@@ -1,0 +1,4656 @@
+import std/os
+import std/times
+import tables
+import cheng/decentralized/json_parse as jparse
+import cheng/runtime/json_ast as json
+import ide/textutils
+import cheng/gui/services/syntax as syntax
+import cheng/gui/services/diagnostics as diag
+
+fn insertCharAt(line: str, col: int32, ch: char): str =
+    let length: int32 = len(line)
+    if col <= 0:
+        return charToStr(ch) + line
+    if col >= length:
+        return line + charToStr(ch)
+    return sliceRange(line, 0, col - 1) + charToStr(ch) + sliceFrom(line, col)
+
+fn removeCharAt(line: str, col: int32): str =
+    let length: int32 = len(line)
+    if length == 0:
+        return ""
+    if col <= 0:
+        if length == 1:
+            return ""
+        return sliceFrom(line, 1)
+    if col >= length:
+        return line
+    if col == length - 1:
+        return sliceRange(line, 0, length - 2)
+    return sliceRange(line, 0, col - 1) + sliceFrom(line, col + 1)
+
+fn isWhitespaceChar(ch: char): bool =
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+
+fn isPairOpen(ch: char): bool =
+    return ch == '(' || ch == '[' || ch == '{'
+
+fn isPairClose(ch: char): bool =
+    return ch == ')' || ch == ']' || ch == '}'
+
+fn isQuoteChar(ch: char): bool =
+    return ch == '"' || ch == '\''
+
+fn matchingClose(ch: char): char =
+    if ch == '(':
+        return ')'
+    if ch == '[':
+        return ']'
+    if ch == '{':
+        return '}'
+    if ch == '"' || ch == '\'':
+        return ch
+    return '\0'
+
+fn matchingOpen(ch: char): char =
+    if ch == ')':
+        return '('
+    if ch == ']':
+        return '['
+    if ch == '}':
+        return '{'
+    if ch == '"' || ch == '\'':
+        return ch
+    return '\0'
+
+fn lineCharAt(text: str, col: int32): char =
+    if col < 0 || col >= len(text):
+        return '\0'
+    return text[col]
+
+fn byteValue(ch: char): int32 =
+    var code: int32 = ord(ch)
+    if code < 0:
+        code = code + 256
+    return code
+
+fn utf8IsContByte(ch: char): bool =
+    let code: int32 = byteValue(ch)
+    return code >= 0x80 && code < 0xC0
+
+fn utf8DecodeFirst(text: str): int32 =
+    if len(text) == 0:
+        return -1
+    let b0: int32 = byteValue(text[0])
+    if b0 < 0x80:
+        return b0
+    if b0 >= 0xC0 && b0 < 0xE0 && len(text) >= 2:
+        let b1: int32 = byteValue(text[1]) & 0x3F
+        return ((b0 & 0x1F) << 6) | b1
+    if b0 >= 0xE0 && b0 < 0xF0 && len(text) >= 3:
+        let b1: int32 = byteValue(text[1]) & 0x3F
+        let b2: int32 = byteValue(text[2]) & 0x3F
+        return ((b0 & 0x0F) << 12) | (b1 << 6) | b2
+    if b0 >= 0xF0 && len(text) >= 4:
+        let b1: int32 = byteValue(text[1]) & 0x3F
+        let b2: int32 = byteValue(text[2]) & 0x3F
+        let b3: int32 = byteValue(text[3]) & 0x3F
+        return ((b0 & 0x07) << 18) | (b1 << 12) | (b2 << 6) | b3
+    return -1
+
+fn isPrivateUseGlyph(text: str): bool =
+    if len(text) == 0:
+        return false
+    let seqLen: int32 = utf8SeqLen(text[0])
+    if seqLen <= 0 || seqLen != len(text):
+        return false
+    let cp: int32 = utf8DecodeFirst(text)
+    if cp < 0:
+        return false
+    return cp >= 0xE000 && cp <= 0xF8FF
+
+fn utf8SeqLen(lead: char): int32 =
+    let code: int32 = byteValue(lead)
+    if code < 0x80:
+        return 1
+    if code >= 0xF0:
+        return 4
+    if code >= 0xE0:
+        return 3
+    if code >= 0xC0:
+        return 2
+    return 1
+
+fn utf8SnapForward(text: str, col: int32): int32 =
+    var idx: int32 = clampInt(col, 0, len(text))
+    while idx < len(text) && utf8IsContByte(text[idx]):
+        idx = idx + 1
+    return idx
+
+fn utf8SnapBackward(text: str, col: int32): int32 =
+    var idx: int32 = clampInt(col, 0, len(text))
+    while idx > 0 && idx < len(text) && utf8IsContByte(text[idx]):
+        idx = idx - 1
+    return idx
+
+fn utf8PrevBoundary(text: str, col: int32): int32 =
+    var idx: int32 = utf8SnapForward(text, col)
+    if idx <= 0:
+        return 0
+    idx = idx - 1
+    while idx > 0 && utf8IsContByte(text[idx]):
+        idx = idx - 1
+    return idx
+
+fn utf8NextBoundary(text: str, col: int32): int32 =
+    var idx: int32 = utf8SnapBackward(text, col)
+    if idx >= len(text):
+        return len(text)
+    idx = idx + 1
+    while idx < len(text) && utf8IsContByte(text[idx]):
+        idx = idx + 1
+    return idx
+
+fn textDisplayUnits(text: str): int32 =
+    var units: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        let ch: char = text[i]
+        let code: int32 = byteValue(ch)
+        let stepRaw: int32 = utf8SeqLen(ch)
+        let step: int32 = maxInt(1, minInt(stepRaw, len(text) - i))
+        if code < 0x80:
+            units = units + 1
+        else:
+            units = units + 2
+        i = i + step
+    return units
+
+fn textUnitsUpTo(text: str, byteIdx: int32): int32 =
+    let stop: int32 = utf8SnapBackward(text, byteIdx)
+    var units: int32 = 0
+    var i: int32 = 0
+    while i < stop && i < len(text):
+        let ch: char = text[i]
+        let code: int32 = byteValue(ch)
+        let stepRaw: int32 = utf8SeqLen(ch)
+        let step: int32 = maxInt(1, minInt(stepRaw, len(text) - i))
+        if code < 0x80:
+            units = units + 1
+        else:
+            units = units + 2
+        i = i + step
+    return units
+
+fn textByteIndexFromUnits(text: str, unitsTarget: int32): int32 =
+    if unitsTarget <= 0:
+        return 0
+    var units: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        let ch: char = text[i]
+        let code: int32 = byteValue(ch)
+        let stepRaw: int32 = utf8SeqLen(ch)
+        let step: int32 = maxInt(1, minInt(stepRaw, len(text) - i))
+        let w: int32 = if code < 0x80: 1 else: 2
+        if units + w > unitsTarget:
+            return i
+        units = units + w
+        i = i + step
+    return len(text)
+
+fn desiredColForLineText(lineText: str, col: int32): int32 =
+    return textUnitsUpTo(lineText, clampInt(col, 0, len(lineText)))
+
+fn desiredColForLine(state: EditorState, lineIdx: int32, col: int32): int32 =
+    if lineIdx < 0 || lineIdx >= seqLenString(state.lines):
+        return 0
+    let lineText = seqGetString(state.lines, lineIdx)
+    return desiredColForLineText(lineText, col)
+
+fn leadingWhitespaceLen(text: str): int32 =
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch == ' ' || ch == '\t':
+            continue
+        return idx
+    return len(text)
+
+fn leadingWhitespace(text: str): str =
+    let count: int32 = leadingWhitespaceLen(text)
+    if count <= 0:
+        return ""
+    return sliceRange(text, 0, count - 1)
+
+fn makeSpaces(count: int32): str =
+    if count <= 0:
+        return ""
+    var outVal = ""
+    for idx in 0..<count:
+        outVal = outVal + " "
+    return outVal
+
+fn trimLeadingWhitespace(text: str): str =
+    if len(text) == 0:
+        return text
+    for idx in 0..<len(text):
+        if text[idx] == ' ' || text[idx] == '\t':
+            continue
+        if idx <= 0:
+            return text
+        return sliceFrom(text, idx)
+    return ""
+
+fn appFirstNonSpaceChar(text: str): char =
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch != ' ' && ch != '\t':
+            return ch
+    return '\0'
+
+fn lastNonSpaceChar(text: str): char =
+    if len(text) == 0:
+        return '\0'
+    for rev in 0..<len(text):
+        let idx: int32 = len(text) - 1 - rev
+        let ch: char = text[idx]
+        if ch != ' ' && ch != '\t':
+            return ch
+    return '\0'
+
+fn startsWithKeyword(text: str, keyword: str): bool =
+    if ! startsWithPrefix(text, keyword):
+        return false
+    if len(text) == len(keyword):
+        return true
+    let nextCh: char = text[len(keyword)]
+    return isWhitespaceChar(nextCh)
+
+fn endsWithKeyword(text: str, keyword: str): bool =
+    if ! endsWithSuffix(text, keyword):
+        return false
+    if len(text) == len(keyword):
+        return true
+    let idx: int32 = len(text) - len(keyword) - 1
+    let prevCh: char = text[idx]
+    return isWhitespaceChar(prevCh)
+
+fn shouldIndentContinuation(text: str): bool =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return false
+    if endsWithSuffix(trimmed, "..") || endsWithSuffix(trimmed, "..<"):
+        return true
+    if endsWithSuffix(trimmed, "->") || endsWithSuffix(trimmed, "=>"):
+        return true
+    if endsWithKeyword(trimmed, "and") || endsWithKeyword(trimmed, "or"):
+        return true
+    let last: char = trimmed[len(trimmed) - 1]
+    if last == ',' || last == '.':
+        return true
+    if last == '+' || last == '-' || last == '*' || last == '/' || last == '%' || last == '^':
+        return true
+    if last == '&' || last == '|' || last == '<' || last == '>':
+        return true
+    return false
+
+fn shouldIndentExtra(text: str): bool =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return false
+    let last: char = trimmed[len(trimmed) - 1]
+    if last == ':' || last == '=':
+        return true
+    if isPairOpen(last):
+        return true
+    if startsWithKeyword(trimmed, "case"):
+        return true
+    if trimmed == "type" || trimmed == "const" || trimmed == "let" || trimmed == "var":
+        return true
+    if trimmed == "fn" || trimmed == "iterator" || trimmed == "converter":
+        return true
+    if trimmed == "template" || trimmed == "macro":
+        return true
+    if endsWithKeyword(trimmed, "enum"):
+        return true
+    if shouldIndentContinuation(trimmed):
+        return true
+    return false
+
+fn isDedentKeyword(text: str): bool =
+    if startsWithKeyword(text, "else"):
+        return true
+    if startsWithKeyword(text, "elif"):
+        return true
+    if startsWithKeyword(text, "of"):
+        return true
+    return false
+
+fn findPrevIndentLessThan(lines: str[], startLine: int32, currentIndent: int32): int32 =
+    for rev in 0..<startLine:
+        let idx: int32 = startLine - 1 - rev
+        let lineText = seqGetString(lines, idx)
+        if len(trimLine(lineText)) > 0:
+            let indent: int32 = leadingWhitespaceLen(lineText)
+            if indent < currentIndent:
+                return indent
+    let fallback: int32 = currentIndent - TabSize
+    if fallback < 0:
+        return 0
+    return fallback
+
+fn findCaseBranchIndent(lines: str[], startLine: int32, currentIndent: int32): int32 =
+    for rev in 0..<startLine:
+        let idx: int32 = startLine - 1 - rev
+        let lineText = seqGetString(lines, idx)
+        let trimmed = trimLine(stripInlineComment(lineText))
+        if len(trimmed) == 0:
+            continue
+        let indent: int32 = leadingWhitespaceLen(lineText)
+        if indent < currentIndent:
+            if startsWithKeyword(trimmed, "case"):
+                return indent + TabSize
+            return -1
+    return -1
+
+fn findIfBranchIndent(lines: str[], startLine: int32, currentIndent: int32): int32 =
+    for rev in 0..<startLine:
+        let idx: int32 = startLine - 1 - rev
+        let lineText = seqGetString(lines, idx)
+        let trimmed = trimLine(stripInlineComment(lineText))
+        if len(trimmed) == 0:
+            continue
+        let indent: int32 = leadingWhitespaceLen(lineText)
+        if indent > currentIndent:
+            continue
+        if startsWithKeyword(trimmed, "if") || startsWithKeyword(trimmed, "elif") || startsWithKeyword(trimmed, "when"):
+            return indent
+        if indent < currentIndent:
+            break
+    return -1
+
+fn bracketStackEntry(ch: char, indent: int32): str =
+    return charToStr(ch) + "|" + intToStr(indent)
+
+fn bracketStackChar(entry: str): char =
+    let token = symbolField(entry, 0)
+    if len(token) > 0:
+        return token[0]
+    return '\0'
+
+fn bracketStackIndent(entry: str): int32 =
+    return parseInt32(symbolField(entry, 1), -1)
+
+fn findOpenBracketIndent(lines: str[], lineIdx: int32, col: int32, closeCh: char): int32 =
+    let openCh: char = matchingOpen(closeCh)
+    if openCh == '\0':
+        return -1
+    var stack: str[] = default[str[]]
+    let maxLines: int32 = 400
+    let startLine: int32 = maxInt(0, lineIdx - maxLines)
+    for idx in startLine..<seqLenString(lines):
+        if idx > lineIdx:
+            break
+        let lineText = seqGetString(lines, idx)
+        var limit: int32 = len(lineText)
+        if idx == lineIdx:
+            limit = clampInt(col, 0, len(lineText))
+        let segment = if limit < len(lineText): sliceRange(lineText, 0, limit - 1) else: lineText
+        var i: int32 = 0
+        let total: int32 = len(segment)
+        while i < total:
+            let ch: char = segment[i]
+            if ch == '#':
+                break
+            if ch == '"' || ch == '\'':
+                i = guiSkipString(segment, i)
+                continue
+            if isPairOpen(ch):
+                let indent: int32 = leadingWhitespaceLen(lineText)
+                addPtr_string(&stack, bracketStackEntry(ch, indent))
+                i = i + 1
+                continue
+            if isPairClose(ch):
+                if seqLenString(stack) > 0:
+                    let top = seqGetString(stack, seqLenString(stack) - 1)
+                    if matchingClose(bracketStackChar(top)) == ch:
+                        seqDeleteString(&stack, seqLenString(stack) - 1)
+                i = i + 1
+                continue
+            i = i + 1
+    let sIdxBase = seqLenString(stack) - 1
+    if sIdxBase >= 0:
+        for sIdxRev in 0..sIdxBase:
+            let sIdx = sIdxBase - sIdxRev
+            let entry = seqGetString(stack, sIdx)
+            if bracketStackChar(entry) == openCh:
+                return bracketStackIndent(entry)
+            if sIdx == 0:
+                break
+    return -1
+
+fn bracketAlignEntry(ch: char, col: int32): str =
+    return charToStr(ch) + "|" + intToStr(col)
+
+fn bracketAlignChar(entry: str): char =
+    let token = symbolField(entry, 0)
+    if len(token) > 0:
+        return token[0]
+    return '\0'
+
+fn bracketAlignCol(entry: str): int32 =
+    return parseInt32(symbolField(entry, 1), -1)
+
+fn findOpenBracketAlignCol(lines: str[], lineIdx: int32, col: int32): int32 =
+    var stack: str[] = default[str[]]
+    let maxLines: int32 = 400
+    let startLine: int32 = maxInt(0, lineIdx - maxLines)
+    for idx in startLine..<seqLenString(lines):
+        if idx > lineIdx:
+            break
+        let lineText = seqGetString(lines, idx)
+        var limit: int32 = len(lineText)
+        if idx == lineIdx:
+            limit = clampInt(col, 0, len(lineText))
+        let segment = if limit < len(lineText): sliceRange(lineText, 0, limit - 1) else: lineText
+        var i: int32 = 0
+        let total: int32 = len(segment)
+        while i < total:
+            let ch: char = segment[i]
+            if ch == '#':
+                break
+            if ch == '"' || ch == '\'':
+                i = guiSkipString(segment, i)
+                continue
+            if isPairOpen(ch):
+                addPtr_string(&stack, bracketAlignEntry(ch, i))
+                i = i + 1
+                continue
+            if isPairClose(ch):
+                if seqLenString(stack) > 0:
+                    let top = seqGetString(stack, seqLenString(stack) - 1)
+                    if matchingClose(bracketAlignChar(top)) == ch:
+                        seqDeleteString(&stack, seqLenString(stack) - 1)
+                i = i + 1
+                continue
+            i = i + 1
+    let lastIdx: int32 = seqLenString(stack) - 1
+    if lastIdx >= 0:
+        let entry = seqGetString(stack, lastIdx)
+        let openCol: int32 = bracketAlignCol(entry)
+        if openCol >= 0:
+            return openCol + 1
+    return -1
+
+fn dedentLineTargetIndent(lines: str[], lineIdx: int32): int32 =
+    if lineIdx < 0 || lineIdx >= seqLenString(lines):
+        return -1
+    let lineText = seqGetString(lines, lineIdx)
+    let indentLen: int32 = leadingWhitespaceLen(lineText)
+    if indentLen <= 0:
+        return -1
+    let trimmed = trimLine(stripInlineComment(lineText))
+    if len(trimmed) == 0 || ! isDedentKeyword(trimmed):
+        return -1
+    var targetIndent: int32 = -1
+    if startsWithKeyword(trimmed, "elif") || startsWithKeyword(trimmed, "else"):
+        targetIndent = findIfBranchIndent(lines, lineIdx, indentLen)
+    if targetIndent < 0 && (startsWithKeyword(trimmed, "of") || startsWithKeyword(trimmed, "else")):
+        targetIndent = findCaseBranchIndent(lines, lineIdx, indentLen)
+    if targetIndent < 0:
+        targetIndent = findPrevIndentLessThan(lines, lineIdx, indentLen)
+    if targetIndent < 0 || targetIndent >= indentLen:
+        return -1
+    return targetIndent
+
+fn closeBracketTargetIndent(lines: str[], lineIdx: int32): int32 =
+    if lineIdx < 0 || lineIdx >= seqLenString(lines):
+        return -1
+    let lineText = seqGetString(lines, lineIdx)
+    let indentLen: int32 = leadingWhitespaceLen(lineText)
+    if indentLen < 0 || indentLen >= len(lineText):
+        return -1
+    let ch: char = lineText[indentLen]
+    if ! isPairClose(ch):
+        return -1
+    let targetIndent: int32 = findOpenBracketIndent(lines, lineIdx, indentLen, ch)
+    if targetIndent < 0 || targetIndent >= indentLen:
+        return -1
+    return targetIndent
+
+fn dedentKeywordAtCursor(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    if lineIdx < 0:
+        return state
+    let lineText = seqGetString(state.lines, lineIdx)
+    let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+    let prefix = if col > 0: sliceRange(lineText, 0, col - 1) else: ""
+    let trimmed = trimLine(prefix)
+    if ! isDedentKeyword(trimmed):
+        return state
+    let indentLen: int32 = leadingWhitespaceLen(lineText)
+    if indentLen <= 0:
+        return state
+    let targetIndent: int32 = dedentLineTargetIndent(state.lines, lineIdx)
+    if targetIndent < 0 || targetIndent >= indentLen:
+        return state
+    let suffix = if indentLen < len(lineText): sliceFrom(lineText, indentLen) else: ""
+    let newLine = makeSpaces(targetIndent) + suffix
+    seqSetString(&state.lines, lineIdx, newLine)
+    let relCol: int32 = col - indentLen
+    let newCol: int32 = targetIndent + maxInt(0, relCol)
+    state.cursorCol = newCol
+    state.desiredCol = desiredColForLineText(newLine, newCol)
+    state.dirty = true
+    return state
+
+fn dedentCloseBracketAtCursor(state: EditorState, closeCh: char): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    if lineIdx < 0:
+        return state
+    let lineText = seqGetString(state.lines, lineIdx)
+    let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+    let prefix = if col > 0: sliceRange(lineText, 0, col - 1) else: ""
+    if len(trimLine(prefix)) > 0:
+        return state
+    let currentIndent: int32 = leadingWhitespaceLen(lineText)
+    let targetIndent: int32 = findOpenBracketIndent(state.lines, lineIdx, col, closeCh)
+    if targetIndent < 0 || targetIndent >= currentIndent:
+        return state
+    let suffix = if currentIndent < len(lineText): sliceFrom(lineText, currentIndent) else: ""
+    let newLine = makeSpaces(targetIndent) + suffix
+    seqSetString(&state.lines, lineIdx, newLine)
+    let relCol: int32 = col - currentIndent
+    let newCol: int32 = targetIndent + maxInt(0, relCol)
+    state.cursorCol = newCol
+    state.desiredCol = desiredColForLineText(newLine, newCol)
+    state.dirty = true
+    return state
+
+fn insertNewLineRaw(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    let lineText = seqGetString(state.lines, lineIdx)
+    let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+    let left = if col > 0: sliceRange(lineText, 0, col - 1) else: ""
+    let right = if col < len(lineText): sliceFrom(lineText, col) else: ""
+    seqSetString(&state.lines, lineIdx, left)
+    seqInsertString(&state.lines, lineIdx + 1, right)
+    state.cursorLine = lineIdx + 1
+    state.cursorCol = 0
+    state.desiredCol = 0
+    state.dirty = true
+    return state
+
+fn insertNewLine(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    let lineText = seqGetString(state.lines, lineIdx)
+    let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+    let left = if col > 0: sliceRange(lineText, 0, col - 1) else: ""
+    let right = if col < len(lineText): sliceFrom(lineText, col) else: ""
+    let baseIndent = leadingWhitespace(left)
+    let leftTrimmed = trimTrailingSpaces(left)
+    let leftLast: char = lastNonSpaceChar(leftTrimmed)
+    let openPair: bool = isPairOpen(leftLast)
+    let codeLeft = trimLine(stripInlineComment(leftTrimmed))
+    let extraIndent = if shouldIndentExtra(codeLeft) || openPair: makeSpaces(TabSize) else: ""
+    var indentText = baseIndent + extraIndent
+    let alignCol: int32 = findOpenBracketAlignCol(state.lines, lineIdx, col)
+    let baseLen: int32 = len(baseIndent)
+    if alignCol > baseLen && ! openPair:
+        indentText = makeSpaces(alignCol)
+    if openPair:
+        let rightTrimmed = trimLeadingWhitespace(right)
+        let rightFirst: char = appFirstNonSpaceChar(rightTrimmed)
+        if rightFirst == matchingClose(leftLast):
+            seqSetString(&state.lines, lineIdx, left)
+            seqInsertString(&state.lines, lineIdx + 1, indentText)
+            seqInsertString(&state.lines, lineIdx + 2, baseIndent + rightTrimmed)
+            state.cursorLine = lineIdx + 1
+            state.cursorCol = len(indentText)
+            state.desiredCol = desiredColForLineText(indentText, state.cursorCol)
+            state.dirty = true
+            return state
+    seqSetString(&state.lines, lineIdx, left)
+    seqInsertString(&state.lines, lineIdx + 1, indentText + right)
+    state.cursorLine = lineIdx + 1
+    state.cursorCol = len(indentText)
+    state.desiredCol = desiredColForLineText(indentText + right, state.cursorCol)
+    state.dirty = true
+    return state
+
+fn toggleCommentLine(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    if lineIdx < 0:
+        return state
+    let lineText = seqGetString(state.lines, lineIdx)
+    let indentLen: int32 = leadingWhitespaceLen(lineText)
+    let lineLen: int32 = len(lineText)
+    let prefix = if indentLen > 0: sliceRange(lineText, 0, indentLen - 1) else: ""
+    var newLine = lineText
+    var delta: int32 = 0
+    if indentLen >= lineLen:
+        newLine = prefix + "# "
+        delta = 2
+    else:
+        let marker: char = lineText[indentLen]
+        if marker == '#':
+            var removeLen: int32 = 1
+            if indentLen + 1 < lineLen && lineText[indentLen + 1] == ' ':
+                removeLen = 2
+            let suffix = if indentLen + removeLen < lineLen: sliceFrom(lineText, indentLen + removeLen) else: ""
+            newLine = prefix + suffix
+            delta = 0 - removeLen
+        else:
+            let suffix = if indentLen < lineLen: sliceFrom(lineText, indentLen) else: ""
+            newLine = prefix + "# " + suffix
+            delta = 2
+    seqSetString(&state.lines, lineIdx, newLine)
+    let col: int32 = clampInt(state.cursorCol, 0, lineLen)
+    if col >= indentLen:
+        let colDelta: int32 = col + delta
+        let nextCol: int32 = maxInt(indentLen, colDelta)
+        state.cursorCol = clampInt(nextCol, 0, len(newLine))
+        state.desiredCol = desiredColForLineText(newLine, state.cursorCol)
+    state.dirty = true
+    return state
+
+fn editorInsertText(state: EditorState, text: str): EditorState =
+    if len(text) == 0:
+        return state
+    if selectionRange(state).active:
+        var next: EditorState = pushUndo(state)
+        next = deleteSelection(next)
+        next = clearMultiCursors(next)
+        next = insertText(next, text)
+        return next
+    if ! hasMultiCursors(state):
+        var next: EditorState = pushUndo(state)
+        next = insertText(next, text)
+        return next
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = insertText(next, text)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorInsertPair(state: EditorState, openCh: char): EditorState =
+    let closeCh: char = matchingClose(openCh)
+    let pairText: str = charToStr(openCh) + charToStr(closeCh)
+    if ! hasMultiCursors(state):
+        var next: EditorState = pushUndo(state)
+        next = insertText(next, pairText)
+        next = moveCursorLeft(next)
+        next.selectionActive = false
+        return next
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = insertText(next, pairText)
+            next = moveCursorLeft(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorInsertQuote(state: EditorState, quoteCh: char): EditorState =
+    let pairText: str = charToStr(quoteCh) + charToStr(quoteCh)
+    if ! hasMultiCursors(state):
+        let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+        let lineText = seqGetString(state.lines, lineIdx)
+        let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+        if lineCharAt(lineText, col) == quoteCh:
+            return moveCursorRight(state)
+        var next: EditorState = pushUndo(state)
+        next = insertText(next, pairText)
+        next = moveCursorLeft(next)
+        next.selectionActive = false
+        return next
+    let cursors: CursorCollection = collectCursorList(state)
+    let count: int32 = seqLenCursor(cursors.positions)
+    var allSkip = true
+    for i in 0..<count:
+        let pos: CursorPos = seqGetCursor(cursors.positions, i)
+        let lineIdx: int32 = clampIndex(pos.line, seqLenString(state.lines))
+        let lineText = seqGetString(state.lines, lineIdx)
+        if lineCharAt(lineText, pos.col) != quoteCh:
+            allSkip = false
+            break
+    if allSkip:
+        var positions: CursorList = cursors.positions
+        for idx in 0..<count:
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            let nextPos: CursorPos = moveCursorPosRight(state, pos)
+            seqSetCursor(&positions, idx, nextPos)
+        return assignCursors(state, positions, cursors.primaryIdx)
+    var next: EditorState = pushUndo(state)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            let lineIdx: int32 = clampIndex(next.cursorLine, seqLenString(next.lines))
+            let lineText = seqGetString(next.lines, lineIdx)
+            if lineCharAt(lineText, next.cursorCol) == quoteCh:
+                next = moveCursorRight(next)
+            else:
+                next = insertText(next, pairText)
+                next = moveCursorLeft(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorInsertClosing(state: EditorState, closeCh: char): EditorState =
+    if ! hasMultiCursors(state):
+        let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+        let lineText = seqGetString(state.lines, lineIdx)
+        let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+        if lineCharAt(lineText, col) == closeCh:
+            return moveCursorRight(state)
+        var next: EditorState = pushUndo(state)
+        next = dedentCloseBracketAtCursor(next, closeCh)
+        next = insertText(next, charToStr(closeCh))
+        next.selectionActive = false
+        return next
+    let cursors: CursorCollection = collectCursorList(state)
+    let count: int32 = seqLenCursor(cursors.positions)
+    var allSkip = true
+    for i in 0..<count:
+        let pos: CursorPos = seqGetCursor(cursors.positions, i)
+        let lineIdx: int32 = clampIndex(pos.line, seqLenString(state.lines))
+        let lineText = seqGetString(state.lines, lineIdx)
+        if lineCharAt(lineText, pos.col) != closeCh:
+            allSkip = false
+            break
+    if allSkip:
+        var positions: CursorList = cursors.positions
+        for idx in 0..<count:
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            let nextPos: CursorPos = moveCursorPosRight(state, pos)
+            seqSetCursor(&positions, idx, nextPos)
+        return assignCursors(state, positions, cursors.primaryIdx)
+    var next: EditorState = pushUndo(state)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            let lineIdx: int32 = clampIndex(next.cursorLine, seqLenString(next.lines))
+            let lineText = seqGetString(next.lines, lineIdx)
+            if lineCharAt(lineText, next.cursorCol) == closeCh:
+                next = moveCursorRight(next)
+            else:
+                next = insertText(next, charToStr(closeCh))
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorInsertColonDedent(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        var next: EditorState = pushUndo(state)
+        next = dedentKeywordAtCursor(next)
+        next = insertText(next, ":")
+        next.selectionActive = false
+        return next
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = dedentKeywordAtCursor(next)
+            next = insertText(next, ":")
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorInsertTextInput(state: EditorState, text: str): EditorState =
+    if len(text) == 0:
+        return state
+    if len(text) != 1:
+        return editorInsertText(state, text)
+    let ch: char = text[0]
+    if selectionRange(state).active:
+        if isPairOpen(ch) || isQuoteChar(ch):
+            let closeCh: char = matchingClose(ch)
+            let wrapped = charToStr(ch) + selectionText(state) + charToStr(closeCh)
+            var next: EditorState = pushUndo(state)
+            next = deleteSelection(next)
+            next = clearMultiCursors(next)
+            next = insertText(next, wrapped)
+            next.selectionActive = false
+            return next
+        return editorInsertText(state, text)
+    if ch == ':':
+        return editorInsertColonDedent(state)
+    if isQuoteChar(ch):
+        return editorInsertQuote(state, ch)
+    if isPairOpen(ch):
+        return editorInsertPair(state, ch)
+    if isPairClose(ch):
+        return editorInsertClosing(state, ch)
+    return editorInsertText(state, text)
+
+fn editorInsertNewline(state: EditorState): EditorState =
+    if selectionRange(state).active:
+        var next: EditorState = pushUndo(state)
+        next = deleteSelection(next)
+        next = clearMultiCursors(next)
+        next = insertNewLine(next)
+        return next
+    if ! hasMultiCursors(state):
+        var next: EditorState = pushUndo(state)
+        next = insertNewLine(next)
+        return next
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = insertNewLine(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorInsertTab(state: EditorState): EditorState =
+    let selRange: LineRange = selectionLineRange(state)
+    if selRange.active:
+        return indentSelectionLines(state, selRange)
+    if ! hasMultiCursors(state):
+        var next: EditorState = pushUndo(state)
+        next = insertTab(next)
+        return next
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = insertTab(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorBackspace(state: EditorState): EditorState =
+    if selectionRange(state).active:
+        var next: EditorState = pushUndo(state)
+        next = deleteSelection(next)
+        next = clearMultiCursors(next)
+        return next
+    if ! hasMultiCursors(state):
+        if state.cursorCol > 0 || state.cursorLine > 0:
+            var next: EditorState = pushUndo(state)
+            return backspace(next)
+        return state
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = backspace(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorBackspaceLineStart(state: EditorState): EditorState =
+    if selectionRange(state).active:
+        var next: EditorState = pushUndo(state)
+        next = deleteSelection(next)
+        next = clearMultiCursors(next)
+        return next
+    if ! hasMultiCursors(state):
+        if state.cursorCol > 0:
+            var next: EditorState = pushUndo(state)
+            return backspaceLineStart(next)
+        return state
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = backspaceLineStart(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorBackspaceWord(state: EditorState): EditorState =
+    if selectionRange(state).active:
+        var next: EditorState = pushUndo(state)
+        next = deleteSelection(next)
+        next = clearMultiCursors(next)
+        return next
+    if ! hasMultiCursors(state):
+        if state.cursorCol > 0:
+            var next: EditorState = pushUndo(state)
+            return backspaceWord(next)
+        return state
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = backspaceWord(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorDeleteForward(state: EditorState): EditorState =
+    if selectionRange(state).active:
+        var next: EditorState = pushUndo(state)
+        next = deleteSelection(next)
+        next = clearMultiCursors(next)
+        return next
+    if ! hasMultiCursors(state):
+        let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+        let lineText = seqGetString(state.lines, lineIdx)
+        if state.cursorCol < len(lineText) || state.cursorLine + 1 < seqLenString(state.lines):
+            var next: EditorState = pushUndo(state)
+            return deleteForward(next)
+        return state
+    var next: EditorState = pushUndo(state)
+    let cursors: CursorCollection = collectCursorList(next)
+    var positions: CursorList = cursors.positions
+    let idxBase = seqLenCursor(positions) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let pos: CursorPos = seqGetCursor(positions, idx)
+            next.cursorLine = pos.line
+            next.cursorCol = pos.col
+            next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+            next = deleteForward(next)
+            seqSetCursor(&positions, idx, makeCursorPos(next.cursorLine, next.cursorCol))
+            if idx == 0:
+                break
+    next = assignCursors(next, positions, cursors.primaryIdx)
+    next.selectionActive = false
+    return next
+
+fn editorToggleComment(state: EditorState): EditorState =
+    var next: EditorState = pushUndo(state)
+    next = toggleCommentLine(next)
+    next = clearMultiCursors(next)
+    return next
+
+fn insertText(state: EditorState, text: str): EditorState =
+    if len(text) == 0:
+        return state
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch == '\r':
+            0
+        elif ch == '\n':
+            state = insertNewLineRaw(state)
+        elif ch == '\x08' || ch == '\x7f':
+            state = backspace(state)
+        else:
+            let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+            let lineText = seqGetString(state.lines, lineIdx)
+            let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+            let newLine = insertCharAt(lineText, col, ch)
+            seqSetString(&state.lines, lineIdx, newLine)
+            state.cursorCol = col + 1
+            state.desiredCol = desiredColForLineText(newLine, state.cursorCol)
+            state.dirty = true
+    return state
+
+fn backspace(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    if lineIdx < 0:
+        return state
+    let lineText = seqGetString(state.lines, lineIdx)
+    let lineLen: int32 = len(lineText)
+    let endCol: int32 = utf8SnapForward(lineText, clampInt(state.cursorCol, 0, lineLen))
+    state.cursorCol = endCol
+    if endCol > 0:
+        let prevIdx: int32 = utf8PrevBoundary(lineText, endCol)
+        let prevCh: char = lineText[prevIdx]
+        let nextCh: char = lineCharAt(lineText, endCol)
+        if (isPairOpen(prevCh) && nextCh == matchingClose(prevCh)) || (isQuoteChar(prevCh) && nextCh == prevCh):
+            var newLine = removeCharAt(lineText, endCol)
+            newLine = removeCharAt(newLine, prevIdx)
+            seqSetString(&state.lines, lineIdx, newLine)
+            state.cursorCol = prevIdx
+            state.desiredCol = desiredColForLineText(newLine, state.cursorCol)
+            state.dirty = true
+            return state
+        let prefix = if prevIdx > 0: sliceRange(lineText, 0, prevIdx - 1) else: ""
+        let suffix = if endCol < lineLen: sliceFrom(lineText, endCol) else: ""
+        let newLine = prefix + suffix
+        seqSetString(&state.lines, lineIdx, newLine)
+        state.cursorCol = prevIdx
+        state.desiredCol = desiredColForLineText(newLine, state.cursorCol)
+        state.dirty = true
+        return state
+    if lineIdx == 0:
+        return state
+    let prevText = seqGetString(state.lines, lineIdx - 1)
+    let currText = seqGetString(state.lines, lineIdx)
+    let mergedLine = prevText + currText
+    seqSetString(&state.lines, lineIdx - 1, mergedLine)
+    seqDeleteString(&state.lines, lineIdx)
+    state.cursorLine = lineIdx - 1
+    state.cursorCol = len(prevText)
+    state.desiredCol = desiredColForLineText(mergedLine, state.cursorCol)
+    state.dirty = true
+    return state
+
+fn backspaceLineStart(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    if lineIdx < 0:
+        return state
+    let lineText = seqGetString(state.lines, lineIdx)
+    let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+    if col <= 0:
+        return state
+    let suffix = if col < len(lineText): sliceFrom(lineText, col) else: ""
+    seqSetString(&state.lines, lineIdx, suffix)
+    state.cursorCol = 0
+    state.desiredCol = 0
+    state.dirty = true
+    return state
+
+fn backspaceWord(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    if lineIdx < 0:
+        return state
+    let lineText = seqGetString(state.lines, lineIdx)
+    let col: int32 = clampInt(state.cursorCol, 0, len(lineText))
+    if col <= 0:
+        return state
+    var i: int32 = col - 1
+    while i >= 0 && (lineText[i] == ' ' || lineText[i] == '\t'):
+        i = i - 1
+    var start: int32 = 0
+    if i < 0:
+        start = 0
+    elif syntax.isIdentChar(lineText[i]):
+        while i >= 0 && syntax.isIdentChar(lineText[i]):
+            i = i - 1
+        start = i + 1
+    else:
+        start = i
+    let prefix = if start > 0: sliceRange(lineText, 0, start - 1) else: ""
+    let suffix = if col < len(lineText): sliceFrom(lineText, col) else: ""
+    let newLine = prefix + suffix
+    seqSetString(&state.lines, lineIdx, newLine)
+    state.cursorCol = start
+    state.desiredCol = desiredColForLineText(newLine, state.cursorCol)
+    state.dirty = true
+    return state
+
+fn deleteForward(state: EditorState): EditorState =
+    let lineIdx: int32 = clampIndex(state.cursorLine, seqLenString(state.lines))
+    let lineText = seqGetString(state.lines, lineIdx)
+    let lineLen: int32 = len(lineText)
+    let startCol: int32 = utf8SnapBackward(lineText, clampInt(state.cursorCol, 0, lineLen))
+    state.cursorCol = startCol
+    if startCol < lineLen:
+        let endCol: int32 = utf8NextBoundary(lineText, startCol)
+        let currCh: char = lineText[startCol]
+        let nextCh: char = lineCharAt(lineText, endCol)
+        if (isPairOpen(currCh) && nextCh == matchingClose(currCh)) || (isQuoteChar(currCh) && nextCh == currCh):
+            var newLine = removeCharAt(lineText, endCol)
+            newLine = removeCharAt(newLine, startCol)
+            seqSetString(&state.lines, lineIdx, newLine)
+            state.desiredCol = desiredColForLineText(newLine, state.cursorCol)
+            state.dirty = true
+            return state
+        let prefix = if startCol > 0: sliceRange(lineText, 0, startCol - 1) else: ""
+        let suffix = if endCol < lineLen: sliceFrom(lineText, endCol) else: ""
+        let newLine = prefix + suffix
+        seqSetString(&state.lines, lineIdx, newLine)
+        state.desiredCol = desiredColForLineText(newLine, state.cursorCol)
+        state.dirty = true
+        return state
+    if lineIdx >= seqLenString(state.lines) - 1:
+        return state
+    let nextText = seqGetString(state.lines, lineIdx + 1)
+    let mergedLine = lineText + nextText
+    seqSetString(&state.lines, lineIdx, mergedLine)
+    seqDeleteString(&state.lines, lineIdx + 1)
+    state.desiredCol = desiredColForLineText(mergedLine, state.cursorCol)
+    state.dirty = true
+    return state
+
+fn moveCursorPosLeft(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    if outVal.col > 0:
+        let lineText = seqGetString(state.lines, outVal.line)
+        outVal.col = utf8PrevBoundary(lineText, outVal.col)
+    elif outVal.line > 0:
+        outVal.line = outVal.line - 1
+        outVal.col = lineLength(state, outVal.line)
+    return outVal
+
+fn moveCursorPosRight(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    let lineLen: int32 = lineLength(state, outVal.line)
+    if outVal.col < lineLen:
+        let lineText = seqGetString(state.lines, outVal.line)
+        outVal.col = utf8NextBoundary(lineText, outVal.col)
+    elif outVal.line + 1 < seqLenString(state.lines):
+        outVal.line = outVal.line + 1
+        outVal.col = 0
+    return outVal
+
+fn moveCursorPosUp(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    let lineCount: int32 = seqLenString(state.lines)
+    if lineCount <= 0:
+        return outVal
+    let baseLine: int32 = normalizeVisibleLine(state, outVal.line)
+    let currentText = seqGetString(state.lines, baseLine)
+    let units: int32 = textUnitsUpTo(currentText, clampInt(outVal.col, 0, len(currentText)))
+    let targetLine: int32 = moveVisibleLine(state, baseLine, -1)
+    if targetLine == baseLine:
+        outVal.line = baseLine
+        outVal.col = utf8SnapForward(currentText, clampInt(outVal.col, 0, len(currentText)))
+        return outVal
+    outVal.line = targetLine
+    let lineText = seqGetString(state.lines, outVal.line)
+    let lineLen: int32 = len(lineText)
+    let targetCol: int32 = textByteIndexFromUnits(lineText, units)
+    outVal.col = utf8SnapForward(lineText, clampInt(targetCol, 0, lineLen))
+    return outVal
+
+fn moveCursorPosDown(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    let lineCount: int32 = seqLenString(state.lines)
+    if lineCount <= 0:
+        return outVal
+    let baseLine: int32 = normalizeVisibleLine(state, outVal.line)
+    let currentText = seqGetString(state.lines, baseLine)
+    let units: int32 = textUnitsUpTo(currentText, clampInt(outVal.col, 0, len(currentText)))
+    let targetLine: int32 = moveVisibleLine(state, baseLine, 1)
+    if targetLine == baseLine:
+        outVal.line = baseLine
+        outVal.col = utf8SnapForward(currentText, clampInt(outVal.col, 0, len(currentText)))
+        return outVal
+    outVal.line = targetLine
+    let lineText = seqGetString(state.lines, outVal.line)
+    let lineLen: int32 = len(lineText)
+    let targetCol: int32 = textByteIndexFromUnits(lineText, units)
+    outVal.col = utf8SnapForward(lineText, clampInt(targetCol, 0, lineLen))
+    return outVal
+
+fn moveCursorPosHome(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    outVal.col = 0
+    return outVal
+
+fn moveCursorPosEnd(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    let lineLen: int32 = lineLength(state, outVal.line)
+    outVal.col = lineLen
+    return outVal
+
+fn isWordCharForMove(ch: char): bool =
+    if syntax.isIdentChar(ch):
+        return true
+    return byteValue(ch) >= 128
+
+fn moveCursorPosWordLeft(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    let lineCount: int32 = seqLenString(state.lines)
+    if lineCount <= 0:
+        return outVal
+    var line: int32 = clampInt(outVal.line, 0, lineCount - 1)
+    var col: int32 = outVal.col
+    while true:
+        let lineText = seqGetString(state.lines, line)
+        let lineLen: int32 = len(lineText)
+        col = clampInt(col, 0, lineLen)
+        if col == 0:
+            if line == 0:
+                outVal.line = line
+                outVal.col = 0
+                return outVal
+            line = line - 1
+            col = len(seqGetString(state.lines, line))
+            continue
+        var idx: int32 = col
+        while idx > 0:
+            let prev: int32 = utf8PrevBoundary(lineText, idx)
+            let ch: char = lineText[prev]
+            if isWordCharForMove(ch):
+                break
+            idx = prev
+        if idx == 0:
+            outVal.line = line
+            outVal.col = 0
+            return outVal
+        var wordIdx: int32 = idx
+        while wordIdx > 0:
+            let prev: int32 = utf8PrevBoundary(lineText, wordIdx)
+            let ch: char = lineText[prev]
+            if ! isWordCharForMove(ch):
+                break
+            wordIdx = prev
+        outVal.line = line
+        outVal.col = wordIdx
+        return outVal
+
+fn moveCursorPosWordRight(state: EditorState, pos: CursorPos): CursorPos =
+    var outVal: CursorPos = pos
+    let lineCount: int32 = seqLenString(state.lines)
+    if lineCount <= 0:
+        return outVal
+    var line: int32 = clampInt(outVal.line, 0, lineCount - 1)
+    var col: int32 = outVal.col
+    while true:
+        let lineText = seqGetString(state.lines, line)
+        let lineLen: int32 = len(lineText)
+        col = clampInt(col, 0, lineLen)
+        if col >= lineLen:
+            if line + 1 >= lineCount:
+                outVal.line = line
+                outVal.col = lineLen
+                return outVal
+            line = line + 1
+            col = 0
+            continue
+        let ch: char = lineText[col]
+        if isWordCharForMove(ch):
+            var idx: int32 = col
+            while idx < lineLen:
+                let nextCh: char = lineText[idx]
+                if ! isWordCharForMove(nextCh):
+                    break
+                idx = utf8NextBoundary(lineText, idx)
+            outVal.line = line
+            outVal.col = idx
+            return outVal
+        var idx: int32 = col
+        while idx < lineLen:
+            let nextCh: char = lineText[idx]
+            if isWordCharForMove(nextCh):
+                break
+            idx = utf8NextBoundary(lineText, idx)
+        if idx < lineLen:
+            outVal.line = line
+            outVal.col = idx
+            return outVal
+        if line + 1 >= lineCount:
+            outVal.line = line
+            outVal.col = lineLen
+            return outVal
+        line = line + 1
+        col = 0
+
+fn moveCursorWordLeft(state: EditorState): EditorState =
+    let pos: CursorPos = moveCursorPosWordLeft(state, makeCursorPos(state.cursorLine, state.cursorCol))
+    state.cursorLine = pos.line
+    state.cursorCol = pos.col
+    state.desiredCol = desiredColForLine(state, pos.line, pos.col)
+    return state
+
+fn moveCursorWordRight(state: EditorState): EditorState =
+    let pos: CursorPos = moveCursorPosWordRight(state, makeCursorPos(state.cursorLine, state.cursorCol))
+    state.cursorLine = pos.line
+    state.cursorCol = pos.col
+    state.desiredCol = desiredColForLine(state, pos.line, pos.col)
+    return state
+
+fn moveCursorWordLeftAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorWordLeft(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosWordLeft(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorWordRightAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorWordRight(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosWordRight(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorLeftAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorLeft(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosLeft(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorRightAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorRight(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosRight(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorUpAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorUp(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosUp(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorDownAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorDown(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosDown(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorHomeAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorHome(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosHome(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorEndAll(state: EditorState): EditorState =
+    if ! hasMultiCursors(state):
+        return moveCursorEnd(state)
+    let cursors: CursorCollection = collectCursorList(state)
+    var positions: CursorList = cursors.positions
+    let count: int32 = seqLenCursor(positions)
+    for idx in 0..<count:
+        let pos: CursorPos = seqGetCursor(positions, idx)
+        let nextPos: CursorPos = moveCursorPosEnd(state, pos)
+        seqSetCursor(&positions, idx, nextPos)
+    return assignCursors(state, positions, cursors.primaryIdx)
+
+fn moveCursorLeft(state: EditorState): EditorState =
+    if state.cursorCol > 0:
+        let lineText = seqGetString(state.lines, state.cursorLine)
+        state.cursorCol = utf8PrevBoundary(lineText, state.cursorCol)
+    elif state.cursorLine > 0:
+        state.cursorLine = state.cursorLine - 1
+        state.cursorCol = lineLength(state, state.cursorLine)
+    state.desiredCol = desiredColForLine(state, state.cursorLine, state.cursorCol)
+    return state
+
+fn moveCursorRight(state: EditorState): EditorState =
+    let lineLen: int32 = lineLength(state, state.cursorLine)
+    if state.cursorCol < lineLen:
+        let lineText = seqGetString(state.lines, state.cursorLine)
+        state.cursorCol = utf8NextBoundary(lineText, state.cursorCol)
+    elif state.cursorLine + 1 < seqLenString(state.lines):
+        state.cursorLine = state.cursorLine + 1
+        state.cursorCol = 0
+    state.desiredCol = desiredColForLine(state, state.cursorLine, state.cursorCol)
+    return state
+
+fn moveCursorUp(state: EditorState): EditorState =
+    let lineCount: int32 = seqLenString(state.lines)
+    if lineCount <= 0:
+        return state
+    let targetLine: int32 = moveVisibleLine(state, state.cursorLine, -1)
+    if targetLine == state.cursorLine:
+        return state
+    state.cursorLine = targetLine
+    let lineText = seqGetString(state.lines, state.cursorLine)
+    let lineLen: int32 = len(lineText)
+    let targetCol: int32 = textByteIndexFromUnits(lineText, state.desiredCol)
+    state.cursorCol = utf8SnapForward(lineText, clampInt(targetCol, 0, lineLen))
+    return state
+
+fn moveCursorDown(state: EditorState): EditorState =
+    let lineCount: int32 = seqLenString(state.lines)
+    if lineCount <= 0:
+        return state
+    let targetLine: int32 = moveVisibleLine(state, state.cursorLine, 1)
+    if targetLine == state.cursorLine:
+        return state
+    state.cursorLine = targetLine
+    let lineText = seqGetString(state.lines, state.cursorLine)
+    let lineLen: int32 = len(lineText)
+    let targetCol: int32 = textByteIndexFromUnits(lineText, state.desiredCol)
+    state.cursorCol = utf8SnapForward(lineText, clampInt(targetCol, 0, lineLen))
+    return state
+
+fn moveCursorHome(state: EditorState): EditorState =
+    state.cursorCol = 0
+    state.desiredCol = 0
+    return state
+
+fn moveCursorEnd(state: EditorState): EditorState =
+    let lineLen: int32 = lineLength(state, state.cursorLine)
+    state.cursorCol = lineLen
+    state.desiredCol = desiredColForLine(state, state.cursorLine, state.cursorCol)
+    return state
+
+fn pageScroll(state: EditorState, delta: int32, layout: GuiLayout): EditorState =
+    let visibleLines: int32 = maxInt(1, int32(float64(layout.editorH) / layout.lineHeight))
+    var scrollLine: int32 = activeScrollLine(state)
+    if delta != 0:
+        scrollLine = moveVisibleLine(state, scrollLine, delta * visibleLines)
+    else:
+        scrollLine = normalizeVisibleLine(state, scrollLine)
+    let maxScroll: int32 = maxScrollLine(state, visibleLines)
+    scrollLine = clampInt(normalizeVisibleLine(state, scrollLine), 0, maxScroll)
+    state = setActiveScrollLine(state, scrollLine)
+    return state
+
+fn scrollLines(state: EditorState, delta: int32, layout: GuiLayout): EditorState =
+    let visibleLines: int32 = maxInt(1, int32(float64(layout.editorH) / layout.lineHeight))
+    var scrollLine: int32 = activeScrollLine(state)
+    if delta != 0:
+        scrollLine = moveVisibleLine(state, scrollLine, delta)
+    else:
+        scrollLine = normalizeVisibleLine(state, scrollLine)
+    let maxScroll: int32 = maxScrollLine(state, visibleLines)
+    scrollLine = clampInt(normalizeVisibleLine(state, scrollLine), 0, maxScroll)
+    state = setActiveScrollLine(state, scrollLine)
+    return state
+
+fn scrollExplorer(state: ExplorerState, delta: int32, layout: GuiLayout): ExplorerState =
+    let visibleLines: int32 = explorerVisibleLines(layout)
+    state.scroll = state.scroll + delta
+    let maxScroll: int32 = maxInt(0, seqLenString(state.items) - visibleLines)
+    state.scroll = clampInt(state.scroll, 0, maxScroll)
+    return state
+
+fn ensureExplorerSelection(state: ExplorerState): ExplorerState =
+    let count: int32 = seqLenString(state.items)
+    if count <= 0:
+        state.selected = -1
+        return state
+    if state.selected < 0:
+        state.selected = 0
+    if state.selected >= count:
+        state.selected = count - 1
+    return state
+
+fn ensureExplorerVisible(state: ExplorerState, layout: GuiLayout): ExplorerState =
+    let visible: int32 = explorerVisibleLines(layout)
+    if state.selected < 0:
+        return state
+    if state.selected < state.scroll:
+        state.scroll = state.selected
+    elif state.selected >= state.scroll + visible:
+        state.scroll = state.selected - visible + 1
+    let maxScroll: int32 = maxInt(0, seqLenString(state.items) - visible)
+    state.scroll = clampInt(state.scroll, 0, maxScroll)
+    return state
+
+fn moveExplorerSelection(state: ExplorerState, delta: int32, layout: GuiLayout): ExplorerState =
+    var next: ExplorerState = ensureExplorerSelection(state)
+    let count: int32 = seqLenString(next.items)
+    if count <= 0:
+        return next
+    let target: int32 = clampInt(next.selected + delta, 0, count - 1)
+    next.selected = target
+    next = ensureExplorerVisible(next, layout)
+    return next
+
+fn pageExplorerSelection(state: ExplorerState, delta: int32, layout: GuiLayout): ExplorerState =
+    let visible: int32 = explorerVisibleLines(layout)
+    return moveExplorerSelection(state, delta * visible, layout)
+
+fn cursorFromPointWithScroll(state: EditorState, layout: GuiLayout, px: float64, py: float64, scrollLine: int32, codeY: float64): CursorPos =
+    if layout.advance <= 0.0 || layout.lineHeight <= 0.0:
+        return makeCursorPos(state.cursorLine, state.cursorCol)
+    let relY = py - codeY
+    let lineOffset: int32 = if relY <= 0.0: 0 else: int32(relY / layout.lineHeight)
+    let startLine: int32 = normalizeVisibleLine(state, scrollLine)
+    let lineIdx: int32 = visibleLineAtOffset(state, startLine, lineOffset)
+    let relX = px - layout.codeX
+    let lineText = seqGetString(state.lines, lineIdx)
+    let lineLen: int32 = len(lineText)
+    let col: int32 = textColForX(lineText, relX, layout)
+    let snappedCol: int32 = utf8SnapForward(lineText, clampInt(col, 0, lineLen))
+    return makeCursorPos(lineIdx, snappedCol)
+
+fn lineIndexFromPointWithScroll(state: EditorState, layout: GuiLayout, py: float64, scrollLine: int32, codeY: float64): int32 =
+    if layout.lineHeight <= 0.0:
+        return clampIndex(state.cursorLine, seqLenString(state.lines))
+    let relY = py - codeY
+    let lineOffset: int32 = if relY <= 0.0: 0 else: int32(relY / layout.lineHeight)
+    let startLine: int32 = normalizeVisibleLine(state, scrollLine)
+    return visibleLineAtOffset(state, startLine, lineOffset)
+
+fn cursorFromPoint(state: EditorState, layout: GuiLayout, px: float64, py: float64): CursorPos =
+    let scrollLine: int32 = activeScrollLine(state)
+    return cursorFromPointWithScroll(state, layout, px, py, scrollLine, layout.codeY)
+
+fn lineIndexFromPoint(state: EditorState, layout: GuiLayout, py: float64): int32 =
+    let scrollLine: int32 = activeScrollLine(state)
+    return lineIndexFromPointWithScroll(state, layout, py, scrollLine, layout.codeY)
+
+fn updateHoverFromPoint(state: GuiState, px: float64, py: float64): GuiState =
+    if state.focus != fkEditor:
+        return guiClearHover(state)
+    if state.overlay.kind != okNone:
+        return guiClearHover(state)
+    let layout: GuiLayout = state.layout
+    let minimapW: int32 = minimapWidth(layout)
+    let editorRight: int32 = if minimapW > 0: layout.editorX + layout.editorW - minimapW else: layout.editorX + layout.editorW
+    let inEditor: bool = px >= float64(layout.editorX) && px <= float64(editorRight) && py >= float64(layout.editorY) && py <= float64(layout.bottomY)
+    if ! inEditor:
+        return guiClearHover(state)
+    let pane: int32 = editorPaneIndex(layout, py, state.editor.splitActive)
+    let paneMetrics: EditorPaneMetrics = editorPaneMetrics(layout, pane, state.editor.splitActive)
+    let paneScroll: int32 = scrollLineForPane(state.editor, pane)
+    let pos: CursorPos = cursorFromPointWithScroll(state.editor, layout, px, py, paneScroll, paneMetrics.codeY)
+    if pos.line == state.hoverLine && pos.col == state.hoverCol:
+        state.hoverX = px
+        state.hoverY = py
+        return state
+    let text = hoverInfoAtPosition(state, pos.line, pos.col)
+    if len(text) == 0:
+        state.hoverActive = false
+        state.hoverText = ""
+        state.hoverLine = pos.line
+        state.hoverCol = pos.col
+        state.hoverX = px
+        state.hoverY = py
+        return state
+    state.hoverActive = true
+    state.hoverText = text
+    state.hoverLine = pos.line
+    state.hoverCol = pos.col
+    state.hoverX = px
+    state.hoverY = py
+    return state
+
+fn setCursorFromPos(state: EditorState, pos: CursorPos): EditorState =
+    state.cursorLine = pos.line
+    state.cursorCol = pos.col
+    state.desiredCol = desiredColForLine(state, pos.line, pos.col)
+    return state
+
+fn toggleMultiCursor(state: EditorState, pos: CursorPos): EditorState =
+    var next: EditorState = state
+    let primary: CursorPos = makeCursorPos(next.cursorLine, next.cursorCol)
+    if cursorEqual(primary, pos):
+        return next
+    if cursorListContains(next.multiCursors, pos):
+        next.multiCursors = removeMultiCursor(next.multiCursors, pos)
+        return next
+    if ! cursorListContains(next.multiCursors, primary):
+        next.multiCursors = addMultiCursorUnique(next.multiCursors, primary)
+    next.cursorLine = pos.line
+    next.cursorCol = pos.col
+    next.desiredCol = desiredColForLine(next, pos.line, pos.col)
+    next.multiCursors = removeMultiCursor(next.multiCursors, pos)
+    return next
+
+fn setMultiCursorsFromRange(state: EditorState, anchorLine: int32, currentLine: int32, col: int32): EditorState =
+    var next: EditorState = state
+    let minLine: int32 = if anchorLine <= currentLine: anchorLine else: currentLine
+    let maxLine: int32 = if anchorLine >= currentLine: anchorLine else: currentLine
+    next.multiCursors = newCursorList()
+    next.selectionActive = false
+    for lineIdx in minLine..maxLine:
+        let lineLen: int32 = lineLength(next, lineIdx)
+        let lineCol: int32 = clampInt(col, 0, lineLen)
+        if lineIdx == currentLine:
+            next.cursorLine = lineIdx
+            next.cursorCol = lineCol
+            next.desiredCol = desiredColForLine(next, lineIdx, lineCol)
+        else:
+            addPtr_cursor(&next.multiCursors, makeCursorPos(lineIdx, lineCol))
+    return next
+
+fn setCursorFromPointWithScroll(state: EditorState, layout: GuiLayout, px: float64, py: float64, scrollLine: int32, codeY: float64): EditorState =
+    let pos: CursorPos = cursorFromPointWithScroll(state, layout, px, py, scrollLine, codeY)
+    return setCursorFromPos(state, pos)
+
+fn setCursorFromPoint(state: EditorState, layout: GuiLayout, px: float64, py: float64): EditorState =
+    let scrollLine: int32 = activeScrollLine(state)
+    return setCursorFromPointWithScroll(state, layout, px, py, scrollLine, layout.codeY)
+
+fn indexOfSubstr(text: str, needle: str, start: int32): int32 =
+    let textLen: int32 = len(text)
+    let needleLen: int32 = len(needle)
+    if needleLen <= 0 || textLen <= 0:
+        return -1
+    var s: int32 = start
+    if s < 0:
+        s = 0
+    let last: int32 = textLen - needleLen
+    if last < s:
+        return -1
+    for i in s..last:
+        var matched = true
+        for j in 0..<needleLen:
+            if text[i + j] != needle[j]:
+                matched = false
+                break
+        if matched:
+            return i
+    return -1
+
+fn findNextMatch(state: EditorState, query: str, startLine: int32, startCol: int32): SearchMatch =
+    var match: SearchMatch
+    match.found = false
+    match.line = -1
+    match.col = -1
+    if len(query) == 0:
+        return match
+    let totalLines: int32 = seqLenString(state.lines)
+    if totalLines <= 0:
+        return match
+    let startLineIdx: int32 = clampIndex(startLine, totalLines)
+    for lineIdx in startLineIdx..<totalLines:
+        let lineText = seqGetString(state.lines, lineIdx)
+        let searchStart: int32 = if lineIdx == startLineIdx: clampInt(startCol, 0, len(lineText)) else: 0
+        let pos: int32 = indexOfSubstr(lineText, query, searchStart)
+        if pos >= 0:
+            match.found = true
+            match.line = lineIdx
+            match.col = pos
+            return match
+    for lineIdx in 0..<totalLines:
+        if lineIdx > startLineIdx:
+            break
+        let lineText = seqGetString(state.lines, lineIdx)
+        let pos: int32 = indexOfSubstr(lineText, query, 0)
+        if pos >= 0:
+            match.found = true
+            match.line = lineIdx
+            match.col = pos
+            return match
+    return match
+
+fn applySearch(state: GuiState, query: str): GuiState =
+    state.search.query = query
+    state.search.matchLine = -1
+    state.search.matchCol = -1
+    if len(query) == 0:
+        state.statusMsg = "find: empty"
+        return state
+    let match: SearchMatch = findNextMatch(state.editor, query, state.editor.cursorLine, state.editor.cursorCol)
+    if match.found:
+        state.search.matchLine = match.line
+        state.search.matchCol = match.col
+        state.editor.cursorLine = match.line
+        state.editor.cursorCol = match.col
+        state.editor.desiredCol = desiredColForLine(state.editor, match.line, match.col)
+        state.editor = ensureCursorVisible(state.editor, state.layout)
+        state.statusMsg = "find: " + query
+    else:
+        state.statusMsg = "find: not found"
+        state.terminal = pushTerminalLine(state.terminal, "find: not found")
+    return state
+
+fn applySearchProject(state: GuiState, query: str): GuiState =
+    if len(query) == 0:
+        state.statusMsg = "search: empty"
+        return state
+    state.search.query = query
+    state.search.matchLine = -1
+    state.search.matchCol = -1
+    state.searchResults = default[str[]]
+    state.searchTotal = 0
+    state.searchTruncated = false
+    state.searchScroll = 0
+    state.searchScroll = 0
+    let files: str[] = collectProjectFiles(state)
+    var results: str[] = default[str[]]
+    var total: int32 = 0
+    let step: int32 = maxInt(1, len(query))
+    for fIdx in 0..<seqLenString(files):
+        let path = seqGetString(files, fIdx)
+        if len(path) > 0 && fileExists(path):
+            let content = readFile(path)
+            let lines: str[] = splitLinesSimple(content)
+            for lineIdx in 0..<seqLenString(lines):
+                let lineText = seqGetString(lines, lineIdx)
+                var pos: int32 = indexOfSubstr(lineText, query, 0)
+                while pos >= 0:
+                    total = total + 1
+                    if seqLenString(results) < MaxSearchOutput:
+                        let lineNo = intToStr(int32(lineIdx + 1))
+                        let colNo = intToStr(int32(pos + 1))
+                        let preview = trimLine(lineText)
+                        addPtr_string(&results, path + ":" + lineNo + ":" + colNo + "\t" + preview)
+                    let nextStart: int32 = pos + step
+                    if nextStart >= len(lineText):
+                        break
+                    pos = indexOfSubstr(lineText, query, nextStart)
+    state.searchResults = results
+    state.searchTotal = total
+    state.searchTruncated = total > MaxSearchOutput
+    state.leftPaneTab = lpSearch
+    state.focus = fkExplorer
+    state.terminal = pushTerminalLine(state.terminal, "search: " + query + " (" + intToStr(total) + ")")
+    if total == 0:
+        state.terminal = pushTerminalLine(state.terminal, "search: not found")
+    elif state.searchTruncated:
+        state.terminal = pushTerminalLine(state.terminal, "search: truncated")
+    state.statusMsg = "search: " + intToStr(total)
+    return state
+
+fn parseReplaceInput(text: str): ReplaceResult =
+    var result: ReplaceResult
+    result.text = ""
+    result.count = -1
+    let trimmed = textutils.strip(text)
+    if len(trimmed) == 0:
+        return result
+    var sep: int32 = indexOfSubstr(trimmed, "=>", 0)
+    var sepLen: int32 = 2
+    if sep < 0:
+        sep = indexOfSubstr(trimmed, "->", 0)
+        sepLen = 2
+    if sep < 0:
+        sep = indexOfSubstr(trimmed, "|", 0)
+        sepLen = 1
+    if sep < 0:
+        return result
+    let left = if sep > 0: sliceRange(trimmed, 0, sep - 1) else: ""
+    let rightStart: int32 = sep + sepLen
+    let right = if rightStart <= len(trimmed) - 1: sliceRange(trimmed, rightStart, len(trimmed) - 1) else: ""
+    result.text = textutils.strip(left) + "\n" + textutils.strip(right)
+    result.count = 0
+    return result
+
+fn replaceAllInLine(line: str, needle: str, replacement: str): ReplaceResult =
+    var result: ReplaceResult
+    result.text = ""
+    result.count = 0
+    if len(needle) == 0:
+        result.text = line
+        return result
+    var start: int32 = 0
+    var pos: int32 = indexOfSubstr(line, needle, start)
+    while pos >= 0:
+        if pos > start:
+            result.text = result.text + sliceRange(line, start, pos - 1)
+        result.text = result.text + replacement
+        result.count = result.count + 1
+        start = pos + len(needle)
+        pos = indexOfSubstr(line, needle, start)
+    if start < len(line):
+        result.text = result.text + sliceFrom(line, start)
+    return result
+
+fn replaceAllInEditor(state: EditorState, needle: str, replacement: str): EditorState =
+    for idx in 0..<seqLenString(state.lines):
+        let lineText = seqGetString(state.lines, idx)
+        let res: ReplaceResult = replaceAllInLine(lineText, needle, replacement)
+        if res.count > 0:
+            seqSetString(&state.lines, idx, res.text)
+            changed = true
+    if changed:
+        state.dirty = true
+    return state
+
+fn replaceAllInLines(lines: str[], needle: str, replacement: str): ReplaceLinesResult =
+    var result: ReplaceLinesResult
+    result.lines = default[str[]]
+    result.count = 0
+    result.changed = false
+    if len(needle) == 0:
+        for idx in 0..<seqLenString(lines):
+            addPtr_string(&result.lines, seqGetString(lines, idx))
+        if seqLenString(result.lines) == 0:
+            addPtr_string(&result.lines, "")
+        return result
+    for idx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, idx)
+        let res: ReplaceResult = replaceAllInLine(lineText, needle, replacement)
+        if res.count > 0:
+            addPtr_string(&result.lines, res.text)
+            result.count = result.count + res.count
+            result.changed = true
+        else:
+            addPtr_string(&result.lines, lineText)
+    if seqLenString(result.lines) == 0:
+        addPtr_string(&result.lines, "")
+    return result
+
+fn replaceAllProject(state: GuiState, needle: str, replacement: str): GuiState =
+    if len(needle) == 0:
+        state.statusMsg = "replace: empty find"
+        return state
+    var next: GuiState = syncActiveBuffer(state)
+    let files: str[] = collectProjectFiles(next)
+    var total: int32 = 0
+    var filesChanged: int32 = 0
+    var dirtyCount: int32 = 0
+    var savedCount: int32 = 0
+    var activeChanged: bool = false
+    for fIdx in 0..<seqLenString(files):
+        let path = seqGetString(files, fIdx)
+        let bufferIdx: int32 = bufferIndexForPath(next.buffers, path)
+        var buffer: EditorState
+        var lines: str[]
+        var bufferDirty = false
+        if bufferIdx >= 0:
+            buffer = bufferGet(next.buffers, bufferIdx)
+            lines = buffer.lines
+            bufferDirty = buffer.dirty
+        else:
+            let content = readFile(path)
+            lines = splitLinesSimple(content)
+        let res: ReplaceLinesResult = replaceAllInLines(lines, needle, replacement)
+        if res.count > 0:
+            total = total + res.count
+            filesChanged = filesChanged + 1
+            if bufferIdx >= 0:
+                buffer.lines = res.lines
+                if bufferDirty:
+                    buffer.dirty = true
+                    dirtyCount = dirtyCount + 1
+                else:
+                    buffer.dirty = false
+                    writeFile(path, joinLines(res.lines))
+                    savedCount = savedCount + 1
+                buffer.bufferVersion = buffer.bufferVersion + 1
+                buffer = invalidateSemanticState(buffer, true)
+                buffer.outlineReady = false
+                buffer.outlineEntries = default[str[]]
+                bufferSet(&next.buffers, bufferIdx, buffer)
+                if bufferIdx == next.activeBuffer:
+                    next.editor = buffer
+                    activeChanged = true
+            else:
+                writeFile(path, joinLines(res.lines))
+                savedCount = savedCount + 1
+    if total > 0:
+        next = guiInvalidateProjectIndex(next)
+        if savedCount > 0:
+            next = guiVcsRefreshSilent(next)
+        if activeChanged:
+            next = guiSetDiagnosticsDirty(next)
+        next.statusMsg = "replace: " + intToStr(total) + " (" + intToStr(filesChanged) + " files)"
+        next.terminal = pushTerminalLine(next.terminal, next.statusMsg)
+        if dirtyCount > 0:
+            next.terminal = pushTerminalLine(next.terminal, "replace: kept dirty " + intToStr(dirtyCount))
+    else:
+        next.statusMsg = "replace: none"
+    return next
+
+fn replaceAll(state: GuiState, needle: str, replacement: str): GuiState =
+    if len(needle) == 0:
+        state.statusMsg = "replace: empty find"
+        return state
+    var total: int32 = 0
+    for idx in 0..<seqLenString(state.editor.lines):
+        let lineText = seqGetString(state.editor.lines, idx)
+        let res: ReplaceResult = replaceAllInLine(lineText, needle, replacement)
+        if res.count > 0:
+            seqSetString(&state.editor.lines, idx, res.text)
+            total = total + res.count
+    if total > 0:
+        state.editor.dirty = true
+        state = guiSetDiagnosticsDirty(state)
+        state.statusMsg = "replace: " + intToStr(total)
+        state.terminal = pushTerminalLine(state.terminal, "replace: " + intToStr(total))
+    else:
+        state.statusMsg = "replace: none"
+    return state
+
+fn trimTrailingSpaces(line: str): str =
+    if len(line) == 0:
+        return line
+    var idx: int32 = len(line) - 1
+    while idx >= 0 && (line[idx] == ' ' || line[idx] == '\t'):
+        idx = idx - 1
+        if idx < 0:
+            return ""
+    return sliceRange(line, 0, idx)
+
+fn stripTrailingColon(text: str): str =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return ""
+    let lastIdx: int32 = len(trimmed) - 1
+    if trimmed[lastIdx] == ':':
+        if lastIdx <= 0:
+            return ""
+        return trimLine(sliceRange(trimmed, 0, lastIdx - 1))
+    return trimmed
+
+fn stripInlineComment(text: str): str =
+    if len(text) == 0:
+        return text
+    var idx: int32 = 0
+    let total: int32 = len(text)
+    while idx < total:
+        let ch: char = text[idx]
+        if ch == '#':
+            if idx <= 0:
+                return ""
+            return sliceRange(text, 0, idx - 1)
+        if ch == '"' || ch == '\'':
+            idx = guiSkipString(text, idx)
+            continue
+        idx = idx + 1
+    return text
+
+fn isDedentLine(text: str): bool =
+    let base = stripTrailingColon(text)
+    if len(base) == 0:
+        return false
+    if isDedentKeyword(base):
+        return true
+    let firstCh: char = base[0]
+    if firstCh == ')' || firstCh == ']' || firstCh == '}':
+        return true
+    if startsWithKeyword(base, "else") || startsWithKeyword(base, "elif") || startsWithKeyword(base, "of"):
+        return true
+    return false
+
+fn scanTripleQuoteState(line: str, inTriple: bool, tripleChar: char): TripleQuoteState =
+    var outVal: TripleQuoteState
+    outVal.active = inTriple
+    outVal.quote = tripleChar
+    outVal.found = false
+    let total: int32 = len(line)
+    var i: int32 = 0
+    while i + 2 < total:
+        if line[i] == '\\':
+            if i + 1 < total:
+                i = i + 2
+            else:
+                i = i + 1
+            continue
+        if outVal.active:
+            if outVal.quote == '"' && line[i] == '"' && line[i + 1] == '"' && line[i + 2] == '"':
+                outVal.active = false
+                outVal.found = true
+                i = i + 3
+                continue
+            if outVal.quote == '\'' && line[i] == '\'' && line[i + 1] == '\'' && line[i + 2] == '\'':
+                outVal.active = false
+                outVal.found = true
+                i = i + 3
+                continue
+        else:
+            if line[i] == '"' && line[i + 1] == '"' && line[i + 2] == '"':
+                outVal.active = true
+                outVal.quote = '"'
+                outVal.found = true
+                i = i + 3
+                continue
+            if line[i] == '\'' && line[i + 1] == '\'' && line[i + 2] == '\'':
+                outVal.active = true
+                outVal.quote = '\''
+                outVal.found = true
+                i = i + 3
+                continue
+        i = i + 1
+    return outVal
+
+fn guiFormatLines(lines: str[]): FormatResult =
+    var result: FormatResult
+    result.lines = default[str[]]
+    result.changed = false
+    var indentLevel: int32 = 0
+    var inTriple = false
+    var tripleChar: char = '\0'
+    for idx in 0..<seqLenString(lines):
+        let line = seqGetString(lines, idx)
+        let normalized = replaceTabs(line, TabSize)
+        let trimmedTrailing = trimTrailingSpaces(normalized)
+        let wasInTriple: bool = inTriple
+        let scan: TripleQuoteState = scanTripleQuoteState(trimmedTrailing, inTriple, tripleChar)
+        inTriple = scan.active
+        tripleChar = scan.quote
+        var formatted = trimmedTrailing
+        if ! wasInTriple:
+            let trimmedLine = trimLine(trimmedTrailing)
+            if len(trimmedLine) == 0:
+                formatted = ""
+            else:
+                let codeLine = trimLine(stripInlineComment(trimmedTrailing))
+                if isDedentLine(codeLine):
+                    indentLevel = maxInt(0, indentLevel - TabSize)
+                if ! scan.found:
+                    formatted = makeSpaces(indentLevel) + trimmedLine
+                if shouldIndentExtra(codeLine):
+                    indentLevel = indentLevel + TabSize
+        if formatted != line:
+            result.changed = true
+        addPtr_string(&result.lines, formatted)
+    if seqLenString(result.lines) == 0:
+        addPtr_string(&result.lines, "")
+    return result
+
+fn shouldFormatOnSave(path: str): bool =
+    if len(path) == 0:
+        return false
+    return endsWithSuffix(path, ".cheng")
+
+fn guiFormatEditor(state: GuiState): GuiState =
+    let res: FormatResult = guiFormatLines(state.editor.lines)
+    if res.changed:
+        state.editor = pushUndo(state.editor)
+        state.editor.lines = res.lines
+        state.editor.dirty = true
+        state = guiSetDiagnosticsDirty(state)
+        state.statusMsg = "format: ok"
+    else:
+        state.statusMsg = "format: clean"
+    return state
+
+fn stripLeadingIndent(text: str, count: int32): str =
+    if count <= 0:
+        return text
+    var idx: int32 = 0
+    var removed: int32 = 0
+    for scanIdx in 0..<len(text):
+        if removed >= count:
+            break
+        let ch: char = text[scanIdx]
+        if ch != ' ' && ch != '\t':
+            break
+        idx = scanIdx + 1
+        removed = removed + 1
+    if idx <= 0:
+        return text
+    if idx >= len(text):
+        return ""
+    return sliceFrom(text, idx)
+
+fn applyBaseIndent(text: str, baseIndent: int32): str =
+    if baseIndent <= 0:
+        return text
+    if len(trimLine(text)) == 0:
+        return ""
+    return makeSpaces(baseIndent) + text
+
+fn selectionHasDedent(state: EditorState, startLine: int32, endLine: int32, baseIndent: int32): bool =
+    if baseIndent <= 0:
+        return false
+    for idx in startLine..<seqLenString(state.lines):
+        if idx > endLine:
+            break
+        let lineText = seqGetString(state.lines, idx)
+        if len(trimLine(lineText)) > 0 && leadingWhitespaceLen(lineText) < baseIndent:
+            return true
+    return false
+
+fn guiFormatSelection(state: GuiState, sel: SelectionRange, baseIndent: int32): GuiState =
+    if ! sel.active:
+        return guiFormatEditor(state)
+    let lineCount: int32 = seqLenString(state.editor.lines)
+    if lineCount <= 0:
+        return state
+    let startLine: int32 = clampIndex(sel.startLine, lineCount)
+    let endLine: int32 = clampIndex(sel.endLine, lineCount)
+    var sliceLines: str[] = default[str[]]
+    for idx in startLine..<lineCount:
+        if idx > endLine:
+            break
+        let lineText = seqGetString(state.editor.lines, idx)
+        addPtr_string(&sliceLines, stripLeadingIndent(lineText, baseIndent))
+    let res: FormatResult = guiFormatLines(sliceLines)
+    if ! res.changed:
+        state.statusMsg = "format: clean"
+        return state
+    var newLines: str[] = default[str[]]
+    for idx in 0..<startLine:
+        addPtr_string(&newLines, seqGetString(state.editor.lines, idx))
+    for idx in 0..<seqLenString(res.lines):
+        let lineText = seqGetString(res.lines, idx)
+        addPtr_string(&newLines, applyBaseIndent(lineText, baseIndent))
+    for idx in endLine + 1..<lineCount:
+        addPtr_string(&newLines, seqGetString(state.editor.lines, idx))
+    state.editor = pushUndo(state.editor)
+    state.editor.lines = newLines
+    state.editor.dirty = true
+    state = guiSetDiagnosticsDirty(state)
+    state.statusMsg = "format: selection"
+    return state
+
+fn guiFormatSelectionOrFile(state: GuiState): GuiState =
+    let current: SelectionRange = selectionRange(state.editor)
+    if ! current.active:
+        return guiFormatEditor(state)
+    var range: SelectionRange = current
+    if ! selectionIsFullLines(state.editor, current):
+        range = selectionRangeForLines(state.editor, current.startLine, current.endLine)
+    var baseIndent: int32 = selectionIndentBase(state.editor, range.startLine, range.endLine)
+    if baseIndent < 0:
+        baseIndent = 0
+    if selectionHasDedent(state.editor, range.startLine, range.endLine, baseIndent):
+        return guiFormatEditor(state)
+    return guiFormatSelection(state, range, baseIndent)
+
+fn guiSplitWords(text: str): str[] =
+    var outVal: str[] = default[str[]]
+    let total: int32 = len(text)
+    for i in 0..<total:
+        while i < total && (text[i] == ' ' || text[i] == '\t'):
+        if i >= total:
+            break
+        let start: int32 = i
+        while i < total && text[i] != ' ' && text[i] != '\t':
+        if i > start:
+            addPtr_string(&outVal, sliceRange(text, start, i - 1))
+    return outVal
+
+fn guiSkipString(line: str, start: int32): int32 =
+    if start < 0 || start >= len(line):
+        return start
+    let quote: char = line[start]
+    var i: int32 = start + 1
+    while i < len(line):
+        let ch: char = line[i]
+        if ch == '\\':
+            if i + 1 < len(line):
+                i = i + 2
+            else:
+                i = i + 1
+        elif ch == quote:
+            return i + 1
+        else:
+            i = i + 1
+    return i
+
+fn guiReplaceIdentInLine(line: str, oldName: str, newName: str): ReplaceResult =
+    var result: ReplaceResult
+    result.text = line
+    result.count = 0
+    if len(oldName) == 0 || oldName == newName:
+        return result
+    var outVal: str = ""
+    var start: int32 = 0
+    var i: int32 = 0
+    let total: int32 = len(line)
+    while i < total:
+        let ch: char = line[i]
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            i = guiSkipString(line, i)
+            continue
+        if syntax.isIdentStart(ch):
+            let tokenStart: int32 = i
+            i = i + 1
+            while i < total && syntax.isIdentChar(line[i]):
+                i = i + 1
+            let token = sliceRange(line, tokenStart, i - 1)
+            if token == oldName:
+                if tokenStart > start:
+                    outVal = outVal + sliceRange(line, start, tokenStart - 1)
+                outVal = outVal + newName
+                result.count = result.count + 1
+                start = i
+            continue
+        i = i + 1
+    if start <= total - 1:
+        outVal = outVal + sliceRange(line, start, total - 1)
+    if result.count > 0:
+        result.text = outVal
+    return result
+
+fn guiRenameLines(lines: str[], oldName: str, newName: str): RenameResult =
+    var result: RenameResult
+    result.lines = default[str[]]
+    result.count = 0
+    for idx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, idx)
+        let res: ReplaceResult = guiReplaceIdentInLine(lineText, oldName, newName)
+        if res.count > 0:
+            addPtr_string(&result.lines, res.text)
+            result.count = result.count + res.count
+        else:
+            addPtr_string(&result.lines, lineText)
+    if seqLenString(result.lines) == 0:
+        addPtr_string(&result.lines, "")
+    return result
+
+fn guiRenameLinesInRange(lines: str[], oldName: str, newName: str, startLine: int32, endLine: int32): RenameResult =
+    var result: RenameResult
+    result.lines = default[str[]]
+    result.count = 0
+    if seqLenString(lines) == 0:
+        return result
+    let startIdx: int32 = clampInt(startLine, 0, seqLenString(lines) - 1)
+    let endIdx: int32 = clampInt(endLine, 0, seqLenString(lines) - 1)
+    for idx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, idx)
+        if idx >= startIdx && idx <= endIdx:
+            let res: ReplaceResult = guiReplaceIdentInLine(lineText, oldName, newName)
+            if res.count > 0:
+                addPtr_string(&result.lines, res.text)
+                result.count = result.count + res.count
+            else:
+                addPtr_string(&result.lines, lineText)
+        else:
+            addPtr_string(&result.lines, lineText)
+    if seqLenString(result.lines) == 0:
+        addPtr_string(&result.lines, "")
+    return result
+
+fn guiAddReferenceEntry(outVal: str[]*, path: str, lineIdx: int32, colIdx: int32, lineText: str) =
+    let preview = trimLine(lineText)
+    let entry = path + ":" + intToStr(int32(lineIdx + 1)) + ":" + intToStr(int32(colIdx + 1)) + ": " + preview
+    addPtr_string(outVal, entry)
+
+fn guiCollectReferencesFromLines(lines: str[], ident: str, path: str): str[] =
+    var outVal: str[] = default[str[]]
+    if len(ident) == 0:
+        return outVal
+    for lineIdx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, lineIdx)
+        let lineIndent: int32 = leadingWhitespaceLen(lineText)
+        var i: int32 = 0
+        let total: int32 = len(lineText)
+        while i < total:
+            let ch: char = lineText[i]
+            if ch == '#':
+                break
+            if ch == '"' || ch == '\'':
+                i = guiSkipString(lineText, i)
+                continue
+            if syntax.isIdentStart(ch):
+                let tokenStart: int32 = i
+                i = i + 1
+                while i < total && syntax.isIdentChar(lineText[i]):
+                    i = i + 1
+                let token = sliceRange(lineText, tokenStart, i - 1)
+                if token == ident:
+                    guiAddReferenceEntry(&outVal, path, lineIdx, tokenStart, lineText)
+                continue
+            i = i + 1
+    return outVal
+
+fn guiCollectReferencesFromLinesRange(lines: str[], ident: str, path: str, startLine: int32, endLine: int32): str[] =
+    var outVal: str[] = default[str[]]
+    if len(ident) == 0:
+        return outVal
+    if seqLenString(lines) == 0:
+        return outVal
+    let startIdx: int32 = clampInt(startLine, 0, seqLenString(lines) - 1)
+    let endIdx: int32 = clampInt(endLine, 0, seqLenString(lines) - 1)
+    for lineIdx in startIdx..<seqLenString(lines):
+        if lineIdx > endIdx:
+            break
+        let lineText = seqGetString(lines, lineIdx)
+        var i: int32 = 0
+        let total: int32 = len(lineText)
+        while i < total:
+            let ch: char = lineText[i]
+            if ch == '#':
+                break
+            if ch == '"' || ch == '\'':
+                i = guiSkipString(lineText, i)
+                continue
+            if syntax.isIdentStart(ch):
+                let tokenStart: int32 = i
+                i = i + 1
+                while i < total && syntax.isIdentChar(lineText[i]):
+                    i = i + 1
+                let token = sliceRange(lineText, tokenStart, i - 1)
+                if token == ident:
+                    guiAddReferenceEntry(&outVal, path, lineIdx, tokenStart, lineText)
+                continue
+            i = i + 1
+    return outVal
+
+fn definitionIsLocal(entry: str): bool =
+    if len(entry) == 0:
+        return false
+    let kind = semanticKind(entry)
+    if kind == "param" || kind == "for":
+        return true
+    return semanticIndent(entry) > 0
+
+fn scopeRangeForDefinition(lines: str[], entry: str): LineRange =
+    var outVal: LineRange
+    outVal.active = false
+    if len(entry) == 0:
+        return outVal
+    let startLine: int32 = semanticLine(entry)
+    let indent: int32 = semanticIndent(entry)
+    if startLine < 0 || startLine >= seqLenString(lines):
+        return outVal
+    outVal.active = true
+    outVal.startLine = startLine
+    outVal.endLine = startLine
+    for idx in startLine + 1..<seqLenString(lines):
+        let lineText = seqGetString(lines, idx)
+        if len(trimLine(lineText)) == 0:
+            continue
+        let lineIndent: int32 = leadingWhitespaceLen(lineText)
+        if lineIndent < indent:
+            break
+        outVal.endLine = idx
+    return outVal
+
+fn guiShowReferences(state: GuiState, arg: str): GuiState =
+    var scopeProject = true
+    let words: str[] = guiSplitWords(arg)
+    var ident: str = ""
+    if seqLenString(words) > 0:
+        let first = textutils.toLowerAscii(seqGetString(words, 0))
+        if first == "local" || first == "file":
+            scopeProject = false
+            if seqLenString(words) > 1:
+                ident = seqGetString(words, 1)
+        else:
+            ident = seqGetString(words, 0)
+    if len(ident) == 0:
+        ident = wordAtCursor(state.editor)
+    if len(ident) == 0:
+        state.statusMsg = "refs: no symbol"
+        return state
+    state = ensureSemanticModel(state)
+    var refs: str[] = default[str[]]
+    var defEntry = resolveDefinitionEntryFromEntries(state.editor.semanticEntries, state.editor.cursorLine, state.editor.cursorCol, ident)
+    if len(defEntry) == 0:
+        defEntry = findDefinitionEntryAt(state.editor, state.editor.cursorLine, state.editor.cursorCol, ident)
+    let localScope: bool = definitionIsLocal(defEntry)
+    if scopeProject && ! localScope:
+        let files: str[] = collectProjectFiles(state)
+        for idx in 0..<seqLenString(files):
+            let path = seqGetString(files, idx)
+            let content = readFile(path)
+            let lines: str[] = splitLinesSimple(content)
+            let hits: str[] = guiCollectReferencesFromLines(lines, ident, path)
+            for hIdx in 0..<seqLenString(hits):
+                addPtr_string(&refs, seqGetString(hits, hIdx))
+    else:
+        let path = if len(state.editor.filePath) > 0: state.editor.filePath else: "<buffer>"
+        var scopeRange: LineRange
+        scopeRange.active = false
+        if localScope:
+            scopeRange = scopeRangeForDefinition(state.editor.lines, defEntry)
+        if scopeRange.active:
+            refs = guiCollectReferencesFromLinesRange(state.editor.lines, ident, path, scopeRange.startLine, scopeRange.endLine)
+        else:
+            refs = guiCollectReferencesFromLines(state.editor.lines, ident, path)
+    state.terminal = pushTerminalLine(state.terminal, "refs: " + ident + " (" + intToStr(seqLenString(refs)) + ")")
+    for idx in 0..<seqLenString(refs):
+        if idx >= MaxRefOutput:
+            break
+        state.terminal = pushTerminalLine(state.terminal, seqGetString(refs, idx))
+    if seqLenString(refs) > MaxRefOutput:
+        state.terminal = pushTerminalLine(state.terminal, "refs: truncated")
+    state.statusMsg = "refs: " + intToStr(seqLenString(refs))
+    return state
+
+fn guiRenameFromInput(state: GuiState, input: str): GuiState =
+    let words: str[] = guiSplitWords(input)
+    var oldName: str = ""
+    var newName: str = ""
+    var projectRename = false
+    for idx in 0..<seqLenString(words):
+        let word = textutils.toLowerAscii(seqGetString(words, idx))
+        if word == "--project" || word == "-p":
+            projectRename = true
+        elif len(oldName) == 0:
+            oldName = seqGetString(words, idx)
+        elif len(newName) == 0:
+            newName = seqGetString(words, idx)
+    if len(newName) == 0 && len(oldName) > 0:
+        newName = oldName
+        oldName = wordAtCursor(state.editor)
+    if len(oldName) == 0:
+        oldName = wordAtCursor(state.editor)
+    if len(oldName) == 0 || len(newName) == 0:
+        state.statusMsg = "rename: missing symbol"
+        return state
+    if projectRename:
+        let files: str[] = collectProjectFiles(state)
+        var total: int32 = 0
+        for fIdx in 0..<seqLenString(files):
+            let path = seqGetString(files, fIdx)
+            let content = readFile(path)
+            let lines: str[] = splitLinesSimple(content)
+            let res: RenameResult = guiRenameLines(lines, oldName, newName)
+            if res.count > 0:
+                total = total + res.count
+                if path == state.editor.filePath:
+                    state.editor.lines = res.lines
+                    if state.editor.dirty:
+                        state.editor.dirty = true
+                    else:
+                        writeFile(path, joinLines(res.lines))
+                else:
+                    writeFile(path, joinLines(res.lines))
+        if total > 0:
+            state = guiInvalidateProjectIndex(state)
+            state = guiSetDiagnosticsDirty(state)
+            state.statusMsg = "rename: " + intToStr(total)
+        else:
+            state.statusMsg = "rename: none"
+        return state
+    state = ensureSemanticModel(state)
+    var defEntry = resolveDefinitionEntryFromEntries(state.editor.semanticEntries, state.editor.cursorLine, state.editor.cursorCol, oldName)
+    if len(defEntry) == 0:
+        defEntry = findDefinitionEntryAt(state.editor, state.editor.cursorLine, state.editor.cursorCol, oldName)
+    let localScope: bool = definitionIsLocal(defEntry)
+    var res: RenameResult
+    if localScope:
+        let scopeRange: LineRange = scopeRangeForDefinition(state.editor.lines, defEntry)
+        if scopeRange.active:
+            res = guiRenameLinesInRange(state.editor.lines, oldName, newName, scopeRange.startLine, scopeRange.endLine)
+        else:
+            res = guiRenameLines(state.editor.lines, oldName, newName)
+    else:
+        res = guiRenameLines(state.editor.lines, oldName, newName)
+    if res.count > 0:
+        state.editor.lines = res.lines
+        state.editor.dirty = true
+        state = guiInvalidateProjectIndex(state)
+        state = guiSetDiagnosticsDirty(state)
+        state.statusMsg = "rename: " + intToStr(res.count)
+    else:
+        state.statusMsg = "rename: none"
+    return state
+
+fn emptyEditorState(): EditorState =
+    return loadEditorState("", "")
+
+fn openUntitledBuffer(state: GuiState): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    let editor: EditorState = emptyEditorState()
+    next.editor = editor
+    next = insertBuffer(next, editor, bufferLen(next.buffers))
+    next.activeBuffer = bufferLen(next.buffers) - 1
+    next.search = defaultSearchState()
+    next = cancelCompletion(next)
+    next.statusMsg = "tab: <untitled>"
+    next.focus = fkEditor
+    next = guiInvalidateProjectIndex(next)
+    next = guiSetDiagnosticsDirty(next)
+    next = guiWorkspaceStateSave(next)
+    return tabStripEnsureActiveVisible(next)
+
+fn bufferIndexForPath(buffers: BufferList, path: str): int32 =
+    if len(path) == 0:
+        return -1
+    for idx in 0..<bufferLen(buffers):
+        let buffer: EditorState = bufferGet(buffers, idx)
+        if buffer.filePath == path:
+            return idx
+    return -1
+
+fn guiUpdateBufferPath(state: GuiState, source: str, target: str): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    for idx in 0..<bufferLen(next.buffers):
+        var buffer: EditorState = bufferGet(next.buffers, idx)
+        if buffer.filePath == source:
+            buffer.filePath = target
+            bufferSet(&next.buffers, idx, buffer)
+    if next.editor.filePath == source:
+        next.editor.filePath = target
+    return next
+
+fn guiDropBuffersForPath(state: GuiState, path: str): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    var filtered: BufferList = newBufferList()
+    var newActive: int32 = -1
+    for idx in 0..<bufferLen(next.buffers):
+        let buffer: EditorState = bufferGet(next.buffers, idx)
+        if buffer.filePath == path:
+            continue
+        bufferInsert(&filtered, bufferLen(filtered), buffer)
+        if idx == next.activeBuffer:
+            newActive = bufferLen(filtered) - 1
+    if bufferLen(filtered) == 0:
+        next.editor = emptyEditorState()
+        next.buffers = newBufferList()
+        bufferInsert(&next.buffers, 0, next.editor)
+        next.activeBuffer = 0
+    else:
+        next.buffers = filtered
+        if newActive < 0:
+            newActive = minInt(next.activeBuffer, bufferLen(filtered) - 1)
+        next.activeBuffer = newActive
+        next.editor = bufferGet(filtered, newActive)
+    next.search = defaultSearchState()
+    next = cancelCompletion(next)
+    next = guiSetDiagnosticsDirty(next)
+    if len(next.editor.filePath) > 0:
+        next = guiRevealExplorerPath(next, next.editor.filePath)
+    return next
+
+fn guiHasDirtyBuffersUnder(state: GuiState, dirPath: str): bool =
+    var next: GuiState = syncActiveBuffer(state)
+    for idx in 0..<bufferLen(next.buffers):
+        let buffer: EditorState = bufferGet(next.buffers, idx)
+        if buffer.dirty && pathIsUnderDir(dirPath, buffer.filePath):
+            return true
+    return false
+
+fn guiDropBuffersForDir(state: GuiState, dirPath: str): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    var filtered: BufferList = newBufferList()
+    var newActive: int32 = -1
+    for idx in 0..<bufferLen(next.buffers):
+        let buffer: EditorState = bufferGet(next.buffers, idx)
+        if pathIsUnderDir(dirPath, buffer.filePath):
+            continue
+        bufferInsert(&filtered, bufferLen(filtered), buffer)
+        if idx == next.activeBuffer:
+            newActive = bufferLen(filtered) - 1
+    if bufferLen(filtered) == 0:
+        next.editor = emptyEditorState()
+        next.buffers = newBufferList()
+        bufferInsert(&next.buffers, 0, next.editor)
+        next.activeBuffer = 0
+    else:
+        next.buffers = filtered
+        if newActive < 0:
+            newActive = minInt(next.activeBuffer, bufferLen(filtered) - 1)
+        next.activeBuffer = newActive
+        next.editor = bufferGet(filtered, newActive)
+    next.search = defaultSearchState()
+    next = cancelCompletion(next)
+    next = guiSetDiagnosticsDirty(next)
+    if len(next.editor.filePath) > 0:
+        next = guiRevealExplorerPath(next, next.editor.filePath)
+    return next
+
+fn guiUpdateBuffersForDir(state: GuiState, sourceDir: str, targetDir: str): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    for idx in 0..<bufferLen(next.buffers):
+        var buffer: EditorState = bufferGet(next.buffers, idx)
+        if pathIsUnderDir(sourceDir, buffer.filePath):
+            buffer.filePath = pathReplaceDirPrefix(buffer.filePath, sourceDir, targetDir)
+            bufferSet(&next.buffers, idx, buffer)
+    if pathIsUnderDir(sourceDir, next.editor.filePath):
+        next.editor.filePath = pathReplaceDirPrefix(next.editor.filePath, sourceDir, targetDir)
+    return next
+
+fn insertBuffer(state: GuiState, editor: EditorState, index: int32): GuiState =
+    bufferInsert(&state.buffers, index, editor)
+    return state
+
+fn syncActiveBuffer(state: GuiState): GuiState =
+    if bufferLen(state.buffers) == 0:
+        let editor: EditorState = state.editor
+        bufferInsert(&state.buffers, 0, editor)
+        state.activeBuffer = 0
+        return state
+    if state.activeBuffer < 0 || state.activeBuffer >= bufferLen(state.buffers):
+        state.activeBuffer = clampInt(state.activeBuffer, 0, bufferLen(state.buffers) - 1)
+    bufferSet(&state.buffers, state.activeBuffer, state.editor)
+    return state
+
+fn loadBufferAt(state: GuiState, idx: int32): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    if idx < 0 || idx >= bufferLen(next.buffers):
+        return next
+    next.activeBuffer = idx
+    next.editor = bufferGet(next.buffers, idx)
+    next.search = defaultSearchState()
+    next = cancelCompletion(next)
+    next.statusMsg = "tab: " + tabLabel(next, next.editor)
+    next.focus = fkEditor
+    next = guiSetDiagnosticsDirty(next)
+    if len(next.editor.filePath) > 0:
+        next = guiRevealExplorerPath(next, next.editor.filePath)
+    next = guiDesktopBridgeSave(next)
+    return tabStripEnsureActiveVisible(next)
+
+fn closeActiveBuffer(state: GuiState): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    let closing: EditorState = next.editor
+    let wasDraft: bool = next.codex.draftActive && len(next.codex.draftPath) > 0 && closing.filePath == next.codex.draftPath
+    let restoreFocus: FocusKind = next.codex.draftPrevFocus
+    if wasDraft:
+        next = guiCodexFinishDraftFromBuffer(next, closing)
+    let count: int32 = bufferLen(next.buffers)
+    if count <= 1:
+        next.editor = emptyEditorState()
+        next.buffers = newBufferList()
+        bufferInsert(&next.buffers, 0, next.editor)
+        next.activeBuffer = 0
+        next.search = defaultSearchState()
+        next = cancelCompletion(next)
+        next.statusMsg = "tab: <untitled>"
+        next = guiSetDiagnosticsDirty(next)
+        next = guiWorkspaceStateSave(next)
+        if wasDraft:
+            next.focus = restoreFocus
+        return tabStripEnsureActiveVisible(next)
+    let removeIdx: int32 = clampInt(next.activeBuffer, 0, count - 1)
+    bufferDelete(&next.buffers, removeIdx)
+    let newIdx: int32 = minInt(removeIdx, bufferLen(next.buffers) - 1)
+    next.activeBuffer = newIdx
+    next.editor = bufferGet(next.buffers, newIdx)
+    next.search = defaultSearchState()
+    next = cancelCompletion(next)
+    next.statusMsg = "tab: " + tabLabel(next, next.editor)
+    next = guiSetDiagnosticsDirty(next)
+    if len(next.editor.filePath) > 0:
+        next = guiRevealExplorerPath(next, next.editor.filePath)
+    next = guiWorkspaceStateSave(next)
+    if wasDraft:
+        next.focus = restoreFocus
+    return tabStripEnsureActiveVisible(next)
+
+fn requestCloseActiveBuffer(state: GuiState): GuiState =
+    if state.editor.dirty:
+        state.statusMsg = "close: unsaved"
+        return startOverlay(state, okCloseDirty)
+    return closeActiveBuffer(state)
+
+fn closeBufferAt(state: GuiState, idx: int32): GuiState =
+    var next: GuiState = syncActiveBuffer(state)
+    if idx < 0 || idx >= bufferLen(next.buffers):
+        return next
+    let buffer: EditorState = bufferGet(next.buffers, idx)
+    let wasDraft: bool = next.codex.draftActive && len(next.codex.draftPath) > 0 && buffer.filePath == next.codex.draftPath
+    let restoreFocus: FocusKind = next.codex.draftPrevFocus
+    if buffer.dirty:
+        next.activeBuffer = idx
+        next.editor = buffer
+        next.search = defaultSearchState()
+        next = cancelCompletion(next)
+        return requestCloseActiveBuffer(next)
+    if wasDraft:
+        next = guiCodexFinishDraftFromBuffer(next, buffer)
+    let active: int32 = next.activeBuffer
+    bufferDelete(&next.buffers, idx)
+    if idx < active:
+        next.activeBuffer = active - 1
+    elif active >= bufferLen(next.buffers):
+        next.activeBuffer = maxInt(0, bufferLen(next.buffers) - 1)
+    next.editor = bufferGet(next.buffers, next.activeBuffer)
+    next.search = defaultSearchState()
+    next = cancelCompletion(next)
+    next.statusMsg = "tab: " + tabLabel(next, next.editor)
+    next = guiSetDiagnosticsDirty(next)
+    if len(next.editor.filePath) > 0:
+        next = guiRevealExplorerPath(next, next.editor.filePath)
+    next = guiWorkspaceStateSave(next)
+    if wasDraft:
+        next.focus = restoreFocus
+    return tabStripEnsureActiveVisible(next)
+
+fn switchBuffer(state: GuiState, delta: int32): GuiState =
+    let count: int32 = bufferLen(state.buffers)
+    if count <= 1:
+        return state
+    var idx: int32 = state.activeBuffer + delta
+    if idx < 0:
+        idx = count - 1
+    elif idx >= count:
+        idx = 0
+    return loadBufferAt(state, idx)
+
+fn collectOutlineItems(lines: str[]): str[] =
+    var outVal: str[] = default[str[]]
+    for lineIdx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, lineIdx)
+        let lineIndent: int32 = leadingWhitespaceLen(lineText)
+        var lastToken: str = ""
+        for i in 0..<len(lineText):
+            let ch: char = lineText[i]
+            if ch == '#':
+                break
+            if syntax.isIdentStart(ch):
+                let start: int32 = i
+                while i < len(lineText) && syntax.isIdentChar(lineText[i]):
+                var token = sliceRange(lineText, start, i - 1)
+                if syntax.isDefinitionKeyword(lastToken):
+                    token = syntax.stripTrailingStar(token)
+                    if len(token) > 0:
+                        addPtr_string(&outVal, makeSymbolEntry(lastToken, token, lineIdx, start))
+                lastToken = token
+            else:
+    return outVal
+
+fn guiOutlineScanStart(state: GuiState): GuiState =
+    var next: GuiState = state
+    next.editor.outlineScanActive = true
+    next.editor.outlineScanLine = 0
+    next.editor.outlineScanVersion = next.editor.bufferVersion
+    next.editor.outlineScanEntries = default[str[]]
+    return next
+
+fn guiOutlineScanTick(state: GuiState, maxLines: int32, budgetMs: int32): GuiState =
+    if state.editor.outlineReady:
+        return state
+    if state.editor.largeFile:
+        var next: GuiState = state
+        next.editor.outlineEntries = default[str[]]
+        next.editor.outlineReady = true
+        next.editor.outlineScanActive = false
+        return next
+    var next: GuiState = state
+    if ! next.editor.outlineScanActive || next.editor.outlineScanVersion != next.editor.bufferVersion:
+        next = guiOutlineScanStart(next)
+    let total: int32 = seqLenString(next.editor.lines)
+    var lineIdx: int32 = next.editor.outlineScanLine
+    var processed: int32 = 0
+    let startMs: int64 = guiNowMs()
+    for curLineIdx in lineIdx..<total:
+        if maxLines > 0 && processed >= maxLines:
+            break
+        if budgetMs > 0 && guiMsDiff(startMs, guiNowMs()) >= budgetMs:
+            break
+        lineIdx = curLineIdx
+        let lineText = seqGetString(next.editor.lines, lineIdx)
+        var lastToken: str = ""
+        for i in 0..<len(lineText):
+            let ch: char = lineText[i]
+            if ch == '#':
+                break
+            if syntax.isIdentStart(ch):
+                let start: int32 = i
+                while i < len(lineText) && syntax.isIdentChar(lineText[i]):
+                var token = sliceRange(lineText, start, i - 1)
+                if syntax.isDefinitionKeyword(lastToken):
+                    token = syntax.stripTrailingStar(token)
+                    if len(token) > 0:
+                        addPtr_string(&next.editor.outlineScanEntries, makeSymbolEntry(lastToken, token, lineIdx, start))
+                lastToken = token
+            else:
+        lineIdx = curLineIdx + 1
+        processed = processed + 1
+    next.editor.outlineScanLine = lineIdx
+    if lineIdx >= total:
+        next.editor.outlineEntries = next.editor.outlineScanEntries
+        next.editor.outlineReady = true
+        next.editor.outlineScanActive = false
+    return next
+
+fn ensureOutlineItems(state: GuiState): GuiState =
+    if state.editor.outlineReady:
+        return state
+    if state.editor.largeFile:
+        state.editor.outlineEntries = default[str[]]
+        state.editor.outlineReady = true
+        return state
+    state.editor.outlineEntries = collectOutlineItems(state.editor.lines)
+    state.editor.outlineReady = true
+    return state
+
+fn firstIdentInLine(lineText: str): IdentMatch =
+    var result: IdentMatch
+    result.ok = false
+    result.name = ""
+    result.col = 0
+    var i: int32 = 0
+    let total: int32 = len(lineText)
+    while i < total:
+        let ch: char = lineText[i]
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            let quote: char = ch
+            i = i + 1
+            while i < total:
+                let c: char = lineText[i]
+                if c == '\\':
+                    if i + 1 < total:
+                        i = i + 2
+                    else:
+                        i = i + 1
+                elif c == quote:
+                    i = i + 1
+                    break
+                else:
+                    i = i + 1
+            continue
+        if syntax.isIdentStart(ch):
+            let start: int32 = i
+            i = i + 1
+            while i < total && syntax.isIdentChar(lineText[i]):
+                i = i + 1
+            let token = sliceRange(lineText, start, i - 1)
+            if ! syntax.isKeyword(token):
+                result.ok = true
+                result.name = token
+                result.col = start
+                return result
+            continue
+        i = i + 1
+    return result
+
+fn addSemanticEntry(outVal: str[]*, kind: str, name: str, line, col, indent: int32) =
+    if len(name) == 0 || name == "_":
+        return
+    addPtr_string(outVal, makeSemanticEntry(kind, name, line, col, indent))
+
+fn scanLineDefinitions(lineText: str, lineIdx: int32, lineIndent: int32): str[] =
+    var outVal: str[] = default[str[]]
+    var i: int32 = 0
+    var pendingKind: str = ""
+    var letKind: str = ""
+    var inLet: bool = false
+    var letDepth: int32 = 0
+    var inFor: bool = false
+    var forDepth: int32 = 0
+    var wantParams: bool = false
+    var inParams: bool = false
+    var paramDepth: int32 = 0
+    var paramTypeDepth: int32 = 0
+    var paramExpectName: bool = true
+    let total: int32 = len(lineText)
+    while i < total:
+        let ch: char = lineText[i]
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            let quote: char = ch
+            i = i + 1
+            while i < total:
+                let c: char = lineText[i]
+                if c == '\\':
+                    if i + 1 < total:
+                        i = i + 2
+                    else:
+                        i = i + 1
+                elif c == quote:
+                    i = i + 1
+                    break
+                else:
+                    i = i + 1
+            continue
+        if syntax.isIdentStart(ch):
+            let start: int32 = i
+            i = i + 1
+            while i < total && syntax.isIdentChar(lineText[i]):
+                i = i + 1
+            let token = sliceRange(lineText, start, i - 1)
+            if inFor:
+                if token == "in" && forDepth == 0:
+                    inFor = false
+                else:
+                    if ! syntax.isKeyword(token) && token != "_":
+                        addSemanticEntry(&outVal, "for", token, lineIdx, start, lineIndent + TabSize)
+                continue
+            if inLet:
+                if ! syntax.isKeyword(token) && token != "_":
+                    addSemanticEntry(&outVal, letKind, token, lineIdx, start, lineIndent)
+                continue
+            if len(pendingKind) > 0:
+                addSemanticEntry(&outVal, pendingKind, token, lineIdx, start, lineIndent)
+                if pendingKind == "fn" || pendingKind == "iterator" || pendingKind == "converter":
+                    wantParams = true
+                pendingKind = ""
+                continue
+            if inParams:
+                if paramExpectName && ! syntax.isKeyword(token) && token != "_":
+                    addSemanticEntry(&outVal, "param", token, lineIdx, start, lineIndent + TabSize)
+                    paramExpectName = false
+                continue
+            if token == "for":
+                inFor = true
+                forDepth = 0
+            elif token == "let" || token == "var" || token == "const":
+                inLet = true
+                letKind = token
+                letDepth = 0
+            elif token == "fn" || token == "iterator" || token == "converter" || token == "template" || token == "macro" || token == "type" || token == "enum":
+                pendingKind = token
+            continue
+        if wantParams && ch == '(':
+            inParams = true
+            paramDepth = 1
+            paramTypeDepth = 0
+            paramExpectName = true
+            wantParams = false
+            i = i + 1
+            continue
+        if inParams:
+            if ch == '(':
+                paramDepth = paramDepth + 1
+                if ! paramExpectName:
+                    paramTypeDepth = paramTypeDepth + 1
+            elif ch == ')':
+                if paramTypeDepth > 0:
+                    paramTypeDepth = paramTypeDepth - 1
+                paramDepth = paramDepth - 1
+                if paramDepth <= 0:
+                    inParams = false
+            elif (ch == '[' || ch == '{') && ! paramExpectName:
+                paramTypeDepth = paramTypeDepth + 1
+            elif (ch == ']' || ch == '}'):
+                if paramTypeDepth > 0:
+                    paramTypeDepth = paramTypeDepth - 1
+            elif (ch == ',' || ch == ';') && paramDepth == 1 && paramTypeDepth == 0:
+                paramExpectName = true
+            elif (ch == ':' || ch == '=') && paramDepth == 1:
+                paramExpectName = false
+                paramTypeDepth = 0
+        if inLet:
+            if ch == '(' || ch == '[' || ch == '{':
+                letDepth = letDepth + 1
+            elif ch == ')' || ch == ']' || ch == '}':
+                if letDepth > 0:
+                    letDepth = letDepth - 1
+            elif (ch == '=' || ch == ':') && letDepth == 0:
+                inLet = false
+        if inFor:
+            if ch == '(' || ch == '[' || ch == '{':
+                forDepth = forDepth + 1
+            elif ch == ')' || ch == ']' || ch == '}':
+                if forDepth > 0:
+                    forDepth = forDepth - 1
+        i = i + 1
+    return outVal
+
+fn collectParamNamesFromDefinitionLine(lineText: str, lineIdx: int32): str[] =
+    var outVal: str[] = default[str[]]
+    let indent: int32 = leadingWhitespaceLen(lineText)
+    let defs: str[] = scanLineDefinitions(lineText, lineIdx, indent)
+    for idx in 0..<seqLenString(defs):
+        let entry = seqGetString(defs, idx)
+        if semanticKind(entry) == "param":
+            addUniqueString(&outVal, semanticName(entry))
+    return outVal
+
+fn collectParamNamesFromProjectSymbol(state: EditorState, entry: str): str[] =
+    var outVal: str[] = default[str[]]
+    if len(entry) == 0:
+        return outVal
+    let lineIdx: int32 = symbolLine(entry)
+    if lineIdx < 0:
+        return outVal
+    let path: str = symbolPath(entry)
+    if len(path) == 0:
+        if lineIdx >= 0 && lineIdx < seqLenString(state.lines):
+            let lineText = seqGetString(state.lines, lineIdx)
+            return collectParamNamesFromDefinitionLine(lineText, lineIdx)
+        return outVal
+    if len(state.filePath) > 0 && path == state.filePath:
+        if lineIdx >= 0 && lineIdx < seqLenString(state.lines):
+            let lineText = seqGetString(state.lines, lineIdx)
+            return collectParamNamesFromDefinitionLine(lineText, lineIdx)
+        return outVal
+    if ! fileExists(path):
+        return outVal
+    let content = readFile(path)
+    let lines: str[] = splitLinesSimple(content)
+    if lineIdx < 0 || lineIdx >= seqLenString(lines):
+        return outVal
+    let lineText = seqGetString(lines, lineIdx)
+    return collectParamNamesFromDefinitionLine(lineText, lineIdx)
+
+fn collectTopLevelDefinitionEntries(lines: str[]): str[] =
+    var outVal: str[] = default[str[]]
+    var blockKind: str = ""
+    var blockIndent: int32 = 0
+    var blockChildIndent: int32 = -1
+    for idx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, idx)
+        let trimmed = trimLine(lineText)
+        let indent: int32 = leadingWhitespaceLen(lineText)
+        if len(trimmed) == 0:
+            continue
+        if len(blockKind) > 0 && indent <= blockIndent:
+            blockKind = ""
+            blockChildIndent = -1
+        if len(blockKind) == 0:
+            if trimmed == "type" || trimmed == "fn" || trimmed == "iterator" || trimmed == "converter" || trimmed == "template" || trimmed == "macro":
+                blockKind = trimmed
+                blockIndent = indent
+                blockChildIndent = -1
+                continue
+        if len(blockKind) > 0 && indent > blockIndent:
+            if blockChildIndent < 0:
+                blockChildIndent = indent
+            if indent == blockChildIndent:
+                let match: IdentMatch = firstIdentInLine(lineText)
+                if match.ok:
+                    addSemanticEntry(&outVal, blockKind, match.name, idx, match.col, indent)
+            continue
+        if indent == 0:
+            let defs: str[] = scanLineDefinitions(lineText, idx, indent)
+            for dIdx in 0..<seqLenString(defs):
+                let entry = seqGetString(defs, dIdx)
+                let kind = semanticKind(entry)
+                if kind != "param" && kind != "for":
+                    addPtr_string(&outVal, entry)
+    return outVal
+
+fn semanticEntryWithScope(entry: str, scope: LineRange): str =
+    let scopeStart: int32 = if scope.active: scope.startLine else: semanticLine(entry)
+    let scopeEnd: int32 = if scope.active: scope.endLine else: semanticLine(entry)
+    return makeSemanticEntryWithScope(semanticKind(entry), semanticName(entry), semanticLine(entry), semanticCol(entry), semanticIndent(entry), scopeStart, scopeEnd)
+
+fn buildSemanticModel(lines: str[]): str[] =
+    var raw: str[] = default[str[]]
+    let globals: str[] = collectTopLevelDefinitionEntries(lines)
+    for gIdx in 0..<seqLenString(globals):
+        addUniqueString(&raw, seqGetString(globals, gIdx))
+    for lineIdx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, lineIdx)
+        let indent: int32 = leadingWhitespaceLen(lineText)
+        if indent > 0:
+            let defs: str[] = scanLineDefinitions(lineText, lineIdx, indent)
+            for dIdx in 0..<seqLenString(defs):
+                addUniqueString(&raw, seqGetString(defs, dIdx))
+    var outVal: str[] = default[str[]]
+    for idx in 0..<seqLenString(raw):
+        let entry = seqGetString(raw, idx)
+        let scope: LineRange = scopeRangeForDefinition(lines, entry)
+        addPtr_string(&outVal, semanticEntryWithScope(entry, scope))
+    return outVal
+
+fn guiSemanticScanStart(state: GuiState): GuiState =
+    var next: GuiState = state
+    next.editor.semanticScanActive = true
+    next.editor.semanticScanLine = 0
+    next.editor.semanticScanVersion = next.editor.bufferVersion
+    next.editor.semanticScanBuildIdx = 0
+    next.editor.semanticScanRaw = default[str[]]
+    next.editor.semanticScanEntries = default[str[]]
+    next.editor.semanticScanBlockKind = ""
+    next.editor.semanticScanBlockIndent = 0
+    next.editor.semanticScanBlockChildIndent = -1
+    return next
+
+fn guiSemanticScanTick(state: GuiState, maxLines: int32, budgetMs: int32): GuiState =
+    if state.editor.semanticReady:
+        return state
+    if state.editor.largeFile:
+        var next: GuiState = state
+        next.editor.semanticEntries = default[str[]]
+        next.editor.semanticReady = true
+        next.editor.semanticScanActive = false
+        return next
+    var next: GuiState = state
+    if ! next.editor.semanticScanActive || next.editor.semanticScanVersion != next.editor.bufferVersion:
+        next = guiSemanticScanStart(next)
+    let total: int32 = seqLenString(next.editor.lines)
+    var lineIdx: int32 = next.editor.semanticScanLine
+    var processed: int32 = 0
+    var blockKind: str = next.editor.semanticScanBlockKind
+    var blockIndent: int32 = next.editor.semanticScanBlockIndent
+    var blockChildIndent: int32 = next.editor.semanticScanBlockChildIndent
+    let startMs: int64 = guiNowMs()
+    for curLineIdx in lineIdx..<total:
+        if maxLines > 0 && processed >= maxLines:
+            break
+        if budgetMs > 0 && guiMsDiff(startMs, guiNowMs()) >= budgetMs:
+            break
+        lineIdx = curLineIdx
+        let lineText = seqGetString(next.editor.lines, lineIdx)
+        let trimmed = trimLine(lineText)
+        let indent: int32 = leadingWhitespaceLen(lineText)
+        if len(trimmed) == 0:
+            lineIdx = curLineIdx + 1
+            processed = processed + 1
+            continue
+        if len(blockKind) > 0 && indent <= blockIndent:
+            blockKind = ""
+            blockChildIndent = -1
+        if len(blockKind) == 0:
+            if trimmed == "type" || trimmed == "fn" || trimmed == "iterator" || trimmed == "converter" || trimmed == "template" || trimmed == "macro":
+                blockKind = trimmed
+                blockIndent = indent
+                blockChildIndent = -1
+        if len(blockKind) > 0 && indent > blockIndent:
+            if blockChildIndent < 0:
+                blockChildIndent = indent
+            if indent == blockChildIndent:
+                let match: IdentMatch = firstIdentInLine(lineText)
+                if match.ok:
+                    let entry = makeSemanticEntry(blockKind, match.name, lineIdx, match.col, indent)
+                    addUniqueString(&next.editor.semanticScanRaw, entry)
+        if indent == 0:
+            let defs: str[] = scanLineDefinitions(lineText, lineIdx, indent)
+            for dIdx in 0..<seqLenString(defs):
+                let entry = seqGetString(defs, dIdx)
+                let kind = semanticKind(entry)
+                if kind != "param" && kind != "for":
+                    addUniqueString(&next.editor.semanticScanRaw, entry)
+        if indent > 0:
+            let defs: str[] = scanLineDefinitions(lineText, lineIdx, indent)
+            for dIdx in 0..<seqLenString(defs):
+                addUniqueString(&next.editor.semanticScanRaw, seqGetString(defs, dIdx))
+        lineIdx = curLineIdx + 1
+        processed = processed + 1
+    next.editor.semanticScanLine = lineIdx
+    next.editor.semanticScanBlockKind = blockKind
+    next.editor.semanticScanBlockIndent = blockIndent
+    next.editor.semanticScanBlockChildIndent = blockChildIndent
+    if lineIdx < total:
+        return next
+    var buildIdx: int32 = next.editor.semanticScanBuildIdx
+    var buildProcessed: int32 = 0
+    let rawCount: int32 = seqLenString(next.editor.semanticScanRaw)
+    for curBuildIdx in buildIdx..<rawCount:
+        if maxLines > 0 && buildProcessed >= maxLines:
+            break
+        if budgetMs > 0 && guiMsDiff(startMs, guiNowMs()) >= budgetMs:
+            break
+        let entry = seqGetString(next.editor.semanticScanRaw, curBuildIdx)
+        let scope: LineRange = scopeRangeForDefinition(next.editor.lines, entry)
+        addPtr_string(&next.editor.semanticScanEntries, semanticEntryWithScope(entry, scope))
+        buildIdx = curBuildIdx + 1
+        buildProcessed = buildProcessed + 1
+    next.editor.semanticScanBuildIdx = buildIdx
+    if buildIdx >= rawCount:
+        next.editor.semanticEntries = next.editor.semanticScanEntries
+        next.editor.semanticReady = true
+        next.editor.semanticScanActive = false
+    return next
+
+fn ensureSemanticModel(state: GuiState): GuiState =
+    if state.editor.semanticReady:
+        return state
+    if state.editor.largeFile:
+        state.editor.semanticEntries = default[str[]]
+        state.editor.semanticReady = true
+        state.editor = resetSemanticScanState(state.editor)
+        return state
+    state.editor.semanticEntries = buildSemanticModel(state.editor.lines)
+    state.editor.semanticReady = true
+    state.editor = resetSemanticScanState(state.editor)
+    return state
+
+fn collectLocalDefinitionEntries(state: EditorState, cursorLine: int32, cursorCol: int32): str[] =
+    var outVal: str[] = default[str[]]
+    if cursorLine < 0 || cursorLine >= seqLenString(state.lines):
+        return outVal
+    let cursorText = seqGetString(state.lines, cursorLine)
+    let cursorIndent: int32 = leadingWhitespaceLen(cursorText)
+    let lineIdxBase = cursorLine
+    if lineIdxBase >= 0:
+        for lineIdxRev in 0..lineIdxBase:
+            let lineIdx = lineIdxBase - lineIdxRev
+            let lineText = seqGetString(state.lines, lineIdx)
+            if len(trimLine(lineText)) == 0:
+                continue
+            let indent: int32 = leadingWhitespaceLen(lineText)
+            if indent <= cursorIndent:
+                let defs: str[] = scanLineDefinitions(lineText, lineIdx, indent)
+                for dIdx in 0..<seqLenString(defs):
+                    let entry = seqGetString(defs, dIdx)
+                    let defIndent: int32 = semanticIndent(entry)
+                    let defCol: int32 = semanticCol(entry)
+                    if defIndent <= cursorIndent:
+                        if lineIdx < cursorLine || (lineIdx == cursorLine && defCol <= cursorCol):
+                            addPtr_string(&outVal, entry)
+    return outVal
+
+fn collectSemanticCompletionEntries(entries: str[], cursorLine: int32, cursorCol: int32): str[] =
+    var outVal: str[] = default[str[]]
+    if cursorLine < 0:
+        return outVal
+    for idx in 0..<seqLenString(entries):
+        let entry = seqGetString(entries, idx)
+        if ! semanticScopeContains(entry, cursorLine):
+            continue
+        let name = semanticName(entry)
+        if len(name) == 0:
+            continue
+        let defLine: int32 = semanticLine(entry)
+        let defCol: int32 = semanticCol(entry)
+        let indent: int32 = semanticIndent(entry)
+        if indent > 0:
+            if defLine > cursorLine || (defLine == cursorLine && defCol > cursorCol):
+                continue
+        addUniqueString(&outVal, name)
+    return outVal
+
+fn activeOutlineIndex(outlineItems: str[], cursorLine: int32): int32 =
+    var active: int32 = -1
+    for idx in 0..<seqLenString(outlineItems):
+        let entry = seqGetString(outlineItems, idx)
+        let lineNo: int32 = symbolLine(entry)
+        if lineNo <= cursorLine:
+            active = idx
+    return active
+
+fn makeBreadcrumbText(state: GuiState, outlineItems: str[], activeOutline: int32, maxChars: int32): str =
+    let rawPath = if len(state.editor.filePath) > 0: state.editor.filePath else: "<untitled>"
+    let pathLabel = if len(rawPath) > 0: guiWorkspaceDisplayPath(state, rawPath) else: "<untitled>"
+    var symbolLabel = ""
+    if activeOutline >= 0 && activeOutline < seqLenString(outlineItems):
+        let entry = seqGetString(outlineItems, activeOutline)
+        let kind = symbolKind(entry)
+        let name = symbolName(entry)
+        if len(name) > 0:
+            symbolLabel = kind + " " + name
+    if maxChars <= 0:
+        return pathLabel
+    if len(symbolLabel) == 0:
+        return truncateMiddle(pathLabel, maxChars)
+    let sep = " > "
+    let symbolLen: int32 = len(symbolLabel)
+    let sepLen: int32 = len(sep)
+    let maxPathChars: int32 = maxChars - symbolLen - sepLen
+    if maxPathChars <= 3:
+        return truncateMiddle(symbolLabel, maxChars)
+    let trimmedPath = truncateMiddle(pathLabel, maxPathChars)
+    return trimmedPath + sep + symbolLabel
+
+fn collectProjectFiles(state: GuiState): str[] =
+    var outVal: str[] = default[str[]]
+    let items: str[] = explorerAllItems(state.explorer)
+    for idx in 0..<seqLenString(items):
+        let item = seqGetString(items, idx)
+        let path = explorerItemPath(state.workspaceRoots, state.projectRoot, item)
+        if len(path) > 0 && fileExists(path):
+            if endsWithSuffix(path, ".cheng"):
+                addUniqueString(&outVal, path)
+    if len(state.editor.filePath) > 0 && fileExists(state.editor.filePath):
+        if endsWithSuffix(state.editor.filePath, ".cheng"):
+            addUniqueString(&outVal, state.editor.filePath)
+    return outVal
+
+fn projectSymbolCacheIndex(cache: ProjectSymbolCacheEntry[], path: str): int32 =
+    for idx in 0..<count:
+        if cache[idx].path == path:
+            return idx
+    return -1
+
+fn projectSymbolStamp(path: str): str =
+    if len(path) == 0 || ! fileExists(path):
+        return ""
+    let size: int64 = getFileSize(path)
+    if size < 0:
+        return ""
+    return int64ToStr(size)
+
+fn scorePathMatch(path: str, query: str): int32 =
+    if len(path) == 0 || len(query) == 0:
+        return 0
+    let normPath = textutils.toLowerAscii(textutils.toForwardSlashes(path))
+    let normQuery = textutils.toLowerAscii(textutils.toForwardSlashes(query))
+    let base = extractFilename(normPath)
+    if base == normQuery:
+        return 120
+    if startsWithPrefix(base, normQuery):
+        return 110
+    if indexOfSubstr(base, normQuery, 0) >= 0:
+        return 100
+    if normPath == normQuery:
+        return 95
+    if endsWithSuffix(normPath, normQuery):
+        return 90
+    if indexOfSubstr(normPath, normQuery, 0) >= 0:
+        return 80
+    return 0
+
+fn bestExplorerPathMatch(items: str[], query: str): str =
+    var best: str = ""
+    var bestScore: int32 = 0
+    for idx in 0..<seqLenString(items):
+        let item = seqGetString(items, idx)
+        let rawPath = explorerItemPathPart(item)
+        if len(rawPath) == 0:
+            continue
+        if lineEndsWithSlash(rawPath):
+            continue
+        let score: int32 = scorePathMatch(rawPath, query)
+        if score > bestScore:
+            bestScore = score
+            best = rawPath
+    return best
+
+fn searchResultPath(entry: str): str =
+    let sep: int32 = indexOfSubstr(entry, "\t", 0)
+    if sep < 0:
+        return entry
+    if sep == 0:
+        return ""
+    return sliceRange(entry, 0, sep - 1)
+
+fn searchResultPreview(entry: str): str =
+    let sep: int32 = indexOfSubstr(entry, "\t", 0)
+    if sep < 0:
+        return ""
+    if sep + 1 > len(entry) - 1:
+        return ""
+    return sliceFrom(entry, sep + 1)
+
+fn searchResultLabel(entry: str): str =
+    let path = searchResultPath(entry)
+    let preview = searchResultPreview(entry)
+    if len(preview) == 0:
+        return path
+    return path + "  " + preview
+
+fn collectProjectSymbolsForFile(path: str): str[] =
+    var outVal: str[] = default[str[]]
+    if len(path) == 0 || ! fileExists(path):
+        return outVal
+    let content = readFile(path)
+    let rawLines: str[] = splitLinesSimple(content)
+    let lines: str[] = normalizeLines(rawLines)
+    var blockKind: str = ""
+    var blockIndent: int32 = 0
+    var blockChildIndent: int32 = -1
+    for lineIdx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, lineIdx)
+        let trimmed = trimLine(lineText)
+        let lineIndent: int32 = leadingWhitespaceLen(lineText)
+        if len(trimmed) == 0:
+            continue
+        if len(blockKind) > 0 && lineIndent <= blockIndent:
+            blockKind = ""
+            blockChildIndent = -1
+        if len(blockKind) == 0:
+            if trimmed == "type" || trimmed == "fn" || trimmed == "iterator" || trimmed == "converter" || trimmed == "template" || trimmed == "macro" || trimmed == "enum" || trimmed == "concept" || trimmed == "trait":
+                blockKind = trimmed
+                blockIndent = lineIndent
+                blockChildIndent = -1
+                continue
+        if len(blockKind) > 0 && lineIndent > blockIndent:
+            if blockChildIndent < 0:
+                blockChildIndent = lineIndent
+            if lineIndent == blockChildIndent:
+                let match: IdentMatch = firstIdentInLine(lineText)
+                if match.ok:
+                    addPtr_string(&outVal, makeProjectSymbolEntry(blockKind, match.name, lineIdx, match.col, path))
+            continue
+        var lastToken: str = ""
+        for i in 0..<len(lineText):
+            let ch: char = lineText[i]
+            if ch == '#':
+                break
+            if syntax.isIdentStart(ch):
+                let start: int32 = i
+                while i < len(lineText) && syntax.isIdentChar(lineText[i]):
+                var token = sliceRange(lineText, start, i - 1)
+                if syntax.isDefinitionKeyword(lastToken):
+                    token = syntax.stripTrailingStar(token)
+                    if len(token) > 0:
+                        if (lastToken == "let" || lastToken == "var" || lastToken == "const") && lineIndent > 0:
+                            0
+                        else:
+                            addPtr_string(&outVal, makeProjectSymbolEntry(lastToken, token, lineIdx, start, path))
+                lastToken = token
+            else:
+    return outVal
+
+fn guiInvalidateProjectIndex(state: GuiState): GuiState =
+    var next: GuiState = state
+    next.projectIndexReady = false
+    next.projectSymbols = default[str[]]
+    next.projectScanActive = false
+    next.projectScanIndex = 0
+    next.projectScanFiles = default[str[]]
+    next.projectScanSymbols = default[str[]]
+    return next
+
+fn guiProjectIndexStart(state: GuiState): GuiState =
+    var next: GuiState = state
+    next.projectScanFiles = collectProjectFiles(next)
+    next.projectScanSymbols = default[str[]]
+    next.projectScanIndex = 0
+    next.projectScanActive = true
+    return next
+
+fn guiProjectIndexScanAll(state: GuiState): GuiState =
+    if state.projectIndexReady:
+        return state
+    var next: GuiState = guiProjectIndexStart(state)
+    let total: int32 = seqLenString(next.projectScanFiles)
+    for idx in 0..<total:
+        let path = seqGetString(next.projectScanFiles, idx)
+        let stamp = projectSymbolStamp(path)
+        var symbols: str[] = default[str[]]
+        let cacheIdx: int32 = projectSymbolCacheIndex(next.projectSymbolCache, path)
+        if cacheIdx >= 0 && len(stamp) > 0 && next.projectSymbolCache[cacheIdx].stamp == stamp:
+            symbols = next.projectSymbolCache[cacheIdx].symbols
+        else:
+            symbols = collectProjectSymbolsForFile(path)
+            if len(stamp) > 0:
+                var entry: ProjectSymbolCacheEntry
+                entry.path = path
+                entry.stamp = stamp
+                entry.symbols = symbols
+                if cacheIdx >= 0:
+                    next.projectSymbolCache[cacheIdx] = entry
+                else:
+                    next.projectSymbolCache.add(entry)
+        for sIdx in 0..<seqLenString(symbols):
+            addPtr_string(&next.projectScanSymbols, seqGetString(symbols, sIdx))
+    next.projectSymbols = next.projectScanSymbols
+    next.projectIndexReady = true
+    next.projectScanActive = false
+    return next
+
+fn guiProjectIndexTick(state: GuiState, maxFiles: int32, budgetMs: int32): GuiState =
+    if state.projectIndexReady:
+        return state
+    var next: GuiState = state
+    if ! next.projectScanActive:
+        next = guiProjectIndexStart(next)
+    let total: int32 = seqLenString(next.projectScanFiles)
+    var idx: int32 = next.projectScanIndex
+    var processed: int32 = 0
+    let startMs: int64 = guiNowMs()
+    for curIdx in idx..<total:
+        if maxFiles > 0 && processed >= maxFiles:
+            break
+        if budgetMs > 0 && guiMsDiff(startMs, guiNowMs()) >= budgetMs:
+            break
+        idx = curIdx
+        let path = seqGetString(next.projectScanFiles, idx)
+        let stamp = projectSymbolStamp(path)
+        var symbols: str[] = default[str[]]
+        let cacheIdx: int32 = projectSymbolCacheIndex(next.projectSymbolCache, path)
+        if cacheIdx >= 0 && len(stamp) > 0 && next.projectSymbolCache[cacheIdx].stamp == stamp:
+            symbols = next.projectSymbolCache[cacheIdx].symbols
+        else:
+            symbols = collectProjectSymbolsForFile(path)
+            if len(stamp) > 0:
+                var entry: ProjectSymbolCacheEntry
+                entry.path = path
+                entry.stamp = stamp
+                entry.symbols = symbols
+                if cacheIdx >= 0:
+                    next.projectSymbolCache[cacheIdx] = entry
+                else:
+                    next.projectSymbolCache.add(entry)
+        for sIdx in 0..<seqLenString(symbols):
+            addPtr_string(&next.projectScanSymbols, seqGetString(symbols, sIdx))
+        idx = curIdx + 1
+        processed = processed + 1
+    next.projectScanIndex = idx
+    if idx >= total:
+        next.projectSymbols = next.projectScanSymbols
+        next.projectIndexReady = true
+        next.projectScanActive = false
+    return next
+
+fn ensureProjectIndex(state: GuiState): GuiState =
+    if state.projectIndexReady:
+        return state
+    let syncFlag = envFlagEnabled(getEnv("CHENG_IDE_PROJECT_INDEX_SYNC"), false)
+    if syncFlag || state.projectChunkFiles <= 0:
+        return guiProjectIndexScanAll(state)
+    return guiProjectIndexTick(state, state.projectChunkFiles, 4)
+
+fn parseInt32(text: str, default: int32): int32 =
+    let length: int32 = len(text)
+    if length == 0:
+        return default
+    var idx: int32 = 0
+    for i in idx..<length:
+        if text[i] == ' ' || text[i] == '\t':
+            idx = i + 1
+            continue
+        break
+    var sign: int32 = 1
+    if idx < length && text[idx] == '-':
+        sign = -1
+        idx = idx + 1
+    var value: int32 = 0
+    var hasDigit = false
+    var digitEnd: int32 = idx
+    for i in idx..<length:
+        let ch: char = text[i]
+        if ! syntax.isDigitChar(ch):
+            break
+        value = value * 10 + (int32(ch) - 48)
+        hasDigit = true
+        digitEnd = i + 1
+    idx = digitEnd
+    if ! hasDigit:
+        return default
+    return value * sign
+
+fn parseLineCol(text: str): LineCol =
+    var result: LineCol
+    result.ok = false
+    result.line = 0
+    result.col = 0
+    let trimmed = textutils.strip(text)
+    if len(trimmed) == 0:
+        return result
+    let sep: int32 = indexOfSubstr(trimmed, ":", 0)
+    if sep >= 0:
+        let left = if sep > 0: sliceRange(trimmed, 0, sep - 1) else: ""
+        let right = if sep + 1 <= len(trimmed) - 1: sliceRange(trimmed, sep + 1, len(trimmed) - 1) else: ""
+        let lineVal: int32 = parseInt32(left, 0)
+        let colVal: int32 = parseInt32(right, 1)
+        if lineVal > 0:
+            result.ok = true
+            result.line = lineVal - 1
+            result.col = if colVal > 0: colVal - 1 else: 0
+        return result
+    let lineVal: int32 = parseInt32(trimmed, 0)
+    if lineVal > 0:
+        result.ok = true
+        result.line = lineVal - 1
+        result.col = 0
+    return result
+
+fn isAllDigits(text: str): bool =
+    if len(text) == 0:
+        return false
+    for idx in 0..<len(text):
+        if ! syntax.isDigitChar(text[idx]):
+            return false
+    return true
+
+fn lastIndexOfCharBefore(text: str, ch: char, beforeIdx: int32): int32 =
+    if len(text) == 0:
+        return -1
+    let idxBase = minInt(beforeIdx, len(text) - 1)
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            if text[idx] == ch:
+                return idx
+    return -1
+
+fn parsePathLineCol(text: str): PathLineCol =
+    var result: PathLineCol
+    result.path = ""
+    result.hasLine = false
+    result.hasCol = false
+    result.line = 0
+    result.col = 0
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return result
+    let lastColon: int32 = lastIndexOfCharBefore(trimmed, ':', len(trimmed) - 1)
+    if lastColon < 0:
+        result.path = trimmed
+        return result
+    let tail = if lastColon + 1 <= len(trimmed) - 1: sliceFrom(trimmed, lastColon + 1) else: ""
+    if ! isAllDigits(tail):
+        result.path = trimmed
+        return result
+    let colVal: int32 = parseInt32(tail, 0)
+    let prevColon: int32 = lastIndexOfCharBefore(trimmed, ':', lastColon - 1)
+    if prevColon >= 0:
+        let mid = if prevColon + 1 <= lastColon - 1: sliceRange(trimmed, prevColon + 1, lastColon - 1) else: ""
+        if isAllDigits(mid):
+            let lineVal: int32 = parseInt32(mid, 0)
+            result.path = if prevColon > 0: sliceRange(trimmed, 0, prevColon - 1) else: ""
+            if lineVal > 0:
+                result.hasLine = true
+                result.line = lineVal - 1
+            if colVal > 0:
+                result.hasCol = true
+                result.col = colVal - 1
+            return result
+    result.path = if lastColon > 0: sliceRange(trimmed, 0, lastColon - 1) else: ""
+    if colVal > 0:
+        result.hasLine = true
+        result.line = colVal - 1
+    return result
+
+fn trimDebugToken(text: str): str =
+    if len(text) == 0:
+        return ""
+    var start: int32 = 0
+    var last: int32 = len(text) - 1
+    while start <= last && (text[start] == '(' || text[start] == '[' || text[start] == '{' || text[start] == '#'):
+        start = start + 1
+    while last >= start && (text[last] == ')' || text[last] == ']' || text[last] == '}' || text[last] == ',' || text[last] == ';'):
+        last = last - 1
+    if last < start:
+        return ""
+    return sliceRange(text, start, last)
+
+fn guiDebugPathFromLine(line: str): PathLineCol =
+    var result: PathLineCol
+    let tokens: str[] = splitCommandArgs(line)
+    let idxBase = seqLenString(tokens) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let raw = seqGetString(tokens, idx)
+            let cleaned = trimDebugToken(raw)
+            let parsed: PathLineCol = parsePathLineCol(cleaned)
+            if len(parsed.path) > 0:
+                return parsed
+    return result
+
+fn gotoLine(state: GuiState, line: int32, col: int32): GuiState =
+    let totalLines: int32 = seqLenString(state.editor.lines)
+    if totalLines <= 0:
+        return state
+    let lineIdx: int32 = clampInt(line, 0, totalLines - 1)
+    let lineText = seqGetString(state.editor.lines, lineIdx)
+    let colIdx: int32 = clampInt(col, 0, len(lineText))
+    state.editor.cursorLine = lineIdx
+    state.editor.cursorCol = colIdx
+    state.editor.desiredCol = desiredColForLineText(lineText, colIdx)
+    state.editor = ensureCursorVisible(state.editor, state.layout)
+    state.focus = fkEditor
+    state.statusMsg = "goto: " + intToStr(int32(lineIdx + 1))
+    return state
+
+fn wordAtLineCol(state: EditorState, line: int32, col: int32): str =
+    if line < 0 || line >= seqLenString(state.lines):
+        return ""
+    let lineText = seqGetString(state.lines, line)
+    let lineLen: int32 = len(lineText)
+    var idx: int32 = clampInt(col, 0, lineLen)
+    if idx < lineLen && syntax.isIdentChar(lineText[idx]):
+        0
+    elif idx > 0 && syntax.isIdentChar(lineText[idx - 1]):
+        idx = idx - 1
+    else:
+        return ""
+    var start: int32 = idx
+    while start > 0 && syntax.isIdentChar(lineText[start - 1]):
+        start = start - 1
+    var finish: int32 = idx + 1
+    while finish < lineLen && syntax.isIdentChar(lineText[finish]):
+        finish = finish + 1
+    if finish <= start:
+        return ""
+    return sliceRange(lineText, start, finish - 1)
+
+fn wordAtCursor(state: EditorState): str =
+    return wordAtLineCol(state, state.cursorLine, state.cursorCol)
+
+fn resolveDefinitionEntryFromEntries(entries: str[], line: int32, col: int32, ident: str): str =
+    if len(ident) == 0:
+        return ""
+    var best: str = ""
+    var bestStart: int32 = -1
+    var bestIndent: int32 = -1
+    var bestLine: int32 = -1
+    var bestFuture: str = ""
+    var bestFutureStart: int32 = -1
+    var bestFutureIndent: int32 = -1
+    var bestFutureLine: int32 = 0x7fffffff
+    for idx in 0..<seqLenString(entries):
+        let entry = seqGetString(entries, idx)
+        if semanticName(entry) != ident:
+            continue
+        if ! semanticScopeContains(entry, line):
+            continue
+        let defLine: int32 = semanticLine(entry)
+        let scopeStartRaw: int32 = semanticScopeStart(entry)
+        let scopeStart: int32 = if scopeStartRaw >= 0: scopeStartRaw else: 0
+        let indent: int32 = semanticIndent(entry)
+        if defLine <= line:
+            if scopeStart > bestStart || (scopeStart == bestStart && indent > bestIndent) || (scopeStart == bestStart && indent == bestIndent && defLine > bestLine):
+                best = entry
+                bestStart = scopeStart
+                bestIndent = indent
+                bestLine = defLine
+        else:
+            if scopeStart > bestFutureStart || (scopeStart == bestFutureStart && indent > bestFutureIndent) || (scopeStart == bestFutureStart && indent == bestFutureIndent && defLine < bestFutureLine):
+                bestFuture = entry
+                bestFutureStart = scopeStart
+                bestFutureIndent = indent
+                bestFutureLine = defLine
+    if len(best) > 0:
+        return best
+    return bestFuture
+
+fn findDefinitionEntryAt(state: EditorState, line: int32, col: int32, ident: str): str =
+    if len(ident) == 0:
+        return ""
+    let cursorLine: int32 = clampIndex(line, seqLenString(state.lines))
+    let cursorText = seqGetString(state.lines, cursorLine)
+    let cursorCol: int32 = clampInt(col, 0, len(cursorText))
+    let cursorIndent: int32 = leadingWhitespaceLen(cursorText)
+    let lineIdxBase = cursorLine
+    if lineIdxBase >= 0:
+        for lineIdxRev in 0..lineIdxBase:
+            let lineIdx = lineIdxBase - lineIdxRev
+            let lineText = seqGetString(state.lines, lineIdx)
+            let indent: int32 = leadingWhitespaceLen(lineText)
+            if indent <= cursorIndent:
+                let defs: str[] = scanLineDefinitions(lineText, lineIdx, indent)
+                for dIdx in 0..<seqLenString(defs):
+                    let entry = seqGetString(defs, dIdx)
+                    if semanticName(entry) == ident:
+                        let defIndent: int32 = semanticIndent(entry)
+                        let defCol: int32 = semanticCol(entry)
+                        if defIndent <= cursorIndent:
+                            if lineIdx < cursorLine || (lineIdx == cursorLine && defCol <= cursorCol):
+                                return entry
+    let globals: str[] = collectTopLevelDefinitionEntries(state.lines)
+    for gIdx in 0..<seqLenString(globals):
+        let entry = seqGetString(globals, gIdx)
+        if semanticName(entry) == ident:
+            return entry
+    return ""
+
+fn isEscapedInLine(lineText: str, idx: int32): bool =
+    if idx <= 0:
+        return false
+    var count: int32 = 0
+    var j: int32 = idx - 1
+    while j >= 0 && lineText[j] == '\\':
+        count = count + 1
+        j = j - 1
+    return (count % 2) == 1
+
+fn commentStartIndex(lineText: str): int32 =
+    var inQuote: bool = false
+    var quoteChar: char = '\0'
+    var idx: int32 = 0
+    while idx < len(lineText):
+        let ch: char = lineText[idx]
+        if inQuote:
+            if ch == '\\' && idx + 1 < len(lineText):
+                idx = idx + 2
+                continue
+            if ch == quoteChar && ! isEscapedInLine(lineText, idx):
+                inQuote = false
+            idx = idx + 1
+            continue
+        if ch == '"' || ch == '\'':
+            inQuote = true
+            quoteChar = ch
+            idx = idx + 1
+            continue
+        if ch == '#':
+            return idx
+        idx = idx + 1
+    return -1
+
+fn callContextAtLine(lineText: str, cursorCol: int32): CallContext =
+    var outVal: CallContext
+    outVal.ok = false
+    outVal.name = ""
+    outVal.fullName = ""
+    outVal.openCol = -1
+    outVal.argIndex = 0
+    let lineLen: int32 = len(lineText)
+    var limit: int32 = clampInt(cursorCol, 0, lineLen)
+    let commentIdx: int32 = commentStartIndex(lineText)
+    if commentIdx >= 0 && cursorCol > commentIdx:
+        return outVal
+    if commentIdx >= 0 && commentIdx < limit:
+        limit = commentIdx
+    var depth: int32 = 0
+    var inQuote: bool = false
+    var quoteChar: char = '\0'
+    let idxBase = limit - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let ch: char = lineText[idx]
+            if inQuote:
+                if ch == quoteChar && ! isEscapedInLine(lineText, idx):
+                    inQuote = false
+                continue
+            if ch == '"' || ch == '\'':
+                if ! isEscapedInLine(lineText, idx):
+                    inQuote = true
+                    quoteChar = ch
+                continue
+            if ch == ')':
+                depth = depth + 1
+                continue
+            if ch == '(':
+                if depth == 0:
+                    let openCol: int32 = idx
+                    var endIdx: int32 = openCol - 1
+                    while endIdx >= 0 && isWhitespaceChar(lineText[endIdx]):
+                        endIdx = endIdx - 1
+                    if endIdx < 0:
+                        continue
+                    var start: int32 = endIdx
+                    while start >= 0 && (syntax.isIdentChar(lineText[start]) || lineText[start] == '.'):
+                        start = start - 1
+                    let rawName: str = if endIdx >= start + 1: sliceRange(lineText, start + 1, endIdx) else: ""
+                    if len(rawName) == 0:
+                        continue
+                    let lastCh: char = rawName[len(rawName) - 1]
+                    if ! syntax.isIdentChar(lastCh):
+                        continue
+                    let dotIdx: int32 = lastIndexOfCharBefore(rawName, '.', len(rawName) - 1)
+                    let shortName: str = if dotIdx >= 0 && dotIdx + 1 < len(rawName): sliceRange(rawName, dotIdx + 1, len(rawName) - 1) else: rawName
+                    if len(shortName) == 0:
+                        continue
+                    outVal.ok = true
+                    outVal.name = shortName
+                    outVal.fullName = rawName
+                    outVal.openCol = openCol
+                    outVal.argIndex = 0
+                    return outVal
+                depth = depth - 1
+                continue
+    return outVal
+
+fn countCallArgIndex(lineText: str, openCol: int32, cursorCol: int32): int32 =
+    if openCol < 0 || openCol >= len(lineText):
+        return 0
+    var limit: int32 = clampInt(cursorCol, 0, len(lineText))
+    var idx: int32 = openCol + 1
+    var depth: int32 = 0
+    var inQuote: bool = false
+    var quoteChar: char = '\0'
+    var argIndex: int32 = 0
+    while idx < limit:
+        let ch: char = lineText[idx]
+        if inQuote:
+            if ch == '\\' && idx + 1 < len(lineText):
+                idx = idx + 2
+                continue
+            if ch == quoteChar && ! isEscapedInLine(lineText, idx):
+                inQuote = false
+            idx = idx + 1
+            continue
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            inQuote = true
+            quoteChar = ch
+            idx = idx + 1
+            continue
+        if ch == '(' || ch == '[' || ch == '{':
+            depth = depth + 1
+            idx = idx + 1
+            continue
+        if ch == ')' || ch == ']' || ch == '}':
+            if depth > 0:
+                depth = depth - 1
+                idx = idx + 1
+                continue
+            break
+        if ch == ',' && depth == 0:
+            argIndex = argIndex + 1
+        idx = idx + 1
+    return argIndex
+
+fn collectNamedArgsInCall(lineText: str, openCol: int32, limitCol: int32): str[] =
+    var outVal: str[] = default[str[]]
+    if openCol < 0:
+        return outVal
+    let lineLen: int32 = len(lineText)
+    var limit: int32 = clampInt(limitCol, 0, lineLen)
+    if openCol + 1 >= limit:
+        return outVal
+    var idx: int32 = openCol + 1
+    var depth: int32 = 0
+    var inQuote: bool = false
+    var quoteChar: char = '\0'
+    while idx < limit:
+        let ch: char = lineText[idx]
+        if inQuote:
+            if ch == '\\' && idx + 1 < limit:
+                idx = idx + 2
+                continue
+            if ch == quoteChar && ! isEscapedInLine(lineText, idx):
+                inQuote = false
+            idx = idx + 1
+            continue
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            inQuote = true
+            quoteChar = ch
+            idx = idx + 1
+            continue
+        if ch == '(' || ch == '[' || ch == '{':
+            depth = depth + 1
+            idx = idx + 1
+            continue
+        if ch == ')' || ch == ']' || ch == '}':
+            if depth > 0:
+                depth = depth - 1
+                idx = idx + 1
+                continue
+            break
+        if depth == 0 && syntax.isIdentStart(ch):
+            let start: int32 = idx
+            idx = idx + 1
+            while idx < limit && syntax.isIdentChar(lineText[idx]):
+                idx = idx + 1
+            let token = sliceRange(lineText, start, idx - 1)
+            if syntax.isKeyword(token):
+                continue
+            var prev: int32 = start - 1
+            while prev > openCol && isWhitespaceChar(lineText[prev]):
+                prev = prev - 1
+            if prev > openCol:
+                let prevCh: char = lineText[prev]
+                if prevCh != '(' && prevCh != ',':
+                    continue
+            var j: int32 = idx
+            while j < limit && isWhitespaceChar(lineText[j]):
+                j = j + 1
+            if j < limit && (lineText[j] == '=' || lineText[j] == ':'):
+                if lineText[j] == '=' && j + 1 < limit && lineText[j + 1] == '=':
+                    0
+                else:
+                    addUniqueString(&outVal, token)
+            continue
+        idx = idx + 1
+    return outVal
+
+fn findMatchingBracket(lineText: str, startIdx: int32, openCh: char, closeCh: char): int32 =
+    if startIdx < 0 || startIdx >= len(lineText) || lineText[startIdx] != openCh:
+        return -1
+    var depth: int32 = 0
+    var inQuote: bool = false
+    var quoteChar: char = '\0'
+    var idx: int32 = startIdx
+    while idx < len(lineText):
+        let ch: char = lineText[idx]
+        if inQuote:
+            if ch == '\\' && idx + 1 < len(lineText):
+                idx = idx + 2
+                continue
+            if ch == quoteChar && ! isEscapedInLine(lineText, idx):
+                inQuote = false
+            idx = idx + 1
+            continue
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            inQuote = true
+            quoteChar = ch
+            idx = idx + 1
+            continue
+        if ch == openCh:
+            depth = depth + 1
+        elif ch == closeCh:
+            depth = depth - 1
+            if depth == 0:
+                return idx
+        idx = idx + 1
+    return -1
+
+fn extractParamList(lineText: str, openIdx: int32): ParamListInfo =
+    var outVal: ParamListInfo
+    outVal.ok = false
+    outVal.text = ""
+    outVal.count = 0
+    outVal.endIdx = openIdx
+    if openIdx < 0 || openIdx >= len(lineText) || lineText[openIdx] != '(':
+        return outVal
+    var idx: int32 = openIdx + 1
+    var depth: int32 = 0
+    var inQuote: bool = false
+    var quoteChar: char = '\0'
+    var paramCount: int32 = 0
+    var paramToken: bool = false
+    while idx < len(lineText):
+        let ch: char = lineText[idx]
+        if inQuote:
+            if ch == '\\' && idx + 1 < len(lineText):
+                idx = idx + 2
+                continue
+            if ch == quoteChar && ! isEscapedInLine(lineText, idx):
+                inQuote = false
+            idx = idx + 1
+            continue
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            inQuote = true
+            quoteChar = ch
+            idx = idx + 1
+            continue
+        if ch == '(' || ch == '[' || ch == '{':
+            depth = depth + 1
+            idx = idx + 1
+            continue
+        if ch == ')':
+            if depth == 0:
+                if paramToken:
+                    paramCount = paramCount + 1
+                outVal.ok = true
+                outVal.count = paramCount
+                outVal.endIdx = idx
+                outVal.text = sliceRange(lineText, openIdx, idx)
+                return outVal
+            depth = depth - 1
+            idx = idx + 1
+            continue
+        if ch == ']' || ch == '}':
+            if depth > 0:
+                depth = depth - 1
+            idx = idx + 1
+            continue
+        if depth == 0:
+            if ch == ',':
+                if paramToken:
+                    paramCount = paramCount + 1
+                paramToken = false
+            elif ! isWhitespaceChar(ch):
+                paramToken = true
+        idx = idx + 1
+    return outVal
+
+fn signatureFromDefinitionLine(lineText: str, kindHint: str, targetName: str): SignatureInfo =
+    var outVal: SignatureInfo
+    outVal.ok = false
+    outVal.text = ""
+    outVal.paramCount = -1
+    if len(targetName) == 0:
+        return outVal
+    var idx: int32 = 0
+    var pendingKind: str = ""
+    while idx < len(lineText):
+        let ch: char = lineText[idx]
+        if ch == '#':
+            break
+        if ch == '"' || ch == '\'':
+            let quote: char = ch
+            idx = idx + 1
+            while idx < len(lineText):
+                let c: char = lineText[idx]
+                if c == '\\' && idx + 1 < len(lineText):
+                    idx = idx + 2
+                elif c == quote && ! isEscapedInLine(lineText, idx):
+                    idx = idx + 1
+                    break
+                else:
+                    idx = idx + 1
+            continue
+        if syntax.isIdentStart(ch):
+            let start: int32 = idx
+            idx = idx + 1
+            while idx < len(lineText) && syntax.isIdentChar(lineText[idx]):
+                idx = idx + 1
+            let token = sliceRange(lineText, start, idx - 1)
+            if len(pendingKind) > 0:
+                let nameToken = syntax.stripTrailingStar(token)
+                if nameToken == targetName && (len(kindHint) == 0 || pendingKind == kindHint):
+                    var scanIdx: int32 = idx
+                    while scanIdx < len(lineText) && isWhitespaceChar(lineText[scanIdx]):
+                        scanIdx = scanIdx + 1
+                    if scanIdx < len(lineText) && lineText[scanIdx] == '[':
+                        let closeIdx: int32 = findMatchingBracket(lineText, scanIdx, '[', ']')
+                        if closeIdx > scanIdx:
+                            scanIdx = closeIdx + 1
+                            while scanIdx < len(lineText) && isWhitespaceChar(lineText[scanIdx]):
+                                scanIdx = scanIdx + 1
+                    if scanIdx < len(lineText) && lineText[scanIdx] == '(':
+                        let params: ParamListInfo = extractParamList(lineText, scanIdx)
+                        if params.ok:
+                            outVal.text = pendingKind + " " + targetName + params.text
+                            outVal.paramCount = params.count
+                        else:
+                            outVal.text = pendingKind + " " + targetName + "(...)"
+                        outVal.ok = true
+                        return outVal
+                    outVal.text = pendingKind + " " + targetName
+                    outVal.ok = true
+                    return outVal
+                pendingKind = ""
+            elif token == "fn" || token == "iterator" || token == "converter" || token == "template" || token == "macro":
+                pendingKind = token
+            continue
+        idx = idx + 1
+    return outVal
+
+fn formatSignatureHint(signature: str, argIndex: int32, paramCount: int32): str =
+    if len(signature) == 0:
+        return ""
+    if paramCount == 0:
+        return signature
+    var indexVal: int32 = argIndex
+    if indexVal < 0:
+        indexVal = 0
+    if paramCount < 0 && indexVal == 0:
+        return signature
+    let argLabel: str = if paramCount > 0: "arg " + intToStr(indexVal + 1) + "/" + intToStr(paramCount) else: "arg " + intToStr(indexVal + 1)
+    return signature + "  " + argLabel
+
+fn gotoDefinitionAt(state: GuiState, line: int32, col: int32): GuiState =
+    let ident = wordAtLineCol(state.editor, line, col)
+    if len(ident) == 0:
+        state.statusMsg = "goto: no symbol"
+        return state
+    var next: GuiState = ensureSemanticModel(state)
+    var entry = resolveDefinitionEntryFromEntries(next.editor.semanticEntries, line, col, ident)
+    if len(entry) == 0:
+        entry = findDefinitionEntryAt(next.editor, line, col, ident)
+    if len(entry) > 0:
+        return gotoLine(next, semanticLine(entry), semanticCol(entry))
+    next = ensureProjectIndex(next)
+    for idx in 0..<seqLenString(next.projectSymbols):
+        let sym = seqGetString(next.projectSymbols, idx)
+        if symbolName(sym) == ident:
+            let path = symbolPath(sym)
+            if len(path) > 0:
+                next = openEditorPath(next, path)
+                return gotoLine(next, symbolLine(sym), symbolCol(sym))
+    next.statusMsg = "goto: not found"
+    next.terminal = pushTerminalLine(next.terminal, "goto: " + ident + " not found")
+    return next
+
+fn gotoDefinition(state: GuiState): GuiState =
+    return gotoDefinitionAt(state, state.editor.cursorLine, state.editor.cursorCol)
+
+fn hoverInfoAtPosition(state: GuiState, line: int32, col: int32): str =
+    let diagText = guiDiagMessageAt(state.diagnostics, line, col)
+    if len(diagText) > 0:
+        return diagText
+    let ident = wordAtLineCol(state.editor, line, col)
+    if len(ident) == 0 || syntax.isKeyword(ident):
+        return ""
+    let hasSemantic: bool = state.editor.semanticReady || seqLenString(state.editor.semanticEntries) > 0
+    var entry = ""
+    if hasSemantic:
+        entry = resolveDefinitionEntryFromEntries(state.editor.semanticEntries, line, col, ident)
+        if len(entry) == 0 && state.editor.semanticReady:
+            entry = findDefinitionEntryAt(state.editor, line, col, ident)
+    if len(entry) > 0:
+        let kind = semanticKind(entry)
+        let lineLabel = intToStr(int32(semanticLine(entry) + 1))
+        let label = if len(kind) > 0: kind + " " + ident else: ident
+        return label + " (line " + lineLabel + ")"
+    if state.editor.semanticReady && state.projectIndexReady:
+        for idx in 0..<seqLenString(state.projectSymbols):
+            let sym = seqGetString(state.projectSymbols, idx)
+            if symbolName(sym) == ident:
+                let kind = symbolKind(sym)
+                let label = if len(kind) > 0: kind + " " + ident else: ident
+                let path = symbolPath(sym)
+                if len(path) > 0:
+                    let location = guiWorkspaceDisplayPath(state, path) + ":" + intToStr(int32(symbolLine(sym) + 1))
+                    return label + " (" + location + ")"
+                return label
+    return ""
+
+fn updateSignatureHint(state: GuiState): GuiState =
+    if state.focus != fkEditor:
+        return guiClearSignature(state)
+    if state.overlay.kind != okNone:
+        return guiClearSignature(state)
+    if ! state.editor.semanticReady && seqLenString(state.editor.semanticEntries) == 0:
+        return guiClearSignature(state)
+    let lineIdx: int32 = state.editor.cursorLine
+    if lineIdx < 0 || lineIdx >= seqLenString(state.editor.lines):
+        return guiClearSignature(state)
+    let lineText = seqGetString(state.editor.lines, lineIdx)
+    let ctx: CallContext = callContextAtLine(lineText, state.editor.cursorCol)
+    if ! ctx.ok:
+        return guiClearSignature(state)
+    if syntax.isKeyword(ctx.name):
+        return guiClearSignature(state)
+    let argIndex: int32 = countCallArgIndex(lineText, ctx.openCol, state.editor.cursorCol)
+    var signatureText: str = ""
+    var paramCount: int32 = -1
+    let hasSemantic: bool = state.editor.semanticReady || seqLenString(state.editor.semanticEntries) > 0
+    var entry = ""
+    if hasSemantic:
+        entry = resolveDefinitionEntryFromEntries(state.editor.semanticEntries, lineIdx, state.editor.cursorCol, ctx.name)
+        if len(entry) == 0 && state.editor.semanticReady:
+            entry = findDefinitionEntryAt(state.editor, lineIdx, state.editor.cursorCol, ctx.name)
+    if len(entry) > 0:
+        let kind = semanticKind(entry)
+        let defLine: int32 = semanticLine(entry)
+        if defLine >= 0 && defLine < seqLenString(state.editor.lines):
+            let defText = seqGetString(state.editor.lines, defLine)
+            let info: SignatureInfo = signatureFromDefinitionLine(defText, kind, ctx.name)
+            if info.ok:
+                signatureText = info.text
+                paramCount = info.paramCount
+            elif len(kind) > 0:
+                signatureText = kind + " " + ctx.name + "(...)"
+    if len(signatureText) == 0:
+        let displayName = if len(ctx.fullName) > 0: ctx.fullName else: ctx.name
+        signatureText = displayName + "(...)"
+    let hintText = formatSignatureHint(signatureText, argIndex, paramCount)
+    if len(hintText) == 0:
+        return guiClearSignature(state)
+    state.signatureActive = true
+    state.signatureText = hintText
+    return state
+
+fn symbolMatchScore(name: str, query: str): int32 =
+    if len(name) == 0 || len(query) == 0:
+        return 0
+    let loweredName = textutils.toLowerAscii(name)
+    let loweredQuery = textutils.toLowerAscii(query)
+    if loweredName == loweredQuery:
+        return 100
+    if startsWithPrefix(loweredName, loweredQuery):
+        return 90
+    if indexOfSubstr(loweredName, loweredQuery, 0) >= 0:
+        return 70
+    return 0
+
+fn findSymbolMatch(entries: str[], query: str): int32 =
+    var bestIdx: int32 = -1
+    var bestScore: int32 = 0
+    for idx in 0..<seqLenString(entries):
+        let entry = seqGetString(entries, idx)
+        let name = symbolName(entry)
+        let score: int32 = symbolMatchScore(name, query)
+        if score > bestScore:
+            bestScore = score
+            bestIdx = idx
+    return bestIdx
+
+fn gotoSymbolInFile(state: GuiState, query: str): GuiState =
+    var next: GuiState = ensureOutlineItems(state)
+    var target = trimLine(query)
+    if len(target) == 0:
+        target = wordAtCursor(next.editor)
+    if len(target) == 0:
+        next.statusMsg = "symbol: no query"
+        return next
+    let outlineItems: str[] = next.editor.outlineEntries
+    let idx: int32 = findSymbolMatch(outlineItems, target)
+    if idx < 0:
+        next.statusMsg = "symbol: not found"
+        next.terminal = pushTerminalLine(next.terminal, "symbol: " + target + " not found")
+        return next
+    let entry = seqGetString(outlineItems, idx)
+    next = gotoLine(next, symbolLine(entry), symbolCol(entry))
+    next.statusMsg = "symbol: " + symbolName(entry)
+    return next
+
+fn gotoSymbolInWorkspace(state: GuiState, query: str): GuiState =
+    var next: GuiState = ensureProjectIndex(state)
+    var target = trimLine(query)
+    if len(target) == 0:
+        target = wordAtCursor(next.editor)
+    if len(target) == 0:
+        next.statusMsg = "symbol: no query"
+        return next
+    let idx: int32 = findSymbolMatch(next.projectSymbols, target)
+    if idx < 0:
+        if ! next.projectIndexReady:
+            next.statusMsg = "symbol: indexing"
+            return next
+        next.statusMsg = "symbol: not found"
+        next.terminal = pushTerminalLine(next.terminal, "symbol: " + target + " not found")
+        return next
+    let entry = seqGetString(next.projectSymbols, idx)
+    let path = symbolPath(entry)
+    if len(path) == 0:
+        next.statusMsg = "symbol: missing path"
+        return next
+    next = openEditorPath(next, path)
+    next = gotoLine(next, symbolLine(entry), symbolCol(entry))
+    next.statusMsg = "symbol: " + symbolName(entry)
+    return next
+
+fn collectIdentifiers(lines: str[]): str[] =
+    var outVal: str[] = default[str[]]
+    for lineIdx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, lineIdx)
+        for i in 0..<len(lineText):
+            let ch: char = lineText[i]
+            if ch == '#':
+                break
+            if syntax.isIdentStart(ch):
+                let start: int32 = i
+                while i < len(lineText) && syntax.isIdentChar(lineText[i]):
+                let token = sliceRange(lineText, start, i - 1)
+                if ! syntax.isKeyword(token):
+                    addUniqueString(&outVal, token)
+            else:
+    return outVal
+
+fn completionMatchScore(name: str, query: str): int32 =
+    if len(name) == 0 || len(query) == 0:
+        return 0
+    if name == query:
+        return 100
+    if startsWithPrefix(name, query):
+        return 90
+    let loweredName = textutils.toLowerAscii(name)
+    let loweredQuery = textutils.toLowerAscii(query)
+    if loweredName == loweredQuery:
+        return 80
+    if startsWithPrefix(loweredName, loweredQuery):
+        return 70
+    if indexOfSubstr(name, query, 0) >= 0:
+        return 60
+    if indexOfSubstr(loweredName, loweredQuery, 0) >= 0:
+        return 50
+    return 0
+
+fn addCompletionCandidate(exact: str[]*, partial: str[]*, fuzzy: str[]*, seen: str[]*, name: str, query: str) =
+    let score: int32 = completionMatchScore(name, query)
+    if score <= 0:
+        return
+    if containsString(*seen, name):
+        return
+    addPtr_string(seen, name)
+    if score >= 90:
+        addPtr_string(exact, name)
+    elif score >= 60:
+        addPtr_string(partial, name)
+    else:
+        addPtr_string(fuzzy, name)
+
+fn appendStringList(outVal: str[]*, items: str[]) =
+    for idx in 0..<seqLenString(items):
+        addPtr_string(outVal, seqGetString(items, idx))
+
+fn buildCompletionItems(state: EditorState, prefix: str, projectSymbols: str[], semanticEntries: str[]): str[] =
+    var exact: str[] = default[str[]]
+    var partial: str[] = default[str[]]
+    var fuzzy: str[] = default[str[]]
+    var seen: str[] = default[str[]]
+    if len(prefix) == 0:
+        return exact
+    if state.cursorLine >= 0 && state.cursorLine < seqLenString(state.lines):
+        let lineText = seqGetString(state.lines, state.cursorLine)
+        let ctx: CallContext = callContextAtLine(lineText, state.cursorCol)
+        if ctx.ok && ! syntax.isKeyword(ctx.name):
+            var paramNames: str[] = default[str[]]
+            var entry = resolveDefinitionEntryFromEntries(semanticEntries, state.cursorLine, state.cursorCol, ctx.name)
+            if len(entry) == 0:
+                entry = findDefinitionEntryAt(state, state.cursorLine, state.cursorCol, ctx.name)
+            if len(entry) > 0:
+                let defLine: int32 = semanticLine(entry)
+                if defLine >= 0 && defLine < seqLenString(state.lines):
+                    let defText = seqGetString(state.lines, defLine)
+                    paramNames = collectParamNamesFromDefinitionLine(defText, defLine)
+            if seqLenString(paramNames) == 0 && seqLenString(projectSymbols) > 0:
+                for sIdx in 0..<seqLenString(projectSymbols):
+                    let sym = seqGetString(projectSymbols, sIdx)
+                    if symbolName(sym) == ctx.name:
+                        let names: str[] = collectParamNamesFromProjectSymbol(state, sym)
+                        if seqLenString(names) > 0:
+                            paramNames = names
+                            break
+            if seqLenString(paramNames) > 0:
+                let usedNamed: str[] = collectNamedArgsInCall(lineText, ctx.openCol, state.cursorCol)
+                for pIdx in 0..<seqLenString(paramNames):
+                    let name = seqGetString(paramNames, pIdx)
+                    if ! containsString(usedNamed, name):
+                        let item = name + " = "
+                        addCompletionCandidate(&exact, &partial, &fuzzy, &seen, item, prefix)
+    var semanticNames: str[] = default[str[]]
+    if seqLenString(semanticEntries) > 0:
+        semanticNames = collectSemanticCompletionEntries(semanticEntries, state.cursorLine, state.cursorCol)
+    if seqLenString(semanticNames) > 0:
+        for sIdx in 0..<seqLenString(semanticNames):
+            let name = seqGetString(semanticNames, sIdx)
+            addCompletionCandidate(&exact, &partial, &fuzzy, &seen, name, prefix)
+    else:
+        let localDefs: str[] = collectLocalDefinitionEntries(state, state.cursorLine, state.cursorCol)
+        for lIdx in 0..<seqLenString(localDefs):
+            let entry = seqGetString(localDefs, lIdx)
+            let name = semanticName(entry)
+            addCompletionCandidate(&exact, &partial, &fuzzy, &seen, name, prefix)
+        let globalDefs: str[] = collectTopLevelDefinitionEntries(state.lines)
+        for gIdx in 0..<seqLenString(globalDefs):
+            let entry = seqGetString(globalDefs, gIdx)
+            let kind = semanticKind(entry)
+            if kind != "param" && kind != "for":
+                let name = semanticName(entry)
+                addCompletionCandidate(&exact, &partial, &fuzzy, &seen, name, prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "fn", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "iterator", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "converter", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "type", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "var", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "let", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "const", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "module", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "concept", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "trait", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "import", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "from", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "as", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "include", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "extern", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "if", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "elif", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "else", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "when", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "case", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "of", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "where", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "for", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "in", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "notin", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "while", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "return", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "break", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "continue", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "defer", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "async", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "await", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "mut", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "template", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "macro", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "enum", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "tuple", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "set", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "and", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "or", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "not", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "is", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "shl", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "shr", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "div", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "mod", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "xor", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "true", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "false", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "nil", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "bool", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "char", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "str", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "int", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "int8", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "int16", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "int32", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "int64", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "uint", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "uint8", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "uint16", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "uint32", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "uint64", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "float", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "float32", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "float64", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "ref", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "seq", prefix)
+    addCompletionCandidate(&exact, &partial, &fuzzy, &seen, "Table", prefix)
+    let identifiers: str[] = collectIdentifiers(state.lines)
+    for idx in 0..<seqLenString(identifiers):
+        let word = seqGetString(identifiers, idx)
+        addCompletionCandidate(&exact, &partial, &fuzzy, &seen, word, prefix)
+    if seqLenString(projectSymbols) > 0:
+        for pIdx in 0..<seqLenString(projectSymbols):
+            let entry = seqGetString(projectSymbols, pIdx)
+            let name = symbolName(entry)
+            addCompletionCandidate(&exact, &partial, &fuzzy, &seen, name, prefix)
+    var outVal: str[] = default[str[]]
+    appendStringList(&outVal, exact)
+    appendStringList(&outVal, partial)
+    appendStringList(&outVal, fuzzy)
+    return outVal
+
+fn currentCompletionPrefix(state: EditorState): str =
+    if state.cursorLine < 0 || state.cursorLine >= seqLenString(state.lines):
+        return ""
+    let lineText = seqGetString(state.lines, state.cursorLine)
+    let lineLen: int32 = len(lineText)
+    var col: int32 = clampInt(state.cursorCol, 0, lineLen)
+    var start: int32 = col
+    while start > 0 && syntax.isIdentChar(lineText[start - 1]):
+        start = start - 1
+    if start >= col:
+        return ""
+    return sliceRange(lineText, start, col - 1)
+
+fn ensureCompletionSelection(state: CompletionState): CompletionState =
+    let count: int32 = seqLenString(state.items)
+    if count <= 0:
+        state.selected = -1
+        return state
+    if state.selected < 0:
+        state.selected = 0
+    if state.selected >= count:
+        state.selected = count - 1
+    return state
+
+fn moveCompletionSelection(state: CompletionState, delta: int32): CompletionState =
+    let count: int32 = seqLenString(state.items)
+    if count <= 0:
+        state.selected = -1
+        return state
+    let nextIdx: int32 = clampInt(state.selected + delta, 0, count - 1)
+    state.selected = nextIdx
+    return state
+
+fn startCompletion(state: GuiState): GuiState =
+    var next: GuiState = ensureProjectIndex(state)
+    next.completion.prefix = currentCompletionPrefix(next.editor)
+    next.completion.items = buildCompletionItems(next.editor, next.completion.prefix, next.projectSymbols, next.editor.semanticEntries)
+    next.completion.selected = 0
+    next.completion.active = seqLenString(next.completion.items) > 0
+    if ! next.completion.active:
+        next.statusMsg = "complete: none"
+    return next
+
+fn tryAutoCompletion(state: GuiState, text: str): GuiState =
+    if state.completion.active:
+        return state
+    if len(text) != 1:
+        return state
+    let ch: char = text[0]
+    if ! syntax.isIdentChar(ch):
+        return state
+    var next: GuiState = ensureProjectIndex(state)
+    let prefix = currentCompletionPrefix(next.editor)
+    if len(prefix) == 0 || ! syntax.isIdentStart(prefix[0]):
+        return state
+    next.completion.prefix = prefix
+    next.completion.items = buildCompletionItems(next.editor, next.completion.prefix, next.projectSymbols, next.editor.semanticEntries)
+    next.completion.selected = 0
+    next.completion.active = seqLenString(next.completion.items) > 0
+    return next
+
+fn updateCompletion(state: GuiState): GuiState =
+    if ! state.completion.active:
+        return state
+    if ! state.projectIndexReady:
+        state = ensureProjectIndex(state)
+    state.completion.prefix = currentCompletionPrefix(state.editor)
+    state.completion.items = buildCompletionItems(state.editor, state.completion.prefix, state.projectSymbols, state.editor.semanticEntries)
+    state.completion = ensureCompletionSelection(state.completion)
+    state.completion.active = seqLenString(state.completion.items) > 0
+    return state
+
+fn cancelCompletion(state: GuiState): GuiState =
+    state.completion.active = false
+    state.completion.items = default[str[]]
+    state.completion.prefix = ""
+    state.completion.selected = -1
+    return state
+
+fn acceptCompletion(state: GuiState): GuiState =
+    if ! state.completion.active:
+        return state
+    let count: int32 = seqLenString(state.completion.items)
+    if count <= 0 || state.completion.selected < 0 || state.completion.selected >= count:
+        return cancelCompletion(state)
+    let item = seqGetString(state.completion.items, state.completion.selected)
+    let prefix = currentCompletionPrefix(state.editor)
+    var insertTextValue: str = item
+    if startsWithPrefix(item, prefix):
+        let prefixLen: int32 = len(prefix)
+        if prefixLen < len(item):
+            insertTextValue = sliceFrom(item, prefixLen)
+        else:
+            insertTextValue = ""
+    state.editor = insertText(state.editor, insertTextValue)
+    state.statusMsg = "complete: " + item
+    return cancelCompletion(state)

@@ -1,0 +1,1504 @@
+# Deprecated: new code should call `cheng/gui/kit` and `cheng/gui/render/backend_compat`.
+import std/math
+import std/os
+import std/strutils
+import std/tables
+import std/times
+import cheng/runtime/fs as runtimeFs
+import cheng/gui/platform/types
+import cheng/gui/platform/native as nativePlat
+for m
+import cheng/gui/render/text_native
+import cheng/gui/render/skia_ffi
+import cheng/gui/render/hot_asm as hotAsm
+import seqs
+type
+    RenderCommand
+    Kind = enum
+        rcRect
+        rcText
+        rcOff
+        screen
+    RenderCommand =
+        kind: RenderCommand
+        Kindrect: GuiRect
+        color: uint32
+        text: str
+        fontSize: float
+        opacity: float
+        offscreenName: str
+    RenderPassKind = enum
+        rpkOpaque
+        rpkTrans
+        parent
+    rpkOverlayRenderDrawEntry =
+        passIndex: int
+        command: RenderCommand
+    PassState =
+        opacity: float
+        hasClip: bool
+        clip: GuiRect
+        clippedOut: bool
+    RenderBackendKind = enum
+        rbNone
+        rbSkiaWgpu
+        rbSkiaCpuFallback
+    FrameMetric =
+        index: int
+        timestampMs: int64
+        cpuMs: float
+        totalMs: float
+        gpuMs: float
+        logicalWidth: float
+        logicalHeight: float
+        pixelWidth: float
+        pixelHeight: float
+        dpiScale: float
+        colorSpace: str
+    SurfaceLifecycle =
+        handle: SurfaceHandle
+        logicalSize: GuiSize
+        pixelSize: GuiSize
+        dpiScale: float
+        colorSpace: str
+        generation: int
+        framesPresented: int
+        lastPresentMs: int64
+    RenderStats =
+        commandCount: int
+        rectCount: int
+        textCount: int
+        offscreenCount: int
+        processingCpuMs: float
+        frameCpuMs: float
+        frameGpuMs: float
+        frameTotalMs: float
+    RenderGpuInfo =
+        initialized: bool
+        adapter: str
+        device: str
+        queue: str
+        surfaceFormat: str
+        presentMode: str
+        width: int
+        height: int
+        frameSerial: int
+        lastError: str
+        fallbackReason: str
+    AnimationLoop = enum
+        alOnce
+        alRepeat
+    alPingPongRenderAnimationSample =
+        name: str
+        progress: float
+        active: bool
+        loop: AnimationLoop
+        elapsedMs: int64
+        remainingMs: int64
+    RenderFrameSummary =
+        frameCount: int
+        averageCpuMs: float
+        averageGpuMs: float
+        averageTotalMs: float
+        maxCpuMs: float
+        maxGpuMs: float
+        maxTotalMs: float
+    RenderResourceKind = enum
+        rrTexture
+        rrPipe
+        line
+        rrBuffer
+        rrFont
+        rrImage
+    rrOtherRenderResourceStats =
+        resourceCount: int
+        currentBytes: int64
+        peakBytes: int64
+        totalAl
+        locations: int64
+        totalReleases: int64
+    RenderResourceInfo =
+        name: str
+        kind: RenderResourceKind
+        sizeBytes: int64
+        refCount: int64createdMs: int64
+        lastUsedMs: int64
+        tags: str[]
+    RenderResourceSnapshot =
+        name: str
+        kind: RenderResourceKind
+        sizeBytes: int64
+        refCount: int64
+        ageMs: int64
+        tags: str[]
+    RenderGpuDiagnostics =
+        backendKind: RenderBackendKind
+        backendName: str
+        gpuName: str
+        gpuActive: bool
+        fallbackReason: str
+        gpuInfo: RenderGpuInfo
+        frameSum
+        mary: RenderFrameSummary
+        hasLastFrame: bool
+        lastFrame: FrameMetricgpuFrameStats: SkiaFrameStatsoffscreenTar
+        gets: str[]
+        animationCount: int
+        animationSamples: RenderAnimationSample[]
+        resourceStats: RenderResourceStatsresources: RenderResourceSnapshot[]
+    CpuCanvas = ref
+        width: int
+        height: int
+        pixels: uint32[]
+    GpuPipelineState = ref
+        adapter: str
+        device: str
+        queue: str
+        surfaceFormat: str
+        presentMode: str
+        width: int
+        height: int
+        frameSerial: int
+        lastError: str
+        valid: bool
+        handle: SkiaRenderHandle
+        lastStats: SkiaFrameStats
+    RenderPass = ref
+        name: str
+        kind: RenderPassKind
+        hasClip: bool
+        clip: GuiRect
+        opacity: float
+        parent: int
+        commands: RenderCommand[]
+    AnimationState = ref
+        name: str
+        durationMs: int64
+        startMs: int64
+        delayMs: int64
+        loop: AnimationLoop
+        active: bool
+    OffscreenSurface = ref
+        name: str
+        context: RenderContext
+        size: GuiSize
+        dpiScale: floatlastUpdatedMs: int64
+    RenderResourcePool = ref
+        resources: Table[str, RenderResourceInfo]
+        order: str[]
+        stats: RenderResourceStats
+    RenderContext = ref
+        kind: RenderBackendKind
+        surface: SurfaceHandle
+        width: float
+        height: float
+        captureEnabled: bool
+        commands: RenderCommand[]
+        drawQueue: RenderDrawEntry[]
+        frameIndex: int
+        dpiScale: float
+        colorSpace: str
+        backendName: str
+        gpuName: str
+        fallbackReason: str
+        history: FrameMetric[]
+        lastSurface: SurfaceFrameInfo
+        screenshotPath: str
+        screenshotPngPath: str
+        surfaceState: SurfaceLifecycle
+        canvas: CpuCanvasstats: RenderStatsgpu: GpuPipelineState
+        passes: RenderPass[]
+        passStack: int[]
+        offscreenTargets: Table[str, OffscreenSurface]
+        animations: Table[str, AnimationState]
+        resourcePool: RenderResourcePool
+    PixelRect =
+        x0: int
+        y0: int
+        x1: int
+        y1: int
+    RectIntersect =
+        valid: bool
+        rect: GuiRect
+    ResourceInfoResult =
+        found: bool
+        info: RenderResourceInfo
+    GpuPipelineInitResult =
+        state: GpuPipelineState
+        fallback: str
+    CaptureSnapshotResult =
+        ppmPath: str
+        pngPath: str
+        error: str
+    RenderTelemetrySink = fn (ctx: RenderContext)
+    var telemetrySinks = default[RenderTelemetrySink[]]
+fn addTelemetrySink(sink: RenderTelemetrySink) =
+    if sink == nil:
+        return
+        var idx = 0
+        while idx < len(telemetrySinks):
+            if telemetrySinks[idx] == sink:
+                return idx = idx + 1 telemetrySinks.add(sink)
+fn clearTelemetrySinks() =
+    setLen(telemetrySinks, 0)
+fn notifyTeleme
+try(ctx: RenderContext) = if ctx == nil:
+    return if len(telemetrySinks) == 0: return
+    for i in 0..<len(telemetrySinks):
+        telemetrySinks[i](ctx)
+fn currentMillis(): int64 =
+    int64(epochTime() * 1000.0)
+fn clampOpacity(value: float): float =
+    if value <= 0.0:
+        0.0
+    elif value >= 1.0:
+        1.0
+    else:
+        value
+fn clampDimension(value: float): int =
+    if value <= 0.0:
+        1
+    else:
+        max(1, int(round(value)))
+fn ensureOpaque(color: uint32): uint32 =
+    if (color && uint32(0xFF000000)) == uint32(0):
+        color || uint32(0xFF000000)
+    else:
+        color
+fn applyOpacity(color: uint32, opacity: float): uint32 =
+    if opacity >= 1.0:
+        return color
+        let clamped = clampOpacity(opacity)
+        let baseColor = ensureOpaque(color)
+        let base = baseColor && uint32(0x00FFFFFF)
+        let alpha = int(float((baseColor >> 24) && uint32(0xFF)) * clamped) base ||(uint32(alpha) << 24)
+fn blendPixel(dst, src: uint32): uint32 =
+    let srcOpaque = ensureOpaque(src)
+    let srcA = int((srcOpaque >> 24) && uint32(0xFF))
+    if srcA >= 255:
+        return srcOpaque
+        let dstOpaque = ensureOpaque(dst)
+        let dstA = int((dstOpaque >> 24) && uint32(0xFF))
+        let invA = 255 - srcA
+        let srcR = int((srcOpaque >> 16) && uint32(0xFF))
+        let srcG = int((srcOpaque >> 8) && uint32(0xFF))
+        let srcB = int(srcOpaque && uint32(0xFF))
+        let dstR = int((dstOpaque >> 16) && uint32(0xFF))
+        let dstG = int((dstOpaque >> 8) && uint32(0xFF))
+        let dstB = int(dstOpaque && uint32(0xFF))
+        let outR =(srcR * srcA + dstR * invA) / 255
+        let outG =(srcG * srcA + dstG * invA) / 255
+        let outB =(srcB * srcA + dstB * invA) / 255
+        let outA = srcA +(dstA * invA) / 255(uint32(outA) << 24) ||(uint32(outR) << 16) ||(uint32(outG) << 8) || uint32(outB)
+fn defaultFillColor(): uint32 =
+    ensureOpaque(uint32(0x001E1E22))
+fn effectiveDpiScale(ctx: RenderContext): float =
+    if ctx == nil:
+        return 1.0
+        if ctx.dpiScale > 0.0:
+            return ctx.dpiScale
+            if ctx.surfaceState.dpiScale > 0.0:
+                return ctx.surfaceState.dpiScale
+                1.0
+fn effectivePixelSize(ctx: RenderContext): GuiSize =
+    if ctx == nil:
+        return makeSize(1.0, 1.0)
+        var width: float = ctx.lastSurface.pixelSize.width
+        var height: float = ctx.lastSurface.pixelSize.height
+        if width <= 0.0 && ctx.surfaceState.pixelSize.width > 0.0:
+            width = ctx.surfaceState.pixelSize.width
+            if height <= 0.0 && ctx.surfaceState.pixelSize.height > 0.0:
+                height = ctx.surfaceState.pixelSize.height
+                if width <= 0.0:
+                    width = ctx.surfaceState.logicalSize.width * max(1.0, ctx.surfaceState.dpiScale)
+                    if height <= 0.0:
+                        height = ctx.surfaceState.logicalSize.height * max(1.0, ctx.surfaceState.dpiScale)
+                        makeSize(width, height)
+fn clampInt(value, minVal, maxVal: int): int =
+    return hotAsm.hotClampInt(value, minVal, maxVal)
+fn makePixelRect(x0, y0, x1, y1: int): PixelRect =
+    var rect: PixelRect
+    rect.x0 = x0
+    rect.y0 = y0
+    rect.x1 = x1
+    rect.y1 = y1 rect
+fn toPixelRect(ctx: RenderContext, rect: GuiRect, canvasWidth, canvasHeight: int): PixelRect =
+    if rect.size.width <= 0.0 || rect.size.height <= 0.0:
+        return makePixelRect(0, 0, 0, 0)
+        let scale = effectiveDpiScale(ctx)
+        let left = rect.origin.x * scale
+        let top = rect.origin.y * scale
+        let right =(rect.origin.x + rect.size.width) * scale
+        let bottom =(rect.origin.y + rect.size.height) * scale
+        let x0 = clampInt(int(floor(left)), 0, canvasWidth)
+        let y0 = clampInt(int(floor(top)), 0, canvasHeight)
+        let x1 = clampInt(int(ceil(right)), 0, canvasWidth)
+        let y1 = clampInt(int(ceil(bottom)), 0, canvasHeight)
+        if x1 <= x0 || y1 <= y0:
+            return makePixelRect(0, 0, 0, 0)
+            makePixelRect(x0, y0, x1, y1)
+fn makeRectIntersect(valid: bool, rect: GuiRect): RectIntersect =
+    var result: RectIntersectresult.valid = valid
+    result.rect = rect result
+fn intersectRect(a, b: GuiRect): RectIntersect =
+    let left = max(a.origin.x, b.origin.x)
+    let top = max(a.origin.y, b.origin.y)
+    let right = min(a.origin.x + a.size.width, b.origin.x + b.size.width)
+    let bottom = min(a.origin.y + a.size.height, b.origin.y + b.size.height)
+    if right <= left || bottom <= top:
+        var emptyRect: GuiRect
+        return makeRectIntersect(false, emptyRect)
+        makeRectIntersect(true, makeRect(left, top, right - left, bottom - top))
+fn ensureCanvas(ctx: RenderContext, width, height: int) =
+    if width <= 0 || height <= 0:
+        ctx.canvas = nil
+        return if ctx.canvas == nil || ctx.canvas.width != width || ctx.canvas.height != height: var canvas: CpuCanvasnew(canvas)
+        canvas.width = width
+        canvas.height = height
+        var pixels: uint32[width * height]
+        canvas.pixels = pixels
+        ctx.canvas = canvas
+        let fill = defaultFillColor()
+        for idx in 0..<total:
+            ctx.canvas.pixels[idx] = fill
+fn drawRectCpu(ctx: RenderContext, rect: GuiRect, color: uint32) =
+    if ctx == nil || ctx.canvas == nil:
+        return
+        let width: int = ctx.canvas.width
+        let height: int = ctx.canvas.height
+        let area = toPixelRect(ctx, rect, width, height)
+        if area.x1 <= area.x0 || area.y1 <= area.y0:
+            return
+            let fill = ensureOpaque(color)
+            for y in area.y0..<area.y1:
+                let row = y * width
+                for x in area.x0..<area.x1:
+                    let idx = row + x
+                    ctx.canvas.pixels[idx] = blendPixel(ctx.canvas.pixels[idx], fill)
+fn drawTextCpu(ctx: RenderContext, rect: GuiRect, text: str, color: uint32, fontSize: float) =
+    if ctx == nil || ctx.canvas == nil:
+        return if len(text) == 0: return
+        let width: int = ctx.canvas.width
+        let height: int = ctx.canvas.height
+        if width <= 0 || height <= 0:
+            return
+            let pixels: uint32* = uint32*(ctx.canvas.pixels.buffer)
+            if pixels != nil:
+                if DrawTextBgra(pixels, width, height, width * 4, rect, ensureOpaque(color), fontSize, text):
+                    return # Fallback: blocky glyphs when native text backend fails.
+                    let scale = effectiveDpiScale(ctx)
+                    let unitWidth = max(1, int(round(max(1.0, fontSize) * 0.62 * scale)))
+                    let unitHeight = max(1, int(round(max(1.0, fontSize) * 1.25 * scale)))
+                    let baseX = int(round(rect.origin.x * scale))
+                    let baseY = int(round(rect.origin.y * scale))
+                    if width <= baseX || height <= baseY:
+                        return
+                        let maxWidth = max(1, int(round(rect.size.width * scale)))
+                        let maxHeight = max(1, int(round(rect.size.height * scale)))
+                        let fill = ensureOpaque(color)
+                        let y0 = clampInt(baseY, 0, height)
+                        let y1 = clampInt(baseY + min(unitHeight, maxHeight), 0, height)
+                        if y1 <= y0:
+                            return
+                            var glyphOffset = 0
+                            var idx = 0
+                            while idx < len(text):
+                                let glyphX = baseX + glyphOffset
+                                if baseX + maxWidth <= glyphX || width <= glyphX:
+                                    break
+                                    let x0 = clampInt(glyphX, 0, width)
+                                    let glyphWidth = min(unitWidth, maxWidth - glyphOffset)
+                                    let x1 = clampInt(glyphX + glyphWidth, 0, width)
+                                    if x0 < x1:
+                                        for y in y0..<y1:
+                                            let row = y * width
+                                            for x in x0..<x1:
+                                                let offset = row + x
+                                                ctx.canvas.pixels[offset] = blendPixel(ctx.canvas.pixels[offset], fill)
+                                                glyphOffset = glyphOffset + unitWidth + 1
+                                                if width <= baseX + glyphOffset:
+                                                    break idx = idx + 1
+fn presentCanvas(ctx: RenderContext) =
+    if ctx == nil || ctx.canvas == nil:
+        return if ctx.surface == nil: return if len(ctx.canvas.pixels) == 0: return
+        let pixels: uint32* = uint32*(ctx.canvas.pixels.buffer)
+        if pixels == nil:
+            return nativePlat.PresentPixels(ctx.surface, pixels, ctx.canvas.width, ctx.canvas.height, ctx.canvas.width * 4)
+fn normalizeResourceName(name: str): str =
+    let trimmed = name.strip()
+    if len(trimmed) == 0:
+        return ""
+        let lowered = trimmed.replace('\\', '/')
+        if lowered.contains(".."):
+            return "" lowered
+fn resourceTime
+stamp(): int64 = currentMillis()
+fn newRenderResourcePool(): RenderResourcePool =
+    var pool: RenderResourcePoolnew(pool)
+    pool.resources = initTable[str, RenderResourceInfo]()
+    pool.order = default[str[]]
+    var stats: RenderResourceStatspool.stats = stats pool
+fn findResourceIndex(pool: RenderResourcePool, key: str): int =
+    var idx = 0
+    while idx < len(pool.resources.keys):
+        if pool.resources.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasRe
+source(pool: RenderResourcePool, key: str): bool = findResourceIndex(pool, key) >= 0
+fn getRe
+source(pool: RenderResourcePool, key: str): RenderResourceInfo = let idx = findResourceIndex(pool, key)
+if idx >= 0:
+    return pool.resources.values[idx]
+    var emptyInfo: RenderResourceInfo emptyInfo
+fn setRe
+source(pool: RenderResourcePool, key: str, info: RenderResourceInfo) = let idx = findResourceIndex(pool, key)
+if idx >= 0:
+    pool.resources.values[idx] = info
+else:
+    pool.resources.keys.add(key) pool.resources.values.add(info)
+fn removeRe
+source(pool: RenderResourcePool, key: str) = let idx = findResourceIndex(pool, key)
+if idx < 0:
+    return
+    let last = len(pool.resources.keys) - 1
+    if idx != last:
+        pool.resources.keys[idx] = pool.resources.keys[last]
+        pool.resources.values[idx] = pool.resources.values[last]
+        setLen(pool.resources.keys, last)
+        setLen(pool.resources.values, last)
+fn ensureResourcePool(ctx: RenderContext): RenderResourcePool =
+    if ctx == nil:
+        return nil
+        if ctx.resourcePool == nil:
+            ctx.resourcePool = newRenderResourcePool() ctx.resourcePool
+fn findOffscreenIndex(ctx: RenderContext, name: str): int =
+    var idx = 0
+    while idx < len(ctx.offscreenTargets.keys):
+        if ctx.offscreenTargets.keys[idx] == name:
+            return idx
+            idx = idx + 1 - 1
+fn hasOffscreenTarget(ctx: RenderContext, name: str): bool =
+    if ctx == nil:
+        return false
+        findOffscreenIndex(ctx, name) >= 0
+fn findAnimationIndex(ctx: RenderContext, name: str): int =
+    var idx = 0
+    while idx < len(ctx.animations.keys):
+        if ctx.animations.keys[idx] == name:
+            return idx
+            idx = idx + 1 - 1
+fn get
+Animation(ctx: RenderContext, name: str): AnimationState = if ctx == nil: return nil
+let idx = findAnimationIndex(ctx, name)
+if idx >= 0:
+    return ctx.animations.values[idx] nil
+fn setAnimation(ctx: RenderContext, name: str, state: AnimationState) =
+    if ctx == nil:
+        return
+        let idx = findAnimationIndex(ctx, name)
+        if idx >= 0:
+            ctx.animations.values[idx] = state
+        else:
+            ctx.animations.keys.add(name) ctx.animations.values.add(state)
+fn removeAnimation(ctx: RenderContext, name: str) =
+    if ctx == nil:
+        return
+        let idx = findAnimationIndex(ctx, name)
+        if idx < 0:
+            return
+            let last = len(ctx.animations.keys) - 1
+            if idx != last:
+                ctx.animations.keys[idx] = ctx.animations.keys[last]
+                ctx.animations.values[idx] = ctx.animations.values[last]
+                setLen(ctx.animations.keys, last)
+                setLen(ctx.animations.values, last)
+fn registerRe
+source(ctx: RenderContext, name: str, kind: RenderResourceKind, sizeBytes: int64, tags: str[]): RenderResourceInfo = if ctx == nil: var emptyInfo: RenderResourceInfo
+return emptyInfo
+let pool = ensureResourcePool(ctx)
+if pool == nil:
+    var emptyInfo: RenderResourceInfo
+    return emptyInfo
+    let key = normalizeResourceName(name)
+    if len(key) == 0:
+        var emptyInfo: RenderResourceInfo
+        return emptyInfo
+        let now = resourceTime
+        stamp()
+        var size: int64 = sizeBytes
+        if size < 0:
+            size = 0
+            if hasRe
+            source(pool, key): var info = getRe
+            source(pool, key)
+            info.refCount = info.refCount + 1
+            info.lastUsedMs = now
+            if info.sizeBytes < size:
+                let diff = size - info.sizeBytes
+                info.sizeBytes = size
+                pool.stats.currentBytes = pool.stats.currentBytes + diff
+                if pool.stats.peakBytes < pool.stats.currentBytes:
+                    pool.stats.peakBytes = pool.stats.currentBytes
+                    if len(tags) > 0:
+                        info.tags = tags
+                        setRe
+                        source(pool, key, info)
+                        pool.stats.totalAl
+                        locations = pool.stats.totalAl locations + 1
+                        return info
+                        var info: RenderResourceInfo
+                        info.name = key
+                        info.kind = kind
+                        info.sizeBytes = size
+                        info.refCount = 1
+                        info.createdMs = now
+                        info.lastUsedMs = now
+                        info.tags = tags
+                        setRe
+                        source(pool, key, info)
+                        pool.order.add(key)
+                        pool.stats.resourceCount = len(pool.resources.keys)
+                        pool.stats.currentBytes = pool.stats.currentBytes + size
+                        if pool.stats.peakBytes < pool.stats.currentBytes:
+                            pool.stats.peakBytes = pool.stats.currentBytes
+                            pool.stats.totalAl
+                            locations = pool.stats.totalAl locations + 1 info
+fn touchRe
+source(ctx: RenderContext, name: str) = if ctx == nil: return
+let pool = ensureResourcePool(ctx)
+if pool == nil:
+    return
+    let key = normalizeResourceName(name)
+    if len(key) == 0:
+        return if ! hasRe
+        source(pool, key): return
+        var info = getRe
+        source(pool, key)
+        info.lastUsedMs = resourceTime
+        stamp()
+        if info.refCount < 1:
+            info.refCount = 1 setRe
+            source(pool, key, info)
+fn releaseRe
+source(ctx: RenderContext, name: str) = if ctx == nil: return
+let pool = ensureResourcePool(ctx)
+if pool == nil:
+    return
+    let key = normalizeResourceName(name)
+    if len(key) == 0:
+        return if ! hasRe
+        source(pool, key): return
+        var info = getRe
+        source(pool, key)
+        info.refCount = info.refCount - 1
+        if info.refCount > 0:
+            info.lastUsedMs = resourceTime
+            stamp() setRe
+            source(pool, key, info)
+            return pool.stats.currentBytes = pool.stats.currentBytes - info.sizeBytes
+            if pool.stats.currentBytes < 0:
+                pool.stats.currentBytes = 0
+                pool.stats.totalReleases = pool.stats.totalReleases + 1
+                removeRe
+                source(pool, key)
+                pool.stats.resourceCount = len(pool.resources.keys)
+fn makeResourceInfoResult(found: bool, info: RenderResourceInfo): ResourceInfoResult =
+    var result: ResourceInfoResult
+    result.found = found
+    result.info = info result
+fn resource
+Info(ctx: RenderContext, name: str): ResourceInfoResult = if ctx == nil: var emptyInfo: RenderResourceInfo
+return makeResourceInfoResult(false, emptyInfo)
+let pool = ensureResourcePool(ctx)
+if pool == nil:
+    var emptyInfo: RenderResourceInfo
+    return makeResourceInfoResult(false, emptyInfo)
+    let key = normalizeResourceName(name)
+    if len(key) == 0:
+        var emptyInfo: RenderResourceInfo
+        return makeResourceInfoResult(false, emptyInfo)
+        if ! hasRe
+        source(pool, key): var emptyInfo: RenderResourceInfo
+        return makeResourceInfoResult(false, emptyInfo)
+        makeResourceInfoResult(true, getRe source(pool, key))
+fn listRe
+sources(ctx: RenderContext): RenderResourceInfo[] = var items = default[RenderResourceInfo[]]
+if ctx == nil:
+    return items
+    let pool = ensureResourcePool(ctx)
+    if pool == nil:
+        return items
+        var i = 0
+        while i < len(pool.order):
+            let key = pool.order[i]
+            if hasRe
+            source(pool, key): items.add(getRe source(pool, key))
+            i = i + 1 items
+fn clearRe
+sources(ctx: RenderContext) = if ctx == nil: return
+let pool = ensureResourcePool(ctx)
+if pool == nil:
+    return setLen(pool.resources.keys, 0)
+    setLen(pool.resources.values, 0)
+    setLen(pool.order, 0)
+    pool.stats.currentBytes = 0
+    pool.stats.resourceCount = 0
+fn resourceStats(ctx: RenderContext): RenderResourceStats =
+    if ctx == nil:
+        var stats: RenderResourceStats
+        return stats
+        let pool = ensureResourcePool(ctx)
+        if pool == nil:
+            var stats: RenderResourceStats
+            return stats pool.stats
+fn updateRe
+source
+Size(ctx: RenderContext, name: str, sizeBytes: int64) = if ctx == nil: return
+let pool = ensureResourcePool(ctx)
+if pool == nil:
+    return
+    let key = normalizeResourceName(name)
+    if len(key) == 0:
+        return if ! hasRe
+        source(pool, key): return
+        var info = getRe
+        source(pool, key)
+        var newSize: int64 = sizeBytes
+        if newSize < 0:
+            newSize = 0
+            if newSize == info.sizeBytes:
+                info.lastUsedMs = resourceTime
+                stamp() setRe
+                source(pool, key, info)
+                return pool.stats.currentBytes = pool.stats.currentBytes - info.sizeBytes + newSize
+                if pool.stats.currentBytes < 0:
+                    pool.stats.currentBytes = 0
+                    if pool.stats.peakBytes < pool.stats.currentBytes:
+                        pool.stats.peakBytes = pool.stats.currentBytes
+                        info.sizeBytes = newSize
+                        info.lastUsedMs = resourceTime
+                        stamp() setRe
+                        source(pool, key, info)
+fn backendDisplayName(kind: RenderBackendKind): str =
+    case kind
+    of rbSkiaWgpu:
+        "wgpu+skia"
+    of rbSkiaCpuFallback:
+        "skia-fallback"
+    of rbNone:
+        "none"
+fn detectGpuName(kind: RenderBackendKind): str =
+    let override = os.getEnv("CHENG_GUI_GPU_NAME")
+    if len(override) > 0:
+        return override
+        case kind
+        of rbSkiaWgpu:
+            "Apple GPU (Metal simulated)"
+        of rbSkiaCpuFallback:
+            "Apple CPU (Skia software)"
+        of rbNone:
+            "unavailable"
+fn detectBackendKind(kind: RenderBackendKind): RenderBackendKind =
+    let forced = strutils.toLowerAscii(os.getEnv("CHENG_GUI_BACKEND").strip())
+    if len(forced) > 0:
+        if forced == "cpu" || forced == "software":
+            return rbSkiaCpuFallback
+            if forced == "none":
+                return rbNone
+                if forced == "gpu" || forced == "wgpu" || forced == "skia" || forced == "skiawgpu":
+                    return rbSkiaWgpu
+                    if kind == rbNone:
+                        rbSkiaWgpu
+                    else:
+                        kind
+fn isGpuActive(ctx: RenderContext): bool =
+    if ctx == nil:
+        return false
+        if ctx.kind != rbSkiaWgpu:
+            return false
+            if ctx.gpu == nil:
+                return false
+                if ! ctx.gpu.valid:
+                    return false ! ctx.gpu.handle.skiaHandleIsNil()
+fn degradeToCpu(ctx: RenderContext, reason: str) =
+    if ctx == nil:
+        return ctx.kind = rbSkiaCpuFallback
+        ctx.fallbackReason = reason
+        ctx.backendName = backendDisplayName(ctx.kind)
+        ctx.gpuName = detectGpuName(ctx.kind)
+        if ctx.gpu != nil:
+            if ! ctx.gpu.handle.skiaHandleIsNil():
+                skiaDestroy(ctx.gpu.handle)
+                ctx.gpu = nil releaseRe
+                source(ctx, "gpu-pipeline")
+fn makeGpuPipelineInitResult(state: GpuPipelineState, fallback: str): GpuPipelineInitResult =
+    var result: GpuPipelineInitResult
+    result.state = state
+    result.fallback = fallback result
+fn initGpuPipe
+line(surface: SurfaceHandle, size: GuiSize, dpiScale: float, colorSpace: str): GpuPipelineInitResult = if surface == nil: return makeGpuPipelineInitResult(nil, "no-surface")
+var pixelSize: GuiSize
+pixelSize.width = max(1.0, size.width * max(1.0, dpiScale))
+pixelSize.height = max(1.0, size.height * max(1.0, dpiScale))
+let handle = skiaCreate(surface, pixelSize, dpiScale, colorSpace)
+if handle.skiaHandleIsNil():
+    return makeGpuPipelineInitResult(nil, "skia-init-failed")
+    var state: GpuPipelineState
+    new(state)
+    state.adapter = ""
+    state.device = ""
+    state.queue = ""
+    state.surfaceFormat = ""
+    state.presentMode = ""
+    state.width = int(round(pixelSize.width))
+    state.height = int(round(pixelSize.height))
+    state.frameSerial = 0
+    state.lastError = ""
+    state.valid = true
+    state.handle = handle
+    var stats: SkiaFrameStatsstate.lastStats = stats
+    makeGpuPipelineInitResult(state, "")
+fn configureGpu(ctx: RenderContext) =
+    if ctx == nil:
+        return if ctx.kind != rbSkiaWgpu: return
+        let pipeline = initGpuPipe
+        line(ctx.surface, makeSize(ctx.width, ctx.height), ctx.dpiScale, ctx.colorSpace)
+        if pipeline.state == nil || ! pipeline.state.valid:
+            degradeToCpu(ctx, if len(pipeline.fallback) > 0: pipeline.fallback else: "gpu-unavailable")
+            return ctx.gpu = pipeline.state registerRe
+            source(ctx, "gpu-pipeline", rrPipe line, 0, default[str[]])
+fn ensureGpuSwap
+chain(ctx: RenderContext, info: SurfaceFrameInfo) = if ! isGpuActive(ctx): return
+var pixelSize: GuiSize
+pixelSize.width = ctx.width
+pixelSize.height = ctx.height
+if info.pixelSize.width > 0.0 && info.pixelSize.height > 0.0:
+    pixelSize = info.pixelSize
+    ctx.gpu.width = clampDimension(pixelSize.width)
+    ctx.gpu.height = clampDimension(pixelSize.height)
+    var resized: GuiSize
+    resized.width = float(ctx.gpu.width)
+    resized.height = float(ctx.gpu.height) skiaRe
+    size(ctx.gpu.handle, resized)
+fn gpuInfo(ctx: RenderContext): RenderGpuInfo =
+    if ctx == nil:
+        var info: RenderGpuInfo
+        return info
+        if ctx.gpu == nil:
+            var info: RenderGpuInfo
+            info.initialized = false
+            info.fallbackReason = ctx.fallbackReason
+            return info
+            var info: RenderGpuInfo
+            info.initialized = ctx.gpu.valid
+            info.adapter = ctx.gpu.adapter
+            info.device = ctx.gpu.device
+            info.queue = ctx.gpu.queue
+            info.surfaceFormat = ctx.gpu.surfaceFormat
+            info.presentMode = ctx.gpu.presentMode
+            info.width = ctx.gpu.width
+            info.height = ctx.gpu.height
+            info.frameSerial = ctx.gpu.frameSerial
+            info.lastError = ctx.gpu.lastError
+            info.fallbackReason = ctx.fallbackReason info
+fn backendKind(ctx: RenderContext): RenderBackendKind =
+    if ctx == nil:
+        rbNone
+    else:
+        ctx.kind
+fn backendName(ctx: RenderContext): str =
+    if ctx == nil:
+        ""
+    else:
+        ctx.backendName
+fn gpuName(ctx: RenderContext): str =
+    if ctx == nil:
+        ""
+    else:
+        ctx.gpuName
+fn fallbackReason(ctx: RenderContext): str =
+    if ctx == nil:
+        ""
+    else:
+        ctx.fallbackReason
+fn lastSurfaceInfo(ctx: RenderContext): SurfaceFrameInfo =
+    if ctx == nil:
+        var info: SurfaceFrameInfo
+        return info ctx.lastSurface
+fn currentPassIndex(ctx: RenderContext): int =
+    if ctx == nil || len(ctx.passStack) == 0:
+        return 0
+    let lastIdx: int32 = len(ctx.passStack) - 1
+    return ctx.passStack[lastIdx]
+fn ensureRootPass(ctx: RenderContext) =
+    if ctx == nil:
+        return if len(ctx.passes) == 0: var root: RenderPass
+        new(root)
+        root.name = "root"
+        root.kind = rpkOpaque
+        root.hasClip = false
+        var clip: GuiRect
+        root.clip = clip
+        root.opacity = 1.0
+        root.parent = - 1
+        root.commands = default[RenderCommand[]]
+        ctx.passes.add(root)
+        ctx.passStack = default[int[]] ctx.passStack.add(0)
+    elif len(ctx.passStack) == 0:
+        ctx.passStack = default[int[]] ctx.passStack.add(0)
+fn clearPassCommands(ctx: RenderContext) =
+    if ctx == nil:
+        return
+        for i in 0..<len(ctx.passes):
+            setLen(ctx.passes[i].commands, 0)
+fn resetPasses(ctx: RenderContext): RenderContext =
+    if ctx == nil:
+        return ctx
+        setLen(ctx.passes, 0)
+        setLen(ctx.passStack, 0)
+        ensureRootPass(ctx) ctx
+fn beginPass(ctx: RenderContext, name: str, kind: RenderPassKind) =
+    var clip: GuiRect
+    beginPass(ctx, name, kind, clip, false, 1.0)
+fn beginPass(ctx: RenderContext, name: str, kind: RenderPassKind, clip: GuiRect, enableClip: bool, opacity: float) =
+    if ctx == nil:
+        return ensureRootPass(ctx)
+        let parent = currentPassIndex(ctx)
+        var pass: RenderPass
+        new(pass)
+        pass.name = name
+        pass.kind = kind
+        pass.hasClip = enableClip
+        pass.clip = clip
+        pass.opacity = clampOpacity(opacity)
+        pass.parent = parent
+        pass.commands = default[RenderCommand[]] ctx.passes.add(pass) ctx.passStack.add(len(ctx.passes) - 1)
+fn endPass(ctx: RenderContext) =
+    if ctx == nil:
+        return if len(ctx.passStack) <= 1: return setLen(ctx.passStack, len(ctx.passStack) - 1)
+fn recordCommand(ctx: RenderContext, cmd: RenderCommand) =
+    if ctx == nil:
+        return
+        let passIndex = currentPassIndex(ctx)
+        if passIndex >= 0 && passIndex < len(ctx.passes):
+            ctx.passes[passIndex].commands.add(cmd)
+            var entry: RenderDrawEntryentry.passIndex = passIndex
+            entry.command = cmd
+            ctx.drawQueue.add(entry)
+            ctx.stats.commandCount = ctx.stats.commandCount + 1
+            if ctx.captureEnabled:
+                ctx.commands.add(cmd)
+fn drawRect(ctx: RenderContext, rect: GuiRect, color: uint32) =
+    drawRect(ctx, rect, color, 1.0)
+fn drawRect(ctx: RenderContext, rect: GuiRect, color: uint32, opacity: float) =
+    if ctx == nil:
+        return
+        let clamped = clampOpacity(opacity)
+        if clamped <= 0.0:
+            return if rect.size.width <= 0.0 || rect.size.height <= 0.0: return
+            var cmd: RenderCommand
+            cmd.kind = rcRect
+            cmd.rect = rect
+            cmd.color = color
+            cmd.text = ""
+            cmd.fontSize = 0.0
+            cmd.opacity = clamped
+            cmd.offscreenName = ""
+            ctx.stats.rectCount = ctx.stats.rectCount + 1
+            recordCommand(ctx, cmd)
+fn drawText(ctx: RenderContext, rect: GuiRect, text: str, color: uint32, fontSize: float) =
+    drawText(ctx, rect, text, color, fontSize, 1.0)
+fn drawText(ctx: RenderContext, rect: GuiRect, text: str, color: uint32, fontSize: float, opacity: float) =
+    if ctx == nil:
+        return if len(text) == 0: return
+        let clamped = clampOpacity(opacity)
+        if clamped <= 0.0:
+            return
+            var cmd: RenderCommand
+            cmd.kind = rcText
+            cmd.rect = rect
+            cmd.color = color
+            cmd.text = text
+            cmd.fontSize = fontSize
+            cmd.opacity = clamped
+            cmd.offscreenName = ""
+            ctx.stats.textCount = ctx.stats.textCount + 1
+            recordCommand(ctx, cmd)
+fn compositeOff
+screen(ctx: RenderContext, name: str, rect: GuiRect) = compositeOff
+screen(ctx, name, rect, 1.0)
+fn compositeOff
+screen(ctx: RenderContext, name: str, rect: GuiRect, opacity: float) = if ctx == nil || len(name) == 0: return if ! hasOffscreenTarget(ctx, name): return
+let clamped = clampOpacity(opacity)
+if clamped <= 0.0:
+    return
+    var cmd: RenderCommand
+    cmd.kind = rcOff
+    screen
+    cmd.rect = rect
+    cmd.color = uint32(0)
+    cmd.text = ""
+    cmd.fontSize = 0.0
+    cmd.opacity = clamped
+    cmd.offscreenName = name
+    ctx.stats.offscreenCount = ctx.stats.offscreenCount + 1
+    recordCommand(ctx, cmd)
+fn enableCommandCapture(ctx: RenderContext, enabled: bool) =
+    if ctx == nil:
+        return ctx.captureEnabled = enabled
+        if ! enabled:
+            setLen(ctx.commands, 0)
+fn getCommands(ctx: RenderContext): RenderCommand[] =
+    if ctx == nil:
+        return default[RenderCommand[]]
+        if ctx.captureEnabled:
+            ctx.commands
+        else:
+            default[RenderCommand[]]
+fn clearCommands(ctx: RenderContext) =
+    if ctx == nil:
+        return setLen(ctx.drawQueue, 0)
+        clearPassCommands(ctx)
+        setLen(ctx.commands, 0)
+fn computePassStates(ctx: RenderContext): PassState[] =
+    var states = default[PassState[]]
+    if ctx == nil:
+        return states
+        var passStates: PassState[len(ctx.passes)]
+        states = passStates
+        var idx = 0
+        while idx < len(ctx.passes):
+            let pass = ctx.passes[idx]
+            var state: PassState
+            state.opacity = clampOpacity(pass->opacity)
+            state.hasClip = pass->hasClip
+            state.clip = pass->clip
+            state.clippedOut = false
+            if pass->parent >= 0 && pass->parent < len(states):
+                let parent = states[pass->parent]
+                state.opacity = clampOpacity(state.opacity * parent.opacity)
+                if parent.hasClip:
+                    if state.hasClip:
+                        let inter = intersectRect(state.clip, parent.clip)
+                        if ! inter.valid:
+                            state.clippedOut = true
+                        else:
+                            state.clip = inter.rect
+                            state.hasClip = true
+                        else:
+                            state.clip = parent.clip
+                            state.hasClip = true
+                            states[idx] = state
+                            idx = idx + 1 states
+fn flushDrawQueue(ctx: RenderContext) =
+    if ctx == nil:
+        return
+        let pixelSize = effectivePixelSize(ctx)
+        let width = clampDimension(pixelSize.width)
+        let height = clampDimension(pixelSize.height)
+        let useGpu = isGpuActive(ctx)
+        if useGpu:
+            var stats: SkiaFrameStatsctx.gpu.lastStats = stats
+            let logicalSize = makeSize(ctx.width, ctx.height)
+            skiaBeginFrame(ctx.gpu.handle, logicalSize, pixelSize, effectiveDpiScale(ctx), ctx.colorSpace)
+            ensureCanvas(ctx, width, height)
+            if ctx.canvas == nil:
+                setLen(ctx.drawQueue, 0)
+                if useGpu:
+                    ctx.gpu.lastStats = skiaEndFrame(ctx.gpu.handle)
+                    return
+                    let states = computePassStates(ctx)
+                    let start = epochTime()
+                    for i in 0..<len(ctx.drawQueue):
+                        let entry = ctx.drawQueue[i]
+                        var state: PassState
+                        state.opacity = 1.0
+                        state.hasClip = false
+                        var emptyClip: GuiRect
+                        state.clip = emptyClip
+                        state.clippedOut = false
+                        if entry.passIndex >= 0 && entry.passIndex < len(states):
+                            state = states[entry.passIndex]
+                            if state.clippedOut:
+                                continue
+                                let cmd = entry.command
+                                var rect = cmd.rect
+                                if state.hasClip:
+                                    let inter = intersectRect(rect, state.clip)
+                                    if ! inter.valid:
+                                        continue rect = inter.rect
+                                        let opacity = clampOpacity(cmd.opacity * state.opacity)
+                                        if opacity <= 0.0:
+                                            continue case cmd.kind
+                                            of rcRect:
+                                                drawRectCpu(ctx, rect, applyOpacity(cmd.color, opacity))
+                                                if useGpu:
+                                                    skiaDrawRect(ctx.gpu.handle, rect, cmd.color, opacity)
+                                                    of rcText:
+                                                        drawTextCpu(ctx, rect, cmd.text, applyOpacity(cmd.color, opacity), cmd.fontSize)
+                                                        if useGpu:
+                                                            skiaDrawText(ctx.gpu.handle, rect, cmd.text, cmd.color, cmd.fontSize, opacity)
+                                                            of rcOff
+                                                            screen: i = i + 1
+                                                            ctx.stats.processingCpuMs = max(0.0,(epochTime() - start) * 1000.0)
+                                                            setLen(ctx.drawQueue, 0)
+                                                            if useGpu:
+                                                                let stats = skiaEndFrame(ctx.gpu.handle)
+                                                                ctx.gpu.lastStats = stats
+                                                                if stats.gpuTimeMs > 0.0:
+                                                                    ctx.stats.frameGpuMs = stats.gpuTimeMs
+                                                                    presentCanvas(ctx)
+fn updateSurfaceState(ctx: RenderContext, info: SurfaceFrameInfo) =
+    if ctx == nil:
+        return if ctx.surfaceState.handle != ctx.surface: var state: SurfaceLifecycle
+        state.handle = ctx.surface
+        if info.logicalSize.width > 0.0 && info.logicalSize.height > 0.0:
+            state.logicalSize = info.logicalSize
+        else:
+            var fallbackLogical: GuiSize
+            fallbackLogical.width = ctx.width
+            fallbackLogical.height = ctx.height
+            state.logicalSize = fallbackLogical
+            if info.pixelSize.width > 0.0 && info.pixelSize.height > 0.0:
+                state.pixelSize = info.pixelSize
+            else:
+                var fallbackPixel: GuiSize
+                fallbackPixel.width = ctx.width
+                fallbackPixel.height = ctx.height
+                state.pixelSize = fallbackPixel
+                if info.dpiScale > 0.0:
+                    state.dpiScale = info.dpiScale
+                else:
+                    state.dpiScale = ctx.dpiScale
+                    if len(info.colorSpace) > 0:
+                        state.colorSpace = info.colorSpace
+                    else:
+                        state.colorSpace = ctx.colorSpace
+                        state.generation = 0
+                        state.framesPresented = 0
+                        state.lastPresentMs = 0
+                        ctx.surfaceState = state
+                    else:
+                        if info.logicalSize.width > 0.0 && info.logicalSize.height > 0.0:
+                            if info.logicalSize.width != ctx.surfaceState.logicalSize.width || info.logicalSize.height != ctx.surfaceState.logicalSize.height:
+                                ctx.surfaceState.generation = ctx.surfaceState.generation + 1
+                                ctx.surfaceState.logicalSize = info.logicalSize
+                                if info.pixelSize.width > 0.0 && info.pixelSize.height > 0.0:
+                                    if info.pixelSize.width != ctx.surfaceState.pixelSize.width || info.pixelSize.height != ctx.surfaceState.pixelSize.height:
+                                        ctx.surfaceState.generation = ctx.surfaceState.generation + 1
+                                        ctx.surfaceState.pixelSize = info.pixelSize
+                                        if info.dpiScale > 0.0 && info.dpiScale != ctx.surfaceState.dpiScale:
+                                            ctx.surfaceState.generation = ctx.surfaceState.generation + 1
+                                            ctx.surfaceState.dpiScale = info.dpiScale
+                                            if len(info.colorSpace) > 0 && info.colorSpace != ctx.surfaceState.colorSpace:
+                                                ctx.surfaceState.generation = ctx.surfaceState.generation + 1
+                                                ctx.surfaceState.colorSpace = info.colorSpace
+fn initRenderBackend(surface: SurfaceHandle, size: GuiSize): RenderContext =
+    initRenderBackend(surface, size, rbSkiaWgpu)
+fn initRenderBackend(surface: SurfaceHandle, size: GuiSize, kind: RenderBackendKind): RenderContext =
+    let effective = detectBackendKind(kind)
+    var ctx: RenderContext
+    new(ctx)
+    ctx.kind = effective
+    ctx.surface = surface
+    ctx.width = max(1.0, size.width)
+    ctx.height = max(1.0, size.height)
+    ctx.captureEnabled = false
+    ctx.commands = default[RenderCommand[]]
+    ctx.drawQueue = default[RenderDrawEntry[]]
+    ctx.frameIndex = 0
+    ctx.dpiScale = 1.0
+    ctx.colorSpace = "sRGB"
+    ctx.backendName = backendDisplayName(effective)
+    ctx.gpuName = detectGpuName(effective)
+    ctx.fallbackReason = if effective == rbSkiaCpuFallback: "forced-cpu"
+    else:
+        ""
+        ctx.history = default[FrameMetric[]]
+        var logical: GuiSize
+        logical.width = size.width
+        logical.height = size.height
+        var pixel: GuiSize
+        pixel.width = size.width
+        pixel.height = size.height
+        var lastSurface: SurfaceFrameInfo
+        lastSurface.logicalSize = logical
+        lastSurface.pixelSize = pixel
+        lastSurface.dpiScale = 1.0
+        lastSurface.colorSpace = "sRGB"
+        ctx.lastSurface = lastSurface
+        ctx.screenshotPath = ""
+        ctx.screenshotPngPath = ""
+        var surfaceState: SurfaceLifecycle
+        surfaceState.handle = surface
+        surfaceState.logicalSize = logical
+        surfaceState.pixelSize = pixel
+        surfaceState.dpiScale = 1.0
+        surfaceState.colorSpace = "sRGB"
+        surfaceState.generation = 0
+        surfaceState.framesPresented = 0
+        surfaceState.lastPresentMs = 0
+        ctx.surfaceState = surfaceState
+        ctx.canvas = nil
+        var stats: RenderStatsctx.stats = stats
+        ctx.gpu = nil
+        ctx.passes = default[RenderPass[]]
+        ctx.passStack = default[int[]]
+        ctx.offscreenTargets = initTable[str, OffscreenSurface]()
+        ctx.animations = initTable[str, AnimationState]()
+        ctx.resourcePool = newRenderResourcePool()
+        configureGpu(ctx)
+        resetPasses(ctx) ctx
+fn resize(ctx: RenderContext, size: GuiSize) =
+    if ctx == nil:
+        return if size.width > 0.0: ctx.width = size.width
+        if size.height > 0.0:
+            ctx.height = size.height
+fn beginFrame(ctx: RenderContext, info: SurfaceFrameInfo) =
+    if ctx == nil:
+        return if ctx.captureEnabled: setLen(ctx.commands, 0)
+        setLen(ctx.drawQueue, 0)
+        resetPasses(ctx)
+        var stats: RenderStatsctx.stats = stats
+        ctx.width = max(1.0, info.logicalSize.width)
+        ctx.height = max(1.0, info.logicalSize.height)
+        if info.dpiScale > 0.0:
+            ctx.dpiScale = info.dpiScale
+            if len(info.colorSpace) > 0:
+                ctx.colorSpace = info.colorSpace
+                ctx.lastSurface = info
+                updateSurfaceState(ctx, info)
+                ensureGpuSwap
+                chain(ctx, info)
+                ctx.frameIndex = ctx.frameIndex + 1
+fn endFrame(ctx: RenderContext) =
+    flushDrawQueue(ctx)
+fn commitFrame(ctx: RenderContext, info: SurfaceFrameInfo, cpuMs: float, totalMs: float): FrameMetric =
+    if ctx == nil:
+        var metric: FrameMetric
+        return metric
+        var safeCpu: float = cpuMs
+        if safeCpu < 0.0:
+            safeCpu = 0.0
+            var safeTotal: float = totalMs
+            if safeTotal < safeCpu:
+                safeTotal = safeCpu
+                var measuredGpu = 0.0
+                if isGpuActive(ctx):
+                    measuredGpu = max(0.0, ctx.gpu.lastStats.gpuTimeMs)
+                    if measuredGpu > 0.0 && safeTotal < safeCpu + measuredGpu:
+                        safeTotal = safeCpu + measuredGpu
+                        if safeTotal < 0.0:
+                            safeTotal = safeCpu
+                            var gpuMs: float = 0.0
+                            if safeCpu < safeTotal:
+                                gpuMs = safeTotal - safeCpu
+                                if measuredGpu > 0.0:
+                                    gpuMs = measuredGpu
+                                    var logical: GuiSize = ctx.lastSurface.logicalSize
+                                    if info.logicalSize.width > 0.0 && info.logicalSize.height > 0.0:
+                                        logical = info.logicalSize
+                                        var pixel: GuiSize = ctx.lastSurface.pixelSize
+                                        if info.pixelSize.width > 0.0 && info.pixelSize.height > 0.0:
+                                            pixel = info.pixelSize
+                                            var dpiScale: float = ctx.dpiScale
+                                            if info.dpiScale > 0.0:
+                                                dpiScale = info.dpiScale
+                                                var colorSpace: str = ctx.colorSpace
+                                                if len(info.colorSpace) > 0:
+                                                    colorSpace = info.colorSpace
+                                                    var metric: FrameMetricmetric.index = ctx.frameIndex
+                                                    metric.timestampMs = currentMillis()
+                                                    metric.cpuMs = safeCpu
+                                                    metric.totalMs = safeTotal
+                                                    metric.gpuMs = gpuMs
+                                                    metric.logicalWidth = logical.width
+                                                    metric.logicalHeight = logical.height
+                                                    metric.pixelWidth = pixel.width
+                                                    metric.pixelHeight = pixel.height
+                                                    metric.dpiScale = dpiScale
+                                                    metric.colorSpace = colorSpace ctx.history.add(metric)
+                                                    if len(ctx.history) > 512:
+                                                        let startIdx = len(ctx.history) - 512
+                                                        var trimmed = default[FrameMetric[]]
+                                                        for idx in startIdx..<len(ctx.history):
+                                                            trimmed.add(ctx.history[idx])
+                                                            ctx.history = trimmed
+                                                            ctx.stats.frameCpuMs = safeCpu
+                                                            ctx.stats.frameGpuMs = gpuMs
+                                                            ctx.stats.frameTotalMs = safeTotal
+                                                            ctx.surfaceState.framesPresented = ctx.surfaceState.framesPresented + 1
+                                                            ctx.surfaceState.lastPresentMs = metric.timestampMs notifyTeleme
+                                                            try(ctx) metric
+fn frameMetrics(ctx: RenderContext): FrameMetric[] =
+    if ctx == nil:
+        default[FrameMetric[]]
+    else:
+        ctx.history
+fn frameStats(ctx: RenderContext): RenderStats =
+    if ctx == nil:
+        var stats: RenderStats
+        return stats ctx.stats
+fn animationCount(ctx: RenderContext): int =
+    if ctx == nil:
+        return 0
+        len(ctx.animations.keys)
+fn computeFrameSummary(metrics: FrameMetric[]): RenderFrameSummary =
+    if len(metrics) == 0:
+        var summary: RenderFrameSummary
+        summary.frameCount = 0
+        return summary
+        var sumCpu = 0.0
+        var sumGpu = 0.0
+        var sumTotal = 0.0
+        var maxCpu = 0.0
+        var maxGpu = 0.0
+        var maxTotal = 0.0
+        for i in 0..<len(metrics):
+            let metric = metrics[i]
+            sumCpu = sumCpu + metric.cpuMs
+            sumGpu = sumGpu + metric.gpuMs
+            sumTotal = sumTotal + metric.totalMs
+            if maxCpu < metric.cpuMs:
+                maxCpu = metric.cpuMs
+                if maxGpu < metric.gpuMs:
+                    maxGpu = metric.gpuMs
+                    if maxTotal < metric.totalMs:
+                        maxTotal = metric.totalMs
+                        let count = len(metrics)
+                        var summary: RenderFrameSummary
+                        summary.frameCount = count
+                        summary.averageCpuMs = sumCpu / float(count)
+                        summary.averageGpuMs = sumGpu / float(count)
+                        summary.averageTotalMs = sumTotal / float(count)
+                        summary.maxCpuMs = maxCpu
+                        summary.maxGpuMs = maxGpu
+                        summary.maxTotalMs = maxTotal summary
+fn animationSampleForState(state: AnimationState, name: str, nowMs: int64): RenderAnimationSample =
+    if state == nil:
+        var sample: RenderAnimationSamplesample.name = name
+        sample.progress = 0.0
+        sample.active = false
+        sample.loop = alOnce
+        sample.elapsedMs = 0
+        sample.remainingMs = 0
+        return sample
+        var duration: int64 = state.durationMs
+        if duration < 1:
+            duration = 1
+            var delay: int64 = state.delayMs
+            if delay < 0:
+                delay = 0
+                let startTime = state.startMs + delay
+                var elapsed = int64(0)
+                var remaining = duration
+                var progress = 0.0
+                var active: bool = state.active
+                if nowMs < startTime:
+                    elapsed = 0
+                    remaining = duration
+                    progress = 0.0
+                else:
+                    elapsed = nowMs - startTime
+                    case state.loop
+                    of alOnce:
+                        if elapsed >= duration:
+                            elapsed = duration
+                            remaining = 0
+                            progress = 1.0
+                            active = false
+                        else:
+                            remaining = duration - elapsed
+                            progress = float(elapsed) / float(duration)
+                    of alRepeat:
+                        remaining = duration -(elapsed % duration)
+                        progress = float(elapsed % duration) / float(duration)
+                    of alPingPong:
+                        let cycle = duration * 2
+                        let modVal = elapsed % cycle
+                        if modVal <= duration:
+                            progress = float(modVal) / float(duration)
+                        else:
+                            progress = float(cycle - modVal) / float(duration)
+                            remaining = duration
+                            var sample: RenderAnimationSamplesample.name = name
+                            sample.progress = progress
+                            sample.active = active
+                            sample.loop = state.loop
+                            sample.elapsedMs = elapsed
+                            sample.remainingMs = remaining sample
+fn animationSamples(ctx: RenderContext, nowMs: int64): RenderAnimationSample[] =
+    var samples = default[RenderAnimationSample[]]
+    if ctx == nil:
+        return samples
+        var i = 0
+        while i < len(ctx.animations.keys):
+            let key = ctx.animations.keys[i]
+            let state = ctx.animations.values[i]
+            samples.add(animationSampleForState(state, key, nowMs))
+            i = i + 1 samples
+fn start
+Animation(ctx: RenderContext, name: str, durationMs: int64, loop: AnimationLoop, delayMs: int64, nowMs: int64) = if ctx == nil || len(name) == 0: return
+var safeDuration: int64 = durationMs
+if safeDuration <= 0:
+    safeDuration = 1
+    var safeDelay: int64 = delayMs
+    if safeDelay < 0:
+        safeDelay = 0
+        var state: AnimationState
+        new(state)
+        state.name = name
+        state.durationMs = safeDuration
+        state.startMs = nowMs
+        state.delayMs = safeDelay
+        state.loop = loop
+        state.active = true
+        setAnimation(ctx, name, state)
+fn stop
+Animation(ctx: RenderContext, name: str) = if ctx == nil || len(name) == 0: return removeAnimation(ctx, name)
+fn listOffscreenTar
+gets(ctx: RenderContext): str[] = var items = default[str[]]
+if ctx == nil:
+    return items
+    var i = 0
+    while i < len(ctx.offscreenTargets.keys):
+        items.add(ctx.offscreenTargets.keys[i])
+        i = i + 1 items
+fn gpuDiagnostics(ctx: RenderContext): RenderGpuDiagnostics =
+    if ctx == nil:
+        var diag: RenderGpuDiagnostics
+        diag.backendKind = rbNone
+        diag.backendName = "none"
+        diag.gpuName = "unavailable"
+        diag.gpuActive = false
+        diag.fallbackReason = "no-context"
+        var info: RenderGpuInfo
+        diag.gpuInfo = info
+        var summary: RenderFrameSummary
+        diag.frameSum
+        mary = summary
+        diag.hasLastFrame = false
+        var last: FrameMetricdiag.lastFrame = last
+        var stats: SkiaFrameStatsdiag.gpuFrameStats = stats
+        diag.offscreenTargets = default[str[]]
+        diag.animationCount = 0
+        diag.animationSamples = default[RenderAnimationSample[]]
+        var resStats: RenderResourceStatsdiag.resourceStats = resStats
+        diag.resources = default[RenderResourceSnapshot[]]
+        return diag
+        let metrics = frameMetrics(ctx)
+        var diag: RenderGpuDiagnostics
+        diag.backendKind = ctx.kind
+        diag.backendName = ctx.backendName
+        diag.gpuName = ctx.gpuName
+        diag.gpuActive = isGpuActive(ctx)
+        diag.fallbackReason = ctx.fallbackReason
+        diag.gpuInfo = gpuInfo(ctx)
+        diag.frameSum
+        mary = computeFrameSummary(metrics)
+        diag.hasLastFrame = false
+        var last: FrameMetricdiag.lastFrame = last
+        if ctx.gpu == nil:
+            var stats: SkiaFrameStatsdiag.gpuFrameStats = stats
+        else:
+            diag.gpuFrameStats = ctx.gpu.lastStats
+            diag.offscreenTargets = listOffscreenTar
+            gets(ctx)
+            diag.animationCount = animationCount(ctx)
+            diag.animationSamples = default[RenderAnimationSample[]]
+            diag.resourceStats = resourceStats(ctx)
+            diag.resources = default[RenderResourceSnapshot[]]
+            if len(metrics) > 0:
+                let lastIdx: int32 = len(metrics) - 1
+                diag.lastFrame = metrics[lastIdx]
+                diag.hasLastFrame = true
+                let infos = listRe
+                sources(ctx)
+                let now = currentMillis()
+                for idx in 0..<len(infos):
+                    let info = infos[idx]
+                    var age: int64 = 0
+                    if info.lastUsedMs < now:
+                        age = now - info.lastUsedMs
+                        var snapshot: RenderResourceSnapshotsnapshot.name = info.name
+                        snapshot.kind = info.kind
+                        snapshot.sizeBytes = info.sizeBytes
+                        snapshot.refCount = info.refCount
+                        snapshot.ageMs = age
+                        snapshot.tags = info.tags
+                        diag.resources.add(snapshot)
+                        diag.animationSamples = animationSamples(ctx, currentMillis()) diag
+fn writeCanvasPpm(ctx: RenderContext, path: str) =
+    if ctx == nil || ctx.canvas == nil:
+        return
+        let width: int = ctx.canvas.width
+        let height: int = ctx.canvas.height
+        if width <= 0 || height <= 0:
+            return
+            var output = "P6\n" + intToStr(int32(width)) + " " + intToStr(int32(height)) + "\n255\n"
+            var y = 0
+            while y < height:
+                for x in 0..<width:
+                    let color = ctx.canvas.pixels[y * width + x] output.add(char(int((color >> 16) && uint32(0xFF)))) output.add(char(int((color >> 8) && uint32(0xFF))))
+                    output.add(char(int(color && uint32(0xFF))))
+                    y = y + 1 runtimeFs.writeFile(path, output)
+fn writePlaceholderPpm(path: str, width, height: int) =
+    var output = "P6\n" + intToStr(int32(width)) + " " + intToStr(int32(height)) + "\n255\n"
+    let color = defaultFillColor()
+    var total = width * height
+    var idx = 0
+    while idx < total:
+        output.add(char(int((color >> 16) && uint32(0xFF)))) output.add(char(int((color >> 8) && uint32(0xFF))))
+        output.add(char(int(color && uint32(0xFF))))
+        idx = idx + 1 runtimeFs.writeFile(path, output)
+fn recordSnapshot(ctx: RenderContext, path: str) =
+    if ctx == nil:
+        return ctx.screenshotPath = path
+fn recordSnapshotPng(ctx: RenderContext, path: str) =
+    if ctx == nil:
+        return ctx.screenshotPngPath = path
+fn makeCaptureSnapshotResult(ppmPath: str, pngPath: str, error: str): CaptureSnapshotResult =
+    var result: CaptureSnapshotResult
+    result.ppmPath = ppmPath
+    result.pngPath = pngPath
+    result.error = error result
+fn captureSnapshot(ctx: RenderContext, resourceRoot: str): CaptureSnapshotResult =
+    if ctx == nil:
+        return makeCaptureSnapshotResult("", "", "no-context")
+        if len(ctx.history) == 0:
+            return makeCaptureSnapshotResult("", "", "no-frame-history")
+            let lastIdx: int32 = len(ctx.history) - 1
+            let latest = ctx.history[lastIdx]
+            let base = if len(resourceRoot) > 0: resourceRoot
+        else:
+            os.getCurrentDir()
+            let snapshotDir = os.joinPath(base, "screenshots")
+            if ! os.dirExists(snapshotDir):
+                os.createDir(snapshotDir)
+                let width = clampDimension(latest.pixelWidth)
+                let height = clampDimension(latest.pixelHeight)
+                var padded = $ latest.index
+                while len(padded) < 4:
+                    padded = "0" + padded
+                    if len(padded) > 4:
+                        let startIdx = len(padded) - 4
+                        var trimmed = ""
+                        for i in startIdx..<len(padded):
+                            trimmed.add(char(padded[i]))
+                            padded = trimmed
+                            let baseName = "frame_" + padded + "_" + $ width + "x" + $ height
+                            let ppmTarget = os.joinPath(snapshotDir, baseName + ".ppm")
+                            let png
+                            Target = os.joinPath(snapshotDir, baseName + ".png")
+                            let hasCanvas = ctx.canvas != nil && ctx.canvas.width == width && ctx.canvas.height == height
+                            recordSnapshot(ctx, "")
+                            recordSnapshotPng(ctx, "")
+                            if hasCanvas:
+                                writeCanvasPpm(ctx, ppmTarget)
+                            else:
+                                writePlaceholderPpm(ppmTarget, width, height)
+                                recordSnapshot(ctx, ppmTarget)
+                                recordSnapshotPng(ctx, "")
+                                let errorText = "png-not-supported"
+                                makeCaptureSnapshotResult(ppmTarget, "", errorText)

@@ -1,0 +1,49 @@
+const
+    copyAppTitle: str = "Unimaker"
+    copyNavHome: str = "首页"
+    copyNavMessage: str = "消息"
+    copyNavPublish: str = "发布"
+    copyNavNode: str = "节点"
+    copyNavProfile: str = "我的"
+    copyActionPrimary: str = "立即执行"
+    copyActionSecondary: str = "稍后处理"
+    copyActionRefresh: str = "刷新"
+    copyActionOpen: str = "打开"
+    copyStatusInstalled: str = "已安装"
+    copyStatusNotInstalled: str = "未安装"
+    copyStateLoading: str = "加载中..."
+    copyStateEmpty: str = "暂无数据"
+    copyStateError: str = "操作失败，请稍后重试"
+
+fn mobileCopyZhCn(key: str): str =
+    if key == "app.title":
+        return copyAppTitle
+    if key == "nav.home":
+        return copyNavHome
+    if key == "nav.message":
+        return copyNavMessage
+    if key == "nav.publish":
+        return copyNavPublish
+    if key == "nav.node":
+        return copyNavNode
+    if key == "nav.profile":
+        return copyNavProfile
+    if key == "action.primary":
+        return copyActionPrimary
+    if key == "action.secondary":
+        return copyActionSecondary
+    if key == "action.refresh":
+        return copyActionRefresh
+    if key == "action.open":
+        return copyActionOpen
+    if key == "status.installed":
+        return copyStatusInstalled
+    if key == "status.not_installed":
+        return copyStatusNotInstalled
+    if key == "state.loading":
+        return copyStateLoading
+    if key == "state.empty":
+        return copyStateEmpty
+    if key == "state.error":
+        return copyStateError
+    return key

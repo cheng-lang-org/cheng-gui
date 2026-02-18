@@ -1,0 +1,169 @@
+import std/sequtils
+import std/sets
+import std/strutils
+import std/tables
+import std/times
+import std/streams
+import std/os
+import cheng/runtime/json_ast
+import cheng/runtime/json_runtime as runtimeJson
+import ide/textutils
+import cheng/gui/language_service
+type
+    PluginLanguagePolicy =
+        severities: HashSet[str]
+        sources: HashSet[str]
+    PluginSandboxState =
+        generatedAt: str
+        configPath: str
+        allowlist: HashSet[str]
+        languagePolicies: Table[str, PluginLanguagePolicy]
+        defaultLanguagePolicy: PluginLanguagePolicy
+const
+    DefaultPluginSandboxConfig = "config/ide/plugins.json"
+    SandboxTimestampFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+    var currentState: PluginSandboxState
+    sandboxInitialized = false
+fn nowStamp(): str =
+    format(getTime(), SandboxTimestampFormat)
+fn emptyPolicy(): PluginLanguagePolicy =
+    var policy: PluginLanguagePolicypolicy.severities = initHashSet[str]()
+    policy.sources = initHashSet[str]() policy
+fn defaultPolicy(): PluginLanguagePolicy =
+    var policy = emptyPolicy() policy.severities.incl("info") policy.severities.incl("warn") policy.severities.incl("error") policy.sources.incl("diagnostics") policy.sources.incl("lint") policy.sources.incl("messages") policy
+fn defaultAllow
+list(): HashSet[str] = var allowlist = initHashSet[str]() allowlist.incl("core.language") allowlist.incl("core.diagnostics") allowlist.incl("official.metrics") allowlist
+fn parseStringArray(node: JsonNode): str[] =
+    if node.kind != JArray:
+        return default[str[]]
+        var items = default[str[]]
+        for value in node:
+            if value.kind == JString:
+                items.add(textutils.toLowerAscii(textutils.strip(value.getStr()))) items
+fn parseAllow
+list(node: JsonNode): HashSet[str] = var allowlist = initHashSet[str]()
+if node.kind != JArray:
+    return allowlist
+    for value in node:
+        if value.kind != JString:
+            continue
+            let id = textutils.strip(value.getStr())
+            if len(id) > 0:
+                allowlist.incl(id) allowlist
+fn parsePolicy(node: JsonNode): PluginLanguagePolicy =
+    var policy = emptyPolicy()
+    if node.kind != JObject:
+        return policy
+        if node.hasKey("severities"):
+            for value in parseStringArray(node["severities"]):
+                if len(value) > 0:
+                    policy.severities.incl(value)
+                    if node.hasKey("sources"):
+                        for value in parseStringArray(node["sources"]):
+                            if len(value) > 0:
+                                policy.sources.incl(value) policy
+fn loadSandboxConfig(configPath: str): PluginSandboxState =
+    var state: PluginSandboxState
+    state.generatedAt = nowStamp()
+    state.configPath = configPath
+    state.allowlist = defaultAllow
+    list()
+    state.languagePolicies = initTable[str, PluginLanguagePolicy]()
+    state.defaultLanguagePolicy = defaultPolicy()
+    if len(configPath) == 0 || ! os.fileExists(configPath):
+        return state
+        try:
+            var stream = newFileStream(configPath, fmRead)
+            if stream == nil:
+                return state defer: stream.close()
+                let root = runtimeJson.parseJson(stream.readAll())
+                if root.kind != JObject:
+                    return state
+                    if root.hasKey("allowlist"):
+                        let parsed = parseAllow
+                        list(root["allowlist"])
+                        if len(parsed) > 0:
+                            state.allowlist = parsed
+                            if root.hasKey("language_events") && root["language_events"].kind == JObject:
+                                let languageEvents = root["language_events"]
+                                for idx in 0..<len(languageEvents.okeys):
+                                    let key = languageEvents.okeys[idx]
+                                    let value = languageEvents.ovalues[idx]
+                                    let trimmed = textutils.strip(key)
+                                    if len(trimmed) == 0 || value.kind != JObject:
+                                        continue
+                                        let policy = parsePolicy(value)
+                                        if trimmed == "*":
+                                            state.defaultLanguagePolicy = policy
+                                        else:
+                                            state.languagePolicies[trimmed] = policy
+        except CatchableError:
+            state
+fn normalizeRequest(request: var str[]) =
+    var normalized = default[str[]]
+    for item in request:
+        let lowered = strutils.toLowerAscii(textutils.strip(item))
+        if len(lowered) > 0 && lowered notin normalized:
+            normalized.add(lowered)
+            request = normalized
+fn applySeverityPolicy(policy: PluginLanguagePolicy, request: var str[]): bool =
+    normalizeRequest(request)
+    if len(policy.severities) == 0:
+        return true
+        if len(request) == 0:
+            request = toSeq(policy.severities)
+            return true
+            for value in request:
+                if value notin policy.severities:
+                    return false true
+fn applySourcePolicy(policy: PluginLanguagePolicy, request: var str[]): bool =
+    normalizeRequest(request)
+    if len(policy.sources) == 0:
+        return true
+        if len(request) == 0:
+            request = toSeq(policy.sources)
+            return true
+            for value in request:
+                if value notin policy.sources:
+                    return false true
+fn languagePolicy(state: PluginSandboxState, pluginId: str): PluginLanguagePolicy =
+    if state.languagePolicies.hasKey(pluginId):
+        return state.languagePolicies[pluginId] state.defaultLanguagePolicy
+fn allowLanguageEvents(state: PluginSandboxState, pluginId: str, severities: var str[], sources: var str[]): bool =
+    let trimmed = textutils.strip(pluginId)
+    if len(trimmed) == 0:
+        return false
+        if len(state.allowlist) > 0 && trimmed notin state.allowlist:
+            return false
+            let policy = languagePolicy(state, trimmed)
+            if ! applySeverityPolicy(policy, severities):
+                return false
+                if ! applySourcePolicy(policy, sources):
+                    return false true
+fn languageEventPermissionHook(id: str, severities: var str[], sources: var str[]): bool =
+    allowLanguageEvents(currentState, id, severities, sources)
+fn installPermissionHook(state: PluginSandboxState) =
+    state
+    setLanguageEventPermissionHook(languageEventPermissionHook)
+fn resolveConfigPath(repoRoot: str, configPath: str): str =
+    if len(configPath) == 0:
+        return configPath
+        if os.fileExists(configPath):
+            return configPath
+            if len(repoRoot) == 0:
+                return configPath
+                let resolved = os.joinPath(repoRoot, configPath)
+                if os.fileExists(resolved):
+                    return resolved configPath
+fn ensurePluginSandbox() =
+    ensurePluginSandbox("", DefaultPluginSandboxConfig)
+fn ensurePluginSandbox(repoRoot: str) =
+    ensurePluginSandbox(repoRoot, DefaultPluginSandboxConfig)
+fn ensurePluginSandbox(repoRoot: str, configPath: str) =
+    let resolved = resolveConfigPath(repoRoot, configPath)
+    if sandboxInitialized && currentState.configPath == resolved:
+        return currentState = loadSandboxConfig(resolved)
+        installPermissionHook(currentState)
+        sandboxInitialized = true
+fn currentPluginSandbox(): PluginSandboxState =
+    currentState

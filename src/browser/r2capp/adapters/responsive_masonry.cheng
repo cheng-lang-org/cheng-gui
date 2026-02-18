@@ -1,0 +1,7 @@
+import cheng/gui/browser/r2capp/react_compat
+
+fn adapterId(): str =
+    return "react-responsive-masonry"
+
+fn masonry(children: react_compat.ReactNode[]): react_compat.ReactNode =
+    return react_compat.createElement("div", "{\"data-r2c\":\"masonry\"}", children)

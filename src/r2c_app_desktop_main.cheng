@@ -1,0 +1,739 @@
+import std/os
+import std/strings
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+import cheng/gui/browser/r2capp/runtime_generic as r2cRuntime
+import cheng/gui/platform/types_v1
+import cheng/gui/platform/native_sys_impl as nativePlat
+import cheng/gui/render/backend_compat
+import cheng/gui/render/drawlist_ir as drawir
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn boolText(value: bool): str =
+    if value:
+        return "true"
+    return "false"
+
+fn resolveR2cManifestPath(): str =
+    let raw = os.getEnv("CHENG_R2CAPP_MANIFEST")
+    if safeLen(raw) > int32(0):
+        return raw
+    return "r2capp/r2capp_manifest.json"
+
+fn i32Text(value: int32): str =
+    return strings.intToStr(int(value))
+
+fn hexDigit(value: int32): char =
+    if value >= int32(0) && value <= int32(9):
+        return char(int32('0') + value)
+    return char(int32('a') + (value - int32(10)))
+
+fn u64ToHex(value: uint64): str =
+    var out: str = ""
+    var remain: uint64 = value
+    var idx: int32 = int32(0)
+    while idx < int32(16):
+        let digit = int32(remain % uint64(16))
+        out = charToStr(hexDigit(digit)) + out
+        remain = remain / uint64(16)
+        idx = idx + int32(1)
+    return out
+
+fn ownStr(text: str): str =
+    if safeLen(text) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        out = out + charToStr(text[idx])
+        idx = idx + int32(1)
+    return out
+
+fn parseInt32(text: str, fallback: int32): int32 =
+    if safeLen(text) <= int32(0):
+        return fallback
+    var idx: int32 = int32(0)
+    var sign: int32 = int32(1)
+    if cEq(text[idx], '-'):
+        sign = int32(-1)
+        idx = idx + int32(1)
+    var value: int32 = int32(0)
+    var saw = false
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if int32(ch) >= int32('0') && int32(ch) <= int32('9'):
+            value = value * int32(10) + int32(int32(ch) - int32('0'))
+            saw = true
+            idx = idx + int32(1)
+        else:
+            break
+    if ! saw:
+        return fallback
+    return value * sign
+
+fn shouldRunRunnerMode(): bool =
+    let raw0 = os.getEnv("CHENG_R2C_RUNNER_MODE")
+    let raw = trimLine(raw0)
+    if safeLen(raw) <= int32(0):
+        return false
+    if cEq(raw[0], '1'):
+        return true
+    if cEq(raw[0], '0'):
+        return false
+    if raw == "true" || raw == "TRUE" || raw == "yes" || raw == "YES" || raw == "on" || raw == "ON":
+        return true
+    if raw == "false" || raw == "FALSE" || raw == "no" || raw == "NO" || raw == "off" || raw == "OFF":
+        return false
+    # Any non-empty marker enables runner mode in strict workflows.
+    return true
+
+fn r2cRunnerBoolText(value: bool): str =
+    if value:
+        return "true"
+    return "false"
+
+fn r2cRunnerCleanup(page: web.BrowserPage, ctx: web.BrowserContext, engine: web.BrowserEngine) =
+    if page != nil:
+        web.destroyPage(page)
+    if ctx != nil:
+        web.destroyContext(ctx)
+    if engine != nil:
+        web.shutdownBrowserEngine(engine)
+
+fn r2cRunnerMain(): int32 =
+    var url = os.getEnv("CHENG_R2C_APP_URL")
+    if safeLen(url) <= int32(0):
+        url = "about:blank"
+
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        return int32(10)
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        r2cRunnerCleanup(nil, nil, engine)
+        return int32(11)
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    if page == nil:
+        r2cRunnerCleanup(nil, ctx, engine)
+        return int32(12)
+
+    if ! web.navigate(page, url):
+        r2cRunnerCleanup(page, ctx, engine)
+        return int32(13)
+    if ! r2cRuntime.mountCompiledApp(page, resolveR2cManifestPath()):
+        r2cRunnerCleanup(page, ctx, engine)
+        return int32(14)
+
+    let oneEvent = os.getEnv("CHENG_R2C_APP_EVENT")
+    if safeLen(oneEvent) > int32(0):
+        let target = os.getEnv("CHENG_R2C_APP_TARGET")
+        let payload = os.getEnv("CHENG_R2C_APP_PAYLOAD")
+        if ! web.dispatchDomEvent(page, oneEvent, target, payload):
+            r2cRunnerCleanup(page, ctx, engine)
+            return int32(15)
+
+    let eventScript = os.getEnv("CHENG_R2C_APP_EVENT_SCRIPT")
+    if safeLen(eventScript) > int32(0):
+        if ! dispatchEventScript(page, eventScript):
+            r2cRunnerCleanup(page, ctx, engine)
+            return int32(16)
+
+    let snapshot = web.captureSnapshot(page)
+    let snapshotOut = os.getEnv("CHENG_R2C_APP_SNAPSHOT_OUT")
+    if safeLen(snapshotOut) > int32(0):
+        os.writeFile(snapshotOut, snapshot + "\n")
+
+    let stateOut = os.getEnv("CHENG_R2C_APP_STATE_OUT")
+    if safeLen(stateOut) > int32(0):
+        let commandCount = int32(0)
+        let compiledCount = int32(0)
+        var stateText: str = ""
+        stateText = stateText + "title=" + "" + "\n"
+        stateText = stateText + "url=" + "" + "\n"
+        stateText = stateText + "snapshot=" + snapshot + "\n"
+        stateText = stateText + "draw_commands=" + i32Text(commandCount) + "\n"
+        stateText = stateText + "mounted=true\n"
+        stateText = stateText + "profile=" + os.getEnv("CHENG_R2C_PROFILE") + "\n"
+        stateText = stateText + "module_count=" + i32Text(compiledCount) + "\n"
+        stateText = stateText + "event_applied=" + r2cRunnerBoolText(safeLen(oneEvent) > int32(0) || safeLen(eventScript) > int32(0)) + "\n"
+        os.writeFile(stateOut, stateText)
+
+    r2cRunnerCleanup(page, ctx, engine)
+    return int32(0)
+
+fn envBool(name: str, fallback: bool): bool =
+    let raw = os.getEnv(name)
+    if safeLen(raw) <= int32(0):
+        return fallback
+    if raw == "1" || raw == "true" || raw == "TRUE" || raw == "yes" || raw == "YES" || raw == "on" || raw == "ON":
+        return true
+    if raw == "0" || raw == "false" || raw == "FALSE" || raw == "no" || raw == "NO" || raw == "off" || raw == "OFF":
+        return false
+    return fallback
+
+fn dispatchOne(page: web.BrowserPage, spec: str): bool =
+    if safeLen(spec) <= int32(0):
+        return true
+    var eventName: str = ""
+    var target: str = ""
+    var payload: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(spec):
+        if cEq(spec[idx], '|'):
+            idx = idx + int32(1)
+            break
+        eventName = eventName + charToStr(spec[idx])
+        idx = idx + int32(1)
+    while idx < safeLen(spec):
+        if cEq(spec[idx], '|'):
+            idx = idx + int32(1)
+            break
+        target = target + charToStr(spec[idx])
+        idx = idx + int32(1)
+    while idx < safeLen(spec):
+        payload = payload + charToStr(spec[idx])
+        idx = idx + int32(1)
+    if safeLen(eventName) <= int32(0):
+        return true
+    if r2cRuntime.dispatchCompiledEvent(page, eventName, target, payload):
+        return true
+    return web.dispatchDomEvent(page, eventName, target, payload)
+
+fn dispatchEventText(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    if safeLen(text) <= int32(0):
+        return true
+    var line: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        if cEq(text[idx], '\n'):
+            if ! dispatchOne(page, line):
+                return false
+            line = ""
+        elif ! cEq(text[idx], '\r'):
+            line = line + charToStr(text[idx])
+        idx = idx + int32(1)
+    if safeLen(line) > int32(0):
+        if ! dispatchOne(page, line):
+            return false
+    return true
+
+fn dispatchEventScript(page: web.BrowserPage, scriptPath: str): bool =
+    if page == nil:
+        return false
+    if safeLen(scriptPath) <= int32(0):
+        return true
+    if ! os.fileExists(scriptPath):
+        return false
+    return dispatchEventText(page, os.readFile(scriptPath))
+
+fn isSpace(ch: char): bool =
+    if cEq(ch, ' '):
+        return true
+    if cEq(ch, '\t'):
+        return true
+    if cEq(ch, '\r'):
+        return true
+    if cEq(ch, '\n'):
+        return true
+    return false
+
+fn trimLine(text: str): str =
+    let n = safeLen(text)
+    if n <= int32(0):
+        return ""
+    var left: int32 = int32(0)
+    var right: int32 = n
+    while left < right && isSpace(text[left]):
+        left = left + int32(1)
+    while right > left && isSpace(text[right - int32(1)]):
+        right = right - int32(1)
+    if right <= left:
+        return ""
+    return text[left..<right]
+
+fn hasPrefix(text: str, prefix: str): bool =
+    let textLen = safeLen(text)
+    let prefLen = safeLen(prefix)
+    if prefLen <= int32(0):
+        return true
+    if textLen < prefLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx < prefLen:
+        if ! cEq(text[idx], prefix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn ensureDir(path: str): bool =
+    if safeLen(path) <= int32(0):
+        return false
+    if os.dirExists(path):
+        return true
+    os.createDir(path)
+    return os.dirExists(path)
+
+fn joinPath(root: str, leaf: str): str =
+    if safeLen(root) <= int32(0):
+        return leaf
+    if safeLen(leaf) <= int32(0):
+        return root
+    let n = safeLen(root)
+    if cEq(root[n - int32(1)], '/'):
+        return root + leaf
+    return root + "/" + leaf
+
+fn maxI32(a, b: int32): int32 =
+    if a >= b:
+        return a
+    return b
+
+fn tracePhase(phase: str) =
+    let traceFile = os.getEnv("CHENG_R2C_TRACE_FILE")
+    if safeLen(traceFile) <= int32(0):
+        return
+    os.writeFile(traceFile, phase + "\n")
+
+fn kindName(kind: drawir.DrawCommandKind): str =
+    if kind == drawir.dcRect:
+        return "rect"
+    elif kind == drawir.dcLine:
+        return "line"
+    elif kind == drawir.dcText:
+        return "text"
+    elif kind == drawir.dcImage:
+        return "image"
+    elif kind == drawir.dcWebSurface:
+        return "web"
+    elif kind == drawir.dcPdfPage:
+        return "pdf"
+    elif kind == drawir.dcMediaFrame:
+        return "media"
+    return "unknown"
+
+fn drawListSummary(page: web.BrowserPage): str =
+    if page == nil || web.pagePaintState(page) == nil:
+        return ""
+    var out: str = ""
+    let list = web.pagePaintState(page)
+    for idx in 0..<len(list.commands):
+        let cmd = list.commands[idx]
+        let rx = cmd.rectX
+        let ry = cmd.rectY
+        let rw = cmd.rectW
+        let rh = cmd.rectH
+        let x0 = cmd.p0x
+        let y0 = cmd.p0y
+        let x1 = cmd.p1x
+        let y1 = cmd.p1y
+        let color = int32(cmd.color)
+        out = out + kindName(cmd.kind)
+        out = out + "|"
+        out = out + i32Text(rx) + "," + i32Text(ry) + "," + i32Text(rw) + "," + i32Text(rh)
+        out = out + "|"
+        out = out + i32Text(x0) + "," + i32Text(y0) + "," + i32Text(x1) + "," + i32Text(y1)
+        out = out + "|"
+        out = out + i32Text(color)
+        if safeLen(cmd.text) > int32(0):
+            var textShort = cmd.text
+            if safeLen(textShort) > int32(48):
+                textShort = textShort[0..<48]
+            out = out + "|" + textShort
+        out = out + "\n"
+    return out
+
+fn processWindowEvents(page: web.BrowserPage, scriptedInput: bool, rounds: int32): bool =
+    if scriptedInput:
+        return true
+    var loop = int32(0)
+    let pollTimeoutMs = parseInt32(os.getEnv("CHENG_R2C_EVENT_POLL_TIMEOUT_MS"), int32(0))
+    while loop < rounds:
+        let events = nativePlat.pumpEvents(pollTimeoutMs)
+        for idx in 0..<len(events):
+            let ev = events[idx]
+            if ev.kind == geClose:
+                return false
+            elif ev.kind == geResized:
+                r2cRuntime.notifyViewport(page, int32(ev.x), int32(ev.y))
+            elif ev.kind == gePointerDown:
+                if scriptedInput:
+                    continue
+                let target = r2cRuntime.hitTestTarget(page, ev.x, ev.y)
+                if safeLen(target) > int32(0):
+                    web.dispatchDomEvent(page, "click", target, "")
+            elif ev.kind == gePointerMove:
+                if scriptedInput:
+                    continue
+                let target = r2cRuntime.hitTestTarget(page, ev.x, ev.y)
+                if safeLen(target) > int32(0):
+                    let payload = "x=" + i32Text(int32(ev.x)) + ";y=" + i32Text(int32(ev.y))
+                    web.dispatchDomEvent(page, "pointer-move", target, payload)
+        loop = loop + int32(1)
+    return true
+
+fn renderFrame(surface: SurfaceHandle, page: web.BrowserPage) =
+    nativePlat.beginFrame(surface)
+    backend_compat.renderDrawList(surface, web.pagePaintState(page))
+    nativePlat.endFrame(surface)
+
+fn writeCaptureOutputs(page: web.BrowserPage,
+        surface: SurfaceHandle,
+        eventApplied: bool,
+        snapshotOut, drawlistOut, stateOut, routeStateOut, frameHashOut, frameRgbaOut: str) =
+    let snapshot = web.captureSnapshot(page)
+    if safeLen(snapshotOut) > int32(0):
+        os.writeFile(snapshotOut, snapshot + "\n")
+    if safeLen(drawlistOut) > int32(0):
+        os.writeFile(drawlistOut, drawListSummary(page))
+    let frameHash = nativePlat.surfaceFrameHash(surface)
+    if safeLen(frameHashOut) > int32(0):
+        os.writeFile(frameHashOut, u64ToHex(frameHash) + "\n")
+    if safeLen(frameRgbaOut) > int32(0):
+        nativePlat.surfaceReadbackRgba(surface, frameRgbaOut)
+    if safeLen(routeStateOut) > int32(0):
+        os.writeFile(routeStateOut, web.pageR2cCurrentTab(page) + "\n")
+    if safeLen(stateOut) > int32(0):
+        let commandCount = int32(0)
+        let compiledCount = int32(0)
+        var stateText: str = ""
+        stateText = stateText + "title=" + "" + "\n"
+        stateText = stateText + "url=" + "" + "\n"
+        stateText = stateText + "snapshot=" + snapshot + "\n"
+        stateText = stateText + "draw_commands=" + i32Text(commandCount) + "\n"
+        stateText = stateText + "mounted=true\n"
+        stateText = stateText + "profile=" + os.getEnv("CHENG_R2C_PROFILE") + "\n"
+        stateText = stateText + "module_count=" + i32Text(compiledCount) + "\n"
+        stateText = stateText + "event_applied=" + boolText(eventApplied) + "\n"
+        stateText = stateText + "route_state=" + web.pageR2cCurrentTab(page) + "\n"
+        stateText = stateText + "frame_hash=" + u64ToHex(frameHash) + "\n"
+        os.writeFile(stateOut, stateText)
+
+fn markPhase(path: str, text: str) =
+    if safeLen(path) <= int32(0):
+        return
+    if safeLen(text) <= int32(0):
+        return
+    os.writeFile(path, text + "\n")
+
+fn captureStateBundle(page: web.BrowserPage, surface: SurfaceHandle, outDir, stateName: str, eventApplied: bool) =
+    var base = ownStr(joinPath(outDir, stateName))
+    if safeLen(base) <= int32(0):
+        base = ownStr(stateName)
+    if safeLen(base) <= int32(0):
+        base = "state"
+    let snapshotPath = ownStr(base + ".snapshot.txt")
+    let drawListPath = ownStr(base + ".drawlist.txt")
+    let statePath = ownStr(base + ".state.txt")
+    let routePath = ownStr(base + ".route.txt")
+    let frameHashPath = ownStr(base + ".framehash.txt")
+    let rgbaPath = ownStr(base + ".rgba.out")
+    writeCaptureOutputs(page, surface, eventApplied,
+        snapshotPath,
+        drawListPath,
+        statePath,
+        routePath,
+        frameHashPath,
+        rgbaPath)
+
+fn resetBatchPage(page: web.BrowserPage): bool =
+    if page == nil:
+        return false
+    if ! web.navigate(page, "about:blank"):
+        return false
+    return r2cRuntime.mountCompiledApp(page, resolveR2cManifestPath())
+
+fn runBatchState(page: web.BrowserPage, surface: SurfaceHandle, outDir, stateName, eventBlock: str): bool =
+    let nameRaw = trimLine(stateName)
+    let name = ownStr(nameRaw)
+    let progressPath = joinPath(outDir, "_batch_progress.txt")
+    markPhase(progressPath, "start:" + name)
+    if safeLen(name) <= int32(0):
+        return true
+    os.writeFile(progressPath, "state=" + name + "\nphase=reset\n")
+    if ! resetBatchPage(page):
+        markPhase(progressPath, "end:" + name + " fail=reset")
+        os.writeFile(progressPath, "state=" + name + "\nphase=reset-failed\n")
+        return false
+    os.writeFile(progressPath, "state=" + name + "\nphase=dispatch\n")
+    if ! dispatchEventText(page, eventBlock):
+        markPhase(progressPath, "end:" + name + " fail=dispatch")
+        os.writeFile(progressPath, "state=" + name + "\nphase=dispatch-failed\n")
+        return false
+    let pumpRounds = parseInt32(os.getEnv("CHENG_R2C_BATCH_PUMP_ROUNDS"), int32(0))
+    if pumpRounds > int32(0):
+        os.writeFile(progressPath, "state=" + name + "\nphase=pump\n")
+        if ! processWindowEvents(page, true, pumpRounds):
+            markPhase(progressPath, "end:" + name + " fail=pump")
+            os.writeFile(progressPath, "state=" + name + "\nphase=pump-failed\n")
+            return false
+    os.writeFile(progressPath, "state=" + name + "\nphase=render\n")
+    renderFrame(surface, page)
+    markPhase(progressPath, "end:" + name + " ok")
+    os.writeFile(progressPath, "state=" + name + "\nphase=capture\n")
+    captureStateBundle(page, surface, outDir, name, safeLen(eventBlock) > int32(0))
+    os.writeFile(progressPath, "state=" + name + "\nphase=done\n")
+    return true
+
+fn runBatchMatrix(page: web.BrowserPage, surface: SurfaceHandle, matrixPath, outDir: str): bool =
+    if page == nil || surface == nil:
+        return false
+    if ! os.fileExists(matrixPath):
+        return false
+    if ! ensureDir(outDir):
+        return false
+    let text = os.readFile(matrixPath)
+    var currentState: str = ""
+    var currentEvents: str = ""
+    var line: str = ""
+    var sawState = false
+    var hasPendingState = false
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cEq(ch, '\n'):
+            let clean = trimLine(line)
+            if safeLen(clean) > int32(0):
+                if hasPrefix(clean, "@state "):
+                    if hasPendingState && ! runBatchState(page, surface, outDir, currentState, currentEvents):
+                        return false
+                    currentState = ownStr(trimLine(clean[int32(7)..<len(clean)]))
+                    currentEvents = ""
+                    sawState = safeLen(currentState) > int32(0)
+                    hasPendingState = sawState
+                elif ! hasPrefix(clean, "#"):
+                    if safeLen(currentEvents) > int32(0):
+                        currentEvents = currentEvents + "\n"
+                    currentEvents = currentEvents + clean
+            line = ""
+        elif ! cEq(ch, '\r'):
+            line = line + charToStr(ch)
+        idx = idx + int32(1)
+    if safeLen(line) > int32(0):
+        let clean = trimLine(line)
+        if safeLen(clean) > int32(0):
+            if hasPrefix(clean, "@state "):
+                if hasPendingState && ! runBatchState(page, surface, outDir, currentState, currentEvents):
+                    return false
+                currentState = ownStr(trimLine(clean[int32(7)..<len(clean)]))
+                currentEvents = ""
+                sawState = safeLen(currentState) > int32(0)
+                hasPendingState = sawState
+            elif ! hasPrefix(clean, "#"):
+                if safeLen(currentEvents) > int32(0):
+                    currentEvents = currentEvents + "\n"
+                currentEvents = currentEvents + clean
+    if hasPendingState && ! runBatchState(page, surface, outDir, currentState, currentEvents):
+        return false
+    return sawState
+
+fn parseBatchStateNames(matrixPath: str): str[] =
+    var states: str[] = []
+    if safeLen(matrixPath) <= int32(0):
+        return states
+    if ! os.fileExists(matrixPath):
+        return states
+    let text = os.readFile(matrixPath)
+    var line: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cEq(ch, '\n'):
+            let clean = trimLine(line)
+            if safeLen(clean) > int32(0) && hasPrefix(clean, "@state "):
+                let name = trimLine(clean[int32(7)..<len(clean)])
+                if safeLen(name) > int32(0):
+                    states.add(ownStr(name))
+            line = ""
+        elif ! cEq(ch, '\r'):
+            line = line + charToStr(ch)
+        idx = idx + int32(1)
+    if safeLen(line) > int32(0):
+        let clean = trimLine(line)
+        if safeLen(clean) > int32(0) && hasPrefix(clean, "@state "):
+            let name = trimLine(clean[int32(7)..<len(clean)])
+            if safeLen(name) > int32(0):
+                states.add(ownStr(name))
+    return states
+
+fn verifyBatchOutputs(outDir: str, states: str[]): bool =
+    if safeLen(outDir) <= int32(0):
+        return false
+    for idx in 0..<len(states):
+        let name = states[idx]
+        let base = joinPath(outDir, name)
+        if ! os.fileExists(base + ".snapshot.txt"):
+            return false
+        if ! os.fileExists(base + ".drawlist.txt"):
+            return false
+        if ! os.fileExists(base + ".state.txt"):
+            return false
+        if ! os.fileExists(base + ".route.txt"):
+            return false
+        if ! os.fileExists(base + ".framehash.txt"):
+            return false
+        if ! os.fileExists(base + ".rgba.out"):
+            return false
+    return true
+
+fn cleanup(page: web.BrowserPage, ctx: web.BrowserContext, engine: web.BrowserEngine, surface: SurfaceHandle, window: WindowHandle) =
+    if surface != nil:
+        nativePlat.destroyRenderSurface(surface)
+    if window != nil:
+        nativePlat.destroyWindow(window)
+    if page != nil:
+        web.destroyPage(page)
+    if ctx != nil:
+        web.destroyContext(ctx)
+    if engine != nil:
+        web.shutdownBrowserEngine(engine)
+    nativePlat.shutdownPlat()
+
+fn main(): int32 =
+    tracePhase("main-enter")
+    if shouldRunRunnerMode():
+        tracePhase("main-runner-mode")
+        return r2cRunnerMain()
+
+    let strictRuntime = envBool("CHENG_R2C_STRICT_RUNTIME", true)
+    var url = os.getEnv("CHENG_R2C_APP_URL")
+    if safeLen(url) <= int32(0):
+        url = "about:blank"
+
+    tracePhase("native-init")
+    nativePlat.initializePlat()
+
+    var windowConfig: GuiWindowConfig
+    windowConfig.title = os.getEnv("CHENG_R2C_APP_TITLE")
+    if safeLen(windowConfig.title) <= int32(0):
+        windowConfig.title = "R2C Desktop"
+    windowConfig.initialRect = makeRect(0.0, 0.0, 1280.0, 800.0)
+    windowConfig.resizable = ! strictRuntime
+    windowConfig.highDpi = true
+
+    tracePhase("native-create-window")
+    let window = nativePlat.createWindow(windowConfig)
+    if window == nil:
+        tracePhase("fail-create-window")
+        cleanup(nil, nil, nil, nil, nil)
+        return int32(20)
+    tracePhase("native-create-surface")
+    let surface = nativePlat.createRenderSurface(window)
+    if surface == nil:
+        tracePhase("fail-create-surface")
+        cleanup(nil, nil, nil, nil, window)
+        return int32(21)
+
+    tracePhase("browser-create-engine")
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        tracePhase("fail-create-engine")
+        cleanup(nil, nil, nil, surface, window)
+        return int32(10)
+    tracePhase("browser-create-context")
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        tracePhase("fail-create-context")
+        cleanup(nil, nil, engine, surface, window)
+        return int32(11)
+    tracePhase("browser-create-page")
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    if page == nil:
+        tracePhase("fail-create-page")
+        cleanup(nil, ctx, engine, surface, window)
+        return int32(12)
+
+    tracePhase("browser-navigate")
+    if ! web.navigate(page, url):
+        tracePhase("fail-navigate")
+        cleanup(page, ctx, engine, surface, window)
+        return int32(13)
+    tracePhase("r2c-mount")
+    if ! r2cRuntime.mountCompiledApp(page, resolveR2cManifestPath()):
+        tracePhase("fail-mount")
+        cleanup(page, ctx, engine, surface, window)
+        return int32(14)
+    tracePhase("after-mount")
+
+    let batchOutDir = os.getEnv("CHENG_R2C_APP_BATCH_OUT_DIR")
+    var eventScript = os.getEnv("CHENG_R2C_APP_EVENT_SCRIPT")
+    let eventMatrix = os.getEnv("CHENG_R2C_APP_EVENT_MATRIX")
+    if safeLen(eventScript) <= int32(0) && safeLen(eventMatrix) > int32(0) && safeLen(batchOutDir) <= int32(0):
+        eventScript = eventMatrix
+    let scriptedInput = safeLen(eventScript) > int32(0) || (safeLen(eventMatrix) > int32(0) && safeLen(batchOutDir) > int32(0))
+    let snapshotOut = os.getEnv("CHENG_R2C_APP_SNAPSHOT_OUT")
+    let drawlistOut = os.getEnv("CHENG_R2C_APP_DRAWLIST_OUT")
+    let stateOut = os.getEnv("CHENG_R2C_APP_STATE_OUT")
+    let routeStateOut = os.getEnv("CHENG_R2C_APP_ROUTE_STATE_OUT")
+    let frameHashOut = os.getEnv("CHENG_R2C_APP_FRAME_HASH_OUT")
+    let frameRgbaOut = os.getEnv("CHENG_R2C_APP_FRAME_RGBA_OUT")
+    if safeLen(batchOutDir) > int32(0):
+        tracePhase("batch-run")
+        if strictRuntime && ! os.fileExists(eventMatrix):
+            cleanup(page, ctx, engine, surface, window)
+            return int32(18)
+        if ! runBatchMatrix(page, surface, eventMatrix, batchOutDir):
+            cleanup(page, ctx, engine, surface, window)
+            return int32(17)
+        if strictRuntime && ! os.fileExists(joinPath(batchOutDir, "lang_select.snapshot.txt")):
+            cleanup(page, ctx, engine, surface, window)
+            return int32(19)
+        if strictRuntime && ! os.fileExists(joinPath(batchOutDir, "update_center_main.snapshot.txt")):
+            cleanup(page, ctx, engine, surface, window)
+            return int32(19)
+        writeCaptureOutputs(page, surface, true, snapshotOut, drawlistOut, stateOut, routeStateOut, frameHashOut, frameRgbaOut)
+        cleanup(page, ctx, engine, surface, window)
+        return int32(0)
+    if ! dispatchEventScript(page, eventScript):
+        tracePhase("fail-dispatch-script")
+        cleanup(page, ctx, engine, surface, window)
+        return int32(16)
+    tracePhase("after-dispatch-script")
+
+    if strictRuntime && scriptedInput:
+        tracePhase("strict-scripted-single-frame")
+        # Strict scripted gates assert snapshot/drawlist/state; skip blocking present path.
+        writeCaptureOutputs(page, surface, true, snapshotOut, drawlistOut, stateOut, routeStateOut, frameHashOut, frameRgbaOut)
+        cleanup(page, ctx, engine, surface, window)
+        return int32(0)
+
+    let autoCloseMs = parseInt32(os.getEnv("CHENG_R2C_DESKTOP_AUTOCLOSE_MS"), int32(0))
+    let autoCloseFramesEnv = parseInt32(os.getEnv("CHENG_R2C_DESKTOP_AUTOCLOSE_FRAMES"), int32(0))
+    let startMs = int64(epochTime() * 1000.0)
+    var autoCloseFrameBudget = autoCloseFramesEnv
+    if autoCloseFrameBudget <= int32(0) && autoCloseMs > int32(0):
+        autoCloseFrameBudget = maxI32(int32(1), autoCloseMs / int32(8))
+    var frameCount = int32(0)
+
+    var running = true
+    tracePhase("loop-enter")
+    while running:
+        if ! processWindowEvents(page, scriptedInput, int32(1)):
+            running = false
+            break
+        renderFrame(surface, page)
+        frameCount = frameCount + int32(1)
+
+        if autoCloseMs > int32(0):
+            let elapsed = int32(int64(epochTime() * 1000.0) - startMs)
+            if elapsed >= autoCloseMs:
+                running = false
+            elif autoCloseFrameBudget > int32(0) && frameCount >= autoCloseFrameBudget:
+                running = false
+        elif autoCloseFrameBudget > int32(0) && frameCount >= autoCloseFrameBudget:
+            running = false
+    writeCaptureOutputs(page, surface, safeLen(eventScript) > int32(0), snapshotOut, drawlistOut, stateOut, routeStateOut, frameHashOut, frameRgbaOut)
+
+    tracePhase("main-exit")
+    cleanup(page, ctx, engine, surface, window)
+    return int32(0)
+
+main()

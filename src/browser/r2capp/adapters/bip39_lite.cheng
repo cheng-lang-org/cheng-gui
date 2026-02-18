@@ -1,0 +1,15 @@
+fn adapterId(): str =
+    return "bip39"
+
+fn generateMnemonic(strength: int32): str =
+    strength
+    return "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+fn validateMnemonic(phrase: str): bool =
+    return len(phrase) > 0
+
+fn mnemonicToSeedHex(phrase: str, passphrase: str): str =
+    phrase
+    passphrase
+    return "0x"
+

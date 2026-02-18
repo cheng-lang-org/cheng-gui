@@ -1,0 +1,293 @@
+const defaultGuiWidth: int32 = 960
+const defaultGuiHeight: int32 = 540
+const maxFrames: int32 = 60
+
+type
+    NativeSurfaceInfo =
+        logicalWidth: float64
+        logicalHeight: float64
+        pixelWidth: float64
+        pixelHeight: float64
+        scale: float64
+        colorSpace: cstring
+
+    MobileHostConfig =
+        platform: int32
+        resourceRoot: cstring
+        title: cstring
+        width: int32
+        height: int32
+        highDpi: int32
+
+fn colorPack(r, g, b, a: int32): uint32 =
+    let packed: int32 = ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF)
+    return uint32(packed)
+
+fn fillGradient(pixels: void*, width, height, strideBytes: int32, frame: int32) =
+    if pixels == nil || width <= 0 || height <= 0:
+        return
+    for y in 0..<height:
+        let row: void* = ptr_add(pixels, y * strideBytes)
+        for x in 0..<width:
+            let r: int32 = (x + frame) % 256
+            let g: int32 = (y + frame) % 256
+            let b: int32 = (x + y + frame) % 256
+            let color: uint32 = colorPack(r, g, b, 255)
+            let p: uint32* = uint32*(ptr_add(row, x * 4))
+            *p = color
+
+const mobileColorSpace: cstring = "sRGB"
+
+var mobileHostReady = false
+var mobileWindow: void* = nil
+var mobileSurface: void* = nil
+var mobileWidth: int32 = defaultGuiWidth
+var mobileHeight: int32 = defaultGuiHeight
+var mobileScale: float64 = 1.0
+var mobileLogicalW: float64 = float64(defaultGuiWidth)
+var mobileLogicalH: float64 = float64(defaultGuiHeight)
+var mobileHostCfg: MobileHostConfig
+
+@ importc("cheng_mobile_host_default_resource_root")
+fn cheng_mobile_host_default_resource_root(): cstring
+@ importc("cheng_mobile_host_init")
+fn cheng_mobile_host_init(cfg: MobileHostConfig*): int32
+@ importc("cheng_mobile_host_open_window")
+fn cheng_mobile_host_open_window(cfg: MobileHostConfig*): int32
+@ importc("cheng_mobile_host_present")
+fn cheng_mobile_host_present(pixels: void*, width, height, strideBytes: int32)
+@ importc("cheng_mobile_host_shutdown")
+fn cheng_mobile_host_shutdown(reason: cstring)
+
+# NOTE: Do not define functions under `when ...:` statement branches.
+# Some toolchain builds treat those as block-local definitions and the linker
+# can't find the expected global symbol. Keep the function always defined and
+# use `when` as an expression for the platform constant.
+fn mobileHostPlatform(): int32 =
+    # Desktop smoke never uses the mobile backend; keep this constant to avoid
+    # relying on compile-time `defined(...)` support in the backend pipeline.
+    return 0
+
+fn buildHostConfig(title: str): MobileHostConfig =
+    var cfg: MobileHostConfig
+    cfg.platform = mobileHostPlatform()
+    cfg.resourceRoot = cheng_mobile_host_default_resource_root()
+    cfg.title = cstring(title)
+    cfg.width = defaultGuiWidth
+    cfg.height = defaultGuiHeight
+    cfg.highDpi = 1
+    return cfg
+
+fn ensureHost(title: str) =
+    if mobileHostReady:
+        if len title > 0:
+            mobileHostCfg.title = title
+        return
+    var cfg = buildHostConfig title
+    mobileWidth = cfg.width
+    mobileHeight = cfg.height
+    if cfg.highDpi != 0:
+        mobileScale = 2.0
+    else:
+        mobileScale = 1.0
+    if mobileScale <= 0.0:
+        mobileScale = 1.0
+    mobileLogicalW = float64(mobileWidth) / mobileScale
+    mobileLogicalH = float64(mobileHeight) / mobileScale
+    mobileHostCfg = cfg
+    let cfgPtr: MobileHostConfig* = &mobileHostCfg
+    cheng_mobile_host_init cfgPtr
+    mobileHostReady = true
+
+fn ensureHandles() =
+    if mobileWindow == nil:
+        mobileWindow = alloc 8
+    if mobileSurface == nil:
+        mobileSurface = alloc 8
+
+fn chengGuiMobileInitialize() =
+    ensureHost "Cheng GUI Smoke"
+    ensureHandles()
+
+fn chengGuiMobileShutdown() =
+    if mobileHostReady:
+        let reason = cstring("exit")
+        cheng_mobile_host_shutdown reason
+    if mobileWindow != nil:
+        dealloc mobileWindow
+        mobileWindow = nil
+    if mobileSurface != nil:
+        dealloc mobileSurface
+        mobileSurface = nil
+    mobileHostReady = false
+
+fn chengGuiMobileCreateDefaultWindow(title: str): void* =
+    ensureHost title
+    ensureHandles()
+    let cfgPtr: MobileHostConfig* = &mobileHostCfg
+    let rc = cheng_mobile_host_open_window cfgPtr
+    rc
+    return mobileWindow
+
+fn chengGuiMobileDestroyWindow(handle: void*) =
+    handle
+
+fn chengGuiMobileCreateSurface(windowHandle: void*): void* =
+    windowHandle
+    ensureHandles()
+    return mobileSurface
+
+fn chengGuiMobileDestroySurface(surfaceHandle: void*) =
+    surfaceHandle
+
+fn chengGuiMobileBeginFrame(surfaceHandle: void*): int32 =
+    surfaceHandle
+    return 0
+
+fn chengGuiMobileEndFrame(surfaceHandle: void*): int32 =
+    surfaceHandle
+    return 0
+
+fn chengGuiMobileGetSurfaceInfo(surfaceHandle: void*, outInfo: NativeSurfaceInfo*): int32 =
+    surfaceHandle
+    if outInfo == nil:
+        return -1
+    outInfo.logicalWidth = mobileLogicalW
+    outInfo.logicalHeight = mobileLogicalH
+    outInfo.pixelWidth = float64(mobileWidth)
+    outInfo.pixelHeight = float64(mobileHeight)
+    outInfo.scale = mobileScale
+    outInfo.colorSpace = mobileColorSpace
+    return 0
+
+fn chengGuiMobilePresentPixels(surfaceHandle: void*, pixels: void*, width: int32, height: int32, strideBytes: int32): int32 =
+    surfaceHandle
+    if pixels == nil:
+        return -1
+    cheng_mobile_host_present(pixels, width, height, strideBytes)
+    return 0
+
+fn chengGuiMobilePollEvents(events: void*, maxEvents: int32, timeoutMs: int32): int32 =
+    events
+    maxEvents
+    timeoutMs
+    return 0
+
+@ importc("chengGuiNativeInitialize")
+fn chengGuiNativeInitializeNative()
+@ importc("chengGuiNativeShutdown")
+fn chengGuiNativeShutdownNative()
+@ importc("chengGuiNativeCreateDefaultWindow")
+fn chengGuiNativeCreateDefaultWindowNative(title: str): void*
+@ importc("chengGuiNativeDestroyWindow")
+fn chengGuiNativeDestroyWindowNative(handle: void*)
+@ importc("chengGuiNativeCreateSurface")
+fn chengGuiNativeCreateSurfaceNative(windowHandle: void*): void*
+@ importc("chengGuiNativeDestroySurface")
+fn chengGuiNativeDestroySurfaceNative(surfaceHandle: void*)
+@ importc("chengGuiNativeBeginFrame")
+fn chengGuiNativeBeginFrameNative(surfaceHandle: void*): int32
+@ importc("chengGuiNativeEndFrame")
+fn chengGuiNativeEndFrameNative(surfaceHandle: void*): int32
+@ importc("chengGuiNativeGetSurfaceInfo")
+fn chengGuiNativeGetSurfaceInfoNative(surfaceHandle: void*, outInfo: NativeSurfaceInfo*): int32
+@ importc("chengGuiNativePresentPixels")
+fn chengGuiNativePresentPixelsNative(surfaceHandle: void*, pixels: void*, width: int32, height: int32, strideBytes: int32): int32
+@ importc("chengGuiNativePollEvents")
+fn chengGuiNativePollEventsNative(events: void*, maxEvents: int32, timeoutMs: int32): int32
+
+fn useMobileBackend(): bool =
+    return false
+
+fn guiSmokeNativeInitialize() =
+    if useMobileBackend():
+        chengGuiMobileInitialize()
+    else:
+        chengGuiNativeInitializeNative()
+
+fn guiSmokeNativeShutdown() =
+    if useMobileBackend():
+        chengGuiMobileShutdown()
+    else:
+        chengGuiNativeShutdownNative()
+
+fn guiSmokeNativeCreateDefaultWindow(title: str): void* =
+    if useMobileBackend():
+        return chengGuiMobileCreateDefaultWindow title
+    return chengGuiNativeCreateDefaultWindowNative title
+
+fn guiSmokeNativeDestroyWindow(handle: void*) =
+    if useMobileBackend():
+        chengGuiMobileDestroyWindow handle
+    else:
+        chengGuiNativeDestroyWindowNative handle
+
+fn guiSmokeNativeCreateSurface(windowHandle: void*): void* =
+    if useMobileBackend():
+        return chengGuiMobileCreateSurface windowHandle
+    return chengGuiNativeCreateSurfaceNative windowHandle
+
+fn guiSmokeNativeDestroySurface(surfaceHandle: void*) =
+    if useMobileBackend():
+        chengGuiMobileDestroySurface surfaceHandle
+    else:
+        chengGuiNativeDestroySurfaceNative surfaceHandle
+
+fn guiSmokeNativeBeginFrame(surfaceHandle: void*): int32 =
+    if useMobileBackend():
+        return chengGuiMobileBeginFrame surfaceHandle
+    return chengGuiNativeBeginFrameNative surfaceHandle
+
+fn guiSmokeNativeEndFrame(surfaceHandle: void*): int32 =
+    if useMobileBackend():
+        return chengGuiMobileEndFrame surfaceHandle
+    return chengGuiNativeEndFrameNative surfaceHandle
+
+fn guiSmokeNativeGetSurfaceInfo(surfaceHandle: void*, outInfo: NativeSurfaceInfo*): int32 =
+    if useMobileBackend():
+        return chengGuiMobileGetSurfaceInfo(surfaceHandle, outInfo)
+    return chengGuiNativeGetSurfaceInfoNative(surfaceHandle, outInfo)
+
+fn guiSmokeNativePresentPixels(surfaceHandle: void*, pixels: void*, width: int32, height: int32, strideBytes: int32): int32 =
+    if useMobileBackend():
+        return chengGuiMobilePresentPixels(surfaceHandle, pixels, width, height, strideBytes)
+    return chengGuiNativePresentPixelsNative(surfaceHandle, pixels, width, height, strideBytes)
+
+fn guiSmokeNativePollEvents(events: void*, maxEvents: int32, timeoutMs: int32): int32 =
+    if useMobileBackend():
+        return chengGuiMobilePollEvents(events, maxEvents, timeoutMs)
+    return chengGuiNativePollEventsNative(events, maxEvents, timeoutMs)
+
+fn main(): int32 =
+    guiSmokeNativeInitialize()
+    let window = guiSmokeNativeCreateDefaultWindow "Cheng GUI Smoke"
+    if window == nil:
+        guiSmokeNativeShutdown()
+        return 1
+    let surface = guiSmokeNativeCreateSurface window
+    if surface == nil:
+        guiSmokeNativeDestroyWindow window
+        guiSmokeNativeShutdown()
+        return 1
+    var info: NativeSurfaceInfo
+    guiSmokeNativeGetSurfaceInfo(surface, &info)
+    var width: int32 = int32(info.pixelWidth)
+    var height: int32 = int32(info.pixelHeight)
+    if width <= 0:
+        width = defaultGuiWidth
+    if height <= 0:
+        height = defaultGuiHeight
+    let strideBytes: int32 = width * 4
+    let bufSize: int32 = strideBytes * height
+    let pixels: void* = alloc bufSize
+    for frame in 0..<maxFrames:
+        fillGradient(pixels, width, height, strideBytes, frame)
+        guiSmokeNativeBeginFrame surface
+        guiSmokeNativePresentPixels(surface, pixels, width, height, strideBytes)
+        guiSmokeNativeEndFrame surface
+        guiSmokeNativePollEvents(nil, 0, 0)
+    dealloc pixels
+    guiSmokeNativeDestroySurface surface
+    guiSmokeNativeDestroyWindow window
+    guiSmokeNativeShutdown()
+    return 0

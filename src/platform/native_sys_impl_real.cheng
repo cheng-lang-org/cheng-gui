@@ -1,0 +1,239 @@
+import cheng/gui/platform/types_v1
+
+when defined(macosx) || defined(macos):
+    type
+        MacCInt = int32
+        MacCUInt = uint32
+        MacCDouble = float64
+
+        MacEvent =
+            kind: MacCInt
+            x: MacCDouble
+            y: MacCDouble
+            width: MacCDouble
+            height: MacCDouble
+            deltaX: MacCDouble
+            deltaY: MacCDouble
+            window: void*
+            button: MacCInt
+            modifiers: MacCUInt
+            keyCode: MacCUInt
+            repeatFlag: bool
+            text: char[256]
+
+        MacSurfaceInfo =
+            logicalWidth: MacCDouble
+            logicalHeight: MacCDouble
+            pixelWidth: MacCDouble
+            pixelHeight: MacCDouble
+            scale: MacCDouble
+            colorSpace: cstring
+
+    const
+        macEventClose = 1
+        macEventResized = 2
+        macEventMoved = 3
+        macEventKeyDown = 4
+        macEventKeyUp = 5
+        macEventTextInput = 6
+        macEventPointerDown = 7
+        macEventPointerUp = 8
+        macEventPointerMove = 9
+        macEventPointerScroll = 10
+        macEventPointerLeave = 11
+        macEventImeStart = 12
+        macEventImeUpdate = 13
+        macEventImeEnd = 14
+
+    fn chengGuiMacInitialize() @ importc("chengGuiMacInitialize")
+    fn chengGuiMacShutdown() @ importc("chengGuiMacShutdown")
+    fn chengGuiMacCreateWindow(title: cstring; x, y, width, height: MacCDouble; resizable: bool; highDpi: bool): void* @ importc("chengGuiMacCreateWindow")
+    fn chengGuiMacDestroyWindow(handle: void*) @ importc("chengGuiMacDestroyWindow")
+    fn chengGuiMacPollEvents(events: MacEvent*; maxEvents: MacCInt; timeoutMs: MacCInt): MacCInt @ importc("chengGuiMacPollEvents")
+    fn chengGuiMacCreateSurface(window: void*): void* @ importc("chengGuiMacCreateSurface")
+    fn chengGuiMacDestroySurface(surface: void*) @ importc("chengGuiMacDestroySurface")
+    fn chengGuiMacBeginFrame(surface: void*): MacCInt @ importc("chengGuiMacBeginFrame")
+    fn chengGuiMacEndFrame(surface: void*): MacCInt @ importc("chengGuiMacEndFrame")
+    fn chengGuiMacGetSurfaceInfo(surface: void*; info: MacSurfaceInfo*): MacCInt @ importc("chengGuiMacGetSurfaceInfo")
+    fn chengGuiMacPresentPixels(surface: void*; pixels: void*; width: MacCInt; height: MacCInt; strideBytes: MacCInt): MacCInt @ importc("chengGuiMacPresentPixels")
+
+    fn macTextToStr(raw: char[256]): str =
+        var out: str = ""
+        for idx in 0..<256:
+            let ch = raw[idx]
+            if int32(ch) == int32('\0'):
+                break
+            out = out + charToStr(ch)
+        return out
+
+    fn realInitializePlat() =
+        chengGuiMacInitialize()
+
+    fn realShutdownPlat() =
+        chengGuiMacShutdown()
+
+    fn realCreateWindow(config: GuiWindowConfig): WindowHandle =
+        return WindowHandle(chengGuiMacCreateWindow(cstring(config.title), config.initialRect.origin.x, config.initialRect.origin.y, config.initialRect.size.width, config.initialRect.size.height, config.resizable, config.highDpi))
+
+    fn realDestroyWindow(handle: WindowHandle) =
+        if handle != nil:
+            chengGuiMacDestroyWindow(void*(handle))
+
+    fn realPumpEvents(timeoutMs: int): GuiEvent[] =
+        var out: GuiEvent[]
+        var batch: MacEvent[128]
+        let n = int(chengGuiMacPollEvents(addr batch[0], 128, timeoutMs))
+        if n <= 0:
+            return out
+        for idx in 0..<n:
+            let macEv = batch[idx]
+            var ev: GuiEvent
+            ev.kind = geNone
+            ev.modifiers = int32(macEv.modifiers)
+            ev.repeat = macEv.repeatFlag
+            ev.keyCode = int32(macEv.keyCode)
+            ev.button = int32(macEv.button)
+            ev.x = macEv.x
+            ev.y = macEv.y
+            ev.dx = macEv.deltaX
+            ev.dy = macEv.deltaY
+            ev.text = ""
+            ev.touchId = int32(0)
+            ev.touchCount = int32(0)
+            ev.pressure = 0.0
+            ev.gestureDelta = 0.0
+            ev.gestureVelocity = 0.0
+            ev.nodeId = int64(0)
+            ev.a11yAction = int32(0)
+            ev.resourceId = int64(0)
+            ev.uri = ""
+            ev.duration = 0.0
+            ev.position = 0.0
+
+            if macEv.kind == macEventClose:
+                ev.kind = geClose
+            elif macEv.kind == macEventResized:
+                ev.kind = geResized
+                ev.x = macEv.width
+                ev.y = macEv.height
+            elif macEv.kind == macEventMoved:
+                ev.kind = geMoved
+            elif macEv.kind == macEventKeyDown:
+                ev.kind = geKeyDown
+            elif macEv.kind == macEventKeyUp:
+                ev.kind = geKeyUp
+            elif macEv.kind == macEventTextInput:
+                ev.kind = geTextInput
+                ev.text = macTextToStr(macEv.text)
+            elif macEv.kind == macEventPointerDown:
+                ev.kind = gePointerDown
+            elif macEv.kind == macEventPointerUp:
+                ev.kind = gePointerUp
+            elif macEv.kind == macEventPointerMove:
+                ev.kind = gePointerMove
+            elif macEv.kind == macEventPointerScroll:
+                ev.kind = gePointerScroll
+            elif macEv.kind == macEventPointerLeave:
+                ev.kind = gePointerLeave
+            elif macEv.kind == macEventImeStart:
+                ev.kind = geTextCompositionStart
+                ev.text = macTextToStr(macEv.text)
+            elif macEv.kind == macEventImeUpdate:
+                ev.kind = geTextCompositionUpdate
+                ev.text = macTextToStr(macEv.text)
+            elif macEv.kind == macEventImeEnd:
+                ev.kind = geTextCompositionEnd
+                ev.text = macTextToStr(macEv.text)
+            else:
+                ev.kind = geNone
+
+            let pos = len(out)
+            setLen[GuiEvent](&out, pos + 1)
+            out[pos] = ev
+        return out
+
+    fn realPumpEvents(): GuiEvent[] =
+        return realPumpEvents(0)
+
+    fn realCreateRenderSurface(window: WindowHandle): SurfaceHandle =
+        if window == nil:
+            return nil
+        return SurfaceHandle(chengGuiMacCreateSurface(void*(window)))
+
+    fn realDestroyRenderSurface(surface: SurfaceHandle) =
+        if surface != nil:
+            chengGuiMacDestroySurface(void*(surface))
+
+    fn realBeginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+        var info: SurfaceFrameInfo
+        if surface == nil:
+            info.logicalSize = makeSize(0.0, 0.0)
+            info.pixelSize = makeSize(0.0, 0.0)
+            info.dpiScale = 1.0
+            info.colorSpace = "sRGB"
+            return info
+        chengGuiMacBeginFrame(void*(surface))
+        var raw: MacSurfaceInfo
+        chengGuiMacGetSurfaceInfo(void*(surface), addr raw)
+        info.logicalSize = makeSize(raw.logicalWidth, raw.logicalHeight)
+        info.pixelSize = makeSize(raw.pixelWidth, raw.pixelHeight)
+        info.dpiScale = raw.scale
+        info.colorSpace = if raw.colorSpace == nil: "sRGB" else: $raw.colorSpace
+        return info
+
+    fn realEndFrame(surface: SurfaceHandle) =
+        if surface != nil:
+            chengGuiMacEndFrame(void*(surface))
+
+    fn realPresentPixels(surface: SurfaceHandle, pixels: uint32*, width, height: int, strideBytes: int) =
+        if surface == nil:
+            return
+        chengGuiMacPresentPixels(void*(surface), void*(pixels), width, height, strideBytes)
+else:
+    fn realInitializePlat() =
+        return
+
+    fn realShutdownPlat() =
+        return
+
+    fn realCreateWindow(config: GuiWindowConfig): WindowHandle =
+        config
+        return nil
+
+    fn realDestroyWindow(handle: WindowHandle) =
+        handle
+
+    fn realPumpEvents(timeoutMs: int): GuiEvent[] =
+        timeoutMs
+        var events: GuiEvent[]
+        return events
+
+    fn realPumpEvents(): GuiEvent[] =
+        var events: GuiEvent[]
+        return events
+
+    fn realCreateRenderSurface(window: WindowHandle): SurfaceHandle =
+        window
+        return nil
+
+    fn realDestroyRenderSurface(surface: SurfaceHandle) =
+        surface
+
+    fn realBeginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+        surface
+        var info: SurfaceFrameInfo
+        info.logicalSize = makeSize(0.0, 0.0)
+        info.pixelSize = makeSize(0.0, 0.0)
+        info.dpiScale = 1.0
+        info.colorSpace = "sRGB"
+        return info
+
+    fn realEndFrame(surface: SurfaceHandle) =
+        surface
+
+    fn realPresentPixels(surface: SurfaceHandle, pixels: uint32*, width, height: int, strideBytes: int) =
+        surface
+        pixels
+        width
+        height
+        strideBytes

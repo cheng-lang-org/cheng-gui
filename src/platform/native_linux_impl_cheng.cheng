@@ -1,0 +1,375 @@
+import std/tables
+import cheng/gui/platform/types
+
+type
+    LinuxCInt = int32
+    LinuxCUInt = uint32
+    LinuxCDouble = float64
+
+type
+    LinuxWindow = ref
+        handle: void*
+        size: GuiSize
+        pixelSize: GuiSize
+        dpi: float
+        colorSpace: str
+
+    LinuxSurface = ref
+        window: LinuxWindow
+        handle: void*
+
+    LinuxEvent =
+        kind: LinuxCInt
+        window: void*
+        x: LinuxCDouble
+        y: LinuxCDouble
+        width: LinuxCDouble
+        height: LinuxCDouble
+        deltaX: LinuxCDouble
+        deltaY: LinuxCDouble
+        pixelWidth: LinuxCDouble
+        pixelHeight: LinuxCDouble
+        scale: LinuxCDouble
+        modifiers: LinuxCUInt
+        button: LinuxCInt
+        keyCode: LinuxCUInt
+        text: array[64, char]
+
+    LinuxSurfaceInfo =
+        logicalWidth: LinuxCDouble
+        logicalHeight: LinuxCDouble
+        pixelWidth: LinuxCDouble
+        pixelHeight: LinuxCDouble
+        scale: LinuxCDouble
+        colorSpace: cstring
+
+const
+    linuxEventClose = 1
+    linuxEventResized = 2
+    linuxEventMoved = 3
+    linuxEventKeyDown = 4
+    linuxEventKeyUp = 5
+    linuxEventTextInput = 6
+    linuxEventPointerDown = 7
+    linuxEventPointerUp = 8
+    linuxEventPointerMove = 9
+    linuxEventPointerScroll = 10
+    linuxModShift = LinuxCUInt(1)
+    linuxModCtrl = LinuxCUInt(1 << 2)
+    linuxModAlt = LinuxCUInt(1 << 3)
+    linuxModMeta = LinuxCUInt(1 << 6)
+    linuxColorSpace = "sRGB"
+    XK_Return = LinuxCUInt(0xFF0D)
+    XK_Escape = LinuxCUInt(0xFF1B)
+    XK_Space = LinuxCUInt(0x20)
+    XK_Tab = LinuxCUInt(0xFF09)
+    XK_BackSpace = LinuxCUInt(0xFF08)
+    XK_Delete = LinuxCUInt(0xFFFF)
+    XK_Left = LinuxCUInt(0xFF51)
+    XK_Right = LinuxCUInt(0xFF53)
+    XK_Up = LinuxCUInt(0xFF52)
+    XK_Down = LinuxCUInt(0xFF54)
+    XK_Home = LinuxCUInt(0xFF50)
+    XK_End = LinuxCUInt(0xFF57)
+    XK_PageUp = LinuxCUInt(0xFF55)
+    XK_PageDown = LinuxCUInt(0xFF56)
+    XK_F1 = LinuxCUInt(0xFFBE)
+    XK_F2 = LinuxCUInt(0xFFBF)
+    XK_F3 = LinuxCUInt(0xFFC0)
+    XK_F4 = LinuxCUInt(0xFFC1)
+    XK_F5 = LinuxCUInt(0xFFC2)
+    XK_F6 = LinuxCUInt(0xFFC3)
+    XK_F7 = LinuxCUInt(0xFFC4)
+    XK_F8 = LinuxCUInt(0xFFC5)
+    XK_F9 = LinuxCUInt(0xFFC6)
+    XK_F10 = LinuxCUInt(0xFFC7)
+    XK_F11 = LinuxCUInt(0xFFC8)
+    XK_F12 = LinuxCUInt(0xFFC9)
+
+var linuxWindows = initTable[void*, LinuxWindow]()
+var linuxStructsValidated = false
+
+fn makePointerEvent(kind: GuiEventKind, pos: GuiPosition, button: int, delta: GuiPosition, mods: GuiModifiers): GuiEvent =
+    let pointer = GuiPointerEvent(position: pos, delta: delta, button: button, modifiers: mods)
+    return GuiEvent(kind: kind, pointerEvent: void*)
+
+fn linuxHalUsesFfi(): bool =
+    true
+
+fn findLinuxWindow(handle: void*): LinuxWindow =
+    for idx in 0..<linuxWindows.keys.len:
+        if linuxWindows.keys[idx] == handle:
+            return linuxWindows.values[idx]
+    return nil
+
+fn setLinuxWindow(handle: void*; win: LinuxWindow) =
+    for idx in 0..<linuxWindows.keys.len:
+        if linuxWindows.keys[idx] == handle:
+            linuxWindows.values[idx] = win
+            return
+    linuxWindows.keys.add(handle)
+    linuxWindows.values.add(win)
+
+fn removeLinuxWindow(handle: void*) =
+    for idx in 0..<linuxWindows.keys.len:
+        if linuxWindows.keys[idx] == handle:
+            let last = linuxWindows.keys.len - 1
+            if idx != last:
+                linuxWindows.keys[idx] = linuxWindows.keys[last]
+                linuxWindows.values[idx] = linuxWindows.values[last]
+            linuxWindows.keys.len = last
+            linuxWindows.values.len = last
+            return
+
+fn toWindowHandle(win: LinuxWindow): WindowHandle =
+    WindowHandle(void*(win))
+
+fn fromWindowHandle(handle: WindowHandle): LinuxWindow =
+    LinuxWindow(void*(handle))
+
+fn linuxScale(win: LinuxWindow): float =
+    if win == nil || win.dpi <= 0.0:
+        return 1.0
+    let scaled = win.dpi / 96.0
+    if scaled < 0.25:
+        return 0.25
+    return scaled
+
+fn hasLinuxModifier(mask: LinuxCUInt; flag: LinuxCUInt): bool =
+    let flagVal = int64(flag)
+    if flagVal == 0:
+        return false
+    let maskVal = int64(mask)
+    return ((maskVal / flagVal) % 2) != 0
+
+fn modifiersFromMask(mask: LinuxCUInt): GuiModifiers =
+    var mods: GuiModifiers = 0
+    if hasLinuxModifier(mask, linuxModShift):
+        addModifier(mods, gmShift)
+    if hasLinuxModifier(mask, linuxModCtrl):
+        addModifier(mods, gmCtrl)
+    if hasLinuxModifier(mask, linuxModAlt):
+        addModifier(mods, gmAlt)
+    if hasLinuxModifier(mask, linuxModMeta):
+        addModifier(mods, gmMeta)
+    return mods
+
+fn toGuiKey(code: LinuxCUInt): GuiKey =
+    case code:
+    of XK_Return:
+        gkEnter
+    of XK_Escape:
+        gkEscape
+    of XK_Space:
+        gkSpace
+    of XK_Tab:
+        gkTab
+    of XK_BackSpace:
+        gkBackspace
+    of XK_Delete:
+        gkDelete
+    of XK_Left:
+        gkLeft
+    of XK_Right:
+        gkRight
+    of XK_Up:
+        gkUp
+    of XK_Down:
+        gkDown
+    of XK_Home:
+        gkHome
+    of XK_End:
+        gkEnd
+    of XK_PageUp:
+        gkPageUp
+    of XK_PageDown:
+        gkPageDown
+    of XK_F1:
+        gkF1
+    of XK_F2:
+        gkF2
+    of XK_F3:
+        gkF3
+    of XK_F4:
+        gkF4
+    of XK_F5:
+        gkF5
+    of XK_F6:
+        gkF6
+    of XK_F7:
+        gkF7
+    of XK_F8:
+        gkF8
+    of XK_F9:
+        gkF9
+    of XK_F10:
+        gkF10
+    of XK_F11:
+        gkF11
+    of XK_F12:
+        gkF12
+    else:
+        gkUnknown
+
+fn chengGuiX11Initialize() @ importc("chengGuiX11Initialize")
+fn chengGuiX11IsInitialized(): LinuxCInt @ importc("chengGuiX11IsInitialized")
+fn chengGuiX11Shutdown() @ importc("chengGuiX11Shutdown")
+fn chengGuiX11CreateWindow(title: cstring; x, y, width, height: LinuxCDouble; resizable: bool; highDpi: bool): void* @ importc("chengGuiX11CreateWindow")
+fn chengGuiX11DestroyWindow(handle: void*) @ importc("chengGuiX11DestroyWindow")
+fn chengGuiX11PollEvents(events: LinuxEvent*; maxEvents: LinuxCInt; timeoutMs: LinuxCInt): LinuxCInt @ importc("chengGuiX11PollEvents")
+fn chengGuiX11CreateSurface(handle: void*): void* @ importc("chengGuiX11CreateSurface")
+fn chengGuiX11DestroySurface(handle: void*) @ importc("chengGuiX11DestroySurface")
+fn chengGuiX11BeginFrame(handle: void*): LinuxCInt @ importc("chengGuiX11BeginFrame")
+fn chengGuiX11EndFrame(handle: void*): LinuxCInt @ importc("chengGuiX11EndFrame")
+fn chengGuiX11GetSurfaceInfo(handle: void*; info: LinuxSurfaceInfo*): LinuxCInt @ importc("chengGuiX11GetSurfaceInfo")
+fn chengGuiX11PresentPixels(handle: void*; pixels: void*; width: LinuxCInt; height: LinuxCInt; strideBytes: LinuxCInt): LinuxCInt @ importc("chengGuiX11PresentPixels")
+fn chengGuiX11EventStructSize(): uint @ importc("chengGuiX11EventStructSize")
+fn chengGuiX11SurfaceInfoStructSize(): uint @ importc("chengGuiX11SurfaceInfoStructSize")
+
+fn ensureLinuxStructsMatch() =
+    if linuxStructsValidated:
+        return
+    let localEventSize = int(sizeof(LinuxEvent))
+    let cEventSize = int(chengGuiX11EventStructSize())
+    if localEventSize != cEventSize:
+        raiseGuiError("Linux event size mismatch", grInvalidState)
+    let localInfoSize = int(sizeof(LinuxSurfaceInfo))
+    let cInfoSize = int(chengGuiX11SurfaceInfoStructSize())
+    if localInfoSize != cInfoSize:
+        raiseGuiError("Linux surface info size mismatch", grInvalidState)
+    linuxStructsValidated = true
+
+fn initializePlat() =
+    ensureLinuxStructsMatch()
+    chengGuiX11Initialize()
+    if chengGuiX11IsInitialized() == 0:
+        raiseGuiError("X11 display unavailable", grIoError)
+
+fn shutdownPlat() =
+    chengGuiX11Shutdown()
+    linuxWindows.keys.len = 0
+    linuxWindows.values.len = 0
+
+fn createWindow(config: GuiWindowConfig): WindowHandle =
+    initializePlat()
+    let rect = config.initialRect
+    let title = if len(config.title) == 0: "Cheng IDE" else: config.title
+    let handle = chengGuiX11CreateWindow(cstring(title), LinuxCDouble(rect.origin.x), LinuxCDouble(rect.origin.y), LinuxCDouble(rect.size.width), LinuxCDouble(rect.size.height), config.resizable, config.highDpi)
+    if handle == nil:
+        raiseGuiError("Linux createWindow failed", grIoError)
+    let win = LinuxWindow(handle: handle, size: rect.size, pixelSize: rect.size, dpi: 96.0, colorSpace: linuxColorSpace)
+    setLinuxWindow(handle, win)
+    return toWindowHandle(win)
+
+fn destroyWindow(handle: WindowHandle) =
+    let win = fromWindowHandle(handle)
+    if win == nil:
+        return
+    removeLinuxWindow(win.handle)
+    if win.handle != nil:
+        chengGuiX11DestroyWindow(win.handle)
+        win.handle = nil
+
+fn applySurfaceInfo(win: LinuxWindow; info: LinuxSurfaceInfo) =
+    if win == nil:
+        return
+    win.size = makeSize(float(info.logicalWidth), float(info.logicalHeight))
+    win.pixelSize = makeSize(float(info.pixelWidth), float(info.pixelHeight))
+    win.dpi = float(info.scale * 96.0)
+    if info.colorSpace != nil && info.colorSpace.len > 0:
+        win.colorSpace = $info.colorSpace
+
+fn pumpEvents(timeoutMs: int = 0): GuiEvent[] =
+    var events: GuiEvent[] = default[GuiEvent[]]
+    let bufferLen = 256
+    var buffer: LinuxEvent[bufferLen]
+    let count = chengGuiX11PollEvents(&buffer[0], LinuxCInt(bufferLen), LinuxCInt(timeoutMs))
+    if count <= 0:
+        return events
+    for idx in 0..<int(count):
+        let ev = buffer[idx]
+        let win = findLinuxWindow(ev.window)
+        if win == nil:
+            continue
+        case ev.kind:
+        of linuxEventClose:
+            events.add(GuiEvent(kind: geClose))
+        of linuxEventResized:
+            win.size = makeSize(float(ev.width), float(ev.height))
+            win.pixelSize = makeSize(float(ev.pixelWidth), float(ev.pixelHeight))
+            if ev.scale > 0.0:
+                win.dpi = float(ev.scale * 96.0)
+            events.add(GuiEvent(kind: geResized, newSize: win.size))
+        of linuxEventMoved:
+            events.add(GuiEvent(kind: geMoved, newPosition: GuiPosition(x: float(ev.x), y: float(ev.y))))
+        of linuxEventKeyDown:
+            events.add(GuiEvent(kind: geKeyDown, keyEvent: GuiKeyEvent(key: toGuiKey(ev.keyCode), modifiers: modifiersFromMask(ev.modifiers), repeat: false)))
+        of linuxEventKeyUp:
+            events.add(GuiEvent(kind: geKeyUp, keyEvent: GuiKeyEvent(key: toGuiKey(ev.keyCode), modifiers: modifiersFromMask(ev.modifiers), repeat: false)))
+        of linuxEventTextInput:
+            let text = $cstring(&ev.text)
+            if text.len > 0:
+                events.add(GuiEvent(kind: geTextInput, text: text))
+        of linuxEventPointerDown, linuxEventPointerUp, linuxEventPointerMove, linuxEventPointerScroll:
+            let pos = GuiPosition(x: float(ev.x), y: float(ev.y))
+            let delta = GuiPosition(x: float(ev.deltaX), y: float(ev.deltaY))
+            let mods = modifiersFromMask(ev.modifiers)
+            let button = int(ev.button)
+            let kind = case ev.kind:
+                of linuxEventPointerDown: gePointerDown
+                of linuxEventPointerUp: gePointerUp
+                of linuxEventPointerMove: gePointerMove
+                else: gePointerScroll
+            events.add(makePointerEvent(kind, pos, button, delta, mods))
+        else:
+            0
+            return events
+
+fn createRenderSurface(window: WindowHandle): SurfaceHandle =
+    let win = fromWindowHandle(window)
+    if win == nil || win.handle == nil:
+        raiseGuiError("invalid window handle", grInvalidState)
+    let handle = chengGuiX11CreateSurface(win.handle)
+    if handle == nil:
+        raiseGuiError("create render surface failed", grIoError)
+    return SurfaceHandle(LinuxSurface(window: win, handle: handle))
+
+fn destroyRenderSurface(surface: SurfaceHandle) =
+    let surf = LinuxSurface(void*(surface))
+    if surf != nil && surf->handle != nil:
+        chengGuiX11DestroySurface(surf->handle)
+        surf->handle = nil
+
+fn beginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    let surf = LinuxSurface(void*(surface))
+    if surf == nil || surf->window == nil || surf->handle == nil:
+        raiseGuiError("invalid render surface", grInvalidState)
+
+    var info: LinuxSurfaceInfo
+    if chengGuiX11GetSurfaceInfo(surf->handle, &info) != 0:
+        raiseGuiError("Linux get surface info failed", grInvalidState)
+
+    applySurfaceInfo(surf->window, info)
+
+    let rc = chengGuiX11BeginFrame(surf->handle)
+    if rc != 0:
+        raiseGuiError("Linux beginFrame failed", grInvalidState)
+
+    return SurfaceFrameInfo(logicalSize: surf->window->size, pixelSize: surf->window->pixelSize, dpiScale: linuxScale(surf->window), colorSpace: surf->window->colorSpace)
+
+fn endFrame(surface: SurfaceHandle) =
+    let surf = LinuxSurface(void*(surface))
+    if surf == nil || surf->handle == nil:
+        raiseGuiError("invalid render surface", grInvalidState)
+    let rc = chengGuiX11EndFrame(surf->handle)
+    if rc != 0:
+        raiseGuiError("Linux endFrame failed", grInvalidState)
+
+fn presentPixels(surface: SurfaceHandle; pixels: uint32*; width, height: int; strideBytes: int) =
+    let surf = LinuxSurface(void*(surface))
+    if surf == nil || surf->handle == nil || pixels == nil:
+        return
+    if width <= 0 || height <= 0:
+        return
+    let stride = if strideBytes <= 0: width * 4 else: strideBytes
+    chengGuiX11PresentPixels(surf->handle, void*(pixels), LinuxCInt(width), LinuxCInt(height), LinuxCInt(stride))

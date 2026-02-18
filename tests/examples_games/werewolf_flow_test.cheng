@@ -1,0 +1,56 @@
+import cheng/gui/examples_games/common/protocol
+import cheng/gui/examples_games/werewolf/state as ww
+
+fn makeReq(seat: int32, kind: str, args: str): ActionRequest =
+    var req: ActionRequest = initActionRequest()
+    req.seat = seat
+    req.actionType = kind
+    req.actionArgs = args
+    req.playerToken = "u" + intToStr(seat)
+    req.clientSeq = int64(1)
+    return req
+
+fn findRoleSeat(state: ww.WerewolfState, role: str): int32 =
+    for idx in 0..<ww.WolfPlayerCount:
+        if state.players[idx].role == role:
+            return idx
+    return -1
+
+fn main(): int32 =
+    let state = ww.newState()
+    for i in 0..<ww.WolfPlayerCount:
+        ww.setPlayer(state, i, "P" + intToStr(i), "u" + intToStr(i), true, false)
+        let readyRes = ww.applyAction(state, i, makeReq(i, "ready", ""))
+        if ! readyRes.applied:
+            return int32(20)
+
+    let startRes = ww.applyAction(state, 0, makeReq(0, "start", ""))
+    if ! startRes.applied || state.stage != "sheriff_nominate":
+        return int32(21)
+
+    let runRes = ww.applyAction(state, 0, makeReq(0, "sheriff_run", ""))
+    if ! runRes.applied:
+        return int32(22)
+
+    let adv1 = ww.applyAction(state, 0, makeReq(0, "advance", ""))
+    if ! adv1.applied || state.stage != "sheriff_vote":
+        return int32(23)
+
+    let voteRes = ww.applyAction(state, 1, makeReq(1, "sheriff_vote", "0"))
+    if ! voteRes.applied:
+        return int32(24)
+
+    let adv2 = ww.applyAction(state, 0, makeReq(0, "advance", ""))
+    if ! adv2.applied || state.stage != "night_guard":
+        return int32(25)
+
+    let guardSeat: int32 = findRoleSeat(state, "guard")
+    if guardSeat < 0:
+        return int32(26)
+    let guardRes = ww.applyAction(state, guardSeat, makeReq(guardSeat, "guard_protect", "1"))
+    if ! guardRes.applied:
+        return int32(27)
+
+    return int32(0)
+
+main()

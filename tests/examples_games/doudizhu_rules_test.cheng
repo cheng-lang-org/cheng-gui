@@ -1,0 +1,342 @@
+import cheng/gui/examples_games/common/protocol as proto
+import cheng/gui/examples_games/doudizhu/state as ddz
+
+fn makeReq(seat: int32, kind: str, args: str, seq: int64): proto.ActionRequest =
+    var req: proto.ActionRequest = proto.initActionRequest()
+    req.seat = seat
+    req.actionType = kind
+    req.actionArgs = args
+    req.playerToken = "t" + intToStr(seat)
+    req.clientSeq = seq
+    return req
+
+fn setupThreePlayers(state: ddz.DoudizhuState) =
+    ddz.setPlayer(state, 0, "A", "t0", true, false)
+    ddz.setPlayer(state, 1, "B", "t1", true, false)
+    ddz.setPlayer(state, 2, "C", "t2", true, false)
+
+fn assertPattern(cards: str[], want: str, codeBase: int32): int32 =
+    let cls = ddz.classifyPlay(cards)
+    if ! cls.ok:
+        return codeBase
+    if cls.pattern != want:
+        return codeBase + 1
+    return 0
+
+fn testPatternPositive(): int32 =
+    var rc: int32 = 0
+    rc = assertPattern(ddz.splitCsv("S3"), "single", 100)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3"), "pair", 110)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3"), "triple", 120)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3,S4"), "triple_single", 130)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3,S4,H4"), "triple_pair", 140)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,S4,S5,S6,S7"), "straight", 150)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,S4,H4,S5,H5"), "pair_straight", 160)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3,S4,H4,C4"), "plane", 170)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3,S4,H4,C4,S7,H8"), "plane_single_wing", 180)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3,S4,H4,C4,S7,H7,S8,H8"), "plane_pair_wing", 190)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3,D3,S4,H5"), "four_two_single", 200)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S3,H3,C3,D3,S4,H4,S5,H5"), "four_two_pair", 210)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("S9,H9,C9,D9"), "bomb", 220)
+    if rc != 0:
+        return rc
+    rc = assertPattern(ddz.splitCsv("BJ,RJ"), "rocket", 230)
+    if rc != 0:
+        return rc
+    return 0
+
+fn testPatternNegative(): int32 =
+    let badStraight = ddz.classifyPlay(ddz.splitCsv("S10,HJ,CQ,DK,S2"))
+    if badStraight.ok:
+        return 300
+    let badPlaneWing = ddz.classifyPlay(ddz.splitCsv("S3,H3,C3,S4,H4,C4,S7"))
+    if badPlaneWing.ok:
+        return 301
+    let badFourTwo = ddz.classifyPlay(ddz.splitCsv("S3,H3,C3,D3,S4,H4,S5"))
+    if badFourTwo.ok:
+        return 302
+    let wrongPlanePairWing = ddz.classifyPlay(ddz.splitCsv("S3,H3,C3,S4,H4,C4,S7,H7,S8,C9"))
+    if wrongPlanePairWing.ok:
+        return 303
+    return 0
+
+fn testCompareMatrix(): int32 =
+    let state = ddz.newState()
+    setupThreePlayers(state)
+
+    state.lastSeat = 1
+    state.lastPattern = "single"
+    state.lastRank = 8
+    state.lastCount = 1
+    state.passCount = 0
+    let c1 = ddz.classifyPlay(ddz.splitCsv("S10"))
+    if ! ddz.canBeat(state, c1.pattern, c1.rank, c1.count):
+        return 400
+    let c2 = ddz.classifyPlay(ddz.splitCsv("S9,H9"))
+    if ddz.canBeat(state, c2.pattern, c2.rank, c2.count):
+        return 401
+    let bomb = ddz.classifyPlay(ddz.splitCsv("S5,H5,C5,D5"))
+    if ! ddz.canBeat(state, bomb.pattern, bomb.rank, bomb.count):
+        return 402
+
+    state.lastPattern = "bomb"
+    state.lastRank = 9
+    state.lastCount = 4
+    state.lastSeat = 1
+    let lowBomb = ddz.classifyPlay(ddz.splitCsv("S8,H8,C8,D8"))
+    if ddz.canBeat(state, lowBomb.pattern, lowBomb.rank, lowBomb.count):
+        return 403
+    let hiBomb = ddz.classifyPlay(ddz.splitCsv("S10,H10,C10,D10"))
+    if ! ddz.canBeat(state, hiBomb.pattern, hiBomb.rank, hiBomb.count):
+        return 404
+    let rocket = ddz.classifyPlay(ddz.splitCsv("BJ,RJ"))
+    if ! ddz.canBeat(state, rocket.pattern, rocket.rank, rocket.count):
+        return 405
+
+    state.lastPattern = "straight"
+    state.lastRank = 7
+    state.lastCount = 5
+    let straight6 = ddz.classifyPlay(ddz.splitCsv("S4,H5,C6,D7,S8,H9"))
+    if ddz.canBeat(state, straight6.pattern, straight6.rank, straight6.count):
+        return 406
+    return 0
+
+fn testStateMachineFlow(): int32 =
+    let state = ddz.newState()
+    setupThreePlayers(state)
+    if ! ddz.applyAction(state, 0, makeReq(0, "ready", "", int64(1))).applied:
+        return 500
+    if ! ddz.applyAction(state, 1, makeReq(1, "ready", "", int64(2))).applied:
+        return 501
+    if ! ddz.applyAction(state, 2, makeReq(2, "ready", "", int64(3))).applied:
+        return 502
+    if ! ddz.applyAction(state, 0, makeReq(0, "start", "", int64(4))).applied:
+        return 503
+    if state.stage != "bidding":
+        return 504
+
+    if ! ddz.applyAction(state, state.turnSeat, makeReq(state.turnSeat, "叫分", "0", int64(5))).applied:
+        return 505
+    if ! ddz.applyAction(state, state.turnSeat, makeReq(state.turnSeat, "bid", "0", int64(6))).applied:
+        return 506
+    if ! ddz.applyAction(state, state.turnSeat, makeReq(state.turnSeat, "bid", "0", int64(7))).applied:
+        return 507
+    if state.stage != "bidding":
+        return 508
+    if state.landlordSeat != -1:
+        return 509
+
+    let s2 = ddz.newState()
+    setupThreePlayers(s2)
+    ddz.applyAction(s2, 0, makeReq(0, "ready", "", int64(1)))
+    ddz.applyAction(s2, 1, makeReq(1, "ready", "", int64(2)))
+    ddz.applyAction(s2, 2, makeReq(2, "ready", "", int64(3)))
+    ddz.applyAction(s2, 0, makeReq(0, "start", "", int64(4)))
+    ddz.applyAction(s2, s2.turnSeat, makeReq(s2.turnSeat, "bid", "1", int64(5)))
+    ddz.applyAction(s2, s2.turnSeat, makeReq(s2.turnSeat, "bid", "2", int64(6)))
+    ddz.applyAction(s2, s2.turnSeat, makeReq(s2.turnSeat, "bid", "0", int64(7)))
+    if s2.stage != "playing":
+        return 510
+    if s2.landlordSeat != 1:
+        return 511
+    return 0
+
+fn testPassResetRound(): int32 =
+    let state = ddz.newState()
+    setupThreePlayers(state)
+    state.stage = "playing"
+    state.landlordSeat = 0
+    state.turnSeat = 1
+    state.lastSeat = 0
+    state.lastPattern = "single"
+    state.lastRank = 4
+    state.lastCount = 1
+    state.passCount = 0
+
+    let p1 = ddz.applyAction(state, 1, makeReq(1, "pass", "", int64(1)))
+    if ! p1.applied:
+        return 600
+    if state.turnSeat != 2 || state.passCount != 1:
+        return 601
+    let p2 = ddz.applyAction(state, 2, makeReq(2, "不出", "", int64(2)))
+    if ! p2.applied:
+        return 602
+    if state.turnSeat != 0:
+        return 603
+    if state.lastPattern != "" || state.lastSeat != -1 || state.passCount != 0:
+        return 604
+    return 0
+
+fn testMultiplierRules(): int32 =
+    let bombState = ddz.newState()
+    setupThreePlayers(bombState)
+    bombState.stage = "playing"
+    bombState.landlordSeat = 0
+    bombState.turnSeat = 0
+    var p0: ddz.DdzPlayer = bombState.players[0]
+    p0.hand = ddz.splitCsv("S6,H6,C6,D6,BJ,RJ")
+    bombState.players[0] = p0
+    var p1: ddz.DdzPlayer = bombState.players[1]
+    p1.hand = ddz.splitCsv("S3,H3,C3,D3")
+    bombState.players[1] = p1
+    var p2: ddz.DdzPlayer = bombState.players[2]
+    p2.hand = ddz.splitCsv("S4,H4,C4,D4")
+    bombState.players[2] = p2
+
+    let b1 = ddz.applyAction(bombState, 0, makeReq(0, "play", "S6,H6,C6,D6", int64(1)))
+    if ! b1.applied:
+        return 700
+    if bombState.multiplier != 2:
+        return 701
+
+    bombState.turnSeat = 0
+    bombState.lastSeat = -1
+    bombState.lastPattern = ""
+    bombState.passCount = 0
+    let b2 = ddz.applyAction(bombState, 0, makeReq(0, "play", "BJ,RJ", int64(2)))
+    if ! b2.applied:
+        return 702
+    if bombState.multiplier != 4:
+        return 703
+
+    let springState = ddz.newState()
+    setupThreePlayers(springState)
+    springState.stage = "playing"
+    springState.landlordSeat = 0
+    springState.turnSeat = 0
+    springState.multiplier = 1
+    p0 = springState.players[0]
+    p0.hand = ddz.splitCsv("S3")
+    springState.players[0] = p0
+    p1 = springState.players[1]
+    p1.hand = ddz.splitCsv("S4,H4")
+    springState.players[1] = p1
+    p2 = springState.players[2]
+    p2.hand = ddz.splitCsv("S5,H5")
+    springState.players[2] = p2
+
+    let winPlay = ddz.applyAction(springState, 0, makeReq(0, "play", "S3", int64(1)))
+    if ! winPlay.applied:
+        return 704
+    if springState.stage != "finished" || springState.winnerSeat != 0:
+        return 705
+    if springState.multiplier != 2:
+        return 706
+    return 0
+
+fn testBotActionLegal(): int32 =
+    let state = ddz.newState()
+    setupThreePlayers(state)
+    state.stage = "playing"
+    state.landlordSeat = 0
+    state.turnSeat = 1
+    state.lastSeat = 0
+    state.lastPattern = "single"
+    state.lastRank = 10
+    state.lastCount = 1
+    var p1: ddz.DdzPlayer = state.players[1]
+    p1.hand = ddz.splitCsv("S3,H3,C3,D3,BJ,RJ")
+    state.players[1] = p1
+
+    let botReq = ddz.makeBotAction(state, 1)
+    if botReq.actionType != "play" && botReq.actionType != "pass":
+        return 800
+    if botReq.actionType == "play":
+        let cls = ddz.classifyPlay(ddz.splitCsv(botReq.actionArgs))
+        if ! cls.ok:
+            return 801
+        if ! ddz.canBeat(state, cls.pattern, cls.rank, cls.count):
+            return 802
+    return 0
+
+fn testIllegalBidInputRejected(): int32 =
+    let state = ddz.newState()
+    setupThreePlayers(state)
+    ddz.applyAction(state, 0, makeReq(0, "ready", "", int64(1)))
+    ddz.applyAction(state, 1, makeReq(1, "ready", "", int64(2)))
+    ddz.applyAction(state, 2, makeReq(2, "ready", "", int64(3)))
+    ddz.applyAction(state, 0, makeReq(0, "start", "", int64(4)))
+    let seqBefore: int64 = state.seq
+    let bad = ddz.applyAction(state, state.turnSeat, makeReq(state.turnSeat, "bid", "9", int64(5)))
+    if bad.applied:
+        return 900
+    if state.seq != seqBefore:
+        return 901
+    return 0
+
+fn testSeatTokenValidation(): int32 =
+    let state = ddz.newState()
+    setupThreePlayers(state)
+    let beforeSeq: int64 = state.seq
+
+    let badSeat = ddz.applyAction(state, -1, makeReq(-1, "ready", "", int64(1)))
+    if badSeat.applied:
+        return 910
+    if state.seq != beforeSeq:
+        return 911
+
+    let wrongTokenReq = makeReq(0, "ready", "", int64(2))
+    wrongTokenReq.playerToken = "t1"
+    let badToken = ddz.applyAction(state, 0, wrongTokenReq)
+    if badToken.applied:
+        return 912
+    if state.seq != beforeSeq:
+        return 913
+    return 0
+
+fn main(): int32 =
+    var rc: int32 = 0
+    rc = testPatternPositive()
+    if rc != 0:
+        return rc
+    rc = testPatternNegative()
+    if rc != 0:
+        return rc
+    rc = testCompareMatrix()
+    if rc != 0:
+        return rc
+    rc = testStateMachineFlow()
+    if rc != 0:
+        return rc
+    rc = testPassResetRound()
+    if rc != 0:
+        return rc
+    rc = testMultiplierRules()
+    if rc != 0:
+        return rc
+    rc = testBotActionLegal()
+    if rc != 0:
+        return rc
+    rc = testIllegalBidInputRejected()
+    if rc != 0:
+        return rc
+    rc = testSeatTokenValidation()
+    if rc != 0:
+        return rc
+    return 0
+
+main()

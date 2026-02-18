@@ -1,0 +1,546 @@
+import std/json
+import std/strformat
+import std/strutils
+import std/tables
+import std/syncio
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+type
+    Visual
+    izationMode = enum
+        vmAst
+        vmSemantics
+        vmBorrow
+        vmArc
+        vmOwnershipVis
+        ual
+    izationDiffKind = enum
+        vdkSame
+        vdkAdded
+        vdkRemoved
+        vdkChangedVis
+        ual
+    izationNode = ref
+        id: str
+        label: str
+        value: str
+        depth: int
+        children: Visual izationNode[]
+        Visual
+    izationRow =
+        depth: int
+        label: str
+        value: str
+        diffKind: Visual
+        izationDiffKind
+        Visual
+    izationTheme =
+        background: uint32
+        textNormal: uint32
+        textHeader: uint32
+        textAdded: uint32
+        textRe
+        moved: uint32
+        textChanged: uint32
+        Visual
+    izationMetrics =
+        nodesPass1: int
+        nodesPass2: int
+        added: int
+        removed: int
+        changed: int
+        unchanged: int
+        diffRatio: float
+        pass1BorrowConflicts: int
+        pass2BorrowConflicts: int
+        arcNodes: int
+        arcEvents: int
+        arcEventCounts: Table[str, int]
+        arcBorrowKinds: Table[str, int] arcTh
+        reads: Table[str, int]
+        arcSharedModes: Table[str, int]
+        arcConfirmations: Table[str, int]
+        ownershipEvents: int
+        ownershipAccessCounts: Table[str, int]
+        ownershipThreadCounts: Table[str, int]
+        diagnostics: str[]
+        errors: str[]
+        Visual
+    izationModel = ref
+        of WidgetPayload
+        mode: Visual
+        izationMode
+        pass1Path: str
+        pass2Path: str
+        rootPass1: Visual
+        izationNode
+        rootPass2: Visual
+        izationNode
+        metrics: Visual
+        izationMetrics
+        rows: Visual izationRow[]
+        theme: Visual
+        izationTheme
+        maxRows: int
+        SnapshotResult =
+            root: Visual izationNode
+            error: str
+fn defaultVisualizationTheme(): Visual
+izationTheme = var theme: Visual
+izationTheme
+theme.background = uint32(0xFF1A1A21)
+theme.textNormal = uint32(0xFFD4D4D4)
+theme.textHeader = uint32(0xFF9CDCFE)
+theme.textAdded = uint32(0xFF4EC9B0)
+theme.textRe
+moved = uint32(0xFFF44747)
+theme.textChanged = uint32(0xFFE5C07B) theme
+fn initVisualizationMetrics(): Visual
+izationMetrics = var metrics: Visual
+izationMetrics
+metrics.nodesPass1 = 0
+metrics.nodesPass2 = 0
+metrics.added = 0
+metrics.removed = 0
+metrics.changed = 0
+metrics.unchanged = 0
+metrics.diffRatio = 0.0
+metrics.pass1BorrowConflicts = 0
+metrics.pass2BorrowConflicts = 0
+metrics.arcNodes = 0
+metrics.arcEvents = 0
+metrics.arcEventCounts = initStringIntTable()
+metrics.arcBorrowKinds = initStringIntTable()
+metrics.arcTh
+reads = initStringIntTable()
+metrics.arcSharedModes = initStringIntTable()
+metrics.arcConfirmations = initStringIntTable()
+metrics.ownershipEvents = 0
+metrics.ownershipAccessCounts = initStringIntTable()
+metrics.ownershipThreadCounts = initStringIntTable()
+metrics.diagnostics = default[str[]]
+metrics.errors = default[str[]] metrics
+fn newVisualizationModel(mode: Visual izationMode): Visual
+izationModel = var model: Visual
+izationModel
+new(model)
+model.mode = mode
+model.pass1Path = ""
+model.pass2Path = ""
+model.rootPass1 = nil
+model.rootPass2 = nil
+model.metrics = initVisualizationMetrics()
+model.rows = default[Visual izationRow[]]
+model.theme = defaultVisualizationTheme()
+model.maxRows = 128 model
+fn setTheme(model: Visual izationModel, theme: Visual izationTheme) =
+    if model == nil:
+        return model.theme = theme
+fn modeLabel(mode: Visual izationMode): str =
+    case mode
+    of vmAst:
+        "ast"
+    of vmSemantics:
+        "semantics"
+    of vmBorrow:
+        "borrow"
+    of vmArc:
+        "arc"
+    of vmOwnership:
+        "ownership"
+fn jsonKindLabel(kind: JsonNodeKind): str =
+    case kind
+    of JNull:
+        "null"
+    of JBool:
+        "bool"
+    of JInt:
+        "int"
+    of JFloat:
+        "float"
+    of JString:
+        "str"
+    of JArray:
+        "array"
+    of JObject:
+        "object"
+fn jsonKind(node: JsonNode): JsonNodeKind =
+    if node == nil:
+        return JNullnode.kind
+fn getJsonField(node: JsonNode, key: str): JsonNode =
+    if node == nil || jsonKind(node) != JObject:
+        return jsonNil()
+        for idx in 0..<len(node.okeys):
+            if node.okeys[idx] == key:
+                return node.ovalues[idx]
+                jsonNil()
+fn initStringNodeTable(): Table[str, Visual izationNode] =
+    initTable[str, Visual izationNode]()
+fn initStringIntTable(): Table[str, int] =
+    initTable[str, int]()
+fn findStringNodeIndex(table: Table[str, Visual izationNode], key: str): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasStringNodeKey(table: Table[str, Visual izationNode], key: str): bool =
+    findStringNodeIndex(table, key) >= 0
+fn getStringNode(table: Table[str, Visual izationNode], key: str): Visual
+izationNode = let idx = findStringNodeIndex(table, key)
+if idx >= 0:
+    return table.values[idx] nil
+fn setStringNode(table: var Table[str, Visual izationNode], key: str, value: Visual izationNode) =
+    let idx = findStringNodeIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn findStringIntIndex(table: Table[str, int], key: str): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn setStringInt(table: var Table[str, int], key: str, value: int) =
+    let idx = findStringIntIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn nodeLabel(node: Visual izationNode): str =
+    if node == nil:
+        return "" node.label
+fn nodeValue(node: Visual izationNode): str =
+    if node == nil:
+        return "" node.value
+fn parseNode(jsonNode: JsonNode, depth: int, parentId: str): Visual
+izationNode = if jsonKind(jsonNode) != JObject: var invalid: Visual
+izationNode
+new(invalid)
+invalid.id = parentId + "/invalid"
+invalid.label = "<invalid>"
+invalid.value = jsonKindLabel(jsonKind(jsonNode))
+invalid.depth = depth
+invalid.children = default[Visual izationNode[]]
+return invalid
+let idNode = getJsonField(jsonNode, "id")
+var rawId = idNode.getStr()
+if len(rawId) == 0:
+    rawId = parentId + "/" + intToStr(int32(depth))
+    let labelNode = getJsonField(jsonNode, "label")
+    var label = labelNode.getStr()
+    if len(label) == 0:
+        label = rawId
+        let valueNode = getJsonField(jsonNode, "value")
+        var node: Visual
+        izationNode
+        new(node)
+        node.id = rawId
+        node.label = label
+        node.value = valueNode.getStr()
+        node.depth = depth
+        node.children = default[Visual izationNode[]]
+        let metricsNode = getJsonField(jsonNode, "metrics")
+        if jsonKind(metricsNode) == JObject:
+            let diags = getJsonField(metricsNode, "diagnostics")
+            if jsonKind(diags) == JArray:
+                var idx = 0
+                while idx < len(diags.a):
+                    0# placeholder, metrics handled by caller
+                    idx = idx + 1
+                    let childrenNode = getJsonField(jsonNode, "children")
+                    if jsonKind(childrenNode) == JArray:
+                        var idx = 0
+                        while idx < len(childrenNode.a):
+                            let child = childrenNode.a[idx]
+                            node.children.add
+                            parseNode(child, depth + 1, rawId)
+                            idx = idx + 1 node
+fn flatten(root: Visual izationNode, output: var Table[str, Visual izationNode]) =
+    if root == nil:
+        return setStringNode(output, root.id, root)
+        for child in root.children:
+            flatten(child, output)
+fn loadCounts(node: JsonNode, target: var Table[str, int]) =
+    target = initStringIntTable()
+    if jsonKind(node) != JObject:
+        return
+        for idx in 0..<len(node.okeys):
+            let key = node.okeys[idx]
+            let valueNode = node.ovalues[idx]
+            let kind = jsonKind(valueNode)
+            if kind == JIntor
+            kind == JFloat: setStringInt(target, key, int(valueNode.getFloat()))
+fn gatherDiagnostics(src: JsonNode, metrics: var Visual izationMetrics) =
+    if jsonKind(src) != JObject:
+        return
+        let meta = getJsonField(src, "metrics")
+        if jsonKind(meta) != JObject:
+            return
+            let borrowNode = getJsonField(meta, "borrow_conflicts")
+            let borrowKind = jsonKind(borrowNode)
+            if borrowKind == JIntor
+            borrowKind == JFloat: metrics.pass2BorrowConflicts = int(borrowNode.getFloat())
+            let nodesNode = getJsonField(meta, "nodes")
+            let nodesKind = jsonKind(nodesNode)
+            if nodesKind == JIntor
+            nodesKind == JFloat: metrics.arcNodes = int(nodesNode.getFloat())
+            let eventsNode = getJsonField(meta, "events")
+            let eventsKind = jsonKind(eventsNode)
+            if eventsKind == JIntor
+            eventsKind == JFloat: metrics.arcEvents = int(eventsNode.getFloat())
+            let eventCounts = getJsonField(meta, "event_counts")
+            if jsonKind(eventCounts) == JObject:
+                loadCounts(eventCounts, metrics.arcEventCounts)
+                let borrowKinds = getJsonField(meta, "borrow_kinds")
+                if jsonKind(borrowKinds) == JObject:
+                    loadCounts(borrowKinds, metrics.arcBorrowKinds)
+                    let threadsNode = getJsonField(meta, "threads")
+                    if jsonKind(threadsNode) == JObject:
+                        loadCounts(threadsNode, metrics.arcTh reads)
+                        let sharedNode = getJsonField(meta, "shared_access")
+                        if jsonKind(sharedNode) == JObject:
+                            loadCounts(sharedNode, metrics.arcSharedModes)
+                            let confirmationsNode = getJsonField(meta, "confirmations")
+                            if jsonKind(confirmationsNode) == JObject:
+                                loadCounts(confirmationsNode, metrics.arcConfirmations)
+                                let own = getJsonField(meta, "ownership")
+                                if jsonKind(own) == JObject:
+                                    let ownEvents = getJsonField(own, "events")
+                                    let ownEventsKind = jsonKind(ownEvents)
+                                    if ownEventsKind == JIntor
+                                    ownEventsKind == JFloat: metrics.ownershipEvents = int(ownEvents.getFloat())
+                                    let accessNode = getJsonField(own, "access")
+                                    if jsonKind(accessNode) == JObject:
+                                        loadCounts(accessNode, metrics.ownershipAccessCounts)
+                                        let ownTh
+                                        reads = getJsonField(own, "threads")
+                                        if jsonKind(ownTh reads) == JObject:
+                                            loadCounts(ownTh reads, metrics.ownershipThreadCounts)
+                                            let diags = getJsonField(meta, "diagnostics")
+                                            if jsonKind(diags) == JArray:
+                                                for idx in 0..<len(diags.a):
+                                                    metrics.diagnostics.add
+                                                    diags.a[idx].getStr()
+fn loadSnapshot(path: str, metrics: var Visual izationMetrics): SnapshotResult =
+    var result: SnapshotResult
+    if len(path) == 0:
+        result.root = nil
+        result.error = "path-empty"
+        return result
+        try:
+            let content = syncio.readFile(path)
+            if len(content) == 0:
+                result.root = nil
+                result.error = "empty-file"
+                return result
+                let parsed = parseJson(content)
+                let rootNode = parseNode(parsed, 0, "root")
+                gatherDiagnostics(parsed, metrics)
+                result.root = rootNode
+                result.error = "" result
+        except CatchableError as
+        e: result.root = nil
+        result.error = e.msg result
+fn visitDiff(node: Visual izationNode, depth: int, maxRows: int, table1: var Table[str, Visual izationNode], table2: var Table[str, Visual izationNode], rows: var Visual izationRow[]) =
+    if node == nil || len(rows) >= maxRows:
+        return
+        var kind = vdkSame
+        let present1 = hasStringNodeKey(table1, node.id)
+        let present2 = hasStringNodeKey(table2, node.id)
+        if present1 && ! present2:
+            kind = vdkRemoved
+        elif present2 && ! present1:
+            kind = vdkAdded
+        elif present1 && present2:
+            let a = getStringNode(table1, node.id)
+            let b = getStringNode(table2, node.id)
+            if a == nil || b == nil:
+                kind = vdkChanged
+            elif nodeLabel(a) != nodeLabel(b) || nodeValue(a) != nodeValue(b):
+                kind = vdkChanged
+                var row: Visual
+                izationRow
+                row.depth = depth
+                row.label = node.label
+                row.value = node.value
+                row.diffKind = kind rows.add(row)
+                if len(rows) >= maxRows:
+                    return for child in node.children: if len(rows) >= maxRows: break visitDiff(child, depth + 1, maxRows, table1, table2, rows)
+fn computeDiff(model: Visual izationModel) =
+    var table1 = initStringNodeTable()
+    var table2 = initStringNodeTable()
+    flatten(model.rootPass1, table1)
+    flatten(model.rootPass2, table2)
+    model.metrics.nodesPass1 = len(table1.keys)
+    model.metrics.nodesPass2 = len(table2.keys)
+    var rows = default[Visual izationRow[]]
+    var added = 0
+    var removed = 0
+    var changed = 0
+    var unchanged = 0
+    for idx in 0..<len(table1.keys):
+        let id = table1.keys[idx]
+        let node = table1.values[idx]
+        if hasStringNodeKey(table2, id):
+            let other = getStringNode(table2, id)
+            if other != nil && nodeLabel(node) == nodeLabel(other) && nodeValue(node) == nodeValue(other):
+                unchanged = unchanged + 1
+            else:
+                changed = changed + 1
+            else:
+                removed = removed + 1
+                for idx2 in 0..<len(table2.keys):
+                    let id = table2.keys[idx2]
+                    if ! hasStringNodeKey(table1, id):
+                        added = added + 1
+                        model.metrics.added = added
+                        model.metrics.removed = removed
+                        model.metrics.changed = changed
+                        model.metrics.unchanged = unchanged
+                        let totalNodes = max(1, len(table1.keys) + len(table2.keys))
+                        let diffTotal = float(added + removed + changed)
+                        let total = float(totalNodes)
+                        model.metrics.diffRatio = diffTotal / total
+                        visitDiff(model.rootPass2, 0, model.maxRows, table1, table2, rows)
+                        model.rows = rows
+fn setSnapshots(model: Visual izationModel, pass1Path, pass2Path: str) =
+    if model == nil:
+        return model.pass1Path = pass1Path
+        model.pass2Path = pass2Path
+        model.metrics = initVisualizationMetrics()
+        if len(pass1Path) > 0:
+            var metricsPass1 = initVisualizationMetrics()
+            let snapshot1 = loadSnapshot(pass1Path, metricsPass1)
+            if len(snapshot1.error) > 0:
+                model.metrics.errors.add("pass1: " + snapshot1.error)
+                model.rootPass1 = snapshot1.root
+                model.metrics.pass1BorrowConflicts = metricsPass1.pass2BorrowConflicts
+                if len(pass2Path) > 0:
+                    var metricsPass2 = initVisualizationMetrics()
+                    let snapshot2 = loadSnapshot(pass2Path, metricsPass2)
+                    if len(snapshot2.error) > 0:
+                        model.metrics.errors.add("pass2: " + snapshot2.error)
+                        model.rootPass2 = snapshot2.root
+                        model.metrics.pass2BorrowConflicts = metricsPass2.pass2BorrowConflicts
+                        model.metrics.diagnostics = metricsPass2.diagnostics
+                        computeDiff(model)
+fn setSnapshotsFromJson(model: Visual izationModel, pass1, pass2: JsonNode) =
+    if model == nil:
+        return model.pass1Path = ""
+        model.pass2Path = ""
+        model.metrics = initVisualizationMetrics()
+        if pass1 != nil:
+            model.rootPass1 = parseNode(pass1, 0, "pass1")
+        else:
+            model.rootPass1 = nil
+            if pass2 != nil:
+                model.rootPass2 = parseNode(pass2, 0, "pass2")
+                gatherDiagnostics(pass2, model.metrics)
+            else:
+                model.rootPass2 = nil
+                computeDiff(model)
+fn diffColor(theme: Visual izationTheme, kind: Visual izationDiffKind): uint32 =
+    case kind
+    of vdkSame:
+        theme.textNormal
+    of vdkAdded:
+        theme.textAdded
+    of vdkRemoved:
+        theme.textRe moved
+    of vdkChanged:
+        theme.textChanged
+fn renderVisualization(model: Visual izationModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background)
+        let headerPrefix = "mode=" + modeLabel(model.mode) + " nodes(pass1=" + intToStr(int32(model.metrics.nodesPass1))
+        let header = headerPrefix + ", pass2=" + intToStr(int32(model.metrics.nodesPass2)) + ") diff=" + formatFloat(model.metrics.diffRatio, ffDecimal, 3)
+        let headerRect = makeRect(rect.origin.x + 8.0, rect.origin.y + 6.0, rect.size.width - 16.0, 20.0) ctx.drawText(headerRect, header, model.theme.textHeader, 14.0)
+        var offsetY = rect.origin.y + 28
+        let lineHeight = 16.0
+        for row in model.rows:
+            if offsetY + lineHeight > rect.origin.y + rect.size.height:
+                break
+                let prefix = case row.diffKind
+                of vdkSame:
+                    " "
+                    of vdkAdded:
+                        "+"
+                        of vdkRemoved:
+                            "-"
+                            of vdkChanged:
+                                "~"
+                                let indent = repeat(' ', row.depth * 2)
+                                let text = indent + prefix + " " + row.label &(if len(row.value) > 0: " => " + row.value else: "")
+                                let lineRect = makeRect(rect.origin.x + 8.0, offsetY, rect.size.width - 16.0, lineHeight)
+                                ctx.drawText(lineRect, text, diffColor(model.theme, row.diffKind), 13.0)
+                                offsetY = offsetY + lineHeight
+                                if len(model.metrics.errors) > 0:
+                                    var errY = offsetY + 8
+                                    for err in model.metrics.errors:
+                                        if errY + lineHeight > rect.origin.y + rect.size.height:
+                                            break
+                                            let errRect = makeRect(rect.origin.x + 8.0, errY, rect.size.width - 16.0, lineHeight)
+                                            ctx.drawText(errRect, "error: " + err, model.theme.textRe moved, 12.0)
+                                            errY = errY + lineHeight
+fn visualizationSum
+mary(model: Visual izationModel): str = if model == nil: return "[visualization]\n  status=uninitialized\n"
+var lines = default[str[]] lines.add "[visualization]\n" lines.add "  mode=" + modeLabel(model.mode) + "\n" lines.add "  nodes_pass1=" + intToStr(int32(model.metrics.nodesPass1)) + "\n" lines.add "  nodes_pass2=" + intToStr(int32(model.metrics.nodesPass2)) + "\n" lines.add "  added=" + intToStr(int32(model.metrics.added)) + "\n" lines.add "  removed=" + intToStr(int32(model.metrics.removed)) + "\n" lines.add "  changed=" + intToStr(int32(model.metrics.changed)) + "\n" lines.add "  diff_ratio=" + formatFloat(model.metrics.diffRatio, ffDecimal, 3) + "\n"
+if model.mode == vmArc:
+    lines.add "  arc_nodes=" + intToStr(int32(model.metrics.arcNodes)) + "\n" lines.add "  arc_events=" + intToStr(int32(model.metrics.arcEvents)) + "\n"
+    if len(model.metrics.arcEventCounts.keys) > 0:
+        for idx in 0..<len(model.metrics.arcEventCounts.keys):
+            let key = model.metrics.arcEventCounts.keys[idx]
+            let value = model.metrics.arcEventCounts.values[idx]
+            lines.add "  arc_event_" + key + "=" + intToStr(int32(value)) + "\n"
+            if len(model.metrics.arcBorrowKinds.keys) > 0:
+                var idx = 0
+                while idx < len(model.metrics.arcBorrowKinds.keys):
+                    let key = model.metrics.arcBorrowKinds.keys[idx]
+                    let value = model.metrics.arcBorrowKinds.values[idx]
+                    lines.add "  arc_borrow_" + key + "=" + intToStr(int32(value)) + "\n"
+                    if len(model.metrics.arcTh reads.keys) > 0:
+                        var idx = 0
+                        while idx < len(model.metrics.arcTh reads.keys):
+                            let key = model.metrics.arcTh reads.keys[idx]
+                            let value = model.metrics.arcTh
+                            reads.values[idx]
+                            lines.add "  arc_thread_" + key + "=" + intToStr(int32(value)) + "\n"
+                            if len(model.metrics.arcSharedModes.keys) > 0:
+                                var idx = 0
+                                while idx < len(model.metrics.arcSharedModes.keys):
+                                    let key = model.metrics.arcSharedModes.keys[idx]
+                                    let value = model.metrics.arcSharedModes.values[idx]
+                                    lines.add "  arc_shared_" + key + "=" + intToStr(int32(value)) + "\n"
+                                    if len(model.metrics.arcConfirmations.keys) > 0:
+                                        var idx = 0
+                                        while idx < len(model.metrics.arcConfirmations.keys):
+                                            let key = model.metrics.arcConfirmations.keys[idx]
+                                            let value = model.metrics.arcConfirmations.values[idx]
+                                            lines.add "  arc_confirm_" + key + "=" + intToStr(int32(value)) + "\n"
+                                            if model.metrics.ownershipEvents > 0:
+                                                lines.add "  ownership_events=" + intToStr(int32(model.metrics.ownershipEvents)) + "\n"
+                                                if len(model.metrics.ownershipAccessCounts.keys) > 0:
+                                                    var idx = 0
+                                                    while idx < len(model.metrics.ownershipAccessCounts.keys):
+                                                        let key = model.metrics.ownershipAccessCounts.keys[idx]
+                                                        let value = model.metrics.ownershipAccessCounts.values[idx]
+                                                        lines.add "  ownership_access_" + key + "=" + intToStr(int32(value)) + "\n"
+                                                        if len(model.metrics.ownershipThreadCounts.keys) > 0:
+                                                            var idx = 0
+                                                            while idx < len(model.metrics.ownershipThreadCounts.keys):
+                                                                let key = model.metrics.ownershipThreadCounts.keys[idx]
+                                                                let value = model.metrics.ownershipThreadCounts.values[idx]
+                                                                lines.add "  ownership_thread_" + key + "=" + intToStr(int32(value)) + "\n"
+                                                                if model.metrics.pass2BorrowConflicts > 0:
+                                                                    lines.add "  borrow_conflicts=" + intToStr(int32(model.metrics.pass2BorrowConflicts)) + "\n"
+                                                                        if len(model.metrics.diagnostics) > 0:
+                                                                            lines.add "  diagnostics=" + intToStr(int32(len(model.metrics.diagnostics))) + "\n"
+                                                                            if len(model.metrics.errors) > 0:
+                                                                                lines.add "  errors=" + intToStr(int32(len(model.metrics.errors))) + "\n" lines.join("")
+fn metrics(model: Visual izationModel): Visual
+izationMetrics = if model == nil: var empty: Visual izationMetrics
+return empty
+return model.metrics

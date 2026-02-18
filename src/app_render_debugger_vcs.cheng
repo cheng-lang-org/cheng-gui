@@ -1,0 +1,806 @@
+import std/os
+import std/times
+import tables
+import cheng/decentralized/json_parse as jparse
+import cheng/runtime/json_ast as json
+import ide/textutils
+import cheng/gui/services/syntax as syntax
+import cheng/gui/services/diagnostics as diag
+
+fn guiDebuggerHeader(state: DebuggerState): str =
+    let status = if len(state.status) > 0: state.status else: "idle"
+    return "DEBUGGER (" + status + ")"
+
+fn guiDebuggerLines(state: DebuggerState): str[] =
+    var outVal: str[] = default[str[]]
+    let status = if len(state.status) > 0: state.status else: "idle"
+    addPtr_string(&outVal, "status: " + status)
+    if len(state.reason) > 0:
+        addPtr_string(&outVal, "reason: " + state.reason)
+    addPtr_string(&outVal, "breakpoints (" + intToStr(seqLenString(state.breakpoints)) + ")")
+    for idx in 0..<seqLenString(state.breakpoints):
+        addPtr_string(&outVal, "bp " + seqGetString(state.breakpoints, idx))
+    addPtr_string(&outVal, "frames (" + intToStr(seqLenString(state.frames)) + ")")
+    for idx in 0..<seqLenString(state.frames):
+        addPtr_string(&outVal, "# " + seqGetString(state.frames, idx))
+    addPtr_string(&outVal, "watch (" + intToStr(seqLenString(state.watches)) + ")")
+    for idx in 0..<seqLenString(state.watches):
+        addPtr_string(&outVal, "@ " + seqGetString(state.watches, idx))
+    addPtr_string(&outVal, "vars (" + intToStr(seqLenString(state.variables)) + ")")
+    for idx in 0..<seqLenString(state.variables):
+        addPtr_string(&outVal, seqGetString(state.variables, idx))
+    return outVal
+
+fn guiDebuggerLoadFromText(content: str): DebuggerState =
+    var dbg: DebuggerState = defaultDebuggerState()
+    let lines: str[] = splitLinesSimple(content)
+    for idx in 0..<seqLenString(lines):
+        let raw = trimLine(seqGetString(lines, idx))
+        if len(raw) == 0:
+            continue
+        if startsWithPrefix(raw, "status:"):
+            let value = trimLine(sliceFrom(raw, 7))
+            if len(value) > 0:
+                dbg.status = value
+        elif startsWithPrefix(raw, "reason:"):
+            dbg.reason = trimLine(sliceFrom(raw, 7))
+        elif startsWithPrefix(raw, "breakpoint:"):
+            let value = trimLine(sliceFrom(raw, 11))
+            addUniqueString(&dbg.breakpoints, value)
+        elif startsWithPrefix(raw, "bp:"):
+            let value = trimLine(sliceFrom(raw, 3))
+            addUniqueString(&dbg.breakpoints, value)
+        elif startsWithPrefix(raw, "frame:"):
+            let value = trimLine(sliceFrom(raw, 6))
+            if len(value) > 0:
+                addPtr_string(&dbg.frames, value)
+        elif startsWithPrefix(raw, "var:"):
+            let value = trimLine(sliceFrom(raw, 4))
+            if len(value) > 0:
+                addPtr_string(&dbg.variables, value)
+        elif startsWithPrefix(raw, "variable:"):
+            let value = trimLine(sliceFrom(raw, 9))
+            if len(value) > 0:
+                addPtr_string(&dbg.variables, value)
+        elif startsWithPrefix(raw, "watch:"):
+            let value = trimLine(sliceFrom(raw, 6))
+            if len(value) > 0:
+                addPtr_string(&dbg.watches, value)
+        elif startsWithPrefix(raw, "watch"):
+            let value = trimLine(sliceFrom(raw, 5))
+            if len(value) > 0:
+                addPtr_string(&dbg.watches, value)
+    return dbg
+
+fn guiDebuggerApplyOutput(state: DebuggerState, output: str): DebuggerState =
+    var next = state
+    var sawAny: bool = false
+    var sawBreakpoints: bool = false
+    var sawFrames: bool = false
+    var sawVars: bool = false
+    var sawWatches: bool = false
+    var newBreakpoints: str[] = default[str[]]
+    var newFrames: str[] = default[str[]]
+    var newVars: str[] = default[str[]]
+    var newWatches: str[] = default[str[]]
+    let lines: str[] = splitLinesSimple(output)
+    for idx in 0..<seqLenString(lines):
+        let raw = trimLine(seqGetString(lines, idx))
+        if len(raw) == 0:
+            continue
+        if startsWithPrefix(raw, "status:"):
+            let value = trimLine(sliceFrom(raw, len("status:")))
+            if len(value) > 0:
+                next.status = value
+                sawAny = true
+        elif startsWithPrefix(raw, "reason:"):
+            next.reason = trimLine(sliceFrom(raw, len("reason:")))
+            sawAny = true
+        elif startsWithPrefix(raw, "breakpoints:"):
+            sawBreakpoints = true
+            sawAny = true
+        elif startsWithPrefix(raw, "breakpoint:"):
+            sawBreakpoints = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("breakpoint:")))
+            if len(value) > 0:
+                addPtr_string(&newBreakpoints, value)
+        elif startsWithPrefix(raw, "bp:"):
+            sawBreakpoints = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("bp:")))
+            if len(value) > 0:
+                addPtr_string(&newBreakpoints, value)
+        elif startsWithPrefix(raw, "bp "):
+            sawBreakpoints = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("bp ")))
+            if len(value) > 0:
+                addPtr_string(&newBreakpoints, value)
+        elif startsWithPrefix(raw, "frames:"):
+            sawFrames = true
+            sawAny = true
+        elif startsWithPrefix(raw, "frame:"):
+            sawFrames = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("frame:")))
+            if len(value) > 0:
+                addPtr_string(&newFrames, value)
+        elif startsWithPrefix(raw, "#"):
+            sawFrames = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, 1))
+            if len(value) > 0:
+                addPtr_string(&newFrames, value)
+        elif startsWithPrefix(raw, "vars:"):
+            sawVars = true
+            sawAny = true
+        elif startsWithPrefix(raw, "variables:"):
+            sawVars = true
+            sawAny = true
+        elif startsWithPrefix(raw, "var:"):
+            sawVars = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("var:")))
+            if len(value) > 0:
+                addPtr_string(&newVars, value)
+        elif startsWithPrefix(raw, "variable:"):
+            sawVars = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("variable:")))
+            if len(value) > 0:
+                addPtr_string(&newVars, value)
+        elif startsWithPrefix(raw, "watch:"):
+            sawWatches = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("watch:")))
+            if len(value) > 0:
+                addPtr_string(&newWatches, value)
+        elif startsWithPrefix(raw, "watch "):
+            sawWatches = true
+            sawAny = true
+            let value = trimLine(sliceFrom(raw, len("watch ")))
+            if len(value) > 0:
+                addPtr_string(&newWatches, value)
+    if ! sawAny:
+        return state
+    if sawBreakpoints:
+        next.breakpoints = newBreakpoints
+    if sawFrames:
+        next.frames = newFrames
+    if sawVars:
+        next.variables = newVars
+    if sawWatches:
+        next.watches = newWatches
+    return next
+
+fn guiDebuggerClear(state: GuiState): GuiState =
+    state.debugger = defaultDebuggerState()
+    state.statusMsg = "debug: cleared"
+    return state
+
+fn guiDebuggerSetStatus(state: GuiState, status: str, reason: str): GuiState =
+    let trimmed = trimLine(status)
+    if len(trimmed) == 0:
+        state.statusMsg = "debug: status required"
+        return state
+    state.debugger.status = trimmed
+    state.debugger.reason = trimLine(reason)
+    state.statusMsg = "debug: " + trimmed
+    return state
+
+fn guiDebuggerLoad(state: GuiState, path: str): GuiState =
+    let trimmed = trimLine(path)
+    if len(trimmed) == 0:
+        state.statusMsg = "debug: path required"
+        return state
+    let resolved = resolveWorkspacePath(state, trimmed)
+    if ! fileExists(resolved):
+        state.statusMsg = "debug: not found"
+        return state
+    let content = readFile(resolved)
+    var dbg: DebuggerState = guiDebuggerLoadFromText(content)
+    dbg.sourcePath = resolved
+    state.debugger = dbg
+    state.statusMsg = "debug: loaded"
+    return state
+
+fn guiDebuggerRefresh(state: GuiState): GuiState =
+    if guiDebugBackendAvailable():
+        return guiDebugBackendRun(state, "refresh", "")
+    if len(state.debugger.sourcePath) == 0:
+        state.statusMsg = "debug: no source"
+        return state
+    return guiDebuggerLoad(state, state.debugger.sourcePath)
+
+fn guiDebuggerFormatBreakpoint(state: GuiState, path: str, line: int32): str =
+    if len(path) == 0 || line <= 0:
+        return ""
+    let rel = pathRelativeToRoot(state.projectRoot, path)
+    return rel + ":" + intToStr(line)
+
+fn guiDebuggerAddBreakpoint(state: GuiState, target: str): GuiState =
+    var path = ""
+    var line: int32 = 0
+    let trimmed = trimLine(target)
+    if len(trimmed) == 0:
+        if len(state.editor.filePath) == 0:
+            state.statusMsg = "bp: no file"
+            return state
+        path = state.editor.filePath
+        line = state.editor.cursorLine + 1
+    else:
+        let parsed: PathLineCol = parsePathLineCol(trimmed)
+        if len(parsed.path) == 0 && isAllDigits(trimmed):
+            if len(state.editor.filePath) == 0:
+                state.statusMsg = "bp: no file"
+                return state
+            path = state.editor.filePath
+            line = parseInt32(trimmed, 0)
+        else:
+            if len(parsed.path) > 0:
+                path = resolveWorkspacePath(state, parsed.path)
+            else:
+                path = resolveWorkspacePath(state, trimmed)
+            if parsed.hasLine:
+                line = parsed.line + 1
+            else:
+                line = state.editor.cursorLine + 1
+    let label = guiDebuggerFormatBreakpoint(state, path, line)
+    if len(label) == 0:
+        state.statusMsg = "bp: invalid"
+        return state
+    addUniqueString(&state.debugger.breakpoints, label)
+    state.statusMsg = "bp: added"
+    return state
+
+fn removeStringValueMatch(items: str[]*, value: str): bool =
+    for idx in 0..<seqLenString(*items):
+        if seqGetString(*items, idx) == value:
+            seqDeleteString(items, idx)
+            return true
+    return false
+
+fn guiDebuggerRemoveBreakpoint(state: GuiState, token: str): GuiState =
+    let trimmed = trimLine(token)
+    if len(trimmed) == 0:
+        state.statusMsg = "bp: target required"
+        return state
+    if isAllDigits(trimmed):
+        let idx: int32 = parseInt32(trimmed, 0) - 1
+        if idx < 0 || idx >= seqLenString(state.debugger.breakpoints):
+            state.statusMsg = "bp: not found"
+            return state
+        seqDeleteString(&state.debugger.breakpoints, idx)
+        state.statusMsg = "bp: removed"
+        return state
+    let parsed: PathLineCol = parsePathLineCol(trimmed)
+    var key = trimmed
+    if len(parsed.path) > 0 && parsed.hasLine:
+        let resolved = resolveWorkspacePath(state, parsed.path)
+        key = guiDebuggerFormatBreakpoint(state, resolved, parsed.line + 1)
+    if removeStringValueMatch(&state.debugger.breakpoints, key):
+        state.statusMsg = "bp: removed"
+    else:
+        state.statusMsg = "bp: not found"
+    return state
+
+fn guiDebuggerHelp(state: GuiState): GuiState =
+    state.terminal = pushTerminalLine(state.terminal, "debug: status <idle|running|paused|stopped> [reason]")
+    state.terminal = pushTerminalLine(state.terminal, "debug: load <path>, refresh, sync, clear")
+    state.terminal = pushTerminalLine(state.terminal, "debug: run/continue/step/next/pause/stop (CHENG_IDE_DEBUG_CMD)")
+    state.terminal = pushTerminalLine(state.terminal, "bp: add [path:line|line], del <idx|path:line>, clear")
+    state.terminal = pushTerminalLine(state.terminal, "frames: set <items...>, clear")
+    state.terminal = pushTerminalLine(state.terminal, "vars: set <items...>, clear")
+    state.terminal = pushTerminalLine(state.terminal, "watch: add <expr>, del <idx|expr>, clear")
+    return state
+
+fn guiDebuggerAddWatch(state: GuiState, expr: str): GuiState =
+    let trimmed = trimLine(expr)
+    if len(trimmed) == 0:
+        state.statusMsg = "watch: expr required"
+        return state
+    addUniqueString(&state.debugger.watches, trimmed)
+    state.statusMsg = "watch: added"
+    return state
+
+fn guiDebuggerRemoveWatch(state: GuiState, token: str): GuiState =
+    let trimmed = trimLine(token)
+    if len(trimmed) == 0:
+        state.statusMsg = "watch: target required"
+        return state
+    if isAllDigits(trimmed):
+        let idx: int32 = parseInt32(trimmed, 0) - 1
+        if idx < 0 || idx >= seqLenString(state.debugger.watches):
+            state.statusMsg = "watch: not found"
+            return state
+        seqDeleteString(&state.debugger.watches, idx)
+        state.statusMsg = "watch: removed"
+        return state
+    if removeStringValueMatch(&state.debugger.watches, trimmed):
+        state.statusMsg = "watch: removed"
+    else:
+        state.statusMsg = "watch: not found"
+    return state
+
+fn guiDebuggerListWatches(state: GuiState): GuiState =
+    let count: int32 = seqLenString(state.debugger.watches)
+    state.terminal = pushTerminalLine(state.terminal, "watches: " + intToStr(count))
+    for idx in 0..<count:
+        let line = intToStr(idx + 1) + ". " + seqGetString(state.debugger.watches, idx)
+        state.terminal = pushTerminalLine(state.terminal, line)
+    return state
+
+fn guiDebugBackendAvailable(): bool =
+    return len(getEnv("CHENG_IDE_DEBUG_CMD")) > 0
+
+fn guiDebugListPayload(items: str[]): str =
+    var outVal: str = ""
+    for idx in 0..<seqLenString(items):
+        if len(outVal) > 0:
+            outVal = outVal + ";"
+        outVal = outVal + seqGetString(items, idx)
+    return outVal
+
+fn guiDebugBackendCommand(state: GuiState, action: str, args: str): str =
+    var cmd = getEnv("CHENG_IDE_DEBUG_CMD")
+    if len(cmd) == 0:
+        return ""
+    let hasAction: bool = indexOfSubstr(cmd, "{action}", 0) >= 0
+    let hasArgs: bool = indexOfSubstr(cmd, "{args}", 0) >= 0
+    let hasBreakpoints: bool = indexOfSubstr(cmd, "{breakpoints}", 0) >= 0
+    let hasWatches: bool = indexOfSubstr(cmd, "{watches}", 0) >= 0
+    if hasAction:
+        cmd = guiReplaceAllText(cmd, "{action}", action)
+    if hasArgs:
+        cmd = guiReplaceAllText(cmd, "{args}", args)
+    if hasBreakpoints:
+        let payload = guiShellQuote(guiDebugListPayload(state.debugger.breakpoints))
+        cmd = guiReplaceAllText(cmd, "{breakpoints}", payload)
+    if hasWatches:
+        let payload = guiShellQuote(guiDebugListPayload(state.debugger.watches))
+        cmd = guiReplaceAllText(cmd, "{watches}", payload)
+    if ! hasAction && len(action) > 0:
+        cmd = cmd + " " + action
+    if ! hasArgs && len(args) > 0:
+        cmd = cmd + " " + args
+    return cmd
+
+fn guiDebugBackendRun(state: GuiState, action: str, args: str): GuiState =
+    let cmd = guiDebugBackendCommand(state, action, args)
+    if len(cmd) == 0:
+        state.statusMsg = "debug: no backend"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let workDir = if len(state.projectRoot) > 0: state.projectRoot else: getCurrentDir()
+    state.terminal = pushTerminalLine(state.terminal, "[debug] " + cmd)
+    state = guiTaskLogAdd(state, "[debug] " + cmd)
+    let result: ExecCmdResult = execCmdEx(cmd, {poStdErrToStdOut}, workDir)
+    state.terminal = guiTerminalAppendOutput(state.terminal, result.output)
+    state.debugger = guiDebuggerApplyOutput(state.debugger, result.output)
+    let exitText = "debug exit=" + intToStr(int32(result.exitCode))
+    state.terminal = pushTerminalLine(state.terminal, exitText)
+    let label = if len(action) > 0: action else: "cmd"
+    state.statusMsg = "debug: " + label + " " + exitText
+    return state
+
+fn guiVcsTrimStatus(line: str): str =
+    let trimmed = textutils.strip(line)
+    if startsWithPrefix(trimmed, "## "):
+        return sliceFrom(trimmed, 3)
+    return trimmed
+
+fn guiVcsStatusFromOutput(output: str): str =
+    let lines: str[] = splitLinesSimple(output)
+    for idx in 0..<seqLenString(lines):
+        let raw = seqGetString(lines, idx)
+        let trimmed = textutils.strip(raw)
+        if len(trimmed) > 0:
+            if startsWithPrefix(trimmed, "## "):
+                return guiVcsTrimStatus(trimmed)
+            return ""
+    return ""
+
+fn guiVcsLinesFromOutput(output: str): str[] =
+    var outVal: str[] = default[str[]]
+    let lines: str[] = splitLinesSimple(output)
+    for idx in 0..<seqLenString(lines):
+        let raw = seqGetString(lines, idx)
+        let trimmed = textutils.strip(raw)
+        if len(trimmed) == 0:
+            continue
+        if startsWithPrefix(trimmed, "## "):
+            continue
+        let line = textutils.stripTrailing(raw, {' ', '\t', '\r'})
+        if seqLenString(outVal) < MaxVcsLines:
+            addPtr_string(&outVal, line)
+    return outVal
+
+fn guiVcsSummaryForError(output: str): str =
+    let trimmed = trimLine(output)
+    if len(trimmed) == 0:
+        return "not a git repo"
+    let lowered = textutils.toLowerAscii(trimmed)
+    if indexOfSubstr(lowered, "not a git", 0) >= 0:
+        return "not a git repo"
+    if indexOfSubstr(lowered, "fatal", 0) >= 0:
+        return "git error"
+    return trimmed
+
+fn guiVcsRefreshInternalAt(state: GuiState, announce: bool, workDir: str): GuiState =
+    let root = if len(workDir) > 0: workDir else: guiWorkspaceActiveRoot(state)
+    state.vcsRoot = root
+    if envFlagEnabled(getEnv("CHENG_IDE_DEBUG_STARTUP"), false):
+        textutils.print("[startup] vcs exec start\n")
+    let result: ExecCmdResult = execCmdEx("git status --porcelain=v1 -b", {poStdErrToStdOut}, root)
+    if envFlagEnabled(getEnv("CHENG_IDE_DEBUG_STARTUP"), false):
+        textutils.print("[startup] vcs exec done\n")
+    if result.exitCode != 0:
+        state.vcsSummary = guiVcsSummaryForError(result.output)
+        state.vcsLines = default[str[]]
+        if announce:
+            state.statusMsg = "vcs: " + state.vcsSummary
+            state.terminal = pushTerminalLine(state.terminal, "vcs: " + state.vcsSummary)
+        return state
+    let summary = guiVcsStatusFromOutput(result.output)
+    state.vcsSummary = if len(summary) > 0: summary else: "clean"
+    state.vcsLines = guiVcsLinesFromOutput(result.output)
+    if announce:
+        state.statusMsg = "vcs: " + state.vcsSummary
+    return state
+
+fn guiVcsRefreshInternal(state: GuiState, announce: bool): GuiState =
+    return guiVcsRefreshInternalAt(state, announce, "")
+
+fn guiVcsRefresh(state: GuiState): GuiState =
+    return guiVcsRefreshInternal(state, true)
+
+fn guiVcsRefreshSilent(state: GuiState): GuiState =
+    return guiVcsRefreshInternal(state, false)
+
+fn guiVcsBranchFromSummary(summary: str): str =
+    let trimmed = trimLine(summary)
+    if ! startsWithPrefix(trimmed, "## "):
+        return ""
+    if len(trimmed) <= 3:
+        return ""
+    var branch = sliceFrom(trimmed, 3)
+    let spaceIdx: int32 = indexOfSubstr(branch, " ", 0)
+    if spaceIdx >= 0:
+        branch = sliceRange(branch, 0, spaceIdx - 1)
+    let ellipsisIdx: int32 = indexOfSubstr(branch, "...", 0)
+    if ellipsisIdx >= 0:
+        branch = sliceRange(branch, 0, ellipsisIdx - 1)
+    return branch
+
+fn guiVcsDiffCommand(state: GuiState, arg: str): VcsCommand =
+    var outVal: VcsCommand
+    let trimmed = trimLine(arg)
+    var staged = false
+    var target = ""
+    if len(trimmed) > 0:
+        let parts: str[] = splitCommandArgs(trimmed)
+        for idx in 0..<seqLenString(parts):
+            let part = seqGetString(parts, idx)
+            if part == "--staged" || part == "--cached":
+                staged = true
+            elif len(target) == 0:
+                target = part
+    if len(target) == 0:
+        target = state.editor.filePath
+    let stagedFlag = if staged: " --staged" else: ""
+    if len(target) == 0:
+        outVal.cmd = "git diff" + stagedFlag
+        outVal.workDir = guiWorkspaceActiveRoot(state)
+        return outVal
+    let resolved = resolveWorkspacePath(state, target)
+    let root = guiWorkspaceRootForResolved(state, resolved)
+    let workDir = if len(root) > 0: root else: guiWorkspaceActiveRoot(state)
+    let relPath = pathRelativeToRoot(workDir, resolved)
+    outVal.cmd = "git diff" + stagedFlag + " -- " + guiShellQuote(relPath)
+    outVal.workDir = workDir
+    return outVal
+
+fn guiVcsBlameCommand(state: GuiState, arg: str): VcsCommand =
+    var outVal: VcsCommand
+    let trimmed = trimLine(arg)
+    var target = ""
+    var lineIdx: int32 = -1
+    if len(trimmed) == 0:
+        target = state.editor.filePath
+        if len(target) == 0:
+            return outVal
+        lineIdx = state.editor.cursorLine
+    else:
+        let tokens: str[] = splitCommandArgs(trimmed)
+        if seqLenString(tokens) == 0:
+            target = state.editor.filePath
+            if len(target) == 0:
+                return outVal
+            lineIdx = state.editor.cursorLine
+        else:
+            let first = seqGetString(tokens, 0)
+            if isAllDigits(first):
+                target = state.editor.filePath
+                if len(target) == 0:
+                    return outVal
+                lineIdx = parseInt32(first, 0) - 1
+            else:
+                let parsed: PathLineCol = parsePathLineCol(first)
+                if len(parsed.path) > 0:
+                    target = parsed.path
+                else:
+                    target = first
+                if parsed.hasLine:
+                    lineIdx = parsed.line
+                if lineIdx < 0 && seqLenString(tokens) > 1:
+                    let second = seqGetString(tokens, 1)
+                    if isAllDigits(second):
+                        lineIdx = parseInt32(second, 0) - 1
+    if len(target) == 0:
+        return outVal
+    let resolved = resolveWorkspacePath(state, target)
+    let root = guiWorkspaceRootForResolved(state, resolved)
+    let workDir = if len(root) > 0: root else: guiWorkspaceActiveRoot(state)
+    let relPath = pathRelativeToRoot(workDir, resolved)
+    if lineIdx >= 0:
+        let lineNo: int32 = lineIdx + 1
+        let lineLabel = intToStr(lineNo)
+        outVal.cmd = "git blame -L " + lineLabel + "," + lineLabel + " -- " + guiShellQuote(relPath)
+        outVal.workDir = workDir
+        return outVal
+    outVal.cmd = "git blame -- " + guiShellQuote(relPath)
+    outVal.workDir = workDir
+    return outVal
+
+fn guiVcsHistoryCommand(state: GuiState, arg: str): VcsCommand =
+    var outVal: VcsCommand
+    let trimmed = trimLine(arg)
+    var target = ""
+    var lineIdx: int32 = -1
+    if len(trimmed) == 0:
+        target = state.editor.filePath
+    else:
+        let tokens: str[] = splitCommandArgs(trimmed)
+        if seqLenString(tokens) == 0:
+            target = state.editor.filePath
+        else:
+            let first = seqGetString(tokens, 0)
+            if isAllDigits(first):
+                target = state.editor.filePath
+                lineIdx = parseInt32(first, 0) - 1
+            else:
+                let parsed: PathLineCol = parsePathLineCol(first)
+                if len(parsed.path) > 0:
+                    target = parsed.path
+                else:
+                    target = first
+                if parsed.hasLine:
+                    lineIdx = parsed.line
+                if lineIdx < 0 && seqLenString(tokens) > 1:
+                    let second = seqGetString(tokens, 1)
+                    if isAllDigits(second):
+                        lineIdx = parseInt32(second, 0) - 1
+    if len(target) == 0:
+        outVal.cmd = "git log --oneline --decorate -n 50"
+        outVal.workDir = guiWorkspaceActiveRoot(state)
+        return outVal
+    let resolved = resolveWorkspacePath(state, target)
+    let root = guiWorkspaceRootForResolved(state, resolved)
+    let workDir = if len(root) > 0: root else: guiWorkspaceActiveRoot(state)
+    let relPath = pathRelativeToRoot(workDir, resolved)
+    if lineIdx >= 0:
+        let lineNo: int32 = lineIdx + 1
+        let lineLabel = intToStr(lineNo)
+        let rangeSpec = lineLabel + "," + lineLabel + ":" + relPath
+        outVal.cmd = "git log -L " + guiShellQuote(rangeSpec)
+        outVal.workDir = workDir
+        return outVal
+    outVal.cmd = "git log --oneline --decorate -n 50 -- " + guiShellQuote(relPath)
+    outVal.workDir = workDir
+    return outVal
+
+fn guiVcsCounts(lines: str[]): VcsCounts =
+    var outVal: VcsCounts
+    for idx in 0..<seqLenString(lines):
+        let line = seqGetString(lines, idx)
+        if len(line) < 2:
+            continue
+        let c0: char = line[0]
+        let c1: char = line[1]
+        if c0 == '?' && c1 == '?':
+            outVal.untracked = outVal.untracked + 1
+            continue
+        if c0 != ' ':
+            outVal.staged = outVal.staged + 1
+        if c1 != ' ':
+            outVal.unstaged = outVal.unstaged + 1
+        if c0 == 'U' || c1 == 'U' || (c0 == 'A' && c1 == 'A') || (c0 == 'D' && c1 == 'D'):
+            outVal.conflicts = outVal.conflicts + 1
+    return outVal
+
+fn guiVcsCountsLabel(counts: VcsCounts): str =
+    var label = ""
+    if counts.staged > 0:
+        label = label + "staged=" + intToStr(counts.staged)
+    if counts.unstaged > 0:
+        if len(label) > 0:
+            label = label + "  "
+        label = label + "unstaged=" + intToStr(counts.unstaged)
+    if counts.untracked > 0:
+        if len(label) > 0:
+            label = label + "  "
+        label = label + "untracked=" + intToStr(counts.untracked)
+    if counts.conflicts > 0:
+        if len(label) > 0:
+            label = label + "  "
+        label = label + "conflicts=" + intToStr(counts.conflicts)
+    if len(label) == 0:
+        label = "clean"
+    return label
+
+fn guiVcsResolveTarget(state: GuiState, arg: str): VcsTarget =
+    var outVal: VcsTarget
+    var target = trimLine(arg)
+    if len(target) == 0:
+        target = state.editor.filePath
+    if len(target) == 0:
+        return outVal
+    if target[0] == '-':
+        outVal.target = target
+        outVal.workDir = guiWorkspaceActiveRoot(state)
+        return outVal
+    if target == "." || target == "./":
+        outVal.target = "."
+        outVal.workDir = guiWorkspaceActiveRoot(state)
+        return outVal
+    let resolved = resolveWorkspacePath(state, target)
+    let root = guiWorkspaceRootForResolved(state, resolved)
+    let workDir = if len(root) > 0: root else: guiWorkspaceActiveRoot(state)
+    let relPath = pathRelativeToRoot(workDir, resolved)
+    outVal.target = relPath
+    outVal.workDir = workDir
+    return outVal
+
+fn guiVcsBlame(state: GuiState, arg: str): GuiState =
+    let res: VcsCommand = guiVcsBlameCommand(state, arg)
+    let cmd: str = res.cmd
+    if len(cmd) == 0:
+        state.statusMsg = "blame: no file"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let runRes: VcsRunResult = guiVcsRunCommand(state, "blame", cmd, res.workDir)
+    return runRes.state
+
+fn guiVcsHistory(state: GuiState, arg: str): GuiState =
+    let res: VcsCommand = guiVcsHistoryCommand(state, arg)
+    let cmd: str = res.cmd
+    if len(cmd) == 0:
+        state.statusMsg = "history: no file"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let runRes: VcsRunResult = guiVcsRunCommand(state, "history", cmd, res.workDir)
+    return runRes.state
+
+fn guiVcsRunCommand(state: GuiState, label: str, command: str, workDir: str): VcsRunResult =
+    var next: GuiState = state
+    var outVal: VcsRunResult
+    outVal.state = next
+    outVal.exitCode = -1
+    if len(command) == 0:
+        return outVal
+    let root = if len(workDir) > 0: workDir else: guiWorkspaceActiveRoot(next)
+    next.terminal = pushTerminalLine(next.terminal, "[vcs] " + label + " " + command)
+    let result: ExecCmdResult = execCmdEx(command, {poStdErrToStdOut}, root)
+    next.terminal = guiTerminalAppendOutput(next.terminal, result.output)
+    let exitCode: int32 = int32(result.exitCode)
+    let exitText = "vcs exit=" + intToStr(exitCode)
+    next.terminal = pushTerminalLine(next.terminal, exitText)
+    next.statusMsg = label + " " + exitText
+    next = guiVcsRefreshInternalAt(next, false, root)
+    outVal.state = next
+    outVal.exitCode = exitCode
+    return outVal
+
+fn guiVcsStage(state: GuiState, arg: str): GuiState =
+    let resolved: VcsTarget = guiVcsResolveTarget(state, arg)
+    let target: str = resolved.target
+    if len(target) == 0:
+        state.statusMsg = "stage: no file"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let cmd = if target[0] == '-': "git add " + target else: "git add -- " + guiShellQuote(target)
+    let res: VcsRunResult = guiVcsRunCommand(state, "stage", cmd, resolved.workDir)
+    return res.state
+
+fn guiVcsUnstage(state: GuiState, arg: str): GuiState =
+    let resolved: VcsTarget = guiVcsResolveTarget(state, arg)
+    let target: str = resolved.target
+    if len(target) == 0:
+        state.statusMsg = "unstage: no file"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let cmd = if target[0] == '-': "git restore --staged " + target else: "git restore --staged -- " + guiShellQuote(target)
+    var res: VcsRunResult = guiVcsRunCommand(state, "unstage", cmd, resolved.workDir)
+    if res.exitCode != 0:
+        let fallback = if target[0] == '-': "git reset -q HEAD " + target else: "git reset -q HEAD -- " + guiShellQuote(target)
+        res = guiVcsRunCommand(res.state, "unstage", fallback, resolved.workDir)
+    return res.state
+
+fn guiVcsCommit(state: GuiState, message: str): GuiState =
+    let trimmed = trimLine(message)
+    if len(trimmed) == 0:
+        state.statusMsg = "commit: message required"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let cmd = "git commit -m " + guiShellQuote(trimmed)
+    let res: VcsRunResult = guiVcsRunCommand(state, "commit", cmd, guiWorkspaceActiveRoot(state))
+    return res.state
+
+fn guiVcsListBranches(state: GuiState): GuiState =
+    let res: VcsRunResult = guiVcsRunCommand(state, "branch", "git branch --no-color", guiWorkspaceActiveRoot(state))
+    return res.state
+
+fn guiVcsCreateBranch(state: GuiState, name: str): GuiState =
+    let trimmed = trimLine(name)
+    if len(trimmed) == 0:
+        state.statusMsg = "branch: name required"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let cmd = "git branch " + guiShellQuote(trimmed)
+    let res: VcsRunResult = guiVcsRunCommand(state, "branch", cmd, guiWorkspaceActiveRoot(state))
+    return res.state
+
+fn guiVcsDeleteBranch(state: GuiState, name: str, force: bool): GuiState =
+    let trimmed = trimLine(name)
+    if len(trimmed) == 0:
+        state.statusMsg = "branch: name required"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let flag = if force: "-D" else: "-d"
+    let cmd = "git branch " + flag + " " + guiShellQuote(trimmed)
+    let res: VcsRunResult = guiVcsRunCommand(state, "branch", cmd, guiWorkspaceActiveRoot(state))
+    return res.state
+
+fn guiVcsCheckout(state: GuiState, name: str): GuiState =
+    let trimmed = trimLine(name)
+    if len(trimmed) == 0:
+        state.statusMsg = "checkout: name required"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    let cmd = "git checkout " + guiShellQuote(trimmed)
+    let res: VcsRunResult = guiVcsRunCommand(state, "checkout", cmd, guiWorkspaceActiveRoot(state))
+    return res.state
+
+fn guiVcsSwitch(state: GuiState, name: str): GuiState =
+    let trimmed = trimLine(name)
+    if len(trimmed) == 0:
+        state.statusMsg = "switch: name required"
+        state.terminal = pushTerminalLine(state.terminal, state.statusMsg)
+        return state
+    var res: VcsRunResult = guiVcsRunCommand(state, "switch", "git switch " + guiShellQuote(trimmed), guiWorkspaceActiveRoot(state))
+    if res.exitCode != 0:
+        res = guiVcsRunCommand(res.state, "switch", "git checkout " + guiShellQuote(trimmed), guiWorkspaceActiveRoot(res.state))
+    return res.state
+
+fn guiVcsListConflicts(state: GuiState): GuiState =
+    var next: GuiState = state
+    let workDir = guiWorkspaceActiveRoot(next)
+    next.terminal = pushTerminalLine(next.terminal, "[vcs] conflicts git diff --name-only --diff-filter=U")
+    let result: ExecCmdResult = execCmdEx("git diff --name-only --diff-filter=U", {poStdErrToStdOut}, workDir)
+    if result.exitCode != 0:
+        next.terminal = guiTerminalAppendOutput(next.terminal, result.output)
+        next.statusMsg = "conflicts: error"
+        return next
+    let lines: str[] = splitLinesSimple(result.output)
+    var listed: int32 = 0
+    for idx in 0..<seqLenString(lines):
+        let line = trimLine(seqGetString(lines, idx))
+        if len(line) > 0:
+            next.terminal = pushTerminalLine(next.terminal, "conflict: " + line)
+            listed = listed + 1
+    if listed == 0:
+        next.terminal = pushTerminalLine(next.terminal, "conflicts: none")
+    next.statusMsg = "conflicts: " + intToStr(listed)
+    next = guiVcsRefreshSilent(next)
+    return next

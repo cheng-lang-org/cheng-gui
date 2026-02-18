@@ -1,0 +1,6 @@
+import cheng/gui/examples_games/werewolf/app
+
+fn main(): int32 =
+    return runWerewolfExample()
+
+main()

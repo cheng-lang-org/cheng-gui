@@ -1,0 +1,252 @@
+{
+  "format": "claude-fullroute-chromium-truth-v1",
+  "source": "external-chromium",
+  "chromium_bin": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "chromium_version": "Google Chrome 144.0.7559.133 ",
+  "generated_at_utc": "2026-02-18T07:05:24Z",
+  "routes": 30,
+  "pixel_tolerance": 0,
+  "states": [
+    {
+      "name": "ecom_main",
+      "rgba_file": "ecom_main.rgba",
+      "framehash_file": "ecom_main.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "0228483b9ecd739d884180a96afee8cb3a5fd08178c19e57ac8a03e5c6442157",
+      "framehash": "843f86fbbbb3627f"
+    },
+    {
+      "name": "home_bazi_overlay_open",
+      "rgba_file": "home_bazi_overlay_open.rgba",
+      "framehash_file": "home_bazi_overlay_open.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "home_channel_manager_open",
+      "rgba_file": "home_channel_manager_open.rgba",
+      "framehash_file": "home_channel_manager_open.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "home_content_detail_open",
+      "rgba_file": "home_content_detail_open.rgba",
+      "framehash_file": "home_content_detail_open.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "home_default",
+      "rgba_file": "home_default.rgba",
+      "framehash_file": "home_default.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "home_ecom_overlay_open",
+      "rgba_file": "home_ecom_overlay_open.rgba",
+      "framehash_file": "home_ecom_overlay_open.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "home_search_open",
+      "rgba_file": "home_search_open.rgba",
+      "framehash_file": "home_search_open.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "home_sort_open",
+      "rgba_file": "home_sort_open.rgba",
+      "framehash_file": "home_sort_open.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "home_ziwei_overlay_open",
+      "rgba_file": "home_ziwei_overlay_open.rgba",
+      "framehash_file": "home_ziwei_overlay_open.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "df03fa60ed6c6e278ed1de3c1db1391ab0cd04315433247a3e9de8c30ce40987",
+      "framehash": "a8e3476b5d5a5787"
+    },
+    {
+      "name": "lang_select",
+      "rgba_file": "lang_select.rgba",
+      "framehash_file": "lang_select.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "marketplace_main",
+      "rgba_file": "marketplace_main.rgba",
+      "framehash_file": "marketplace_main.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "176d9879952d6a91ebf093f29acad612bf3ae50286e28f0ab4600965d17052f9",
+      "framehash": "71cfeecaef6f8a77"
+    },
+    {
+      "name": "publish_app",
+      "rgba_file": "publish_app.rgba",
+      "framehash_file": "publish_app.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_content",
+      "rgba_file": "publish_content.rgba",
+      "framehash_file": "publish_content.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_crowdfunding",
+      "rgba_file": "publish_crowdfunding.rgba",
+      "framehash_file": "publish_crowdfunding.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_food",
+      "rgba_file": "publish_food.rgba",
+      "framehash_file": "publish_food.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_hire",
+      "rgba_file": "publish_hire.rgba",
+      "framehash_file": "publish_hire.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_job",
+      "rgba_file": "publish_job.rgba",
+      "framehash_file": "publish_job.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_live",
+      "rgba_file": "publish_live.rgba",
+      "framehash_file": "publish_live.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_product",
+      "rgba_file": "publish_product.rgba",
+      "framehash_file": "publish_product.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_rent",
+      "rgba_file": "publish_rent.rgba",
+      "framehash_file": "publish_rent.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_ride",
+      "rgba_file": "publish_ride.rgba",
+      "framehash_file": "publish_ride.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_secondhand",
+      "rgba_file": "publish_secondhand.rgba",
+      "framehash_file": "publish_secondhand.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_selector",
+      "rgba_file": "publish_selector.rgba",
+      "framehash_file": "publish_selector.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "publish_sell",
+      "rgba_file": "publish_sell.rgba",
+      "framehash_file": "publish_sell.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "tab_messages",
+      "rgba_file": "tab_messages.rgba",
+      "framehash_file": "tab_messages.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "fc35b409e34318bff86757bf0f48ffc40854719f1b1d79f7408cca229ad8236a",
+      "framehash": "6af2e10f7e867397"
+    },
+    {
+      "name": "tab_nodes",
+      "rgba_file": "tab_nodes.rgba",
+      "framehash_file": "tab_nodes.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "0228483b9ecd739d884180a96afee8cb3a5fd08178c19e57ac8a03e5c6442157",
+      "framehash": "843f86fbbbb3627f"
+    },
+    {
+      "name": "tab_profile",
+      "rgba_file": "tab_profile.rgba",
+      "framehash_file": "tab_profile.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "44d186788abb145cd5cb5f4f385706160bfd973cc6f366be8c766e510494d5f1",
+      "framehash": "6c55f5d644aeb86f"
+    },
+    {
+      "name": "trading_crosshair",
+      "rgba_file": "trading_crosshair.rgba",
+      "framehash_file": "trading_crosshair.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "50c0b7cad715bbc982c99a30ea4a01c177d9be17e9c11c955898cdd0fb1c2e77",
+      "framehash": "0771a7e4cd0c233f"
+    },
+    {
+      "name": "trading_main",
+      "rgba_file": "trading_main.rgba",
+      "framehash_file": "trading_main.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "50c0b7cad715bbc982c99a30ea4a01c177d9be17e9c11c955898cdd0fb1c2e77",
+      "framehash": "0771a7e4cd0c233f"
+    },
+    {
+      "name": "update_center_main",
+      "rgba_file": "update_center_main.rgba",
+      "framehash_file": "update_center_main.framehash",
+      "rgba_bytes": 2073600,
+      "rgba_sha256": "0db961e8ea5502539d7126d586e485c6fbaea3c7215f0ad5afa6323f6cad6663",
+      "framehash": "63ee256af7523e27"
+    }
+  ],
+  "rollup_sha256": "61a67235cf890981549a56f084227a928369df2a44e72d551b85f98254532d34"
+}

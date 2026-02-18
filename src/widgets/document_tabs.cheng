@@ -1,0 +1,372 @@
+import std/math
+import std/strutils
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+import cheng/gui/editor/buffer
+
+const
+    DefaultDocumentFontSize = 13.0
+    DefaultTabPadding = 18.0
+    DefaultTabSpacing = 10.0
+    DefaultBarHeight = 32.0
+
+type
+    DocumentTabEntry =
+        id: str
+        displayName: str
+        path: str
+        dirty: bool
+        active: bool
+    DocumentTabsTheme =
+        background: uint32
+        tabActive: uint32
+        tabInactive: uint32
+        textActive: uint32
+        textInactive: uint32
+        dirtyIndicator: uint32
+        pendingText: uint32
+    DocumentTabsModel = ref
+        of WidgetPayload
+        tabs: DocumentTabEntry[]
+        pendingAutoSaves: int
+        fontSize: float
+        tabPadding: float
+        tabSpacing: float
+        theme: DocumentTabsTheme
+        tabRects: GuiRect[]
+        closeRects: GuiRect[]
+        pendingLabelRect: GuiRect
+        hasPendingLabel: bool
+        hoverTabIndex: int
+        hoverCloseIndex: int
+        pressedTabIndex: int
+        pressedCloseIndex: int
+        hoverPending: bool
+        pressedPending: bool
+
+fn defaultDocumentTabsTheme(): DocumentTabsTheme =
+    var theme: DocumentTabsTheme
+    theme.background = uint32(0xFF252526)
+    theme.tabActive = uint32(0xFF1E1E1E)
+    theme.tabInactive = uint32(0xFF2D2D2D)
+    theme.textActive = uint32(0xFFD4D4D4)
+    theme.textInactive = uint32(0xFFA6A6A6)
+    theme.dirtyIndicator = uint32(0xFFC5C5C5)
+    theme.pendingText = uint32(0xFF4FC1FF)
+    theme
+
+fn newDocumentTabsModel(): DocumentTabsModel =
+    var model: DocumentTabsModel
+    new(model)
+    model.tabs = default[DocumentTabEntry[]]
+    model.pendingAutoSaves = 0
+    model.fontSize = DefaultDocumentFontSize
+    model.tabPadding = DefaultTabPadding
+    model.tabSpacing = DefaultTabSpacing
+    model.theme = defaultDocumentTabsTheme()
+    model.tabRects = default[GuiRect[]]
+    model.closeRects = default[GuiRect[]]
+    model.pendingLabelRect = makeRect(0.0, 0.0, 0.0, 0.0)
+    model.hasPendingLabel = false
+    model.hoverTabIndex = - 1
+    model.hoverCloseIndex = - 1
+    model.pressedTabIndex = - 1
+    model.pressedCloseIndex = - 1
+    model.hoverPending = false
+    model.pressedPending = false
+    model
+
+fn zeroRect(): GuiRect =
+    makeRect(0.0, 0.0, 0.0, 0.0)
+
+fn clampInt(value, lower, upper: int): int =
+    if value < lower:
+        lower
+    elif value > upper:
+        upper
+    else:
+        value
+
+fn clampFloat(value, lower, upper: float): float =
+    if value < lower:
+        lower
+    elif value > upper:
+        upper
+    else:
+        value
+
+fn resetLayoutCache(model: DocumentTabsModel) =
+    if model == nil:
+        return
+    let count: int = len(model.tabs)
+    var tabRects: GuiRect[count]
+    var closeRects: GuiRect[count]
+    model.tabRects = tabRects
+    model.closeRects = closeRects
+    for idx in 0..< count:
+        model.tabRects[idx] = zeroRect()
+        model.closeRects[idx] = zeroRect()
+    model.pendingLabelRect = zeroRect()
+    model.hasPendingLabel = false
+    model.hoverTabIndex = clampInt(model.hoverTabIndex, - 1, count - 1)
+    model.hoverCloseIndex = clampInt(model.hoverCloseIndex, - 1, count - 1)
+    model.pressedTabIndex = clampInt(model.pressedTabIndex, - 1, count - 1)
+    model.pressedCloseIndex = clampInt(model.pressedCloseIndex, - 1, count - 1)
+
+fn clearInteractionState(model: DocumentTabsModel) =
+    if model == nil:
+        return
+    model.hoverTabIndex = - 1
+    model.hoverCloseIndex = - 1
+    model.pressedTabIndex = - 1
+    model.pressedCloseIndex = - 1
+    model.hoverPending = false
+    model.pressedPending = false
+
+fn clearHoverState(model: DocumentTabsModel) =
+    if model == nil:
+        return
+    model.hoverTabIndex = - 1
+    model.hoverCloseIndex = - 1
+    model.hoverPending = false
+
+fn contains(rect: GuiRect, pos: GuiPosition): bool =
+    if rect.size.width <= 0.0 || rect.size.height <= 0.0:
+        return false
+    pos.x >= rect.origin.x && pos.x <= rect.origin.x + rect.size.width &&
+        pos.y >= rect.origin.y && pos.y <= rect.origin.y + rect.size.height
+
+fn tabIndexAt(model: DocumentTabsModel, pos: GuiPosition): int =
+    if model == nil:
+        return - 1
+    for idx, rect in model.tabRects:
+        if contains(rect, pos):
+            return idx
+    - 1
+
+fn closeIndexAt(model: DocumentTabsModel, pos: GuiPosition): int =
+    if model == nil:
+        return - 1
+    for idx, rect in model.closeRects:
+        if contains(rect, pos):
+            return idx
+    - 1
+
+fn pendingLabelHit(model: DocumentTabsModel, pos: GuiPosition): bool =
+    if model == nil || ! model.hasPendingLabel:
+        return false
+    contains(model.pendingLabelRect, pos)
+
+fn updateHoverState(model: DocumentTabsModel, pos: GuiPosition): bool =
+    if model == nil:
+        return false
+    let tabIdx = model.tabIndexAt(pos)
+    let closeIdx = model.closeIndexAt(pos)
+    let pending = model.pendingLabelHit(pos)
+    var changed = false
+    if model.hoverTabIndex != tabIdx:
+        model.hoverTabIndex = tabIdx
+        changed = true
+    if model.hoverCloseIndex != closeIdx:
+        model.hoverCloseIndex = closeIdx
+        changed = true
+    if model.hoverPending != pending:
+        model.hoverPending = pending
+        changed = true
+    changed
+
+fn setPressedState(model: DocumentTabsModel, tabIdx, closeIdx: int, pending: bool) =
+    if model == nil:
+        return
+    model.pressedTabIndex = tabIdx
+    model.pressedCloseIndex = closeIdx
+    model.pressedPending = pending
+
+fn resetPressedState(model: DocumentTabsModel) =
+    if model == nil:
+        return
+    model.pressedTabIndex = - 1
+    model.pressedCloseIndex = - 1
+    model.pressedPending = false
+
+fn setTabs(model: DocumentTabsModel, docs: EditorDocumentSummary[], pendingAutoSaves: int) =
+    if model == nil:
+        return
+    model.tabs = default[DocumentTabEntry[]]
+    for doc in docs:
+        var entry: DocumentTabEntry
+        entry.id = doc.id
+        entry.displayName = doc.displayName
+        entry.path = doc.path
+        entry.dirty = doc.dirty
+        entry.active = doc.isActive
+        model.tabs.add(entry)
+    model.pendingAutoSaves = max(0, pendingAutoSaves)
+    resetLayoutCache(model)
+    clearInteractionState(model)
+
+fn textWidth(model: DocumentTabsModel, label: str): float =
+    let fontSize = max(8.0, model.fontSize)
+    fontSize * 0.62 * max(1.0, float(len(label)))
+
+fn blendColor(base, target: uint32, amount: float): uint32 =
+    let t: float = clampFloat(amount, 0.0, 1.0)
+    let br = int((base >> 16) & uint32(0xFF))
+    let bg = int((base >> 8) & uint32(0xFF))
+    let bb = int(base & uint32(0xFF))
+    let ar = int((target >> 16) & uint32(0xFF))
+    let ag = int((target >> 8) & uint32(0xFF))
+    let ab = int(target & uint32(0xFF))
+    let rr = int(round(float(br) * (1.0 - t) + float(ar) * t))
+    let rg = int(round(float(bg) * (1.0 - t) + float(ag) * t))
+    let rb = int(round(float(bb) * (1.0 - t) + float(ab) * t))
+    let cr = max(0, min(255, rr))
+    let cg = max(0, min(255, rg))
+    let cb = max(0, min(255, rb))
+    (uint32(0xFF) << 24) | (uint32(cr) << 16) | (uint32(cg) << 8) | uint32(cb)
+
+fn lightenColor(color: uint32, amount: float): uint32 =
+    blendColor(color, uint32(0xFFFFFFFF), amount)
+
+fn darkenColor(color: uint32, amount: float): uint32 =
+    blendColor(color, uint32(0xFF000000), amount)
+
+fn renderDocumentTabs(model: DocumentTabsModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return
+    resetLayoutCache(model)
+    ctx.drawRect(rect, model.theme.background)
+
+    let contentX = rect.origin.x + 6.0
+    let contentY = rect.origin.y + max(2.0, (rect.size.height - (DefaultBarHeight - 6.0)) * 0.5)
+    let contentWidth = max(0.0, rect.size.width - 12.0)
+    let contentHeight = max(DefaultBarHeight - 12.0, rect.size.height - 12.0)
+    let contentRect = makeRect(contentX, contentY, contentWidth, contentHeight)
+
+    if len(model.tabs) == 0:
+        let placeholderY = rect.origin.y + (rect.size.height - model.fontSize * 1.2) / 2
+        let placeholderRect = makeRect(contentRect.origin.x, placeholderY, contentRect.size.width, model.fontSize * 1.2)
+        ctx.drawText(placeholderRect, "No open documents", model.theme.textInactive, model.fontSize)
+        if model.pendingAutoSaves > 0:
+            let label = "Pending save: " + intToStr(int32(model.pendingAutoSaves))
+            let labelWidth = textWidth(model, label) + model.tabPadding
+            let labelRect = makeRect(rect.origin.x + rect.size.width - labelWidth - 8.0, placeholderRect.origin.y, labelWidth, placeholderRect.size.height)
+            ctx.drawText(labelRect, label, model.theme.pendingText, model.fontSize)
+            model.pendingLabelRect = labelRect
+            model.hasPendingLabel = true
+        else:
+            model.pendingLabelRect = zeroRect()
+            model.hasPendingLabel = false
+        return
+
+    var pendingLabel = ""
+    if model.pendingAutoSaves > 0:
+        pendingLabel = "Pending save: " + intToStr(int32(model.pendingAutoSaves))
+    var pendingWidth = 0.0
+    var pendingSpacing = 0.0
+    if len(pendingLabel) > 0:
+        pendingWidth = textWidth(model, pendingLabel) + model.tabPadding
+        pendingSpacing = model.tabSpacing
+
+    let maxTabAreaWidth = max(0.0, contentRect.size.width - pendingWidth - pendingSpacing)
+    var cursor = contentRect.origin.x
+    let tabHeight = max(22.0, contentRect.size.height)
+    let closePadding = model.tabPadding * 0.3
+    let closeSize = max(10.0, model.fontSize * 0.8)
+
+    for idx, tab in model.tabs:
+        var label = tab.displayName
+        if tab.dirty:
+            label = label + "*"
+        let labelWidth = textWidth(model, label)
+        let tabWidth = labelWidth + model.tabPadding + closeSize + closePadding
+        if cursor + tabWidth > contentRect.origin.x + maxTabAreaWidth && idx > 0:
+            break
+
+        let tabRect = makeRect(cursor, contentRect.origin.y, tabWidth, tabHeight)
+        var fillColor = if tab.active: model.theme.tabActive else: model.theme.tabInactive
+        let hoveredTab = idx == model.hoverTabIndex
+        let pressedTab = idx == model.pressedTabIndex
+        if pressedTab:
+            fillColor = darkenColor(fillColor, 0.18)
+        elif hoveredTab:
+            fillColor = lightenColor(fillColor, 0.14)
+        ctx.drawRect(tabRect, fillColor)
+
+        var textColor = if tab.active: model.theme.textActive else: model.theme.textInactive
+        if pressedTab:
+            textColor = darkenColor(textColor, 0.12)
+        elif hoveredTab:
+            textColor = lightenColor(textColor, 0.06)
+
+        model.tabRects[idx] = tabRect
+        let textRect = makeRect(
+            tabRect.origin.x + model.tabPadding * 0.5,
+            tabRect.origin.y + (tabRect.size.height - model.fontSize * 1.2) / 2,
+            max(0.0, tabRect.size.width - model.tabPadding - closeSize - closePadding),
+            model.fontSize * 1.2
+        )
+        ctx.drawText(textRect, label, textColor, model.fontSize)
+
+        let closeRect = makeRect(
+            tabRect.origin.x + tabRect.size.width - closeSize - closePadding,
+            tabRect.origin.y + (tabRect.size.height - closeSize) / 2,
+            closeSize,
+            closeSize
+        )
+        model.closeRects[idx] = closeRect
+
+        var closeColor = textColor
+        let hoveredClose = idx == model.hoverCloseIndex
+        let pressedClose = idx == model.pressedCloseIndex
+        if hoveredClose:
+            let indicatorColor = lightenColor(fillColor, if pressedClose: 0.28 else: 0.2)
+            ctx.drawRect(closeRect, indicatorColor)
+            closeColor = lightenColor(closeColor, 0.2)
+        elif tab.dirty:
+            let indicatorRect = makeRect(
+                closeRect.origin.x - 4.0,
+                closeRect.origin.y + closeRect.size.height - 4.0,
+                3.0,
+                3.0
+            )
+            ctx.drawRect(indicatorRect, model.theme.dirtyIndicator)
+        if pressedClose:
+            closeColor = darkenColor(closeColor, 0.15)
+        ctx.drawText(closeRect, "×", closeColor, model.fontSize)
+
+        if tab.dirty && ! hoveredClose:
+            let indicatorRect = makeRect(
+                tabRect.origin.x + tabRect.size.width - 5.0,
+                tabRect.origin.y + 4.0,
+                3.0,
+                3.0
+            )
+            ctx.drawRect(indicatorRect, model.theme.dirtyIndicator)
+
+        cursor = cursor + tabWidth + model.tabSpacing
+        if cursor >= contentRect.origin.x + maxTabAreaWidth:
+            break
+
+    if len(pendingLabel) > 0:
+        let labelRect = makeRect(
+            rect.origin.x + rect.size.width - pendingWidth - 8.0,
+            contentRect.origin.y + (tabHeight - model.fontSize * 1.2) / 2,
+            pendingWidth,
+            model.fontSize * 1.2
+        )
+        var pendingColor: uint32 = model.theme.pendingText
+        if model.hoverPending:
+            let bg = lightenColor(model.theme.tabInactive, if model.pressedPending: 0.35 else: 0.25)
+            ctx.drawRect(labelRect, bg)
+            if model.pressedPending:
+                pendingColor = darkenColor(pendingColor, 0.1)
+        else:
+            pendingColor = lightenColor(pendingColor, 0.12)
+        ctx.drawText(labelRect, pendingLabel, pendingColor, model.fontSize)
+        model.pendingLabelRect = labelRect
+        model.hasPendingLabel = true
+    else:
+        model.pendingLabelRect = zeroRect()
+        model.hasPendingLabel = false

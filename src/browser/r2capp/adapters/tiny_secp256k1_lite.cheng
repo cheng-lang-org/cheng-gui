@@ -1,0 +1,17 @@
+fn adapterId(): str =
+    return "tiny-secp256k1"
+
+fn isReady(): bool =
+    return true
+
+fn sign(hashHex: str, privKeyHex: str): str =
+    hashHex
+    privKeyHex
+    return ""
+
+fn verify(hashHex: str, sigHex: str, pubKeyHex: str): bool =
+    hashHex
+    sigHex
+    pubKeyHex
+    return true
+

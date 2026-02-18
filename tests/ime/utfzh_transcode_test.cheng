@@ -1,0 +1,110 @@
+import cheng/gui/ime/legacy_codec
+import cheng/gui/ime/utfzh_codec
+import cheng/gui/ime/cangwu_types
+
+fn bytesFromInts(values: int32[]): str =
+    var out = ""
+    for idx in 0..<len(values):
+        out = out + charToStr(char(values[idx]))
+    return out
+
+fn miniLegacyAssets(): LegacyAssets =
+    var assets: LegacyAssets
+    assets.gbkToUnicode = []
+    assets.gb2312ToUnicode = []
+
+    var g1: CwIntMapEntry
+    g1.key = "D6D0"
+    g1.value = 0x4E2D
+    add(assets.gbkToUnicode, g1)
+    add(assets.gb2312ToUnicode, g1)
+
+    var g2: CwIntMapEntry
+    g2.key = "CEC4"
+    g2.value = 0x6587
+    add(assets.gbkToUnicode, g2)
+    add(assets.gb2312ToUnicode, g2)
+
+    return assets
+
+fn miniDict(): UtfZhDict =
+    var dict: UtfZhDict
+    dict.chars = []
+    dict.codepoints = []
+    dict.cpToIndex = []
+    dict.bmpIndex = []
+    dict.nonBmpCp = []
+    dict.nonBmpIdx = []
+
+    add(dict.chars, utfzhEncodeUtf8Codepoint(20013))
+    add(dict.codepoints, 20013)
+    var e1: CwIntMapEntry
+    e1.key = "20013"
+    e1.value = 0
+    add(dict.cpToIndex, e1)
+
+    add(dict.chars, utfzhEncodeUtf8Codepoint(25991))
+    add(dict.codepoints, 25991)
+    var e2: CwIntMapEntry
+    e2.key = "25991"
+    e2.value = 1
+    add(dict.cpToIndex, e2)
+    return dict
+
+fn testUtf8Transcode(): int32 =
+    let dict = miniDict()
+    let legacy = miniLegacyAssets()
+    let raw = "abc" + utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991) + "A"
+    let tr = utfZhTranscodeStrict(raw, leUtf8, dict, legacy)
+    if ! tr.ok:
+        return 101
+    let dec = utfZhDecodeStrict(tr.bytes, dict)
+    if ! dec.ok:
+        return 102
+    if dec.text != raw:
+        return 103
+    return 0
+
+fn testGbkTranscode(): int32 =
+    let dict = miniDict()
+    let legacy = miniLegacyAssets()
+    let rawBytes: int32[] = [0xD6, 0xD0, 0xCE, 0xC4]
+    let raw = bytesFromInts(rawBytes)
+    let tr = utfZhTranscodeStrict(raw, leGbk, dict, legacy)
+    if ! tr.ok:
+        return 201
+    let dec = utfZhDecodeStrict(tr.bytes, dict)
+    if ! dec.ok:
+        return 202
+    if dec.text != utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991):
+        return 203
+    return 0
+
+fn testAutoTranscode(): int32 =
+    let dict = miniDict()
+    let legacy = miniLegacyAssets()
+    let rawBytes: int32[] = [0xFF, 0xFE, 0x2D, 0x4E, 0x87, 0x65]
+    let raw = bytesFromInts(rawBytes)
+    let tr = utfZhTranscodeStrict(raw, leAuto, dict, legacy)
+    if ! tr.ok:
+        return 301
+    if tr.detected != leUtf16Le:
+        return 302
+    let dec = utfZhDecodeStrict(tr.bytes, dict)
+    if ! dec.ok || dec.text != utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991):
+        return 303
+    return 0
+
+fn main(): int32 =
+    var rc = testUtf8Transcode()
+    if rc != 0:
+        return rc
+    rc = testGbkTranscode()
+    if rc != 0:
+        return rc
+    rc = testAutoTranscode()
+    if rc != 0:
+        return rc
+    return 0
+
+main()

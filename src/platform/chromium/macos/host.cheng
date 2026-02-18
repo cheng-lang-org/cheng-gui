@@ -1,0 +1,14 @@
+import cheng/gui/browser/types
+
+type
+    MacosHostInfo =
+        platformName: str
+        supportsGpu: bool
+        supportsSandbox: bool
+
+fn macosHostInfo(profile: types.SandboxProfile): MacosHostInfo =
+    var info: MacosHostInfo
+    info.platformName = "macos"
+    info.supportsGpu = true
+    info.supportsSandbox = profile != types.spCompat
+    return info

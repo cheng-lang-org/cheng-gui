@@ -1,0 +1,161 @@
+import std/strutils
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+const defaultTaskFontSize = 13.0
+DefaultTaskLineHeight = 18.0
+type
+    TaskStatus = enum
+        tsPending
+        tsRunning
+        tsSucceeded
+        tsFailed
+    tsCancelledTaskInfo =
+        id: str
+        label: str
+        status: TaskStatus
+        progress: float
+        startedAtMs: int64
+        durationMs: int64
+        detail: str
+    TaskMonitorTheme =
+        background: uint32
+        barP
+        ending: uint32
+        barRunning: uint32
+        barSuccess: uint32
+        barFailed: uint32
+        barCancelled: uint32
+        textNormal: uint32
+        textMuted: uint32
+        textError: uint32
+    TaskMonitorMetrics =
+        tasks: int
+        pending: int
+        running: int
+        succeeded: int
+        failed: int
+        cancelled: int
+    TaskMonitorModel = ref
+        of WidgetPayload
+        tasks: TaskInfo[]
+        theme: TaskMonitorThemefontSize: float
+        lineHeight: float
+        metrics: TaskMonitorMetrics
+fn defaultTaskMonitorTheme(): TaskMonitorTheme =
+    var theme: TaskMonitorThemetheme.background = uint32(0xFF141414)
+    theme.barP
+    ending = uint32(0xFF3A3A3A)
+    theme.barRunning = uint32(0xFF569CD6)
+    theme.barSuccess = uint32(0xFF57A64A)
+    theme.barFailed = uint32(0xFFFF5A5A)
+    theme.barCancelled = uint32(0xFFB0B0B0)
+    theme.textNormal = uint32(0xFFE0E0E0)
+    theme.textMuted = uint32(0xFF808080)
+    theme.textError = uint32(0xFFFF7373) theme
+fn newTaskMonitorModel(): TaskMonitorModel =
+    var model: TaskMonitorModel
+    new(model)
+    model.tasks = default[TaskInfo[]]
+    model.theme = defaultTaskMonitorTheme()
+    model.fontSize = defaultTaskFontSize
+    model.lineHeight = DefaultTaskLineHeight
+    var metrics: TaskMonitorMetricsmetrics.tasks = 0
+    metrics.pending = 0
+    metrics.running = 0
+    metrics.succeeded = 0
+    metrics.failed = 0
+    metrics.cancelled = 0
+    model.metrics = metrics model
+fn metrics(model: TaskMonitorModel): TaskMonitorMetrics =
+    if model == nil:
+        var empty: TaskMonitorMetrics
+        return empty
+        return model.metrics
+fn recomputeMetrics(model: TaskMonitorModel) =
+    if model == nil:
+        return
+        var metrics: TaskMonitorMetricsmetrics.tasks = len(model.tasks)
+        for task in model.tasks:
+            case task.status
+            of tsPending:
+                metrics.pending = metrics.pending + 1
+            of tsRunning:
+                metrics.running = metrics.running + 1
+            of tsSucceeded:
+                metrics.succeeded = metrics.succeeded + 1
+            of tsFailed:
+                metrics.failed = metrics.failed + 1
+            of tsCancelled:
+                metrics.cancelled = metrics.cancelled + 1
+                model.metrics = metrics
+fn setTasks(model: TaskMonitorModel, tasks: TaskInfo[]) =
+    if model == nil:
+        return model.tasks = tasks model.recomputeMetrics()
+fn updateTask(model: TaskMonitorModel, task: TaskInfo) =
+    if model == nil:
+        return
+        var idx = 0
+        while idx < len(model.tasks):
+            let existing = model.tasks[idx]
+            if existing.id == task.id:
+                model.tasks[idx] = task model.recomputeMetrics()
+                return idx = idx + 1 model.tasks.add(task) model.recomputeMetrics()
+fn statusLabel(task: TaskInfo): str =
+    case task.status
+    of tsPending:
+        "pending"
+    of tsRunning:
+        "running"
+    of tsSucceeded:
+        "succeeded"
+    of tsFailed:
+        "failed"
+    of tsCancelled:
+        "cancelled"
+fn statusColor(theme: TaskMonitorTheme, status: TaskStatus): uint32 =
+    case status
+    of tsPending:
+        theme.barP ending
+    of tsRunning:
+        theme.barRunning
+    of tsSucceeded:
+        theme.barSuccess
+    of tsFailed:
+        theme.barFailed
+    of tsCancelled:
+        theme.barCancelled
+fn renderTaskMonitor(model: TaskMonitorModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background)
+        if len(model.tasks) == 0:
+            ctx.drawText(makeRect(rect.origin.x + 8.0, rect.origin.y + 8.0, rect.size.width - 16.0, model.lineHeight), "(no tasks)", model.theme.textMuted, model.fontSize)
+            return
+            const Gap = 4.0
+            var y = rect.origin.y + 4
+            let contentWidth = rect.size.width - 16
+            for task in model.tasks:
+                let labelRect = makeRect(rect.origin.x + 8.0, y, contentWidth, model.lineHeight)
+                var label = task.label
+                if len(label) == 0:
+                    label = task.id
+                    label = label + " [" + statusLabel(task) + "]"
+                    ctx.drawText(labelRect, label, model.theme.textNormal, model.fontSize)
+                    y = y + model.lineHeight
+                    var progress = clamp(task.progress, 0.0, 1.0)
+                    let barRect = makeRect(rect.origin.x + 8.0, y, contentWidth, model.lineHeight * 0.45)
+                    let filledRect = makeRect(barRect.origin.x, barRect.origin.y, barRect.size.width * progress, barRect.size.height)
+                    ctx.drawRect(barRect, uint32(0xFF1F1F1F))
+                    ctx.drawRect(filledRect, model.theme.statusColor(task.status))
+                    y = y + barRect.size.height + Gap
+                    if len(task.detail) > 0:
+                        ctx.drawText(makeRect(rect.origin.x + 8.0, y, contentWidth, model.lineHeight), task.detail,(if task.status == tsFailed: model.theme.textError else: model.theme.textMuted), model.fontSize)
+                        y = y + model.lineHeight + Gap
+                    else:
+                        y = y + Gap
+                        if y > rect.origin.y + rect.size.height - model.lineHeight:
+                            break
+fn taskMonitorSummary(model: TaskMonitorModel): str =
+    if model == nil:
+        return "[task-monitor]\n  status=uninitialized\n"
+        var lines = default[str[]] lines.add "[task-monitor]\n" lines.add "  tasks=" + intToStr(int32(model.metrics.tasks)) + "\n" lines.add "  pending=" + intToStr(int32(model.metrics.pending)) + "\n" lines.add "  running=" + intToStr(int32(model.metrics.running)) + "\n" lines.add "  succeeded=" + intToStr(int32(model.metrics.succeeded)) + "\n" lines.add "  failed=" + intToStr(int32(model.metrics.failed)) + "\n" lines.add "  cancelled=" + intToStr(int32(model.metrics.cancelled)) + "\n" lines.join("")

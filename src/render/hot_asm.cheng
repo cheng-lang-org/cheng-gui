@@ -1,0 +1,9 @@
+fn hotClampInt(value, minVal, maxVal: int): int =
+    if value < minVal:
+        return minVal
+    if value > maxVal:
+        return maxVal
+    return value
+
+fn hotIdentityInt(value: int): int =
+    return value

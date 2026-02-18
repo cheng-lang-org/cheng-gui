@@ -1,0 +1,332 @@
+import std/tables
+import cheng/gui/platform/types
+
+type
+    WinCInt = int32
+    WinCUInt = uint32
+    WinCDouble = float64
+
+type
+    WinWindow = ref
+        handle: void*
+        size: GuiSize
+        pixelSize: GuiSize
+        dpi: float
+        colorSpace: str
+
+    WinSurface = ref
+        window: WinWindow
+        handle: void*
+
+    WinEvent =
+        kind: WinCInt
+        window: void*
+        x: WinCDouble
+        y: WinCDouble
+        width: WinCDouble
+        height: WinCDouble
+        deltaX: WinCDouble
+        deltaY: WinCDouble
+        modifiers: WinCUInt
+        button: WinCInt
+        keyCode: WinCUInt
+        repeatFlag: bool
+        text: array[64, char]
+
+    WinSurfaceInfo =
+        logicalWidth: WinCDouble
+        logicalHeight: WinCDouble
+        pixelWidth: WinCDouble
+        pixelHeight: WinCDouble
+        scale: WinCDouble
+        colorSpace: cstring
+
+const
+    winEventClose = 1
+    winEventResized = 2
+    winEventMoved = 3
+    winEventKeyDown = 4
+    winEventKeyUp = 5
+    winEventTextInput = 6
+    winEventPointerDown = 7
+    winEventPointerUp = 8
+    winEventPointerMove = 9
+    winEventPointerScroll = 10
+    winModShift = WinCUInt(0x1)
+    winModCtrl = WinCUInt(0x2)
+    winModAlt = WinCUInt(0x4)
+    winModMeta = WinCUInt(0x8)
+
+var winWindows = initTable[void*, WinWindow]()
+var winStructsValidated = false
+
+fn makePointerEvent(kind: GuiEventKind, pos: GuiPosition, button: int, delta: GuiPosition, mods: GuiModifiers): GuiEvent =
+    let pointer = GuiPointerEvent(position: pos, delta: delta, button: button, modifiers: mods)
+    return GuiEvent(kind: kind, pointerEvent: void*)
+
+fn winHalUsesFfi(): bool =
+    true
+
+fn findWinWindow(handle: void*): WinWindow =
+    for idx in 0..<winWindows.keys.len:
+        if winWindows.keys[idx] == handle:
+            return winWindows.values[idx]
+    return nil
+
+fn setWinWindow(handle: void*; win: WinWindow) =
+    for idx in 0..<winWindows.keys.len:
+        if winWindows.keys[idx] == handle:
+            winWindows.values[idx] = win
+            return
+    winWindows.keys.add(handle)
+    winWindows.values.add(win)
+
+fn removeWinWindow(handle: void*) =
+    for idx in 0..<winWindows.keys.len:
+        if winWindows.keys[idx] == handle:
+            let last = winWindows.keys.len - 1
+            if idx != last:
+                winWindows.keys[idx] = winWindows.keys[last]
+                winWindows.values[idx] = winWindows.values[last]
+            winWindows.keys.len = last
+            winWindows.values.len = last
+            return
+
+fn toWindowHandle(win: WinWindow): WindowHandle =
+    WindowHandle(void*(win))
+
+fn fromWindowHandle(handle: WindowHandle): WinWindow =
+    WinWindow(void*(handle))
+
+fn hasWinModifier(mask: WinCUInt; flag: WinCUInt): bool =
+    let flagVal = int64(flag)
+    if flagVal == 0:
+        return false
+    let maskVal = int64(mask)
+    return ((maskVal / flagVal) % 2) != 0
+
+fn modifiersFromMask(mask: WinCUInt): GuiModifiers =
+    var mods: GuiModifiers = 0
+    if hasWinModifier(mask, winModShift):
+        addModifier(mods, gmShift)
+    if hasWinModifier(mask, winModCtrl):
+        addModifier(mods, gmCtrl)
+    if hasWinModifier(mask, winModAlt):
+        addModifier(mods, gmAlt)
+    if hasWinModifier(mask, winModMeta):
+        addModifier(mods, gmMeta)
+    return mods
+
+fn toGuiKey(code: WinCUInt): GuiKey =
+    case int(code):
+    of 0x0D:
+        gkEnter
+    of 0x1B:
+        gkEscape
+    of 0x20:
+        gkSpace
+    of 0x09:
+        gkTab
+    of 0x08:
+        gkBackspace
+    of 0x2E:
+        gkDelete
+    of 0x25:
+        gkLeft
+    of 0x27:
+        gkRight
+    of 0x26:
+        gkUp
+    of 0x28:
+        gkDown
+    of 0x24:
+        gkHome
+    of 0x23:
+        gkEnd
+    of 0x21:
+        gkPageUp
+    of 0x22:
+        gkPageDown
+    of 0x70:
+        gkF1
+    of 0x71:
+        gkF2
+    of 0x72:
+        gkF3
+    of 0x73:
+        gkF4
+    of 0x74:
+        gkF5
+    of 0x75:
+        gkF6
+    of 0x76:
+        gkF7
+    of 0x77:
+        gkF8
+    of 0x78:
+        gkF9
+    of 0x79:
+        gkF10
+    of 0x7A:
+        gkF11
+    of 0x7B:
+        gkF12
+    else:
+        gkUnknown
+
+fn chengGuiWinInitialize() @ importc("chengGuiWinInitialize")
+fn chengGuiWinShutdown() @ importc("chengGuiWinShutdown")
+fn chengGuiWinCreateWindow(title: cstring; x, y, width, height: WinCDouble; resizable: bool; highDpi: bool): void* @ importc("chengGuiWinCreateWindow")
+fn chengGuiWinDestroyWindow(handle: void*) @ importc("chengGuiWinDestroyWindow")
+fn chengGuiWinPollEvents(events: WinEvent*; maxEvents: WinCInt; timeoutMs: WinCInt): WinCInt @ importc("chengGuiWinPollEvents")
+fn chengGuiWinCreateSurface(handle: void*): void* @ importc("chengGuiWinCreateSurface")
+fn chengGuiWinDestroySurface(handle: void*) @ importc("chengGuiWinDestroySurface")
+fn chengGuiWinBeginFrame(handle: void*): WinCInt @ importc("chengGuiWinBeginFrame")
+fn chengGuiWinEndFrame(handle: void*): WinCInt @ importc("chengGuiWinEndFrame")
+fn chengGuiWinGetSurfaceInfo(handle: void*; info: WinSurfaceInfo*): WinCInt @ importc("chengGuiWinGetSurfaceInfo")
+fn chengGuiWinPresentPixels(handle: void*; pixels: void*; width: WinCInt; height: WinCInt; strideBytes: WinCInt): WinCInt @ importc("chengGuiWinPresentPixels")
+fn chengGuiWinEventStructSize(): uint @ importc("chengGuiWinEventStructSize")
+fn chengGuiWinSurfaceInfoStructSize(): uint @ importc("chengGuiWinSurfaceInfoStructSize")
+
+fn ensureWinStructsMatch() =
+    if winStructsValidated:
+        return
+    let localEventSize = int(sizeof(WinEvent))
+    let cEventSize = int(chengGuiWinEventStructSize())
+    if localEventSize != cEventSize:
+        raiseGuiError("Windows event size mismatch", grInvalidState)
+    let localInfoSize = int(sizeof(WinSurfaceInfo))
+    let cInfoSize = int(chengGuiWinSurfaceInfoStructSize())
+    if localInfoSize != cInfoSize:
+        raiseGuiError("Windows surface info size mismatch", grInvalidState)
+    winStructsValidated = true
+
+fn initializePlat() =
+    ensureWinStructsMatch()
+    chengGuiWinInitialize()
+
+fn shutdownPlat() =
+    chengGuiWinShutdown()
+    winWindows.keys.len = 0
+    winWindows.values.len = 0
+
+fn createWindow(config: GuiWindowConfig): WindowHandle =
+    chengGuiWinInitialize()
+    let rect = config.initialRect
+    var title = config.title
+    if len(title) == 0:
+        title = "Cheng IDE"
+    let handle = chengGuiWinCreateWindow(cstring(title), WinCDouble(rect.origin.x), WinCDouble(rect.origin.y), WinCDouble(rect.size.width), WinCDouble(rect.size.height), config.resizable, config.highDpi)
+    if handle == nil:
+        raiseGuiError("Windows createWindow failed", grIoError)
+    let win = WinWindow(handle: handle, size: rect.size, pixelSize: rect.size, dpi: 96.0, colorSpace: "sRGB")
+    setWinWindow(handle, win)
+    return toWindowHandle(win)
+
+fn destroyWindow(handle: WindowHandle) =
+    let win = fromWindowHandle(handle)
+    if win == nil:
+        return
+    removeWinWindow(win.handle)
+    if win.handle != nil:
+        chengGuiWinDestroyWindow(win.handle)
+        win.handle = nil
+
+fn pumpEvents(timeoutMs: int = 0): GuiEvent[] =
+    var events: GuiEvent[] = default[GuiEvent[]]
+    let bufferLen = 64
+    var buffer: WinEvent[bufferLen]
+    let emitted = chengGuiWinPollEvents(&buffer[0], WinCInt(bufferLen), WinCInt(timeoutMs))
+    if emitted <= 0:
+        return events
+    for idx in 0..<int(emitted):
+        let ev = buffer[idx]
+        let win = findWinWindow(ev.window)
+        if win == nil:
+            continue
+        case ev.kind:
+        of winEventClose:
+            events.add(GuiEvent(kind: geClose))
+        of winEventResized:
+            win.size = makeSize(float(ev.width), float(ev.height))
+            events.add(GuiEvent(kind: geResized, newSize: win.size))
+        of winEventMoved:
+            events.add(GuiEvent(kind: geMoved, newPosition: GuiPosition(x: float(ev.x), y: float(ev.y))))
+        of winEventKeyDown:
+            events.add(GuiEvent(kind: geKeyDown, keyEvent: GuiKeyEvent(key: toGuiKey(ev.keyCode), modifiers: modifiersFromMask(ev.modifiers), repeat: ev.repeatFlag)))
+        of winEventKeyUp:
+            events.add(GuiEvent(kind: geKeyUp, keyEvent: GuiKeyEvent(key: toGuiKey(ev.keyCode), modifiers: modifiersFromMask(ev.modifiers), repeat: ev.repeatFlag)))
+        of winEventTextInput:
+            let text = $cstring(&ev.text)
+            if text.len > 0:
+                events.add(GuiEvent(kind: geTextInput, text: text))
+        of winEventPointerDown, winEventPointerUp, winEventPointerMove, winEventPointerScroll:
+            let pos = GuiPosition(x: float(ev.x), y: float(ev.y))
+            let delta = GuiPosition(x: float(ev.deltaX), y: float(ev.deltaY))
+            let mods = modifiersFromMask(ev.modifiers)
+            let button = int(ev.button)
+            let kind = case ev.kind:
+                of winEventPointerDown: gePointerDown
+                of winEventPointerUp: gePointerUp
+                of winEventPointerMove: gePointerMove
+                else: gePointerScroll
+            events.add(makePointerEvent(kind, pos, button, delta, mods))
+        else:
+            0
+            return events
+
+fn createRenderSurface(window: WindowHandle): SurfaceHandle =
+    let win = fromWindowHandle(window)
+    if win == nil || win.handle == nil:
+        raiseGuiError("invalid window handle", grInvalidState)
+    let surfaceHandle = chengGuiWinCreateSurface(win.handle)
+    if surfaceHandle == nil:
+        raiseGuiError("create render surface failed", grIoError)
+    return SurfaceHandle(WinSurface(window: win, handle: surfaceHandle))
+
+fn destroyRenderSurface(surface: SurfaceHandle) =
+    let surf = WinSurface(void*(surface))
+    if surf != nil && surf->handle != nil:
+        chengGuiWinDestroySurface(surf->handle)
+        surf->handle = nil
+
+fn beginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    let surf = WinSurface(void*(surface))
+    if surf == nil || surf->window == nil || surf->handle == nil:
+        raiseGuiError("invalid render surface", grInvalidState)
+
+    var info: WinSurfaceInfo
+    if chengGuiWinGetSurfaceInfo(surf->handle, &info) != 0:
+        raiseGuiError("Windows get surface info failed", grInvalidState)
+
+    surf->window->size = makeSize(float(info.logicalWidth), float(info.logicalHeight))
+    surf->window->pixelSize = makeSize(float(info.pixelWidth), float(info.pixelHeight))
+    surf->window->dpi = float(info.scale * 96.0)
+    if info.colorSpace != nil && info.colorSpace.len > 0:
+        surf->window->colorSpace = $info.colorSpace
+
+    let rc = chengGuiWinBeginFrame(surf->handle)
+    if rc != 0:
+        raiseGuiError("Windows beginFrame failed", grInvalidState)
+
+    var dpiScale = float(info.scale)
+    if dpiScale < 0.25:
+        dpiScale = 0.25
+    return SurfaceFrameInfo(logicalSize: surf->window->size, pixelSize: surf->window->pixelSize, dpiScale: dpiScale, colorSpace: surf->window->colorSpace)
+
+fn endFrame(surface: SurfaceHandle) =
+    let surf = WinSurface(void*(surface))
+    if surf == nil || surf->handle == nil:
+        raiseGuiError("invalid render surface", grInvalidState)
+    let rc = chengGuiWinEndFrame(surf->handle)
+    if rc != 0:
+        raiseGuiError("Windows endFrame failed", grInvalidState)
+
+fn presentPixels(surface: SurfaceHandle; pixels: uint32*; width, height: int; strideBytes: int) =
+    let surf = WinSurface(void*(surface))
+    if surf == nil || surf->handle == nil || pixels == nil:
+        return
+    if width <= 0 || height <= 0:
+        return
+    let stride = if strideBytes <= 0: width * 4 else: strideBytes
+    chengGuiWinPresentPixels(surf->handle, void*(pixels), WinCInt(width), WinCInt(height), WinCInt(stride))

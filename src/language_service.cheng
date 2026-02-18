@@ -1,0 +1,217 @@
+import std/strutils
+import std/tables
+import std/times
+import ide/textutils
+type
+    LanguageServiceEvent =
+        seq: int
+        timestampMs: int64
+        severity: str
+        source: str
+        location: str
+        message: str
+    LanguageEventSubscription =
+        id: str
+        lastSeq: int
+        severityFilter: str[]
+        sourceFilter: str[]
+    LanguageEventPermissionHook = fn (id: str, severities: str[], sources: str[]): bool
+const
+    MaxLanguageServiceEvents = 512
+    var eventLog: LanguageServiceEvent[] = default[LanguageServiceEvent[]]
+    eventKeys: Table[str, int] = initStringIntTable()
+    subscriptions: Table[str, LanguageEventSubscription] = initStringSubscriptionTable()
+    nextSeq: int = 0
+    minSeq: int = 0
+    permissionHook: LanguageEventPermissionHook = nil
+fn initStringIntTable(): Table[str, int] =
+    var table: Table[str, int]
+    table.keys = default[str[]]
+    table.values = default[int[]] table
+fn initStringSubscriptionTable(): Table[str, LanguageEventSubscription] =
+    var table: Table[str, LanguageEventSubscription]
+    table.keys = default[str[]]
+    table.values = default[LanguageEventSubscription[]] table
+fn emptyLanguageEventSubscription(): LanguageEventSubscription =
+    var sub: LanguageEventSubscriptionsub.id = ""
+    sub.lastSeq = 0
+    sub.severityFilter = default[str[]]
+    sub.sourceFilter = default[str[]] sub
+fn findStringIntIndex(table: Table[str, int], key: str): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasStringIntKey(table: Table[str, int], key: str): bool =
+    findStringIntIndex(table, key) >= 0
+fn getStringIntOrDefault(table: Table[str, int], key: str, defaultValue: int): int =
+    let idx = findStringIntIndex(table, key)
+    if idx >= 0:
+        table.values[idx]
+    else:
+        defaultValue
+fn setStringInt(table: var Table[str, int], key: str, value: int) =
+    let idx = findStringIntIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn findStringSubscriptionIndex(table: Table[str, LanguageEventSubscription], key: str): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasStringSubscriptionKey(table: Table[str, LanguageEventSubscription], key: str): bool =
+    findStringSubscriptionIndex(table, key) >= 0
+fn getStringSubscriptionOrDefault(table: Table[str, LanguageEventSubscription], key: str, defaultValue: LanguageEventSubscription): LanguageEventSubscription =
+    let idx = findStringSubscriptionIndex(table, key)
+    if idx >= 0:
+        table.values[idx]
+    else:
+        defaultValue
+fn setStringSubscription(table: var Table[str, LanguageEventSubscription], key: str, value: LanguageEventSubscription) =
+    let idx = findStringSubscriptionIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn removeStringSubscription(table: var Table[str, LanguageEventSubscription], key: str) =
+    let idx = findStringSubscriptionIndex(table, key)
+    if idx >= 0:
+        let last = len(table.keys) - 1
+        if idx != last:
+            table.keys[idx] = table.keys[last]
+            table.values[idx] = table.values[last]
+            setLen(table.keys, last)
+            setLen(table.values, last)
+fn stringInSeq(values: str[], target: str): bool =
+    for value in values:
+        if value == target:
+            return true false
+fn canonicalKey(event: LanguageServiceEvent): str =
+    let severity = strutils.toLowerAscii(event.severity)
+    let source = strutils.toLowerAscii(event.source) severity + "|" + source + "|" + event.location + "|" + event.message
+fn normalizeEvent(event: LanguageServiceEvent): LanguageServiceEvent =
+    var normalized = event
+    if normalized.timestampMs <= 0:
+        normalized.timestampMs = int64(epochTime() * 1000.0)
+        normalized.severity = strutils.toLowerAscii(textutils.strip(normalized.severity))
+        normalized.source = textutils.strip(normalized.source)
+        normalized.location = textutils.strip(normalized.location)
+        normalized.message = textutils.strip(normalized.message) normalized
+fn rebuildKeys() =
+    eventKeys = initStringIntTable()
+    for idx, ev in eventLog:
+        setStringInt(eventKeys, canonicalKey(ev), idx)
+fn trimLog() =
+    if len(eventLog) <= MaxLanguageServiceEvents:
+        return
+        let dropCount = len(eventLog) - MaxLanguageServiceEvents
+        if dropCount <= 0:
+            let endIdx: int32 = len(eventLog) - 1
+            return eventLog = eventLog[dropCount..endIdx]
+            if len(eventLog) > 0:
+                minSeq = eventLog[0].seq
+            else:
+                minSeq = nextSeq
+                for idx in 0..<len(subscriptions.keys):
+                    var sub = subscriptions.values[idx]
+                    if sub.lastSeq < minSeq - 1:
+                        sub.lastSeq = minSeq - 1
+                        subscriptions.values[idx] = sub
+                        rebuildKeys()
+fn publishLanguageEvent(event: LanguageServiceEvent): LanguageServiceEvent =
+    var normalized = normalizeEvent(event)
+    let key = canonicalKey(normalized)
+    if hasStringIntKey(eventKeys, key):
+        let idx = getStringIntOrDefault(eventKeys, key, - 1)
+        if idx >= 0 && idx < len(eventLog):
+            return eventLog[idx]
+            nextSeq = nextSeq + 1
+            normalized.seq = nextSeq eventLog.add(normalized)
+            setStringInt(eventKeys, key, len(eventLog) - 1)
+            trimLog() normalized
+fn publishLanguageEvents(events: LanguageServiceEvent[]): LanguageServiceEvent[] =
+    var appended = default[LanguageServiceEvent[]]
+    for event in events:
+        appended.add(publishLanguageEvent(event)) appended
+fn makeSeverityFilter(values: str[]): str[] =
+    var filter = default[str[]]
+    for value in values:
+        let lowered = strutils.toLowerAscii(textutils.strip(value))
+        if len(lowered) > 0 && stringInSeq(filter, lowered) == false:
+            filter.add(lowered) filter
+fn makeSourceFilter(values: str[]): str[] =
+    var filter = default[str[]]
+    for value in values:
+        let normalized = strutils.toLowerAscii(textutils.strip(value))
+        if len(normalized) > 0 && stringInSeq(filter, normalized) == false:
+            filter.add(normalized) filter
+fn setLanguageEventPermissionHook(hook: LanguageEventPermissionHook) =
+    permissionHook = hook
+fn registerLanguageSubscriber(id: str): bool =
+    registerLanguageSubscriber(id, default[str[]], default[str[]])
+fn registerLanguageSubscriber(id: str, severities: str[]): bool =
+    registerLanguageSubscriber(id, severities, default[str[]])
+fn registerLanguageSubscriber(id: str, severities: str[], sources: str[]): bool =
+    let trimmed = textutils.strip(id)
+    if len(trimmed) == 0:
+        return false
+        var severityRequest = severities
+        var sourceRequest = sources
+        if permissionHook != nil:
+            if ! permissionHook(trimmed, severityRequest, sourceRequest):
+                return false
+                var sub: LanguageEventSubscriptionsub.id = trimmed
+                sub.lastSeq = nextSeq
+                sub.severityFilter = makeSeverityFilter(severityRequest)
+                sub.sourceFilter = makeSourceFilter(sourceRequest)
+                setStringSubscription(subscriptions, trimmed, sub) true
+fn unregisterLanguageSubscriber(id: str) =
+    let trimmed = textutils.strip(id)
+    if len(trimmed) == 0:
+        return if hasStringSubscriptionKey(subscriptions, trimmed): removeStringSubscription(subscriptions, trimmed)
+fn passesFilters(event: LanguageServiceEvent, sub: LanguageEventSubscription): bool =
+    let severity = strutils.toLowerAscii(event.severity)
+    let source = strutils.toLowerAscii(event.source)
+    if len(sub.severityFilter) > 0 && stringInSeq(sub.severityFilter, severity) == false:
+        return false
+        if len(sub.sourceFilter) > 0 && stringInSeq(sub.sourceFilter, source) == false:
+            return false true
+fn pull
+Language
+Events(id: str): LanguageServiceEvent[] = let trimmed = textutils.strip(id)
+if len(trimmed) == 0 || hasStringSubscriptionKey(subscriptions, trimmed) == false:
+    return default[LanguageServiceEvent[]]
+    var sub = getStringSubscriptionOrDefault(subscriptions, trimmed, emptyLanguageEventSubscription())
+    if sub.lastSeq < minSeq - 1:
+        sub.lastSeq = minSeq - 1
+        var collected = default[LanguageServiceEvent[]]
+        for event in eventLog:
+            if event.seq <= sub.lastSeq:
+                continue if passesFilters(event, sub): collected.add(event)
+                sub.lastSeq = nextSeq
+                setStringSubscription(subscriptions, trimmed, sub) collected
+fn snapshotLanguageEvents(): LanguageServiceEvent[] =
+    snapshotLanguageEvents(32)
+fn snapshotLanguageEvents(maxItems: int): LanguageServiceEvent[] =
+    if len(eventLog) <= maxItems:
+        return eventLog
+        let startIdx: int32 = max(0, len(eventLog) - maxItems)
+        let endIdx: int32 = len(eventLog) - 1
+        eventLog[startIdx..endIdx]
+fn languageEventStats(): Table[str, int] =
+    var stats = initStringIntTable()
+    for event in eventLog:
+        let key = strutils.toLowerAscii(event.severity)
+        let current = getStringIntOrDefault(stats, key, 0)
+        setStringInt(stats, key, current + 1) stats
+fn reset
+Language
+Events() = eventLog = default[LanguageServiceEvent[]]
+eventKeys = initStringIntTable()
+subscriptions = initStringSubscriptionTable()
+nextSeq = 0
+minSeq = 0

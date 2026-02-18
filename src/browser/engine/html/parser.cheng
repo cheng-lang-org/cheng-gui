@@ -1,0 +1,332 @@
+import cheng/gui/browser/engine/dom/model
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return !cGt(a, b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return !cLt(a, b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn htmlStrEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn htmlMatchAt(text: str, pattern: str, offset: int32): bool =
+    if text == nil || pattern == nil:
+        return false
+    if offset < 0:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn htmlIsSpace(ch: char): bool =
+    return cEq(ch, ' ') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t')
+
+fn htmlLowerAsciiChar(ch: char): char =
+    let v = int32(ch)
+    if v >= int32('A') && v <= int32('Z'):
+        return char(v + int32(32))
+    return ch
+
+fn htmlIsNameChar(ch: char): bool =
+    let v = int32(ch)
+    if v >= int32('a') && v <= int32('z'):
+        return true
+    if v >= int32('A') && v <= int32('Z'):
+        return true
+    if v >= int32('0') && v <= int32('9'):
+        return true
+    return cEq(ch, '-') || cEq(ch, '_') || cEq(ch, ':') || cEq(ch, '.')
+
+fn htmlAppendNode(items: var model.DomNode[], item: model.DomNode) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn htmlSkipSpaces(text: str, idx0: int32): int32 =
+    var idx = idx0
+    while idx < len(text) && htmlIsSpace(text[idx]):
+        idx = idx + 1
+    return idx
+
+fn isVoidTag(tag: str): bool =
+    if htmlStrEq(tag, "br") || htmlStrEq(tag, "img") || htmlStrEq(tag, "meta") ||
+        htmlStrEq(tag, "link") || htmlStrEq(tag, "input") || htmlStrEq(tag, "hr"):
+        return true
+    return false
+
+fn htmlLowerAscii(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out: str = ""
+    for idx in 0..<len(text):
+        out = out + charToStr(htmlLowerAsciiChar(text[idx]))
+    return out
+
+fn htmlParseNameEnd(text: str, idx0: int32): int32 =
+    var idx = idx0
+    while idx < len(text) && htmlIsNameChar(text[idx]):
+        idx = idx + 1
+    return idx
+
+fn htmlExtractRaw(text: str, start, stop: int32): str =
+    var out: str = ""
+    var idx = start
+    while idx < stop && idx < len(text):
+        out = out + charToStr(text[idx])
+        idx = idx + 1
+    return out
+
+fn htmlNormalizeRange(text: str, start, stop: int32): str =
+    var out: str = ""
+    var pendingSpace = false
+    var idx = start
+    while idx < stop && idx < len(text):
+        let ch = text[idx]
+        if htmlIsSpace(ch):
+            if len(out) > 0:
+                pendingSpace = true
+        else:
+            if pendingSpace:
+                out = out + " "
+                pendingSpace = false
+            out = out + charToStr(ch)
+        idx = idx + 1
+    return out
+
+fn findCloseStyle(text: str, start: int32): int32 =
+    var idx = start
+    while idx + 7 < len(text):
+        if htmlMatchAt(text, "</style>", idx):
+            return idx
+        idx = idx + 1
+    return -1
+
+fn findCloseTitle(text: str, start: int32): int32 =
+    var idx = start
+    while idx + 7 < len(text):
+        if htmlMatchAt(text, "</title>", idx):
+            return idx
+        idx = idx + 1
+    return -1
+
+fn findCloseScript(text: str, start: int32): int32 =
+    var idx = start
+    while idx + 8 < len(text):
+        if htmlMatchAt(text, "</script>", idx):
+            return idx
+        idx = idx + 1
+    return -1
+
+fn skipToChar(text: str, idx0: int32, target: char): int32 =
+    var idx = idx0
+    while idx < len(text) && cNe(text[idx], target):
+        idx = idx + 1
+    if idx < len(text) && cEq(text[idx], target):
+        return idx + 1
+    return idx
+
+fn parseHtmlDocument(url, markup: str): model.DomDocument =
+    # Work around a backend type inference bug where `var x = if ...: <str> else: <str>`
+    # may lower to a 32-bit store and truncate the pointer on 64-bit targets.
+    var title: str = "Document"
+    if len(url) > 0:
+        title = url
+    let doc = model.newDocument(url, title)
+
+    # Stable container even for malformed HTML.
+    let htmlNode = model.newElementNode("html")
+    let bodyNode = model.newElementNode("body")
+    var stack: model.DomNode[]
+    let bodyAttached = model.appendChild(htmlNode, bodyNode)
+    model.appendChild(doc.root, htmlNode)
+    htmlAppendNode(stack, if bodyAttached != nil: bodyAttached else: bodyNode)
+
+    var idx: int32 = 0
+    while idx < len(markup):
+        let ch = markup[idx]
+        if cNe(ch, '<'):
+            let start = idx
+            while idx < len(markup) && cNe(markup[idx], '<'):
+                idx = idx + 1
+            let textNorm: str = htmlNormalizeRange(markup, start, idx)
+            if len(textNorm) > 0:
+                let textNode = model.newTextNode(textNorm)
+                model.appendChild(stack[len(stack) - 1], textNode)
+            continue
+
+        # Comment: <!-- ... -->
+        if idx + 3 < len(markup) && cEq(markup[idx + 1], '!') && cEq(markup[idx + 2], '-') && cEq(markup[idx + 3], '-'):
+            idx = idx + 4
+            while idx + 2 < len(markup):
+                if cEq(markup[idx], '-') && cEq(markup[idx + 1], '-') && cEq(markup[idx + 2], '>'):
+                    idx = idx + 3
+                    break
+                idx = idx + 1
+            continue
+
+        # Doctype / declaration: <! ... >
+        if idx + 1 < len(markup) && cEq(markup[idx + 1], '!'):
+            idx = skipToChar(markup, idx + 2, '>')
+            continue
+
+        # End tag
+        if idx + 1 < len(markup) && cEq(markup[idx + 1], '/'):
+            let nameStart = htmlSkipSpaces(markup, idx + 2)
+            let nameEnd = htmlParseNameEnd(markup, nameStart)
+            let tagName: str = htmlLowerAscii(htmlExtractRaw(markup, nameStart, nameEnd))
+            idx = skipToChar(markup, nameEnd, '>')
+            if htmlStrEq(tagName, "html") || htmlStrEq(tagName, "head") || htmlStrEq(tagName, "body"):
+                continue
+            let kBase = len(stack) - 1
+            if kBase > 0:
+                for kRev in 0..<kBase:
+                    let k = kBase - kRev
+                    let node = stack[k]
+                    if node != nil && htmlStrEq(node.tag, tagName):
+                        setLen[model.DomNode](&stack, k)
+                        break
+            continue
+
+        # Start tag
+        let nameStart = htmlSkipSpaces(markup, idx + 1)
+        let nameEnd = htmlParseNameEnd(markup, nameStart)
+        let tagName: str = htmlLowerAscii(htmlExtractRaw(markup, nameStart, nameEnd))
+        idx = nameEnd
+        if len(tagName) < 1:
+            idx = skipToChar(markup, idx, '>')
+            continue
+
+        # Attributes
+        var idValue: str = ""
+        var classValue: str = ""
+        var styleValue: str = ""
+        var selfClosing = false
+
+        while idx < len(markup):
+            idx = htmlSkipSpaces(markup, idx)
+            if idx >= len(markup):
+                break
+            if cEq(markup[idx], '>'):
+                idx = idx + 1
+                break
+            if cEq(markup[idx], '/') && idx + 1 < len(markup) && cEq(markup[idx + 1], '>'):
+                selfClosing = true
+                idx = idx + 2
+                break
+
+            # Attribute name (lowercased)
+            var attrName: str = ""
+            while idx < len(markup) && htmlIsNameChar(markup[idx]):
+                attrName = attrName + charToStr(htmlLowerAsciiChar(markup[idx]))
+                idx = idx + 1
+            idx = htmlSkipSpaces(markup, idx)
+
+            # Attribute value
+            var attrValue: str = ""
+            if idx < len(markup) && cEq(markup[idx], '='):
+                idx = idx + 1
+                idx = htmlSkipSpaces(markup, idx)
+                if idx < len(markup) && (cEq(markup[idx], '\"') || cEq(markup[idx], '\'')):
+                    let quote = markup[idx]
+                    idx = idx + 1
+                    while idx < len(markup) && cNe(markup[idx], quote):
+                        attrValue = attrValue + charToStr(markup[idx])
+                        idx = idx + 1
+                    if idx < len(markup) && cEq(markup[idx], quote):
+                        idx = idx + 1
+                else:
+                    while idx < len(markup) && !htmlIsSpace(markup[idx]) && cNe(markup[idx], '>'):
+                        if cEq(markup[idx], '/') && idx + 1 < len(markup) && cEq(markup[idx + 1], '>'):
+                            break
+                        attrValue = attrValue + charToStr(markup[idx])
+                        idx = idx + 1
+
+            if htmlStrEq(attrName, "id"):
+                idValue = attrValue
+            elif htmlStrEq(attrName, "class"):
+                classValue = attrValue
+            elif htmlStrEq(attrName, "style"):
+                styleValue = attrValue
+
+        # Raw-text special tags.
+        if htmlStrEq(tagName, "style"):
+            let endIdx = findCloseStyle(markup, idx)
+            if endIdx >= 0:
+                let raw: str = htmlExtractRaw(markup, idx, endIdx)
+                if len(raw) > 0:
+                    doc.stylesText = doc.stylesText + raw + "\n"
+                idx = endIdx + 8
+                continue
+            continue
+        if htmlStrEq(tagName, "title"):
+            let endIdx = findCloseTitle(markup, idx)
+            if endIdx >= 0:
+                let t: str = htmlNormalizeRange(markup, idx, endIdx)
+                if len(t) > 0:
+                    doc.title = t
+                idx = endIdx + 8
+                continue
+            continue
+        if htmlStrEq(tagName, "script"):
+            let endIdx = findCloseScript(markup, idx)
+            if endIdx >= 0:
+                idx = endIdx + 9
+                continue
+            continue
+
+        # Ignore container tags; we always render into our own body node.
+        if htmlStrEq(tagName, "html") || htmlStrEq(tagName, "head") || htmlStrEq(tagName, "body"):
+            continue
+
+        let parent = stack[len(stack) - 1]
+        let node = model.newElementNode(tagName)
+        node.id = idValue
+        node.classList = classValue
+        node.styleText = styleValue
+        let attached = model.appendChild(parent, node)
+        if !selfClosing && !isVoidTag(tagName) && attached != nil:
+            htmlAppendNode(stack, attached)
+
+    return doc

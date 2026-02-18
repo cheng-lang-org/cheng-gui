@@ -1,0 +1,16 @@
+type
+    ExternalStub = ref
+        spec: str
+        available: bool
+        message: str
+
+fn adapterId(): str =
+    return "external-stub"
+
+fn resolve(spec: str): ExternalStub =
+    var out: ExternalStub
+    new(out)
+    out.spec = spec
+    out.available = false
+    out.message = "unavailable"
+    return out

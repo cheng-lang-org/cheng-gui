@@ -1,0 +1,69 @@
+type
+    ReactNode = ref
+        kind: str
+        tag: str
+        text: str
+        propsJson: str
+        children: ReactNode[]
+
+    ReactRenderContext = ref
+        hookCursor: int32
+        stateValues: str[]
+
+fn appendNode(items: var ReactNode[], node: ReactNode) =
+    let idx = len(items)
+    setLen[ReactNode](&items, idx + 1)
+    items[idx] = node
+
+fn appendString(items: var str[], value: str) =
+    let idx = len(items)
+    setLen[str](&items, idx + 1)
+    items[idx] = value
+
+fn createText(text: str): ReactNode =
+    var node: ReactNode
+    new(node)
+    node.kind = "text"
+    node.tag = ""
+    node.text = text
+    node.propsJson = ""
+    setLen[ReactNode](&node.children, 0)
+    return node
+
+fn createElement(tag, propsJson: str, children: ReactNode[]): ReactNode =
+    var node: ReactNode
+    new(node)
+    node.kind = "element"
+    node.tag = tag
+    node.text = ""
+    node.propsJson = propsJson
+    setLen[ReactNode](&node.children, 0)
+    for idx in 0..<len(children):
+        appendNode(node.children, children[idx])
+    return node
+
+fn useState(ctx: ReactRenderContext, initial: str): tuple[value: str, token: int32] =
+    if ctx == nil:
+        return (value: initial, token: int32(-1))
+    let token = ctx.hookCursor
+    if token < int32(0):
+        return (value: initial, token: int32(-1))
+    if int(token) >= len(ctx.stateValues):
+        appendString(ctx.stateValues, initial)
+    let value = ctx.stateValues[token]
+    ctx.hookCursor = ctx.hookCursor + int32(1)
+    return (value: value, token: token)
+
+fn setState(ctx: ReactRenderContext, token: int32, value: str): bool =
+    if ctx == nil:
+        return false
+    if token < int32(0) || int(token) >= len(ctx.stateValues):
+        return false
+    ctx.stateValues[token] = value
+    return true
+
+fn useEffect(ctx: ReactRenderContext, key: str): bool =
+    ctx
+    key
+    # V1 shim: effect scheduling is modeled in runtime_generic dispatch loop.
+    return true

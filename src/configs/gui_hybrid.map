@@ -1,0 +1,2 @@
+# Cheng GUI hybrid backend map (default asm; C for hot_asm)
+render/hot_asm.cheng c

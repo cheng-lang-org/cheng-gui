@@ -1,0 +1,386 @@
+import std/os
+import ide/textutils
+import cheng/gui/platform/types
+import cheng/gui/platform/native as nativePlat
+
+type
+    GuiPlatform = enum
+        gpUnknown
+        gpMacOS
+        gpWindows
+        gpLinux
+        gpAndroid
+        gpIos
+
+    BackendPreference = enum
+        bpAuto
+        bpSkia
+        bpWgpu
+        bpOpenGl
+
+    WindowMode = enum
+        wmWindowed
+        wmBorderless
+        wmFullscreen
+
+    WindowDescriptor =
+        title: str
+        width: int
+        height: int
+        minWidth: int
+        minHeight: int
+        mode: WindowMode
+        highDpi: bool
+        backend: BackendPreference
+
+    ResourcePlacement =
+        root: str
+        note: str
+
+    ResourceResolution =
+        path: str
+        error: str
+
+    GuiEnvPair =
+        key: str
+        value: str
+
+    CapabilityEntry =
+        name: str
+        level: str
+        summary: str
+
+    GuiNativeEnvironment =
+        platform: GuiPlatform
+        nativeSupported: bool
+        nativeReady: bool
+        nativeReason: str
+        disableNative: bool
+        disableValue: str
+        forceNative: bool
+        forceValue: str
+        environment: GuiEnvPair[]
+        hints: str[]
+
+fn flagEnabled(value: str): bool =
+    let trimmed = textutils.strip(value)
+    if len(trimmed) == 0:
+        return false
+    let lowered = textutils.toLowerAscii(trimmed)
+    return lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on" || lowered == "enabled"
+
+fn recordEnvPair(pairs: var GuiEnvPair[], key, value: str) =
+    let stored = if len(value) == 0: "<unset>" else: value
+    var pair: GuiEnvPair
+    pair.key = key
+    pair.value = stored
+    pairs.add(pair)
+
+fn parsePlatformOverride(value: str): GuiPlatform =
+    if len(value) == 0:
+        return gpUnknown
+    let lowered = textutils.toLowerAscii(value)
+    case lowered
+    of "macos", "mac", "darwin":
+        gpMacOS
+    of "windows", "win32", "win":
+        gpWindows
+    of "linux":
+        gpLinux
+    of "android":
+        gpAndroid
+    of "ios":
+        gpIos
+    else:
+        gpUnknown
+
+fn toNativePlatform(kind: GuiPlatform): nativePlat.GuiPlatform =
+    nativePlat.GuiPlatform(int(kind))
+
+fn HalCapabilityMatrix(platform: GuiPlatform): CapabilityEntry[] =
+    let entries = nativePlat.HalCapabilityMatrix(toNativePlatform(platform))
+    var outVal = default[CapabilityEntry[]]
+    for entry in entries:
+        var cap: CapabilityEntry
+        cap.name = entry.name
+        cap.level = entry.level
+        cap.summary = entry.summary
+        outVal.add(cap)
+    return outVal
+
+fn DetectPlatform(): GuiPlatform =
+    let override = os.getEnv("CHENG_GUI_PLATFORM", "")
+    let fromEnv = parsePlatformOverride(override)
+    if fromEnv != gpUnknown:
+        return fromEnv
+    when defined(macos) || defined(macosx):
+        gpMacOS
+    elif defined(windows):
+        gpWindows
+    elif defined(linux):
+        gpLinux
+    elif defined(android):
+        gpAndroid
+    elif defined(ios):
+        gpIos
+    else:
+        gpUnknown
+
+fn DetectNativeEnvironment(): GuiNativeEnvironment =
+    let platform = DetectPlatform()
+    var report: GuiNativeEnvironment
+    report.platform = platform
+    report.nativeSupported = platform == gpMacOS || platform == gpWindows || platform == gpLinux
+    report.nativeReady = true
+    report.nativeReason = ""
+    report.disableNative = false
+    report.disableValue = ""
+    report.forceNative = false
+    report.forceValue = ""
+    report.environment = default[GuiEnvPair[]]
+    report.hints = default[str[]]
+
+    let disableValue = os.getEnv("CHENG_GUI_DISABLE_NATIVE", "")
+    report.disableValue = disableValue
+    report.disableNative = flagEnabled(disableValue)
+    recordEnvPair(report.environment, "flag.disable_native", disableValue)
+
+    let forceValue = os.getEnv("CHENG_GUI_FORCE_NATIVE", "")
+    report.forceValue = forceValue
+    report.forceNative = flagEnabled(forceValue)
+    recordEnvPair(report.environment, "flag.force_native", forceValue)
+
+    let displayValue = os.getEnv("DISPLAY", "")
+    let waylandValue = os.getEnv("WAYLAND_DISPLAY", "")
+    let sessionType = os.getEnv("XDG_SESSION_TYPE", "")
+    let sshConnection = os.getEnv("SSH_CONNECTION", "")
+    recordEnvPair(report.environment, "env.display", displayValue)
+    recordEnvPair(report.environment, "env.wayland_display", waylandValue)
+    recordEnvPair(report.environment, "env.xdg_session_type", sessionType)
+    recordEnvPair(report.environment, "env.ssh_connection", sshConnection)
+
+    case platform
+    of gpMacOS:
+        let cgDisable = os.getEnv("CG_SESSION_DISABLE", "")
+        recordEnvPair(report.environment, "env.cg_session_disable", cgDisable)
+        let sshActive = len(sshConnection) > 0
+        let cgDisabled = flagEnabled(cgDisable)
+        if sshActive && cgDisabled:
+            report.nativeReady = false
+            report.nativeReason = "cg-session-disabled"
+            report.hints.add("SSH session detected and CG_SESSION_DISABLE=1; native window unavailable")
+            report.hints.add("Run in a graphical session or `launchctl setenv CG_SESSION_DISABLE 0`")
+        elif sshActive:
+            report.hints.add("SSH session detected; if window init fails, check CG_SESSION_DISABLE")
+    of gpLinux:
+        let wslInterop = os.getEnv("WSL_INTEROP", "")
+        recordEnvPair(report.environment, "env.wsl_interop", wslInterop)
+        if len(displayValue) == 0 && len(waylandValue) == 0:
+            report.nativeReady = false
+            report.nativeReason = "missing-display"
+            report.hints.add("No DISPLAY or WAYLAND_DISPLAY detected; native window cannot start")
+            if len(wslInterop) > 0:
+                report.hints.add("WSL detected; configure an X server and export DISPLAY, or use headless mode")
+            else:
+                report.hints.add("Use a desktop session or `xvfb-run` for a virtual display, or use headless mode")
+    of gpWindows:
+        let sessionName = os.getEnv("SESSIONNAME", "")
+        recordEnvPair(report.environment, "env.session_name", sessionName)
+    else:
+        0
+    if ! report.nativeSupported:
+        report.nativeReady = false
+    if len(report.nativeReason) == 0 && ! report.nativeSupported:
+        report.nativeReason = "unsupported-platform"
+        if len(report.hints) == 0:
+            report.hints.add("Native HAL is not available on this platform; defaulting to headless mode")
+            if report.nativeSupported && report.nativeReady && report.disableNative:
+                report.hints.add("CHENG_GUI_DISABLE_NATIVE is set; defaulting to headless mode")
+
+    return report
+
+fn PlatformName(platform: GuiPlatform): str =
+    case platform
+    of gpMacOS:
+        "macOS"
+    of gpWindows:
+        "Windows"
+    of gpLinux:
+        "Linux"
+    of gpAndroid:
+        "Android"
+    of gpIos:
+        "iOS"
+    else:
+        "unknown"
+
+fn BackendName(backend: BackendPreference): str =
+    case backend
+    of bpAuto:
+        "auto"
+    of bpSkia:
+        "skia"
+    of bpWgpu:
+        "wgpu"
+    of bpOpenGl:
+        "opengl"
+
+fn WindowModeName(mode: WindowMode): str =
+    case mode
+    of wmWindowed:
+        "windowed"
+    of wmBorderless:
+        "borderless"
+    of wmFullscreen:
+        "fullscreen"
+
+fn DefaultBackend(platform: GuiPlatform): BackendPreference =
+    case platform
+    of gpMacOS:
+        bpSkia
+    of gpWindows:
+        bpWgpu
+    of gpLinux:
+        bpWgpu
+    of gpAndroid:
+        bpSkia
+    of gpIos:
+        bpSkia
+    else:
+        bpAuto
+
+fn SanitizeWindowDescriptor(descriptor: var WindowDescriptor) =
+    if len(descriptor.title) == 0:
+        descriptor.title = "Cheng IDE"
+    if descriptor.width < 320:
+        descriptor.width = 320
+    if descriptor.height < 200:
+        descriptor.height = 200
+    if descriptor.minWidth <= 0 || descriptor.minWidth > descriptor.width:
+        descriptor.minWidth = descriptor.width
+    if descriptor.minHeight <= 0 || descriptor.minHeight > descriptor.height:
+        descriptor.minHeight = descriptor.height
+
+fn DefaultWindowDescriptor(title: str): WindowDescriptor =
+    var descriptor: WindowDescriptor
+    descriptor.title = title
+    descriptor.width = 1280
+    descriptor.height = 800
+    descriptor.minWidth = 640
+    descriptor.minHeight = 480
+    descriptor.mode = wmWindowed
+    descriptor.highDpi = true
+    descriptor.backend = DefaultBackend(DetectPlatform())
+    SanitizeWindowDescriptor(descriptor)
+    return descriptor
+
+fn EnsureResourceRoot(candidate: str): ResourcePlacement =
+    var placement: ResourcePlacement
+    placement.root = ""
+    placement.note = ""
+
+    var desired = textutils.strip(candidate)
+    if len(desired) == 0:
+        desired = "build/ide/resources"
+        placement.note = "Using default resource directory"
+
+    if textutils.containsParentTraversal(desired):
+        let prefix = if len(placement.note) == 0: "" else: placement.note + "; "
+        placement.note = prefix + "Path contains parent traversal; reset to build/ide/resources"
+        desired = "build/ide/resources"
+
+    var resolved = ""
+    if os.isAbsolute(desired):
+        resolved = absolutePath(desired)
+    else:
+        resolved = absolutePath(joinPath(getCurrentDir(), desired))
+    placement.root = resolved
+
+    if ! dirExists(resolved):
+        createDir(resolved)
+        let prefix = if len(placement.note) == 0: "" else: placement.note + "; "
+        if dirExists(resolved):
+            placement.note = prefix + "Created resource directory"
+        else:
+            placement.note = prefix + "Failed to create resource directory"
+
+    return placement
+
+fn makeResourceResolution(path: str, error: str): ResourceResolution =
+    var result: ResourceResolution
+    result.path = path
+    result.error = error
+    return result
+
+fn ResolveResource(placement: ResourcePlacement, relative: str): ResourceResolution =
+    if len(relative) == 0:
+        return makeResourceResolution(placement.root, "")
+    if textutils.containsParentTraversal(relative):
+        return makeResourceResolution("", "Path contains parent segment: " + relative)
+
+    var resolved = ""
+    if os.isAbsolute(relative):
+        resolved = absolutePath(relative)
+    else:
+        resolved = absolutePath(joinPath(placement.root, relative))
+
+    let rel = relativePath(resolved, placement.root)
+    if len(rel) == 0:
+        return makeResourceResolution(resolved, "")
+    if textutils.containsParentTraversal(rel):
+        return makeResourceResolution("", "Resource path escapes root: " + rel)
+
+    return makeResourceResolution(resolved, "")
+
+fn DescribePlacement(placement: ResourcePlacement): str =
+    var text = "[resource-root]\n"
+    if len(placement.root) == 0:
+        text = text + "  path=<unset>\n"
+    else:
+        text = text + "  path=" + placement.root + "\n"
+        if len(placement.note) > 0:
+            text = text + "  note=" + placement.note + "\n"
+    return text
+
+fn DefaultWindowConfig(title: str): GuiWindowConfig =
+    let descriptor = DefaultWindowDescriptor(title)
+    var config: GuiWindowConfig
+    config.title = descriptor.title
+    config.initialRect = makeRect(0, 0, float(descriptor.width), float(descriptor.height))
+    config.resizable = descriptor.mode != wmFullscreen
+    config.highDpi = descriptor.highDpi
+    return config
+
+fn InitializePlat() =
+    nativePlat.InitializePlat()
+
+fn ShutdownPlatform() =
+    nativePlat.ShutdownPlatform()
+
+fn CreateWindow(config: GuiWindowConfig): WindowHandle =
+    nativePlat.CreateWindow(config)
+
+fn DestroyWindow(handle: WindowHandle) =
+    nativePlat.DestroyWindow(handle)
+
+fn PumpEvents(timeoutMs: int): GuiEvent[] =
+    nativePlat.PumpEvents(timeoutMs)
+
+fn PumpEvents(): GuiEvent[] =
+    nativePlat.PumpEvents(0)
+
+fn CreateRenderSurface(window: WindowHandle): SurfaceHandle =
+    nativePlat.CreateRenderSurface(window)
+
+fn DestroyRenderSurface(surface: SurfaceHandle) =
+    nativePlat.DestroyRenderSurface(surface)
+
+fn BeginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    nativePlat.BeginFrame(surface)
+
+fn EndFrame(surface: SurfaceHandle) =
+    nativePlat.EndFrame(surface)
+
+fn NativeEnvironmentAvailable(): bool =
+    let report = DetectNativeEnvironment()
+    return report.nativeSupported && report.nativeReady

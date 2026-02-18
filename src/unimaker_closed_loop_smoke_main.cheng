@@ -1,0 +1,258 @@
+import std/os
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+import cheng/gui/browser/engine/storage/store as storageStore
+import cheng/r2capp/entry as r2cEntry
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn smokeMatchAt(text, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if text == nil || pattern == nil:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn smokeContains(text, pattern: str): bool =
+    let pLen = safeLen(pattern)
+    if pLen == int32(0):
+        return true
+    let tLen = safeLen(text)
+    if tLen < pLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx + pLen <= tLen:
+        if smokeMatchAt(text, pattern, int(idx)):
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn snapshotHas(page: types.BrowserPage, pattern: str): bool =
+    return smokeContains(web.captureSnapshot(page), pattern)
+
+fn main(): int32 =
+    let httpUrl = os.getEnv("CHENG_UNIMAKER_HTTP_URL")
+    let httpsUrl = os.getEnv("CHENG_UNIMAKER_HTTPS_URL")
+    if safeLen(httpUrl) == int32(0) || safeLen(httpsUrl) == int32(0):
+        return int32(2)
+
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        return int32(60)
+
+    let ctx1 = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx1 == nil:
+        return int32(61)
+
+    let page1 = web.createPage(ctx1, types.defaultPageOptions())
+    if page1 == nil:
+        return int32(62)
+
+    if ! web.navigate(page1, httpUrl):
+        return int32(63)
+    if ! snapshotHas(page1, "main.tsx"):
+        return int32(64)
+
+    if ! r2cEntry.mount(page1):
+        return int32(65)
+
+    let snapshot = web.captureSnapshot(page1)
+    if ! smokeContains(snapshot, "Welcome to unimaker") && ! smokeContains(snapshot, "Welcome to UniMaker"):
+        return int32(66)
+
+    if ! snapshotHas(page1, "Welcome to unimaker") && ! snapshotHas(page1, "Welcome to UniMaker"):
+        return int32(69)
+
+    # Select English and confirm.
+    if ! web.dispatchDomEvent(page1, "click", "#lang-en", ""):
+        return int32(72)
+    if ! smokeContains(page1.r2cSelectedLanguage, "en"):
+        return int32(73)
+    if ! web.dispatchDomEvent(page1, "click", "#confirm", ""):
+        return int32(74)
+    let afterConfirm = web.captureSnapshot(page1)
+    if ! smokeContains(afterConfirm, "APP:unimaker") && ! smokeContains(afterConfirm, "APP:UniMaker") && ! smokeContains(afterConfirm, "UNIMAKER_HOME"):
+        return int32(75)
+    if ! smokeContains(afterConfirm, "LOCALE:en"):
+        return int32(76)
+    let langSet = storageStore.getValue(page1.storage, "app_language_set")
+    if ! smokeContains(langSet, "true"):
+        return int32(77)
+    let locale = storageStore.getValue(page1.storage, "app_locale")
+    if ! smokeContains(locale, "en"):
+        return int32(78)
+
+    web.destroyPage(page1)
+    web.destroyContext(ctx1)
+
+    let ctx2 = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx2 == nil:
+        return int32(79)
+    let page2 = web.createPage(ctx2, types.defaultPageOptions())
+    if page2 == nil:
+        return int32(80)
+    if ! web.navigate(page2, httpUrl):
+        return int32(81)
+    if ! snapshotHas(page2, "main.tsx"):
+        return int32(82)
+    if ! r2cEntry.mount(page2):
+        return int32(83)
+    let snapshot2 = web.captureSnapshot(page2)
+    if ! smokeContains(snapshot2, "Welcome to unimaker") && ! smokeContains(snapshot2, "Welcome to UniMaker"):
+        return int32(84)
+
+    # Skip and validate persistence.
+    if ! web.dispatchDomEvent(page2, "click", "#skip", ""):
+        return int32(85)
+    let afterSkip = web.captureSnapshot(page2)
+    if ! smokeContains(afterSkip, "APP:unimaker") && ! smokeContains(afterSkip, "APP:UniMaker") && ! smokeContains(afterSkip, "UNIMAKER_HOME"):
+        return int32(86)
+    if ! smokeContains(afterSkip, "LOCALE:zh-CN"):
+        return int32(87)
+    if ! smokeContains(afterSkip, "MQL_MIN_1000:true"):
+        return int32(98)
+    let langSet2 = storageStore.getValue(page2.storage, "app_language_set")
+    if ! smokeContains(langSet2, "true"):
+        return int32(88)
+    let locale2 = storageStore.getValue(page2.storage, "app_locale")
+    if ! smokeContains(locale2, "zh-CN"):
+        return int32(89)
+
+    # Timers: interval ticks + timeout fire.
+    if ! web.dispatchDomEvent(page2, "click", "#timer-start", ""):
+        return int32(99)
+    if ! web.dispatchDomEvent(page2, "tick", "", "ms=500"):
+        return int32(100)
+    if ! web.dispatchDomEvent(page2, "tick", "", "ms=500"):
+        return int32(101)
+    if ! web.dispatchDomEvent(page2, "tick", "", "ms=500"):
+        return int32(102)
+    let afterTicks = web.captureSnapshot(page2)
+    if ! smokeContains(afterTicks, "TIMER_TICKS:3"):
+        return int32(103)
+    if ! smokeContains(afterTicks, "TIMEOUT_FIRED:true"):
+        return int32(104)
+
+    # Clipboard + geolocation + cookie.
+    if ! web.dispatchDomEvent(page2, "click", "#clipboard-copy", ""):
+        return int32(105)
+    let afterClip = web.captureSnapshot(page2)
+    if ! smokeContains(afterClip, "CLIPBOARD:"):
+        return int32(106)
+
+    if ! web.dispatchDomEvent(page2, "click", "#geo-request", ""):
+        return int32(107)
+    let afterGeo = web.captureSnapshot(page2)
+    if ! smokeContains(afterGeo, "GEO:"):
+        return int32(108)
+
+    if ! web.dispatchDomEvent(page2, "click", "#cookie-set", ""):
+        return int32(109)
+    let afterCookie = web.captureSnapshot(page2)
+    if ! smokeContains(afterCookie, "COOKIE:"):
+        return int32(110)
+    let cookieVal = storageStore.getValue(page2.storage, "cookie")
+    if safeLen(cookieVal) == int32(0):
+        return int32(111)
+
+    # ResizeObserver: shrink viewport so matchMedia becomes false.
+    if ! web.dispatchDomEvent(page2, "resize", "", "w=800;h=600"):
+        return int32(112)
+    let afterResize = web.captureSnapshot(page2)
+    if ! smokeContains(afterResize, "RESIZE_COUNT:1"):
+        return int32(113)
+    if ! smokeContains(afterResize, "VIEWPORT:800x600"):
+        return int32(114)
+    if ! smokeContains(afterResize, "MQL_MIN_1000:false"):
+        return int32(115)
+
+    if ! web.dispatchDomEvent(page2, "click", "#tab-messages", ""):
+        return int32(90)
+    let afterTab = web.captureSnapshot(page2)
+    if ! smokeContains(afterTab, "TAB:messages"):
+        return int32(91)
+    if ! smokeContains(afterTab, "MQL_MIN_1000:false"):
+        return int32(92)
+
+    # Drag reorder in Nodes tab.
+    if ! web.dispatchDomEvent(page2, "click", "#tab-nodes", ""):
+        return int32(116)
+    let afterNodes = web.captureSnapshot(page2)
+    if ! smokeContains(afterNodes, "TAB:nodes"):
+        return int32(117)
+    if ! smokeContains(afterNodes, "DRAG_ORDER:A,B,C"):
+        return int32(118)
+    if ! web.dispatchDomEvent(page2, "drag-end", "#nodes", "from=0;to=2"):
+        return int32(119)
+    let afterDrag = web.captureSnapshot(page2)
+    if ! smokeContains(afterDrag, "DRAG_ORDER:B,C,A"):
+        return int32(120)
+
+    # File selection + FileReader preview in Publish tab.
+    if ! web.dispatchDomEvent(page2, "click", "#tab-publish", ""):
+        return int32(121)
+    let afterPublish = web.captureSnapshot(page2)
+    if ! smokeContains(afterPublish, "TAB:publish"):
+        return int32(122)
+    if ! web.dispatchDomEvent(page2, "click", "#file-select", ""):
+        return int32(123)
+    let afterFile = web.captureSnapshot(page2)
+    if ! smokeContains(afterFile, "FILE_PREVIEW_OK"):
+        return int32(124)
+    if ! smokeContains(afterFile, "DATA_URL:data:"):
+        return int32(125)
+
+    if ! web.dispatchDomEvent(page2, "click", "#tab-trading", ""):
+        return int32(93)
+    let afterTrading = web.captureSnapshot(page2)
+    if ! smokeContains(afterTrading, "TAB:trading"):
+        return int32(94)
+    if ! smokeContains(afterTrading, "CANVAS_OK"):
+        return int32(95)
+    if ! smokeContains(afterTrading, "CROSSHAIR:"):
+        return int32(126)
+
+    if ! web.dispatchDomEvent(page2, "pointer-move", "#chart", "x=120;y=80"):
+        return int32(127)
+    let afterMove = web.captureSnapshot(page2)
+    if ! smokeContains(afterMove, "CROSSHAIR:"):
+        return int32(128)
+
+    if ! snapshotHas(page2, "Welcome to unimaker") && ! snapshotHas(page2, "Welcome to UniMaker"):
+        return int32(96)
+    if ! snapshotHas(page2, "CANVAS_OK"):
+        return int32(97)
+    if ! snapshotHas(page2, "CROSSHAIR:"):
+        return int32(129)
+
+    if ! web.navigate(page2, httpsUrl):
+        return int32(70)
+    if ! snapshotHas(page2, "main.tsx"):
+        return int32(71)
+
+    web.destroyPage(page2)
+    web.destroyContext(ctx2)
+    web.shutdownBrowserEngine(engine)
+    return int32(0)
+
+main()

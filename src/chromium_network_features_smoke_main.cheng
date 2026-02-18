@@ -1,0 +1,88 @@
+import std/os
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+
+fn snapshotHas(page: types.BrowserPage, pattern: str): bool =
+    return smokeContains(web.captureSnapshot(page), pattern)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn smokeMatchAt(text, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if text == nil || pattern == nil:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn smokeContains(text, pattern: str): bool =
+    if len(pattern) == 0:
+        return true
+    var idx = 0
+    while idx + len(pattern) <= len(text):
+        if smokeMatchAt(text, pattern, idx):
+            return true
+        idx = idx + 1
+    return false
+
+fn main(): int32 =
+    let httpUrl = os.getEnv("CHENG_NET_HTTP_URL")
+    let httpsUrl = os.getEnv("CHENG_NET_HTTPS_URL")
+    if len(httpUrl) == 0 || len(httpsUrl) == 0:
+        return int32(2)
+
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        return int32(60)
+
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        return int32(61)
+
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    if page == nil:
+        return int32(62)
+
+    if ! web.navigate(page, httpUrl):
+        return int32(63)
+    if ! snapshotHas(page, "HELLO_CHENG_HTTP"):
+        return int32(64)
+
+    let snapshot = web.captureSnapshot(page)
+    if ! smokeContains(snapshot, "BOX_A"):
+        return int32(65)
+    if ! smokeContains(snapshot, "BOX_B"):
+        return int32(66)
+    if smokeContains(snapshot, "SHOULD_NOT_RENDER"):
+        return int32(67)
+
+    if ! web.navigate(page, httpsUrl):
+        return int32(71)
+    if ! snapshotHas(page, "HELLO_CHENG_HTTP"):
+        return int32(72)
+
+    web.destroyPage(page)
+    web.destroyContext(ctx)
+    web.shutdownBrowserEngine(engine)
+    return int32(0)
+
+main()

@@ -1,0 +1,209 @@
+import std/sequtils
+import std/strutils
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+const
+    DefaultDebuggerFontSize = 13.0
+    DefaultDebuggerLineHeight = 18.0
+type
+    DebuggerStatus = enum
+        dsIn
+        active
+        dsRunning
+        dsPaused
+        dsCompleted
+        dsFaultedDebug
+        gerBreak
+    point =
+        file: str
+        line: int
+        enabled: bool
+        hitCount: int
+    DebuggerFrame =
+        functionName: str
+        location: str
+        isCurrent: bool
+        DebuggerVariable
+    Kind = enum
+        dvkLocal
+        dvkGlobal
+        dvkWatchDebug
+        gerVari
+    able =
+        name: str
+        value: str
+        kind: DebuggerVariable
+        Kindchanged: bool
+    DebuggerTheme =
+        background: uint32
+        sectionLabel: uint32
+        textNormal: uint32
+        textAccent: uint32
+        textMuted: uint32
+        textError: uint32
+        highlight: uint32
+    DebuggerMetrics =
+        break points: int activeBreak
+        points: int
+        frames: int
+        var iables: int
+        changedVar
+        iables: int
+    DebuggerModel = ref
+        of WidgetPayload
+        status: DebuggerStatus
+        reason: str
+        break points: DebuggerBreak point[]
+        frames: DebuggerFrame[]
+        var iables: DebuggerVari able[]
+        theme: DebuggerTheme
+        fontSize: float
+        lineHeight: float
+        metrics: DebuggerMetrics
+fn defaultDebuggerTheme(): DebuggerTheme =
+    var theme: DebuggerTheme
+    theme.background = uint32(0xFF141414)
+    theme.sectionLabel = uint32(0xFF7FB0FF)
+    theme.textNormal = uint32(0xFFDEDEDE)
+    theme.textAccent = uint32(0xFF89D185)
+    theme.textMuted = uint32(0xFF808080)
+    theme.textError = uint32(0xFFFF6C6C)
+    theme.highlight = uint32(0x403A96DD) theme
+fn newDebuggerModel(): DebuggerModel =
+    var model: DebuggerModel
+    new(model)
+    model.status = dsIn
+    active
+    model.reason = "" model.break points = default[DebuggerBreak point[]]
+    model.frames = default[DebuggerFrame[]] model.var iables = default[DebuggerVari able[]]
+    model.theme = defaultDebuggerTheme()
+    model.fontSize = DefaultDebuggerFontSize
+    model.lineHeight = DefaultDebuggerLineHeight
+    var metrics: DebuggerMetrics metrics.break points = 0
+    metrics.activeBreak
+    points = 0
+    metrics.frames = 0 metrics.var iables = 0
+    metrics.changedVar
+    iables = 0
+    model.metrics = metrics model
+fn metrics(model: DebuggerModel): DebuggerMetrics =
+    if model == nil:
+        var empty: DebuggerMetrics
+        return empty
+        return model.metrics
+fn setStatus(model: DebuggerModel, status: DebuggerStatus) =
+    setStatus(model, status, "")
+fn setStatus(model: DebuggerModel, status: DebuggerStatus, reason: str) =
+    if model == nil:
+        return model.status = status
+        model.reason = reason
+fn setBreak
+points(model: DebuggerModel, break points: DebuggerBreak point[]) = if model == nil: return model.break points = break points model.metrics.break points = len(break points)
+var active = 0
+for bp in break points:
+    if bp.enabled:
+        active = active + 1
+        model.metrics.activeBreak
+        points = active
+fn setFrames(model: DebuggerModel, frames: DebuggerFrame[]) =
+    if model == nil:
+        return model.frames = frames
+        model.metrics.frames = len(frames)
+fn setVar
+iables(model: DebuggerModel, var iables: DebuggerVari able[]) = if model == nil: return model.var iables = var iables model.metrics.var iables = len(var iables)
+var changed = 0
+for entry in var iables:
+    if entry.changed:
+        changed = changed + 1
+        model.metrics.changedVar
+        iables = changed
+fn drawSectionLabel(ctx: RenderContext, title: str, rect: GuiRect, color: uint32, fontSize: float) =
+    ctx.drawText(rect, title, color, fontSize)
+fn drawDebuggerList(ctx: RenderContext, lines: str[], startX, startY: float, width: float, lineHeight, fontSize: float, color: uint32) =
+    var y = startY
+    for line in lines:
+        let lineRect = makeRect(startX, y, width, lineHeight)
+        ctx.drawText(lineRect, line, color, fontSize)
+        y = y + lineHeight
+fn statusLabel(model: DebuggerModel): str =
+    case model.status
+    of dsIn
+    active: "inactive"
+    of dsRunning:
+        "running"
+    of dsPaused:
+        "paused"
+    of dsCompleted:
+        "completed"
+    of dsFaulted:
+        "faulted"
+fn renderDebugger(model: DebuggerModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background)
+        var cursorY = rect.origin.y + 4
+        let paddingX = rect.origin.x + 8
+        let contentWidth = rect.size.width - 16
+        let statusRect = makeRect(paddingX, cursorY, contentWidth, model.lineHeight)
+        var statusText = "Status: " + statusLabel(model)
+        if len(model.reason) > 0:
+            statusText = statusText + " (" + model.reason + ")"
+            ctx.drawText(statusRect, statusText, model.theme.textNormal, model.fontSize)
+            cursorY = cursorY + model.lineHeight + 4
+            drawSectionLabel(ctx, "Breakpoints", makeRect(paddingX, cursorY, contentWidth, model.lineHeight), model.theme.sectionLabel, model.fontSize)
+            cursorY = cursorY + model.lineHeight
+            if len(model.break points) == 0:
+                ctx.drawText(makeRect(paddingX, cursorY, contentWidth, model.lineHeight), "(no breakpoints)", model.theme.textMuted, model.fontSize)
+                cursorY = cursorY + model.lineHeight + 4
+            else:
+                var lines = default[str[]]
+                for bp in model.break points:
+                    var prefix = if bp.enabled: "● "
+            else:
+                "○ "
+                prefix = prefix + bp.file + ":" + $ bp.line
+                if bp.hitCount > 0:
+                    prefix = prefix + " hits=" + $ bp.hitCount
+                    lines.add(prefix)
+                    drawDebuggerList(ctx, lines, paddingX, cursorY, contentWidth, model.lineHeight, model.fontSize, model.theme.textNormal)
+                    cursorY = cursorY + float(len(lines)) * model.lineHeight + 4
+                    drawSectionLabel(ctx, "Call stack", makeRect(paddingX, cursorY, contentWidth, model.lineHeight), model.theme.sectionLabel, model.fontSize)
+                    cursorY = cursorY + model.lineHeight
+                    if len(model.frames) == 0:
+                        ctx.drawText(makeRect(paddingX, cursorY, contentWidth, model.lineHeight), "(no call stack)", model.theme.textMuted, model.fontSize)
+                        cursorY = cursorY + model.lineHeight + 4
+                    else:
+                        for frame in model.frames:
+                            let label =(if frame.isCurrent: "▶ " else: "") + frame.functionName + " @ " + frame.location
+                            let color = if frame.isCurrent: model.theme.textAccent
+                    else:
+                        model.theme.textNormal
+                        ctx.drawText(makeRect(paddingX, cursorY, contentWidth, model.lineHeight), label, color, model.fontSize)
+                        cursorY = cursorY + model.lineHeight
+                        cursorY = cursorY + 4
+                        drawSectionLabel(ctx, "Variables", makeRect(paddingX, cursorY, contentWidth, model.lineHeight), model.theme.sectionLabel, model.fontSize)
+                        cursorY = cursorY + model.lineHeight
+                        if len(model.var iables) == 0:
+                            ctx.drawText(makeRect(paddingX, cursorY, contentWidth, model.lineHeight), "(no variables)", model.theme.textMuted, model.fontSize)
+                        else:
+                            for variable in model.var iables:
+                                var prefix = case variable.kind
+                                of dvkLocal:
+                                    "loc "
+                                    of dvkGlobal:
+                                        "glob "
+                                        of dvkWatch:
+                                            "watch "
+                                            var text = prefix + variable.name + " = " + variable.value
+                                            let color = if model.status == dsFaulted: model.theme.textError
+                                            elif variable.changed:
+                                                model.theme.textAccent
+                                            else:
+                                                model.theme.textNormal
+                                                ctx.drawText(makeRect(paddingX, cursorY, contentWidth, model.lineHeight), text, color, model.fontSize)
+                                                cursorY = cursorY + model.lineHeight
+fn debuggerSum
+mary(model: DebuggerModel): str = if model == nil: return "[debug-panel]\n  status=uninitialized\n"
+var lines = default[str[]] lines.add "[debug-panel]\n" lines.add "  status=" + statusLabel(model) + "\n"
+if len(model.reason) > 0:
+    lines.add "  reason=" + model.reason + "\n" lines.add "  breakpoints=" + intToStr(int32(model.metrics.break points)) + "\n" lines.add "  active_breakpoints=" + intToStr(int32(model.metrics.activeBreak points)) + "\n" lines.add "  frames=" + intToStr(int32(model.metrics.frames)) + "\n" lines.add "  variables=" + intToStr(int32(model.metrics.var iables)) + "\n" lines.add "  changed_variables=" + intToStr(int32(model.metrics.changedVar iables)) + "\n" lines.join("")

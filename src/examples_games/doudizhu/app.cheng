@@ -1,0 +1,1096 @@
+import std/seqs
+import cheng/gui/examples_games/common/protocol
+import cheng/gui/examples_games/common/p2p_node
+import cheng/gui/examples_games/common/gui_runtime
+import cheng/gui/examples_games/common/session_store
+import cheng/gui/examples_games/common/string_utils as sutil
+import cheng/gui/examples_games/doudizhu/state as ddz
+
+const
+    GameId = "doudizhu"
+    DdzSeats = 3
+    TrusteeTimeoutTicks: int64 = int64(900)
+    BotActGapTicks: int64 = int64(90)
+
+var gScene: GuiSceneState
+var gNode: P2PNode
+var gGameState: ddz.DoudizhuState
+var gIsHost = false
+var gRoomCode = ""
+var gLocalName = ""
+var gLocalToken = ""
+var gLocalSeat: int32 = -1
+var gHostPeerId = ""
+var gHostAddr = ""
+var gPeerBySeat: str[]
+var gAllowedActions: str[]
+var gLastPublicSnapshot = ""
+var gLastPrivateSnapshot = ""
+var gMemoKeys: str[]
+var gMemoApplied: bool[]
+var gMemoActionType: str[]
+var gMemoActionArgs: str[]
+var gMemoStateSeq: int64[]
+var gMemoPublicSnapshot: str[]
+var gMemoNote: str[]
+var gClientSeq: int64 = int64(0)
+var gTick: int64 = int64(0)
+var gSeatLastActiveTick: int64[]
+var gSeatLastBotTick: int64[]
+var gCtxInited = false
+
+fn i32ToStr(value: int32): str =
+    return intToStr(value)
+
+fn i64ToStr(value: int64): str =
+    return intToStr(int32(value))
+
+fn defaultListenPort(): int32 =
+    let nowMs: int64 = sutil.nowMillis()
+    return 18000 + int32(nowMs % int64(1000))
+
+fn defaultListenAddr(): str =
+    return "/ip4/0.0.0.0/tcp/" + i32ToStr(defaultListenPort())
+
+fn makeRoomCode(): str =
+    let nowMs: int64 = sutil.nowMillis()
+    return "R" + i32ToStr(int32(nowMs % int64(1000000)))
+
+fn makeToken(name: str): str =
+    let base: str = if len(name) > 0: name else: "guest"
+    let nowMs: int64 = sutil.nowMillis()
+    return base + "-" + i64ToStr(nowMs)
+
+fn resetSeatRuntime() =
+    gPeerBySeat = default[str[]]
+    gSeatLastActiveTick = default[int64[]]
+    gSeatLastBotTick = default[int64[]]
+    setLen(gPeerBySeat, DdzSeats)
+    setLen(gSeatLastActiveTick, DdzSeats)
+    setLen(gSeatLastBotTick, DdzSeats)
+
+fn stopCurrentNode() =
+    if gNode != nil:
+        p2pStop(gNode)
+        gNode = nil
+
+fn addLog(text: str) =
+    if ! gCtxInited:
+        return
+    gScene = addSceneLog(gScene, text, 220)
+
+fn safeSeqGet(items: str[], idx: int32): str =
+    if idx < 0 || idx >= len(items):
+        return ""
+    return get(items, idx)
+
+fn splitPipe(text: str): str[] =
+    let raw: str[] = sutil.splitByChar(text, '|')
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(raw):
+        add(outVal, sutil.strip(raw[idx]))
+    return outVal
+
+fn splitByComma(text: str): str[] =
+    let raw: str[] = sutil.splitByChar(text, ',')
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(raw):
+        let v: str = sutil.strip(raw[idx])
+        if len(v) > 0:
+            add(outVal, v)
+    return outVal
+
+fn joinCsv(items: str[]): str =
+    return sutil.joinWith(items, ",")
+
+fn containsText(items: var str[], value: str): bool =
+    for idx in 0..<len(items):
+        if get(items, idx) == value:
+            return true
+    return false
+
+fn setI64At(items: int64[], targetIdx: int32, value: int64): int64[] =
+    var next: int64[] = default[int64[]]
+    for idx in 0..<len(items):
+        if idx == targetIdx:
+            add(next, value)
+        else:
+            add(next, get(items, idx))
+    return next
+
+fn setBoolAt(items: bool[], targetIdx: int32, value: bool): bool[] =
+    var next: bool[] = default[bool[]]
+    for idx in 0..<len(items):
+        if idx == targetIdx:
+            add(next, value)
+        else:
+            add(next, get(items, idx))
+    return next
+
+fn setStrAt(items: str[], targetIdx: int32, value: str): str[] =
+    var next: str[] = default[str[]]
+    for idx in 0..<len(items):
+        if idx == targetIdx:
+            add(next, value)
+        else:
+            add(next, get(items, idx))
+    return next
+
+fn setActionAt(items: GuiActionRect[], targetIdx: int32, value: GuiActionRect): GuiActionRect[] =
+    var next: GuiActionRect[] = default[GuiActionRect[]]
+    for idx in 0..<len(items):
+        if idx == targetIdx:
+            add(next, value)
+        else:
+            add(next, get(items, idx))
+    return next
+
+fn parseAllowedActions(raw: str): str[] =
+    let parts: str[] = splitByComma(raw)
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(parts):
+        let key: str = sutil.toLowerAscii(sutil.strip(parts[idx]))
+        if len(key) > 0 && ! containsText(outVal, key):
+            add(outVal, key)
+    return outVal
+
+fn markSeatActive(seat: int32) =
+    if seat < 0 || seat >= DdzSeats || seat >= len(gSeatLastActiveTick):
+        return
+    gSeatLastActiveTick = setI64At(gSeatLastActiveTick, seat, gTick)
+
+fn markSeatBotTick(seat: int32) =
+    if seat < 0 || seat >= DdzSeats || seat >= len(gSeatLastBotTick):
+        return
+    gSeatLastBotTick = setI64At(gSeatLastBotTick, seat, gTick)
+
+fn seatActiveElapsed(seat: int32): int64 =
+    if seat < 0 || seat >= len(gSeatLastActiveTick):
+        return int64(0)
+    return gTick - get(gSeatLastActiveTick, seat)
+
+fn seatBotElapsed(seat: int32): int64 =
+    if seat < 0 || seat >= len(gSeatLastBotTick):
+        return int64(0)
+    return gTick - get(gSeatLastBotTick, seat)
+
+fn peerAt(seat: int32): str =
+    if seat < 0 || seat >= DdzSeats || seat >= len(gPeerBySeat):
+        return ""
+    return get(gPeerBySeat, seat)
+
+fn peerSet(seat: int32, peerId: str) =
+    if seat < 0 || seat >= DdzSeats:
+        return
+    var next: str[] = default[str[]]
+    for idx in 0..<DdzSeats:
+        if idx == seat:
+            add(next, peerId)
+        else:
+            add(next, peerAt(idx))
+    gPeerBySeat = next
+
+fn findFirstEmptySeat(): int32 =
+    return ddz.findEmptySeat(gGameState)
+
+fn nextClientSeq(): int64 =
+    gClientSeq = gClientSeq + int64(1)
+    return gClientSeq
+
+fn makeMemoKey(playerToken: str, clientSeq: int64): str =
+    if len(playerToken) == 0 || clientSeq <= int64(0):
+        return ""
+    return playerToken + "#" + i64ToStr(clientSeq)
+
+fn findMemoIndex(key: str): int32 =
+    if len(key) == 0:
+        return -1
+    for idx in 0..<len(gMemoKeys):
+        if get(gMemoKeys, idx) == key:
+            return idx
+    return -1
+
+fn memoAppliedAt(idx: int32): ActionApplied =
+    var resultMsg: ActionApplied = initActionApplied()
+    if idx < 0 || idx >= len(gMemoKeys):
+        return resultMsg
+    resultMsg.applied = get(gMemoApplied, idx)
+    resultMsg.actionType = get(gMemoActionType, idx)
+    resultMsg.actionArgs = get(gMemoActionArgs, idx)
+    resultMsg.stateSeq = get(gMemoStateSeq, idx)
+    resultMsg.publicSnapshot = get(gMemoPublicSnapshot, idx)
+    resultMsg.note = get(gMemoNote, idx)
+    return resultMsg
+
+fn rememberMemo(key: str, actionResult: ActionApplied) =
+    if len(key) == 0:
+        return
+    var idx: int32 = findMemoIndex(key)
+    if idx >= 0:
+        gMemoApplied = setBoolAt(gMemoApplied, idx, actionResult.applied)
+        gMemoActionType = setStrAt(gMemoActionType, idx, actionResult.actionType)
+        gMemoActionArgs = setStrAt(gMemoActionArgs, idx, actionResult.actionArgs)
+        gMemoStateSeq = setI64At(gMemoStateSeq, idx, actionResult.stateSeq)
+        gMemoPublicSnapshot = setStrAt(gMemoPublicSnapshot, idx, actionResult.publicSnapshot)
+        gMemoNote = setStrAt(gMemoNote, idx, actionResult.note)
+        return
+    add(gMemoKeys, key)
+    add(gMemoApplied, actionResult.applied)
+    add(gMemoActionType, actionResult.actionType)
+    add(gMemoActionArgs, actionResult.actionArgs)
+    add(gMemoStateSeq, actionResult.stateSeq)
+    add(gMemoPublicSnapshot, actionResult.publicSnapshot)
+    add(gMemoNote, actionResult.note)
+    if len(gMemoKeys) > 320:
+        var clippedKeys: str[] = default[str[]]
+        var clippedApplied: bool[] = default[bool[]]
+        var clippedActionType: str[] = default[str[]]
+        var clippedActionArgs: str[] = default[str[]]
+        var clippedStateSeq: int64[] = default[int64[]]
+        var clippedPublicSnapshot: str[] = default[str[]]
+        var clippedNote: str[] = default[str[]]
+        idx = len(gMemoKeys) - 240
+        while idx < len(gMemoKeys):
+            add(clippedKeys, get(gMemoKeys, idx))
+            add(clippedApplied, get(gMemoApplied, idx))
+            add(clippedActionType, get(gMemoActionType, idx))
+            add(clippedActionArgs, get(gMemoActionArgs, idx))
+            add(clippedStateSeq, get(gMemoStateSeq, idx))
+            add(clippedPublicSnapshot, get(gMemoPublicSnapshot, idx))
+            add(clippedNote, get(gMemoNote, idx))
+            idx = idx + 1
+        gMemoKeys = clippedKeys
+        gMemoApplied = clippedApplied
+        gMemoActionType = clippedActionType
+        gMemoActionArgs = clippedActionArgs
+        gMemoStateSeq = clippedStateSeq
+        gMemoPublicSnapshot = clippedPublicSnapshot
+        gMemoNote = clippedNote
+
+fn newAction(id: str, label: str): GuiActionRect =
+    var action: GuiActionRect
+    action.id = id
+    action.label = label
+    action.enabled = true
+    action.x = 0
+    action.y = 0
+    action.w = 0
+    action.h = 0
+    return action
+
+fn fillBaseActions(actions: var GuiActionRect[]) =
+    actions = default[GuiActionRect[]]
+    add(actions, newAction("create", "创建房间 Create"))
+    add(actions, newAction("join", "加入房间 Join"))
+    add(actions, newAction("ready", "准备 Ready"))
+    add(actions, newAction("start", "开始 Start"))
+    add(actions, newAction("send", "发送动作 Send"))
+    add(actions, newAction("bot", "机器人补位 Bot Fill"))
+    add(actions, newAction("reconnect", "重连 Reconnect"))
+
+fn actionAllowed(kind: str): bool =
+    if len(gAllowedActions) <= 0:
+        return gIsHost
+    return containsText(gAllowedActions, kind)
+
+fn allowSendActionButton(): bool =
+    if len(gAllowedActions) <= 0:
+        return true
+    return actionAllowed("bid") || actionAllowed("play") || actionAllowed("pass") || actionAllowed("ready") || actionAllowed("start")
+
+fn computeAllowedActionsForSeat(state: ddz.DoudizhuState, seat: int32): str[] =
+    var allowed: str[] = default[str[]]
+    if state == nil || seat < 0 || seat >= DdzSeats:
+        return allowed
+
+    let stageName: str = ddz.getStage(state)
+    let turnSeat: int32 = ddz.getTurnSeat(state)
+
+    if stageName == "lobby":
+        add(allowed, "ready")
+        if seat == 0 && ddz.allReady(state):
+            add(allowed, "start")
+        return allowed
+
+    if stageName == "bidding":
+        if turnSeat == seat:
+            add(allowed, "bid")
+        return allowed
+
+    if stageName == "playing":
+        if turnSeat == seat:
+            add(allowed, "play")
+            if ddz.getLastPattern(state) != "":
+                add(allowed, "pass")
+        return allowed
+
+    if stageName == "finished":
+        add(allowed, "ready")
+        if seat == 0:
+            add(allowed, "start")
+        return allowed
+    return allowed
+
+fn updateHostAllowedActions() =
+    if ! gIsHost:
+        return
+    gAllowedActions = computeAllowedActionsForSeat(gGameState, gLocalSeat)
+
+fn allowedActionsTextForSeat(seat: int32): str =
+    let allowed: str[] = computeAllowedActionsForSeat(gGameState, seat)
+    return joinCsv(allowed)
+
+fn ensureContext(scene: GuiSceneState) =
+    if gCtxInited:
+        return
+    gScene = scene
+    gGameState = ddz.newState()
+    gNode = nil
+    gIsHost = false
+    gRoomCode = ""
+    gLocalName = "玩家"
+    gLocalToken = ""
+    gLocalSeat = -1
+    gHostPeerId = ""
+    gHostAddr = ""
+    gAllowedActions = default[str[]]
+    gLastPublicSnapshot = ""
+    gLastPrivateSnapshot = ""
+    gMemoKeys = default[str[]]
+    gMemoApplied = default[bool[]]
+    gMemoActionType = default[str[]]
+    gMemoActionArgs = default[str[]]
+    gMemoStateSeq = default[int64[]]
+    gMemoPublicSnapshot = default[str[]]
+    gMemoNote = default[str[]]
+    gClientSeq = int64(0)
+    gTick = int64(0)
+    resetSeatRuntime()
+    fillBaseActions(gScene.actions)
+    if len(gScene.icon) == 0:
+        gScene.icon = "D"
+    if len(gScene.rating) == 0:
+        gScene.rating = "4.9"
+    gScene.description = "中文命令: 叫分 0|1|2|3 / 出牌 S3,H3 / 不出; 英文别名: bid/play/pass"
+    gScene.inputState.placeholder = "创建: 房间|监听|昵称; 加入: 房间|hostPeer|hostAddr|昵称|监听; 发送: 叫分 3 或 出牌 S3,H3 或 不出"
+    gCtxInited = true
+
+fn saveLocalSession() =
+    if len(gLocalName) > 0 && len(gLocalToken) > 0:
+        savePlayerToken(GameId, gLocalName, gLocalToken)
+    if len(gHostAddr) > 0:
+        saveLastEndpoint(GameId, gRoomCode + "|" + gHostPeerId + "|" + gHostAddr + "|" + gLocalName)
+
+fn snapshotValue(snapshot: str, key: str): str =
+    if len(snapshot) <= 0:
+        return ""
+    let lines: str[] = sutil.splitLines(snapshot)
+    let prefix: str = key + "="
+    for idx in 0..<len(lines):
+        let line: str = lines[idx]
+        if sutil.startsWithPrefix(line, prefix):
+            if len(line) <= len(prefix):
+                return ""
+            return sutil.unescapeField(sutil.sliceRange(line, len(prefix), len(line) - 1))
+    return ""
+
+fn snapshotInt(snapshot: str, key: str, defaultValue: int32): int32 =
+    let text: str = snapshotValue(snapshot, key)
+    if len(text) == 0:
+        return defaultValue
+    return sutil.parseInt32(text, defaultValue)
+
+fn parseSeatFromJoinNote(note: str, localToken: str): int32 =
+    let parts: str[] = sutil.splitByChar(note, ';')
+    var tokenVal = ""
+    var seatVal: int32 = -1
+    for idx in 0..<len(parts):
+        let part: str = sutil.strip(parts[idx])
+        let tokenText: str = sutil.parseKeyValueLine(part, "token")
+        if len(tokenText) > 0:
+            tokenVal = tokenText
+        let seatText: str = sutil.parseKeyValueLine(part, "seat")
+        if len(seatText) > 0 || part == "seat=0":
+            seatVal = sutil.parseInt32(seatText, -1)
+    if tokenVal == localToken:
+        return seatVal
+    return -1
+
+fn tryUpdateSeatFromPrivateSnapshot() =
+    if len(gLastPrivateSnapshot) <= 0:
+        return
+    let seatText: str = snapshotValue(gLastPrivateSnapshot, "seat")
+    if len(seatText) > 0 || snapshotValue(gLastPrivateSnapshot, "seat") == "0":
+        gLocalSeat = sutil.parseInt32(seatText, gLocalSeat)
+
+fn publishActionApplied(applied: ActionApplied) =
+    if gNode == nil:
+        return
+    gLastPublicSnapshot = applied.publicSnapshot
+    let env: NetEnvelope = actionAppliedToEnvelope(applied, GameId, gRoomCode, p2pSelfPeerId(gNode))
+    let errText: str = p2pPublishPublic(gNode, encodeNetEnvelope(env))
+    if len(errText) > 0:
+        addLog("公共广播失败: " + errText)
+
+fn pushPrivateSyncToSeat(seat: int32) =
+    if gNode == nil || seat < 0 || seat >= DdzSeats:
+        return
+    let playerToken: str = ddz.getPlayerToken(gGameState, seat)
+    if len(playerToken) <= 0:
+        return
+
+    var msg: PrivateSync = initPrivateSync()
+    msg.playerToken = playerToken
+    msg.privateSnapshot = ddz.buildPrivateSnapshot(gGameState, seat)
+    msg.allowedActions = allowedActionsTextForSeat(seat)
+    msg.stateSeq = ddz.getSeq(gGameState)
+
+    if gIsHost && seat == gLocalSeat:
+        gLastPrivateSnapshot = msg.privateSnapshot
+        gAllowedActions = parseAllowedActions(msg.allowedActions)
+
+    let peerId: str = peerAt(seat)
+    if len(peerId) <= 0:
+        return
+    let env: NetEnvelope = privateSyncToEnvelope(msg, GameId, gRoomCode, p2pSelfPeerId(gNode), peerId)
+    let respText: str = p2pRequestPrivate(gNode, peerId, encodeNetEnvelope(env))
+    if len(respText) == 0:
+        let dmErr: str = p2pLastError(gNode)
+        if len(dmErr) > 0:
+            addLog("私信同步失败 seat=" + i32ToStr(seat) + " err=" + dmErr)
+
+fn broadcastPrivateSyncAll() =
+    for seat in 0..<DdzSeats:
+        pushPrivateSyncToSeat(seat)
+
+fn resolveSeatByToken(req: ActionRequest): tuple[ok: bool, seat: int32, note: str] =
+    if len(req.playerToken) == 0:
+        return (ok: false, seat: -1, note: "缺少 playerToken")
+    let tokenSeat: int32 = ddz.recoverPlayerSession(gGameState, req.playerToken)
+    var seat: int32 = req.seat
+    if tokenSeat >= 0:
+        if seat >= 0 && seat != tokenSeat:
+            return (ok: false, seat: tokenSeat, note: "seat 与 token 不一致")
+        seat = tokenSeat
+    if seat < 0 || seat >= DdzSeats:
+        return (ok: false, seat: -1, note: "seat 非法")
+    let seatToken: str = ddz.getPlayerToken(gGameState, seat)
+    if len(seatToken) > 0 && seatToken != req.playerToken:
+        return (ok: false, seat: seat, note: "token 与座位绑定不匹配")
+    return (ok: true, seat: seat, note: "")
+
+fn applyHostAction(reqIn: ActionRequest, senderPeerId: str) =
+    if ! gIsHost:
+        return
+    var req: ActionRequest = reqIn
+    let check = resolveSeatByToken(req)
+    if ! check.ok:
+        var rejected: ActionApplied = initActionApplied()
+        rejected.applied = false
+        rejected.actionType = req.actionType
+        rejected.actionArgs = req.actionArgs
+        rejected.stateSeq = ddz.getSeq(gGameState)
+        rejected.publicSnapshot = ddz.buildPublicSnapshot(gGameState)
+        rejected.note = check.note
+        addLog("[房主] 拒绝动作: " + rejected.note)
+        publishActionApplied(rejected)
+        if check.seat >= 0:
+            pushPrivateSyncToSeat(check.seat)
+        return
+
+    req.seat = check.seat
+    if len(senderPeerId) > 0:
+        peerSet(req.seat, senderPeerId)
+    markSeatActive(req.seat)
+
+    let memoKey: str = makeMemoKey(req.playerToken, req.clientSeq)
+    let memoIdx: int32 = findMemoIndex(memoKey)
+    if memoIdx >= 0:
+        addLog("[房主] 重复动作忽略: " + req.actionType)
+        publishActionApplied(memoAppliedAt(memoIdx))
+        broadcastPrivateSyncAll()
+        return
+
+    let actionResult: ActionApplied = ddz.applyAction(gGameState, req.seat, req)
+    if len(memoKey) > 0:
+        rememberMemo(memoKey, actionResult)
+    if actionResult.applied:
+        addLog("[房主] 动作生效: " + req.actionType + " " + req.actionArgs)
+    else:
+        addLog("[房主] 动作拒绝: " + actionResult.note)
+    publishActionApplied(actionResult)
+    broadcastPrivateSyncAll()
+    updateHostAllowedActions()
+
+fn handleJoinEnvelope(env: NetEnvelope) =
+    if ! gIsHost:
+        return
+    let joinMsg: RoomJoin = envelopeToRoomJoin(env)
+    if len(joinMsg.playerToken) == 0:
+        addLog("忽略空 token 入房请求")
+        return
+    var seat: int32 = ddz.recoverPlayerSession(gGameState, joinMsg.playerToken)
+    if seat < 0:
+        if joinMsg.desiredSeat >= 0 && joinMsg.desiredSeat < DdzSeats && len(ddz.getPlayerToken(gGameState, joinMsg.desiredSeat)) == 0:
+            seat = joinMsg.desiredSeat
+        else:
+            seat = findFirstEmptySeat()
+    if seat < 0:
+        addLog("房间已满，拒绝入房")
+        return
+
+    let oldName: str = ddz.getPlayerName(gGameState, seat)
+    let name: str = if len(joinMsg.playerName) > 0: joinMsg.playerName else: oldName
+    ddz.setPlayer(gGameState, seat, name, joinMsg.playerToken, true, false)
+    ddz.setReady(gGameState, seat, false)
+    peerSet(seat, env.senderPeerId)
+    markSeatActive(seat)
+    addLog("玩家入房: " + name + " -> 座位 " + i32ToStr(seat))
+
+    ddz.bumpSeq(gGameState)
+    var joinApplied: ActionApplied = initActionApplied()
+    joinApplied.applied = true
+    joinApplied.actionType = "join"
+    joinApplied.actionArgs = name
+    joinApplied.stateSeq = ddz.getSeq(gGameState)
+    joinApplied.publicSnapshot = ddz.buildPublicSnapshot(gGameState)
+    joinApplied.note = "seat=" + i32ToStr(seat) + ";token=" + joinMsg.playerToken
+    publishActionApplied(joinApplied)
+    broadcastPrivateSyncAll()
+    updateHostAllowedActions()
+
+fn handleActionRequestEnvelope(env: NetEnvelope) =
+    if ! gIsHost:
+        return
+    let req: ActionRequest = envelopeToActionRequest(env)
+    applyHostAction(req, env.senderPeerId)
+
+fn consumePublicMessages() =
+    if gNode == nil:
+        return
+    var msg: P2PPublicMessage
+    while p2pPollPublic(gNode, msg):
+        let env: NetEnvelope = decodeNetEnvelope(msg.envelopeText)
+        if env.game != GameId:
+            continue
+        if len(gRoomCode) > 0 && env.roomCode != gRoomCode:
+            continue
+
+        if env.kind == "room_hello":
+            if ! gIsHost:
+                gHostPeerId = env.senderPeerId
+                gHostAddr = env.publicPayload
+                addLog("发现房主: " + gHostPeerId)
+            continue
+
+        if env.kind == "room_join" && gIsHost:
+            handleJoinEnvelope(env)
+            continue
+
+        if env.kind == "action_request" && gIsHost:
+            handleActionRequestEnvelope(env)
+            continue
+
+        if env.kind == "action_applied":
+            let actionAppliedMsg: ActionApplied = envelopeToActionApplied(env)
+            gLastPublicSnapshot = actionAppliedMsg.publicSnapshot
+            if actionAppliedMsg.actionType == "join" && len(actionAppliedMsg.note) > 0 && len(gLocalToken) > 0:
+                let seatFound: int32 = parseSeatFromJoinNote(actionAppliedMsg.note, gLocalToken)
+                if seatFound >= 0:
+                    gLocalSeat = seatFound
+                    markSeatActive(seatFound)
+            if actionAppliedMsg.applied:
+                addLog("同步动作: " + actionAppliedMsg.actionType)
+            else:
+                addLog("动作失败: " + actionAppliedMsg.note)
+            if gIsHost:
+                updateHostAllowedActions()
+
+fn privateRequestHandler(reqText: str): str =
+    let env: NetEnvelope = decodeNetEnvelope(reqText)
+    if env.game != GameId:
+        return reqText
+
+    if env.kind == "private_sync":
+        let sync: PrivateSync = envelopeToPrivateSync(env)
+        if len(sync.playerToken) > 0 && sync.playerToken == gLocalToken:
+            gLastPrivateSnapshot = sync.privateSnapshot
+            gAllowedActions = parseAllowedActions(sync.allowedActions)
+            tryUpdateSeatFromPrivateSnapshot()
+            addLog("收到私有同步，seat=" + i32ToStr(gLocalSeat))
+        var ack: NetEnvelope = initNetEnvelope()
+        ack.kind = "ack"
+        ack.game = GameId
+        ack.roomCode = gRoomCode
+        ack.ok = true
+        ack.actionArgs = "private_sync_ok"
+        return encodeNetEnvelope(ack)
+
+    if env.kind == "reconnect_claim" && gIsHost:
+        let claim: ReconnectClaim = envelopeToReconnectClaim(env)
+        let seat: int32 = ddz.recoverPlayerSession(gGameState, claim.playerToken)
+        var reply: NetEnvelope = initNetEnvelope()
+        reply.kind = "reconnect_snapshot"
+        reply.game = GameId
+        reply.roomCode = gRoomCode
+        if seat < 0:
+            reply.ok = false
+            reply.errorMessage = "token not found"
+            return encodeNetEnvelope(reply)
+        let seatName: str = ddz.getPlayerName(gGameState, seat)
+        let seatToken: str = ddz.getPlayerToken(gGameState, seat)
+        let seatIsBot: bool = ddz.getPlayerIsBot(gGameState, seat)
+        ddz.setPlayer(gGameState, seat, seatName, seatToken, true, seatIsBot)
+        peerSet(seat, env.senderPeerId)
+        markSeatActive(seat)
+
+        var snap: ReconnectSnapshot = initReconnectSnapshot()
+        snap.publicSnapshot = ddz.buildPublicSnapshot(gGameState)
+        snap.privateSnapshot = ddz.buildPrivateSnapshot(gGameState, seat)
+        snap.allowedActions = allowedActionsTextForSeat(seat)
+        snap.stateSeq = ddz.getSeq(gGameState)
+        snap.seat = seat
+        reply = reconnectSnapshotToEnvelope(snap, GameId, gRoomCode, p2pSelfPeerId(gNode), env.senderPeerId)
+        reply.ok = true
+        addLog("处理重连认领: seat=" + i32ToStr(seat))
+        return encodeNetEnvelope(reply)
+
+    if env.kind == "reconnect_snapshot":
+        if ! env.ok:
+            addLog("重连失败: " + env.errorMessage)
+            return reqText
+        let snap: ReconnectSnapshot = envelopeToReconnectSnapshot(env)
+        gLastPublicSnapshot = snap.publicSnapshot
+        gLastPrivateSnapshot = snap.privateSnapshot
+        gAllowedActions = parseAllowedActions(snap.allowedActions)
+        gLocalSeat = snap.seat
+        markSeatActive(gLocalSeat)
+        addLog("重连恢复成功: seat=" + i32ToStr(gLocalSeat))
+        var ack: NetEnvelope = initNetEnvelope()
+        ack.kind = "ack"
+        ack.game = GameId
+        ack.roomCode = gRoomCode
+        ack.ok = true
+        return encodeNetEnvelope(ack)
+    return reqText
+
+fn parseActionInput(text: str): tuple[ok: bool, actionType: str, actionArgs: str, note: str] =
+    let trimmed: str = sutil.strip(text)
+    if len(trimmed) == 0:
+        return (ok: false, actionType: "", actionArgs: "", note: "请输入动作")
+    if trimmed == "不出" || trimmed == "过" || sutil.toLowerAscii(trimmed) == "pass":
+        return (ok: true, actionType: "pass", actionArgs: "", note: "")
+    let pos: int32 = sutil.indexOfSubstr(trimmed, " ", 0)
+    var left = ""
+    var right = ""
+    if pos < 0:
+        left = trimmed
+        right = ""
+    else:
+        if pos > 0:
+            left = sutil.sliceRange(trimmed, 0, pos - 1)
+        if pos + 1 < len(trimmed):
+            right = sutil.sliceRange(trimmed, pos + 1, len(trimmed) - 1)
+    let kindRaw: str = sutil.toLowerAscii(sutil.strip(left))
+    let args: str = sutil.strip(right)
+
+    if kindRaw == "叫分" || kindRaw == "bid":
+        return (ok: true, actionType: "bid", actionArgs: args, note: "")
+    if kindRaw == "出牌" || kindRaw == "play":
+        if len(args) == 0:
+            return (ok: false, actionType: "", actionArgs: "", note: "出牌格式: 出牌 S3,H3")
+        return (ok: true, actionType: "play", actionArgs: args, note: "")
+    if kindRaw == "不出" || kindRaw == "过" || kindRaw == "pass":
+        return (ok: true, actionType: "pass", actionArgs: "", note: "")
+    if kindRaw == "准备" || kindRaw == "ready":
+        return (ok: true, actionType: "ready", actionArgs: "", note: "")
+    if kindRaw == "开始" || kindRaw == "start":
+        return (ok: true, actionType: "start", actionArgs: "", note: "")
+    if kindRaw == "0" || kindRaw == "1" || kindRaw == "2" || kindRaw == "3":
+        return (ok: true, actionType: "bid", actionArgs: kindRaw, note: "")
+    return (ok: false, actionType: "", actionArgs: "", note: "动作格式: 叫分 3 / 出牌 S3,H3 / 不出")
+
+fn sendActionRequest(actionType: str, actionArgs: str) =
+    if gNode == nil:
+        addLog("请先创建或加入房间")
+        return
+    var req: ActionRequest = initActionRequest()
+    req.actionType = actionType
+    req.actionArgs = actionArgs
+    req.clientSeq = nextClientSeq()
+    req.playerToken = gLocalToken
+    req.seat = gLocalSeat
+
+    if gIsHost:
+        applyHostAction(req, p2pSelfPeerId(gNode))
+        return
+
+    let env: NetEnvelope = actionRequestToEnvelope(req, GameId, gRoomCode, p2pSelfPeerId(gNode))
+    let pubErr: str = p2pPublishPublic(gNode, encodeNetEnvelope(env))
+    if len(pubErr) > 0:
+        addLog("发送动作失败: " + pubErr)
+
+fn tryCreateRoom(input: str) =
+    stopCurrentNode()
+    gGameState = ddz.newState()
+    gMemoKeys = default[str[]]
+    gMemoApplied = default[bool[]]
+    gMemoActionType = default[str[]]
+    gMemoActionArgs = default[str[]]
+    gMemoStateSeq = default[int64[]]
+    gMemoPublicSnapshot = default[str[]]
+    gMemoNote = default[str[]]
+    gLastPublicSnapshot = ""
+    gLastPrivateSnapshot = ""
+    gAllowedActions = default[str[]]
+    gClientSeq = int64(0)
+    resetSeatRuntime()
+
+    let parts: str[] = splitPipe(input)
+    let room: str = if len(safeSeqGet(parts, 0)) > 0: safeSeqGet(parts, 0) else: makeRoomCode()
+    let listenAddr: str = if len(safeSeqGet(parts, 1)) > 0: safeSeqGet(parts, 1) else: defaultListenAddr()
+    let name: str = if len(safeSeqGet(parts, 2)) > 0: safeSeqGet(parts, 2) else: "房主"
+
+    gRoomCode = room
+    gLocalName = name
+    gLocalToken = loadPlayerToken(GameId, name)
+    if len(gLocalToken) == 0:
+        gLocalToken = makeToken(name)
+
+    gNode = initP2PNode(GameId, room)
+    let startErr: str = p2pStart(gNode, listenAddr, true)
+    if len(startErr) > 0:
+        addLog("创建房间失败: " + startErr)
+        stopCurrentNode()
+        return
+    p2pSetRequestHandler(gNode, privateRequestHandler)
+
+    gIsHost = true
+    gLocalSeat = 0
+    gHostPeerId = p2pSelfPeerId(gNode)
+    gHostAddr = p2pListenAddr(gNode)
+    ddz.setPlayer(gGameState, 0, name, gLocalToken, true, false)
+    peerSet(0, gHostPeerId)
+    markSeatActive(0)
+
+    var hello: RoomHello = initRoomHello()
+    hello.game = GameId
+    hello.roomCode = room
+    hello.hostPeerId = gHostPeerId
+    hello.hostMultiaddr = gHostAddr
+    hello.note = "room_open"
+    let helloErr: str = p2pPublishPublic(gNode, encodeNetEnvelope(roomHelloToEnvelope(hello)))
+    if len(helloErr) > 0:
+        addLog("广播房间失败: " + helloErr)
+
+    updateHostAllowedActions()
+    saveLocalSession()
+    addLog("房间已创建 room=" + room)
+    addLog("hostPeerId=" + gHostPeerId)
+    addLog("输入“机器人补位”后可直接开始单机演示")
+
+fn tryJoinRoom(input: str) =
+    stopCurrentNode()
+    gGameState = ddz.newState()
+    gMemoKeys = default[str[]]
+    gMemoApplied = default[bool[]]
+    gMemoActionType = default[str[]]
+    gMemoActionArgs = default[str[]]
+    gMemoStateSeq = default[int64[]]
+    gMemoPublicSnapshot = default[str[]]
+    gMemoNote = default[str[]]
+    gLastPublicSnapshot = ""
+    gLastPrivateSnapshot = ""
+    gAllowedActions = default[str[]]
+    gClientSeq = int64(0)
+    resetSeatRuntime()
+
+    var parts: str[] = splitPipe(input)
+    if len(parts) <= 1:
+        let saved: str = loadLastEndpoint(GameId)
+        if len(saved) > 0:
+            parts = splitPipe(saved)
+    let room: str = safeSeqGet(parts, 0)
+    let hostPeerId: str = safeSeqGet(parts, 1)
+    let hostAddr: str = safeSeqGet(parts, 2)
+    let name: str = if len(safeSeqGet(parts, 3)) > 0: safeSeqGet(parts, 3) else: "玩家"
+    let listenAddr: str = if len(safeSeqGet(parts, 4)) > 0: safeSeqGet(parts, 4) else: defaultListenAddr()
+
+    if len(room) == 0 || len(hostPeerId) == 0 || len(hostAddr) == 0:
+        addLog("加入参数: room|hostPeer|hostAddr|name|listen")
+        return
+
+    gRoomCode = room
+    gLocalName = name
+    gLocalToken = loadPlayerToken(GameId, name)
+    if len(gLocalToken) == 0:
+        gLocalToken = makeToken(name)
+
+    gNode = initP2PNode(GameId, room)
+    let startErr: str = p2pStart(gNode, listenAddr, false)
+    if len(startErr) > 0:
+        addLog("启动节点失败: " + startErr)
+        stopCurrentNode()
+        return
+    p2pSetRequestHandler(gNode, privateRequestHandler)
+
+    let connErr: str = p2pConnectHost(gNode, hostPeerId, hostAddr)
+    if len(connErr) > 0:
+        addLog("连接房主失败: " + connErr)
+        stopCurrentNode()
+        return
+
+    gIsHost = false
+    gHostPeerId = hostPeerId
+    gHostAddr = hostAddr
+    gLocalSeat = -1
+
+    var joinMsg: RoomJoin = initRoomJoin()
+    joinMsg.playerName = name
+    joinMsg.playerToken = gLocalToken
+    joinMsg.desiredSeat = -1
+    let joinEnv: NetEnvelope = roomJoinToEnvelope(joinMsg, GameId, room, p2pSelfPeerId(gNode))
+    let joinErr: str = p2pPublishPublic(gNode, encodeNetEnvelope(joinEnv))
+    if len(joinErr) > 0:
+        addLog("发送入房请求失败: " + joinErr)
+    else:
+        addLog("已发送入房请求，等待房主同步")
+    saveLocalSession()
+
+fn sendReady() =
+    sendActionRequest("ready", "")
+
+fn sendStart() =
+    sendActionRequest("start", "")
+
+fn sendCustomAction(input: str) =
+    let parsed = parseActionInput(input)
+    if ! parsed.ok:
+        addLog(parsed.note)
+        return
+    sendActionRequest(parsed.actionType, parsed.actionArgs)
+
+fn fillBotsAndReady() =
+    if ! gIsHost:
+        addLog("仅房主可执行机器人补位")
+        return
+    var changed = false
+    for seat in 0..<DdzSeats:
+        let seatToken: str = ddz.getPlayerToken(gGameState, seat)
+        let seatName: str = ddz.getPlayerName(gGameState, seat)
+        let seatOnline: bool = ddz.getPlayerOnline(gGameState, seat)
+        let seatIsBot: bool = ddz.getPlayerIsBot(gGameState, seat)
+        if len(seatToken) == 0:
+            let botName: str = "机器人" + i32ToStr(seat + 1)
+            let botToken: str = "bot-" + gRoomCode + "-" + i32ToStr(seat)
+            ddz.setPlayer(gGameState, seat, botName, botToken, false, true)
+            ddz.setReady(gGameState, seat, true)
+            markSeatActive(seat)
+            changed = true
+        elif ! seatOnline && ! seatIsBot:
+            ddz.setPlayer(gGameState, seat, seatName, seatToken, false, true)
+            markSeatActive(seat)
+            changed = true
+    if ! changed:
+        addLog("没有可补位座位")
+        return
+
+    ddz.bumpSeq(gGameState)
+    addLog("机器人补位完成")
+    var botApplied: ActionApplied = initActionApplied()
+    botApplied.applied = true
+    botApplied.actionType = "bot_fill"
+    botApplied.actionArgs = ""
+    botApplied.stateSeq = ddz.getSeq(gGameState)
+    botApplied.publicSnapshot = ddz.buildPublicSnapshot(gGameState)
+    botApplied.note = "机器人已就位"
+    publishActionApplied(botApplied)
+    broadcastPrivateSyncAll()
+    updateHostAllowedActions()
+
+fn requestReconnect() =
+    if gNode == nil || gIsHost:
+        addLog("仅客户端可重连")
+        return
+    if len(gHostPeerId) == 0:
+        addLog("缺少 hostPeerId，无法重连")
+        return
+
+    var claim: ReconnectClaim = initReconnectClaim()
+    claim.playerToken = gLocalToken
+    claim.playerName = gLocalName
+    let env: NetEnvelope = reconnectClaimToEnvelope(claim, GameId, gRoomCode, p2pSelfPeerId(gNode))
+    let respText: str = p2pRequestPrivate(gNode, gHostPeerId, encodeNetEnvelope(env))
+    if len(respText) == 0:
+        addLog("重连失败: " + p2pLastError(gNode))
+        return
+    let ack: str = privateRequestHandler(respText)
+    ack
+
+fn runHostTrusteeTick() =
+    if ! gIsHost || gGameState == nil:
+        return
+    let stageName: str = ddz.getStage(gGameState)
+    if stageName != "bidding" && stageName != "playing":
+        return
+    let seat: int32 = ddz.getTurnSeat(gGameState)
+    if seat < 0 || seat >= DdzSeats:
+        return
+    let playerToken: str = ddz.getPlayerToken(gGameState, seat)
+    if len(playerToken) <= 0:
+        return
+
+    let seatIsBot: bool = ddz.getPlayerIsBot(gGameState, seat)
+    let seatOnline: bool = ddz.getPlayerOnline(gGameState, seat)
+    let seatName: str = ddz.getPlayerName(gGameState, seat)
+    var shouldBot = seatIsBot || ! seatOnline
+    if ! shouldBot && seatActiveElapsed(seat) >= TrusteeTimeoutTicks:
+        ddz.setPlayer(gGameState, seat, seatName, playerToken, false, true)
+        addLog("座位 " + i32ToStr(seat) + " 超时，已托管")
+        shouldBot = true
+    if ! shouldBot:
+        return
+    if seatBotElapsed(seat) < BotActGapTicks:
+        return
+    markSeatBotTick(seat)
+    let botReq: ActionRequest = ddz.makeBotAction(gGameState, seat)
+    applyHostAction(botReq, "")
+
+fn handleAction(actionId: str, input: str) =
+    if actionId == "create":
+        tryCreateRoom(input)
+    elif actionId == "join":
+        tryJoinRoom(input)
+    elif actionId == "ready":
+        sendReady()
+    elif actionId == "start":
+        sendStart()
+    elif actionId == "send":
+        sendCustomAction(input)
+    elif actionId == "bot":
+        fillBotsAndReady()
+    elif actionId == "reconnect":
+        requestReconnect()
+
+fn buildClientSeatLinesFromSnapshot(): str[] =
+    var outVal: str[] = default[str[]]
+    let seatsText: str = snapshotValue(gLastPublicSnapshot, "seats")
+    let handText: str = snapshotValue(gLastPublicSnapshot, "hand_counts")
+    if len(seatsText) <= 0:
+        return outVal
+    let seatsRaw: str[] = sutil.splitByChar(seatsText, '|')
+    let handRaw: str[] = sutil.splitByChar(handText, ',')
+    for idx in 0..<len(seatsRaw):
+        let seatName: str = sutil.strip(seatsRaw[idx])
+        let handCnt: str = safeSeqGet(handRaw, idx)
+        add(outVal, i32ToStr(idx) + ". " + seatName + " hand=" + handCnt)
+    return outVal
+
+fn setupActionEnabled(scene: var GuiSceneState) =
+    for idx in 0..<len(scene.actions):
+        var action: GuiActionRect = scene.actions[idx]
+        if action.id == "create":
+            action.enabled = gNode == nil
+        elif action.id == "join":
+            action.enabled = gNode == nil
+        elif action.id == "ready":
+            action.enabled = gNode != nil && actionAllowed("ready")
+        elif action.id == "start":
+            action.enabled = gNode != nil && gIsHost && actionAllowed("start")
+        elif action.id == "send":
+            action.enabled = gNode != nil && allowSendActionButton()
+        elif action.id == "bot":
+            action.enabled = gNode != nil && gIsHost
+        elif action.id == "reconnect":
+            action.enabled = gNode != nil && ! gIsHost
+        scene.actions = setActionAt(scene.actions, idx, action)
+
+fn refreshScene(base: GuiSceneState): GuiSceneState =
+    var scene: GuiSceneState = base
+    fillBaseActions(scene.actions)
+    setupActionEnabled(scene)
+
+    var conn: str[] = default[str[]]
+    add(conn, "连接角色: " + (if gIsHost: "房主" else: "客户端"))
+    add(conn, "房间号: " + gRoomCode)
+    if gNode != nil:
+        add(conn, "本端PeerId: " + p2pSelfPeerId(gNode))
+        add(conn, "监听地址: " + p2pListenAddr(gNode))
+    add(conn, "房主PeerId: " + gHostPeerId)
+    add(conn, "房主地址: " + gHostAddr)
+    scene.connectionLines = conn
+
+    var seats: str[] = default[str[]]
+    if gIsHost:
+        for i in 0..<DdzSeats:
+            let pName: str = ddz.getPlayerName(gGameState, i)
+            let pOnline: bool = ddz.getPlayerOnline(gGameState, i)
+            let pIsBot: bool = ddz.getPlayerIsBot(gGameState, i)
+            let pHand: int32 = ddz.getPlayerHandCount(gGameState, i)
+            add(seats, i32ToStr(i) + ". " + pName + " [" + (if pOnline: "在线" else: "离线") + "," + (if pIsBot: "托管" else: "真人") + "] 手牌=" + i32ToStr(pHand))
+    else:
+        seats = buildClientSeatLinesFromSnapshot()
+        if len(seats) <= 0:
+            for i in 0..<DdzSeats:
+                add(seats, i32ToStr(i) + ". " + ddz.getPlayerName(gGameState, i))
+    scene.seatLines = seats
+
+    var status: str[] = default[str[]]
+    add(status, "昵称: " + gLocalName)
+    add(status, "座位: " + i32ToStr(gLocalSeat))
+    add(status, "token: " + gLocalToken)
+
+    if gIsHost:
+        add(status, "阶段: " + ddz.getStage(gGameState))
+        add(status, "当前轮到: seat " + i32ToStr(ddz.getTurnSeat(gGameState)))
+        add(status, "地主: seat " + i32ToStr(ddz.getLandlordSeat(gGameState)))
+        add(status, "上手牌型: " + ddz.getLastPattern(gGameState) + " rank=" + i32ToStr(ddz.getLastRank(gGameState)))
+        add(status, "倍数: " + i32ToStr(ddz.getMultiplier(gGameState)))
+        add(status, "赢家: " + i32ToStr(ddz.getWinnerSeat(gGameState)))
+    else:
+        add(status, "阶段: " + snapshotValue(gLastPublicSnapshot, "stage"))
+        add(status, "当前轮到: seat " + snapshotValue(gLastPublicSnapshot, "turn"))
+        add(status, "地主: seat " + snapshotValue(gLastPublicSnapshot, "landlord"))
+        add(status, "上手牌型: " + snapshotValue(gLastPublicSnapshot, "last_pattern") + " rank=" + snapshotValue(gLastPublicSnapshot, "last_rank"))
+        add(status, "倍数: " + snapshotValue(gLastPublicSnapshot, "multiplier"))
+        add(status, "赢家: " + snapshotValue(gLastPublicSnapshot, "winner"))
+    add(status, "可行动作: " + joinCsv(gAllowedActions))
+    if len(gLastPrivateSnapshot) > 0:
+        add(status, "我的手牌: " + snapshotValue(gLastPrivateSnapshot, "hand"))
+    scene.statusLines = status
+
+    let brief: str = if len(gLastPublicSnapshot) > 0: snapshotValue(gLastPublicSnapshot, "logs") else: ""
+    scene.notice = if len(brief) > 0: brief else: "提示: 点击“发送动作”后在输入框输入“叫分 3 / 出牌 S3,H3 / 不出”"
+    return scene
+
+fn reducer(scene: GuiSceneState, eventKind: str, payload: str): GuiSceneState =
+    ensureContext(scene)
+    gScene = scene
+
+    if eventKind == "tick":
+        gTick = gTick + int64(1)
+        if gNode != nil:
+            p2pTick(gNode)
+            consumePublicMessages()
+            if gIsHost:
+                updateHostAllowedActions()
+                runHostTrusteeTick()
+
+    elif eventKind == "action":
+        let inputText: str = sutil.strip(gScene.inputState.text)
+        handleAction(payload, inputText)
+
+    elif eventKind == "submit":
+        sendCustomAction(payload)
+
+    gScene = refreshScene(gScene)
+    return gScene
+
+fn runDoudizhuExample(): int32 =
+    var scene: GuiSceneState = newSceneState("斗地主", "经典三人联机对战")
+    scene.icon = "斗"
+    scene.rating = "4.9"
+    scene.description = "中文命令优先：叫分/出牌/不出；支持重连与托管"
+    scene.inputState.placeholder = "创建: room|listen|name; 加入: room|hostPeer|hostAddr|name|listen; 动作: 叫分 3 / 出牌 S3,H3 / 不出"
+    fillBaseActions(scene.actions)
+    return runExampleApp(scene, reducer)

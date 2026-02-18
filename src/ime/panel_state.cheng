@@ -1,0 +1,405 @@
+import std/os
+import cheng/gui/ime/cangwu_assets_loader
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/cangwu_rules
+import cheng/gui/ime/cangwu_engine
+import cheng/gui/ime/cangwu_reverse
+import cheng/gui/ime/utfzh_codec
+import cheng/gui/ime/legacy_types
+import cheng/gui/ime/legacy_assets_loader
+import cheng/gui/ime/legacy_codec
+
+type
+    CwPanelMode = enum
+        pmNormal
+        pmReverse
+
+    CwPanelState =
+        engine: CwEngine
+        query: str
+        filter: CwStructFilter
+        page: int32
+        pageSize: int32
+        mode: CwPanelMode
+        results: CwQueryResult
+        reverseResults: CwReverseResult
+        outputText: str
+        status: str
+        utfHexPreview: str
+        utfByteLen: int32
+        utfErrorCount: int32
+        utfRoundtripOk: bool
+
+fn cwPanelDefault(engine: CwEngine): CwPanelState =
+    var state: CwPanelState
+    state.engine = engine
+    state.query = ""
+    state.filter = cfAny
+    state.page = 0
+    state.pageSize = 9
+    state.mode = pmNormal
+    state.results = cwDefaultQueryResult(0, 9)
+    state.reverseResults = cwDefaultReverseResult(0, 9)
+    state.outputText = ""
+    state.status = "ready"
+    state.utfHexPreview = ""
+    state.utfByteLen = 0
+    state.utfErrorCount = 0
+    state.utfRoundtripOk = true
+    return state
+
+fn cwPanelByteHex(b: int32): str =
+    let hi = (b / 16) & 0xF
+    let lo = b & 0xF
+    let hiCh = if hi < 10: char(int32('0') + hi) else: char(int32('A') + (hi - 10))
+    let loCh = if lo < 10: char(int32('0') + lo) else: char(int32('A') + (lo - 10))
+    return charToStr(hiCh) + charToStr(loCh)
+
+fn cwPanelRefreshUtf(state: var CwPanelState) =
+    let dict = cwEngineDict(state.engine)
+    let encoded = utfZhEncodeStrict(state.outputText, dict)
+    let decoded = utfZhDecodeStrict(encoded.bytes, dict)
+    state.utfByteLen = len(encoded.bytes)
+    state.utfErrorCount = encoded.errorCount + decoded.errorCount
+    state.utfRoundtripOk = encoded.ok && decoded.ok && decoded.text == state.outputText
+    var hex = ""
+    var maxBytes = len(encoded.bytes)
+    if maxBytes > 24:
+        maxBytes = 24
+    for idx in 0..<maxBytes:
+        if idx > 0:
+            hex = hex + " "
+        var b = int32(encoded.bytes[idx])
+        if b < 0:
+            b = b + 256
+        hex = hex + cwPanelByteHex(b)
+    if len(encoded.bytes) > maxBytes:
+        hex = hex + " ..."
+    state.utfHexPreview = hex
+
+fn cwPanelRefresh(state: var CwPanelState) =
+    if state.mode == pmReverse:
+        state.reverseResults = cwReverse(state.engine, state.query, state.page, state.pageSize)
+        state.results = cwDefaultQueryResult(state.page, state.pageSize)
+    else:
+        state.results = cwQuery(state.engine, state.query, state.filter, state.page, state.pageSize)
+        state.reverseResults = cwDefaultReverseResult(state.page, state.pageSize)
+    cwPanelRefreshUtf(state)
+
+fn cwPanelAppendQuery(state: var CwPanelState, text: str) =
+    if len(text) == 0:
+        return
+    if len(state.query) == 0:
+        if text == "Z" || text == "z":
+            state.mode = pmReverse
+            state.query = "z"
+            state.page = 0
+            cwPanelRefresh(state)
+            return
+    if state.mode == pmReverse:
+        state.query = state.query + cwNormalizeReverseInput(text)
+    else:
+        state.query = state.query + cwNormalizeCodeInput(text)
+    state.page = 0
+    cwPanelRefresh(state)
+
+fn cwPanelBackspaceUtf(text: str): str =
+    if len(text) <= 0:
+        return ""
+    var idx = len(text) - 1
+    while idx > 0:
+        var b = int32(text[idx])
+        if b < 0:
+            b = b + 256
+        if b >= 0x80 && b < 0xC0:
+            idx = idx - 1
+            continue
+        break
+    if idx <= 0:
+        return ""
+    return cwSlicePrefix(text, idx)
+
+fn cwPanelBackspace(state: var CwPanelState) =
+    if len(state.query) > 0:
+        state.query = cwPanelBackspaceUtf(state.query)
+        if len(state.query) == 0:
+            state.mode = pmNormal
+            state.filter = cfAny
+            state.page = 0
+        cwPanelRefresh(state)
+    elif len(state.outputText) > 0:
+        state.outputText = cwPanelBackspaceUtf(state.outputText)
+        cwPanelRefreshUtf(state)
+
+fn cwPanelClearInput(state: var CwPanelState) =
+    state.query = ""
+    state.filter = cfAny
+    state.page = 0
+    state.mode = pmNormal
+    cwPanelRefresh(state)
+
+fn cwPanelSetFilter(state: var CwPanelState, filter: CwStructFilter) =
+    if state.mode == pmReverse:
+        return
+    state.filter = filter
+    state.page = 0
+    cwPanelRefresh(state)
+
+fn cwPanelCommitCandidate(state: var CwPanelState, idx: int32) =
+    if state.mode == pmReverse:
+        if idx < 0 || idx >= len(state.reverseResults.items):
+            return
+        state.outputText = state.outputText + state.reverseResults.items[idx].text
+        state.status = "commit reverse " + state.reverseResults.items[idx].text
+        state.query = ""
+        state.mode = pmNormal
+        state.filter = cfAny
+        state.page = 0
+        cwPanelRefresh(state)
+        return
+
+    if idx < 0 || idx >= len(state.results.candidates):
+        return
+    let cand = state.results.candidates[idx]
+    var engine = state.engine
+    let committed = cwCommit(engine, cand)
+    state.engine = engine
+    if committed.committed:
+        state.outputText = state.outputText + committed.text
+        state.status = "commit " + committed.text
+        state.query = ""
+        state.page = 0
+        state.mode = pmNormal
+        state.filter = cfAny
+        cwPanelRefresh(state)
+
+fn cwPanelPageDown(state: var CwPanelState) =
+    if state.mode == pmReverse:
+        if state.reverseResults.hasMore:
+            state.page = state.page + 1
+            cwPanelRefresh(state)
+    else:
+        if state.results.hasMore:
+            state.page = state.page + 1
+            cwPanelRefresh(state)
+
+fn cwPanelPageUp(state: var CwPanelState) =
+    if state.page > 0:
+        state.page = state.page - 1
+        cwPanelRefresh(state)
+
+fn cwPanelSaveUtf8(state: CwPanelState, path: str): bool =
+    var outPath = path
+    if len(outPath) == 0:
+        outPath = "cangwu_output.txt"
+    writeFile(outPath, state.outputText)
+    return fileExists(outPath)
+
+fn cwPanelSaveUtfZh(state: CwPanelState, path: str): bool =
+    var outPath = path
+    if len(outPath) == 0:
+        outPath = "cangwu_output.utfzh.bin"
+    let dict = cwEngineDict(state.engine)
+    let encoded = utfZhEncodeStrict(state.outputText, dict)
+    writeFile(outPath, encoded.bytes)
+    return fileExists(outPath)
+
+fn cwPanelImportLegacyFile(state: var CwPanelState, path: str, source: LegacyEncoding): bool =
+    if ! fileExists(path):
+        state.status = "import failed: file missing"
+        return false
+    let raw = readFile(path)
+    let legacy = legacyLoadAssets("")
+    let dict = cwEngineDict(state.engine)
+    let trans = utfZhTranscodeStrict(raw, source, dict, legacy)
+    let decoded = legacyDecodeStrict(raw, source, legacy)
+    state.outputText = decoded.textUtf8
+    state.status = "import " + legacyEncodingLabel(trans.detected) + " errors=" + intToStr(trans.errorCount)
+    cwPanelRefreshUtf(state)
+    return trans.ok
+
+fn cwSelfTestUtfZh(engine: CwEngine): int32 =
+    if ! engine.ready:
+        return 6101
+    let dict = cwEngineDict(engine)
+    if len(dict.codepoints) != 9698:
+        return 6102
+    let text = "abc中文A"
+    let enc = utfZhEncodeStrict(text, dict)
+    if ! enc.ok:
+        return 6103
+    let dec = utfZhDecodeStrict(enc.bytes, dict)
+    if ! dec.ok:
+        if len(dec.errors) > 0:
+            let msg = dec.errors[0].message
+            if msg == "overlong dict member":
+                return 6110
+            if msg == "overlong ascii":
+                return 6111
+            if msg == "dict index out of range":
+                return 6112
+            if msg == "continuation as lead":
+                return 6113
+        return 6104
+    if dec.text != text:
+        return 6108
+    if len(dict.chars) <= 9697:
+        return 6105
+    let boundary = dict.chars[33] + dict.chars[34] + dict.chars[1505] + dict.chars[1506] + dict.chars[9697]
+    let enc2 = utfZhEncodeStrict(boundary, dict)
+    let dec2 = utfZhDecodeStrict(enc2.bytes, dict)
+    if ! dec2.ok:
+        return 6106
+    if dec2.text != boundary:
+        return 6109
+    let overlong = charToStr(char(0xFB)) + charToStr(char(0x80)) + charToStr(char(0x81)) + charToStr(char(0x81))
+    let dec3 = utfZhDecodeStrict(overlong, dict)
+    if dec3.errorCount <= 0:
+        return 6107
+    return 0
+
+fn cwSelfTestEngine(engine: CwEngine): int32 =
+    if ! engine.ready:
+        return 6201
+    let singles = cwEngineSingles(engine)
+    if len(singles) <= 0:
+        return 6202
+    let seed = singles[0]
+    let query = if len(seed.code) >= 2: cwSlicePrefix(seed.code, 2) else: seed.code
+    let r = cwQuery(engine, query, cfAny, 0, 9)
+    if len(r.candidates) <= 0:
+        return 6203
+    let filter = cwStructFilterFromStruct(r.candidates[0].structKind)
+    let rf = cwQuery(engine, query, filter, 0, 9)
+    if len(rf.candidates) <= 0:
+        return 6204
+    for idx in 0..<len(rf.candidates):
+        let c = rf.candidates[idx]
+        if filter == cfUD && c.structKind != csUD:
+            return 6205
+        if filter == cfENC && c.structKind != csENC:
+            return 6206
+        if filter == cfMIX && c.structKind != csMIX:
+            return 6207
+        if filter == cfLR && c.structKind != csLR:
+            return 6208
+    return 0
+
+fn cwSelfTestPhrase(engine: CwEngine): int32 =
+    if ! engine.ready:
+        return 6301
+    let phrases = cwEnginePhrases(engine)
+    if len(phrases) <= 0:
+        return 6302
+    let phrase = phrases[0]
+    if len(phrase.code) != 4:
+        return 6303
+    let r = cwQuery(engine, phrase.code, cfAny, 0, 20)
+    var found = false
+    for idx in 0..<len(r.candidates):
+        if r.candidates[idx].text == phrase.text:
+            found = true
+            break
+    if ! found:
+        return 6304
+    return 0
+
+fn cwSelfTestReverse(engine: CwEngine): int32 =
+    if ! engine.ready:
+        return 6401
+    let revItems = cwEngineReverseEntries(engine)
+    var charKey = ""
+    var pyKey = ""
+    for idx in 0..<len(revItems):
+        let item = revItems[idx]
+        if len(charKey) == 0 && item.mode == "char":
+            charKey = item.text
+        if len(pyKey) == 0 && item.mode == "py" && len(item.key) >= 2:
+            pyKey = item.key
+        if len(charKey) > 0 && len(pyKey) > 0:
+            break
+    if len(charKey) == 0 || len(pyKey) == 0:
+        return 6402
+    let r1 = cwReverse(engine, "z" + charKey, 0, 12)
+    if len(r1.items) <= 0:
+        return 6403
+    let r2 = cwReverse(engine, "z" + pyKey, 0, 12)
+    if len(r2.items) <= 0:
+        return 6404
+    return 0
+
+fn cwSelfTestPanel(engine: CwEngine): int32 =
+    if ! engine.ready:
+        return 6501
+    var state = cwPanelDefault(engine)
+    cwPanelRefresh(state)
+    let singles = cwEngineSingles(engine)
+    if len(singles) <= 0:
+        return 6502
+    let seed = singles[0]
+    let query = if len(seed.code) >= 2: cwSlicePrefix(seed.code, 2) else: seed.code
+    cwPanelAppendQuery(state, query)
+    if len(state.results.candidates) <= 0:
+        return 6503
+    cwPanelCommitCandidate(state, 0)
+    if len(state.outputText) <= 0:
+        return 6504
+    let utf8Path = "build/cangwu_ime/panel_smoke.txt"
+    let utfZhPath = "build/cangwu_ime/panel_smoke.utfzh.bin"
+    if ! cwPanelSaveUtf8(state, utf8Path):
+        return 6505
+    if ! cwPanelSaveUtfZh(state, utfZhPath):
+        return 6506
+    if ! fileExists(utf8Path):
+        return 6507
+    if ! fileExists(utfZhPath):
+        return 6508
+    cwPanelAppendQuery(state, "z")
+    cwPanelAppendQuery(state, seed.text)
+    if state.mode != pmReverse:
+        return 6509
+    if len(state.reverseResults.items) <= 0:
+        return 6510
+    return 0
+
+fn cwSelfTestLegacy(engine: CwEngine): int32 =
+    if ! engine.ready:
+        return 6601
+    let legacy = legacyLoadAssets("src/ime/data")
+    if len(legacy.gbkToUnicode) <= 0 || len(legacy.gb2312ToUnicode) <= 0:
+        return 6602
+    let raw = charToStr(char(0xD6)) + charToStr(char(0xD0)) + charToStr(char(0xCE)) + charToStr(char(0xC4))
+    let trans = utfZhTranscodeStrict(raw, leGbk, cwEngineDict(engine), legacy)
+    if ! trans.ok:
+        return 6603
+    let dec = utfZhDecodeStrict(trans.bytes, cwEngineDict(engine))
+    if ! dec.ok || dec.text != "中文":
+        return 6604
+    let bad = charToStr(char(0x81)) + charToStr(char(0x30))
+    let badDec = legacyDecodeStrict(bad, leGbk, legacy)
+    if badDec.errorCount <= 0:
+        return 6605
+    return 0
+
+fn cwRunImeSelfTests(dataRoot: str): int32 =
+    let assets = cwLoadAssets(dataRoot)
+    let engine = cwCreateEngine(assets)
+    var rc = cwSelfTestUtfZh(engine)
+    if rc != 0:
+        return rc
+    rc = cwSelfTestEngine(engine)
+    if rc != 0:
+        return rc
+    rc = cwSelfTestPhrase(engine)
+    if rc != 0:
+        return rc
+    rc = cwSelfTestReverse(engine)
+    if rc != 0:
+        return rc
+    rc = cwSelfTestPanel(engine)
+    if rc != 0:
+        return rc
+    rc = cwSelfTestLegacy(engine)
+    if rc != 0:
+        return rc
+    return 0

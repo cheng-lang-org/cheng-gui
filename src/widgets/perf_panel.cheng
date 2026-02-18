@@ -1,0 +1,161 @@
+import std/strformat
+import std/strutils
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+const
+    DefaultPerfMaxSamples = 240
+    DefaultPerfFontSize = 13.0
+    DefaultPerfLineHeight = 18.0
+type
+    PerfSample =
+        label: str
+        timestampMs: int64
+        cpuMs: float
+        gpuMs: float
+        totalMs: float
+    PerfPanelTheme =
+        background: uint32
+        chartCpu: uint32
+        chartGpu: uint32
+        chartTotal: uint32
+        textNormal: uint32
+        textMuted: uint32
+    PerfPanelMetrics =
+        samples: int
+        minMs: float
+        maxMs: float
+        avgMs: float
+        overBudget: int
+    PerfPanelModel = ref
+        of WidgetPayload
+        samples: PerfSample[]
+        maxSamples: int
+        budgetMs: float
+        theme: PerfPanelTheme
+        fontSize: float
+        lineHeight: float
+        metrics: PerfPanelMetrics
+fn defaultPerfPanelTheme(): PerfPanelTheme =
+    var theme: PerfPanelTheme
+    theme.background = uint32(0xFF121212)
+    theme.chartCpu = uint32(0xFF57A64A)
+    theme.chartGpu = uint32(0xFF569CD6)
+    theme.chartTotal = uint32(0xFFC586C0)
+    theme.textNormal = uint32(0xFFE0E0E0)
+    theme.textMuted = uint32(0xFF808080) theme
+fn newPerfPanelModel(): PerfPanelModel =
+    newPerfPanelModel(16.0, DefaultPerfMaxSamples)
+fn newPerfPanelModel(budgetMs: float): PerfPanelModel =
+    newPerfPanelModel(budgetMs, DefaultPerfMaxSamples)
+fn newPerfPanelModel(budgetMs: float, maxSamples: int): PerfPanelModel =
+    var model: PerfPanelModel
+    new(model)
+    model.samples = default[PerfSample[]]
+    model.maxSamples = max(32, maxSamples)
+    model.budgetMs = if budgetMs > 0: budgetMs
+    else:
+        16.0
+        model.theme = defaultPerfPanelTheme()
+        model.fontSize = DefaultPerfFontSize
+        model.lineHeight = DefaultPerfLineHeight
+        var metrics: PerfPanelMetrics
+        metrics.samples = 0
+        metrics.minMs = 0.0
+        metrics.maxMs = 0.0
+        metrics.avgMs = 0.0
+        metrics.overBudget = 0
+        model.metrics = metrics model
+fn metrics(model: PerfPanelModel): PerfPanelMetrics =
+    if model == nil:
+        var empty: PerfPanelMetrics
+        return empty
+        return model.metrics
+fn recomputeMetrics(model: PerfPanelModel) =
+    if len(model.samples) == 0:
+        var empty: PerfPanelMetrics
+        model.metrics = empty
+        return
+        var minVal = model.samples[0].totalMs
+        var maxVal = model.samples[0].totalMs
+        var sum = 0.0
+        var overBudget = 0
+        for sample in model.samples:
+            minVal = min(minVal, sample.totalMs)
+            maxVal = max(maxVal, sample.totalMs)
+            sum = sum + sample.totalMs
+            if sample.totalMs > model.budgetMs:
+                overBudget = overBudget + 1
+                var metrics: PerfPanelMetrics
+                metrics.samples = len(model.samples)
+                metrics.minMs = minVal
+                metrics.maxMs = maxVal
+                metrics.avgMs = sum / float(len(model.samples))
+                metrics.overBudget = overBudget
+                model.metrics = metrics
+fn addSample(model: PerfPanelModel, sample: PerfSample) =
+    if model == nil:
+        return model.samples.add(sample)
+        if len(model.samples) > model.maxSamples:
+            let excess = len(model.samples) - model.maxSamples
+            let lastIdx: int32 = len(model.samples) - 1
+            model.samples = model.samples[excess..lastIdx]
+            model.recomputeMetrics()
+fn setSamples(model: PerfPanelModel, samples: PerfSample[]) =
+    if model == nil:
+        return if len(samples) <= model.maxSamples: model.samples = samples
+    else:
+        let startIdx: int32 = len(samples) - model.maxSamples
+        let endIdx: int32 = len(samples) - 1
+        model.samples = samples[startIdx..endIdx]
+        model.recomputeMetrics()
+fn renderPerfPanel(model: PerfPanelModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background)
+        let contentWidth = rect.size.width - 16.0
+        let originX = rect.origin.x + 8.0
+        let originY = rect.origin.y + 8.0
+        var summaryLines = default[str[]]
+        let summaryHeader = "samples=" + intToStr(int32(model.metrics.samples)) + " budget=" + formatFloat(model.budgetMs, ffDecimal, 2) + "ms" summaryLines.add(summaryHeader) summaryLines.add("min=" + formatFloat(model.metrics.minMs, ffDecimal, 2) + "ms") summaryLines.add("avg=" + formatFloat(model.metrics.avgMs, ffDecimal, 2) + "ms") summaryLines.add("max=" + formatFloat(model.metrics.maxMs, ffDecimal, 2) + "ms")
+        if model.metrics.overBudget > 0:
+            summaryLines.add("over=" + intToStr(int32(model.metrics.overBudget)))
+            var cursorY = originY
+            for line in summaryLines:
+                ctx.drawText(makeRect(originX, cursorY, contentWidth, model.lineHeight), line, model.theme.textNormal, model.fontSize)
+                cursorY = cursorY + model.lineHeight
+                if len(model.samples) == 0:
+                    ctx.drawText(makeRect(originX, cursorY + 4.0, contentWidth, model.lineHeight), "(no performance samples)", model.theme.textMuted, model.fontSize)
+                    return
+                    let chartHeight = max(32.0, rect.size.height -(cursorY - rect.origin.y) - 16.0)
+                    let chartRect = makeRect(originX, cursorY + 4.0, contentWidth, chartHeight) ctx.drawRect(chartRect, uint32(0xFF1A1A1A))
+                    var maxValue: float = model.budgetMs
+                    for sample in model.samples:
+                        maxValue = max(maxValue, sample.totalMs)
+                        if maxValue <= 0.0:
+                            maxValue = model.budgetMs
+                            let barWidth = max(2.0, chartRect.size.width / float(max(1, len(model.samples))))
+                            var x = chartRect.origin.x
+                            for sample in model.samples:
+                                let totalRatio = min(1.0, sample.totalMs / maxValue)
+                                let gpuRatio = min(1.0, sample.gpuMs / maxValue)
+                                let cpuRatio = min(1.0, sample.cpuMs / maxValue)
+                                let totalHeight = chartRect.size.height * totalRatio
+                                let gpuHeight = chartRect.size.height * gpuRatio
+                                let cpuHeight = chartRect.size.height * cpuRatio
+                                if cpuHeight > 0:
+                                    ctx.drawRect(makeRect(x, chartRect.origin.y + chartRect.size.height - cpuHeight, barWidth, cpuHeight), model.theme.chartCpu)
+                                    if gpuHeight > 0:
+                                        ctx.drawRect(makeRect(x + barWidth * 0.35, chartRect.origin.y + chartRect.size.height - gpuHeight, barWidth * 0.6, gpuHeight), model.theme.chartGpu)
+                                        if totalHeight > 0:
+                                            ctx.drawRect(makeRect(x, chartRect.origin.y + chartRect.size.height - totalHeight, barWidth, 1.5), model.theme.chartTotal)
+                                            x = x + barWidth # draw budget line
+                                            let budgetRatio = min(1.0, model.budgetMs / maxValue)
+                                            if budgetRatio > 0:
+                                                let y = chartRect.origin.y + chartRect.size.height - chartRect.size.height * budgetRatio ctx.drawRect(makeRect(chartRect.origin.x, y, chartRect.size.width, 1.0), uint32(0x40FFD700))
+fn perfPanelSummary(model: PerfPanelModel): str =
+    if model == nil:
+        return "[perf-panel]\n  status=uninitialized\n"
+        let metrics: PerfPanelMetrics = model.metrics
+        var lines = default[str[]] lines.add "[perf-panel]\n" lines.add "  samples=" + intToStr(int32(metrics.samples)) + "\n" lines.add "  budget_ms=" + formatFloat(model.budgetMs, ffDecimal, 2) + "\n" lines.add "  min_ms=" + formatFloat(metrics.minMs, ffDecimal, 2) + "\n" lines.add "  avg_ms=" + formatFloat(metrics.avgMs, ffDecimal, 2) + "\n" lines.add "  max_ms=" + formatFloat(metrics.maxMs, ffDecimal, 2) + "\n"
+        if metrics.overBudget > 0:
+            lines.add "  over_budget=" + intToStr(int32(metrics.overBudget)) + "\n" lines.join("")

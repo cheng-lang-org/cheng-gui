@@ -1,0 +1,107 @@
+type
+    GuiResult = enum
+        grOk
+        grNotSupported
+        grInvalidState
+        grIoError
+
+    WindowHandle = void*
+    SurfaceHandle = void*
+
+    GuiSize =
+        width: float
+        height: float
+
+    GuiPosition =
+        x: float
+        y: float
+
+    GuiRect =
+        origin: GuiPosition
+        size: GuiSize
+
+    SurfaceFrameInfo =
+        logicalSize: GuiSize
+        pixelSize: GuiSize
+        dpiScale: float
+        colorSpace: str
+
+    GuiWindowConfig =
+        title: str
+        initialRect: GuiRect
+        resizable: bool
+        highDpi: bool
+
+    GuiEventKind = enum
+        geNone
+        geClose
+        geResized
+        geMoved
+        geKeyDown
+        geKeyUp
+        geTextInput
+        geTextCompositionStart
+        geTextCompositionUpdate
+        geTextCompositionEnd
+        gePointerDown
+        gePointerUp
+        gePointerMove
+        gePointerScroll
+        gePointerLeave
+        geTouchDown
+        geTouchUp
+        geTouchMove
+        geGesturePinch
+        geGestureRotate
+        geGestureSwipe
+        geA11yAction
+        geWebNavigate
+        geWebLoaded
+        gePdfLoaded
+        geMediaPlay
+        geMediaPause
+        geMediaEnded
+        geMediaTimeUpdate
+
+    GuiModifiers = int32
+
+    GuiEvent =
+        kind: GuiEventKind
+        modifiers: GuiModifiers
+        repeat: bool
+        keyCode: int32
+        button: int32
+        x: float
+        y: float
+        dx: float
+        dy: float
+        text: str
+        touchId: int32
+        touchCount: int32
+        pressure: float
+        gestureDelta: float
+        gestureVelocity: float
+        nodeId: int64
+        a11yAction: int32
+        resourceId: int64
+        uri: str
+        duration: float
+        position: float
+
+fn makeRect(x, y, w, h: float): GuiRect =
+    var rect: GuiRect
+    var origin: GuiPosition
+    origin.x = x
+    origin.y = y
+    rect.origin = origin
+    var size: GuiSize
+    size.width = w
+    size.height = h
+    rect.size = size
+    return rect
+
+fn makeSize(w, h: float): GuiSize =
+    var size: GuiSize
+    size.width = w
+    size.height = h
+    return size

@@ -1,0 +1,49 @@
+import cheng/gui/kit
+import cheng/gui/core/component
+
+fn appendNode(items: var component.Node[], item: component.Node) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn rootView(ctx: component.UiContext): component.Node =
+    let root = component.newNode(ctx, component.nkView, "browser-root")
+    root.name = "browser-root"
+
+    let webNode = component.newNode(ctx, component.nkWebView, "web-surface")
+    webNode.text = "Web Ready"
+    webNode.focusable = true
+
+    let pdfNode = component.newNode(ctx, component.nkPdfView, "pdf-surface")
+    pdfNode.text = "PDF Ready"
+    pdfNode.focusable = true
+
+    let videoNode = component.newNode(ctx, component.nkVideoPlayer, "video-player")
+    videoNode.text = "Video Ready"
+    videoNode.focusable = true
+
+    let audioNode = component.newNode(ctx, component.nkAudioPlayer, "audio-player")
+    audioNode.text = "Audio Ready"
+    audioNode.focusable = true
+
+    var children: component.Node[]
+    appendNode(children, webNode)
+    appendNode(children, pdfNode)
+    appendNode(children, videoNode)
+    appendNode(children, audioNode)
+    component.setChildren(root, children)
+    return root
+
+fn main(): int32 =
+    var config = defaultAppConfig()
+    config.appId = "cheng.gui.browser.smoke"
+    config.title = "Cheng GUI Browser Smoke"
+    config.root = rootView
+    config.enableA11y = true
+    let app = createApp(config)
+    app.frameLimit = 1
+    runApp(app)
+    shutdownApp(app)
+    return int32(0)
+
+main()

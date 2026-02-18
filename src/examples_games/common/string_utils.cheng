@@ -1,0 +1,253 @@
+import std/seqs
+import std/times
+
+fn isAsciiWhitespace(ch: char): bool =
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+
+fn strip(text: str): str =
+    if len(text) == 0:
+        return ""
+    var startIdx: int32 = 0
+    var endIdx: int32 = len(text) - 1
+    while startIdx < len(text) && isAsciiWhitespace(text[startIdx]):
+        startIdx = startIdx + 1
+    if startIdx >= len(text):
+        return ""
+    while endIdx >= startIdx && isAsciiWhitespace(text[endIdx]):
+        endIdx = endIdx - 1
+    return sliceRange(text, startIdx, endIdx)
+
+fn toLowerAscii(text: str): str =
+    if len(text) == 0:
+        return ""
+    var outVal = ""
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch >= 'A' && ch <= 'Z':
+            outVal = outVal + charToStr(char(int32(ch) + 32))
+        else:
+            outVal = outVal + charToStr(ch)
+    return outVal
+
+fn clampInt(value, lower, upper: int32): int32 =
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+fn maxInt(a, b: int32): int32 =
+    if a >= b:
+        return a
+    return b
+
+fn minInt(a, b: int32): int32 =
+    if a <= b:
+        return a
+    return b
+
+fn nowMillis(): int64 =
+    return int64(epochTime() * 1000.0)
+
+fn parseInt32(text: str, defaultValue: int32): int32 =
+    let raw: str = strip(text)
+    if len(raw) == 0:
+        return defaultValue
+    var idx: int32 = 0
+    var sign: int32 = 1
+    if raw[0] == '-':
+        sign = -1
+        idx = 1
+    elif raw[0] == '+':
+        idx = 1
+    if idx >= len(raw):
+        return defaultValue
+    var value: int32 = 0
+    var hasDigit = false
+    while idx < len(raw):
+        let ch: char = raw[idx]
+        if ch < '0' || ch > '9':
+            return defaultValue
+        value = value * 10 + (int32(ch) - 48)
+        hasDigit = true
+        idx = idx + 1
+    if ! hasDigit:
+        return defaultValue
+    return value * sign
+
+fn parseInt64(text: str, defaultValue: int64): int64 =
+    let raw: str = strip(text)
+    if len(raw) == 0:
+        return defaultValue
+    var idx: int32 = 0
+    var sign: int64 = int64(1)
+    if raw[0] == '-':
+        sign = int64(-1)
+        idx = 1
+    elif raw[0] == '+':
+        idx = 1
+    if idx >= len(raw):
+        return defaultValue
+    var value: int64 = int64(0)
+    var hasDigit = false
+    while idx < len(raw):
+        let ch: char = raw[idx]
+        if ch < '0' || ch > '9':
+            return defaultValue
+        value = value * int64(10) + int64(int32(ch) - 48)
+        hasDigit = true
+        idx = idx + 1
+    if ! hasDigit:
+        return defaultValue
+    return value * sign
+
+fn parseBool(text: str, defaultValue: bool): bool =
+    let lowered: str = toLowerAscii(strip(text))
+    if lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on":
+        return true
+    if lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off":
+        return false
+    return defaultValue
+
+fn sliceRange(text: str, startIncl: int32, endIncl: int32): str =
+    if len(text) <= 0:
+        return ""
+    let startIdx: int32 = clampInt(startIncl, 0, len(text) - 1)
+    let endIdx: int32 = clampInt(endIncl, 0, len(text) - 1)
+    if endIdx < startIdx:
+        return ""
+    var outVal = ""
+    for idx in startIdx..endIdx:
+        outVal = outVal + charToStr(text[idx])
+    return outVal
+
+fn startsWithPrefix(text: str, prefix: str): bool =
+    if len(prefix) == 0:
+        return true
+    if len(text) < len(prefix):
+        return false
+    for idx in 0..<len(prefix):
+        if text[idx] != prefix[idx]:
+            return false
+    return true
+
+fn indexOfSubstr(text: str, needle: str, start: int32): int32 =
+    let textLen: int32 = len(text)
+    let needleLen: int32 = len(needle)
+    if needleLen <= 0 || textLen <= 0:
+        return -1
+    var s: int32 = start
+    if s < 0:
+        s = 0
+    let last: int32 = textLen - needleLen
+    if last < s:
+        return -1
+    for i in s..last:
+        var j: int32 = 0
+        while j < needleLen:
+            if text[i + j] != needle[j]:
+                break
+            j = j + 1
+        if j == needleLen:
+            return i
+    return -1
+
+fn splitByChar(text: str, sep: char): str[] =
+    var outVal: str[] = []
+    if len(text) == 0:
+        return outVal
+    var token = ""
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch == sep:
+            add(outVal, token)
+            token = ""
+        else:
+            token = token + charToStr(ch)
+    add(outVal, token)
+    return outVal
+
+fn splitLines(text: str): str[] =
+    var outVal: str[] = []
+    if len(text) == 0:
+        return outVal
+    var token = ""
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch == '\n':
+            add(outVal, token)
+            token = ""
+        elif ch == '\r':
+            0
+        else:
+            token = token + charToStr(ch)
+    add(outVal, token)
+    return outVal
+
+fn joinWith(items: str[], sep: str): str =
+    var outVal = ""
+    for idx in 0..<len(items):
+        if idx > 0:
+            outVal = outVal + sep
+        outVal = outVal + items[idx]
+    return outVal
+
+fn containsString(items: str[], value: str): bool =
+    for idx in 0..<len(items):
+        if items[idx] == value:
+            return true
+    return false
+
+fn addUniqueString(items: str[], value: str): str[] =
+    var next: str[] = items
+    if len(value) == 0:
+        return next
+    if ! containsString(next, value):
+        add(next, value)
+    return next
+
+fn escapeField(text: str): str =
+    var outVal = ""
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch == '\\':
+            outVal = outVal + "\\\\"
+        elif ch == '\n':
+            outVal = outVal + "\\n"
+        elif ch == '\t':
+            outVal = outVal + "\\t"
+        elif ch == '=':
+            outVal = outVal + "\\e"
+        else:
+            outVal = outVal + charToStr(ch)
+    return outVal
+
+fn unescapeField(text: str): str =
+    var outVal = ""
+    var idx: int32 = 0
+    while idx < len(text):
+        let ch: char = text[idx]
+        if ch == '\\' && idx + 1 < len(text):
+            let nx: char = text[idx + 1]
+            if nx == 'n':
+                outVal = outVal + "\n"
+            elif nx == 't':
+                outVal = outVal + "\t"
+            elif nx == 'e':
+                outVal = outVal + "="
+            elif nx == '\\':
+                outVal = outVal + "\\"
+            else:
+                outVal = outVal + charToStr(nx)
+            idx = idx + 2
+        else:
+            outVal = outVal + charToStr(ch)
+            idx = idx + 1
+    return outVal
+
+fn parseKeyValueLine(line: str, key: str): str =
+    if len(line) <= len(key) + 1:
+        return ""
+    if ! startsWithPrefix(line, key + "="):
+        return ""
+    return unescapeField(sliceRange(line, len(key) + 1, len(line) - 1))

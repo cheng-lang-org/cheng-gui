@@ -1,0 +1,560 @@
+import std/seqs
+import cheng/gui/examples_games/common/protocol
+import cheng/gui/examples_games/common/string_utils as sutil
+
+const
+    MahjongPlayerCount = 4
+
+
+type
+    MahjongPlayer =
+        seat: int32
+        name: str
+        token: str
+        online: bool
+        ready: bool
+        isBot: bool
+        hand: str[]
+        melds: str[]
+        discards: str[]
+
+    Mahjong4State = ref
+        stage: str
+        players: MahjongPlayer[]
+        wall: str[]
+        dealerSeat: int32
+        turnSeat: int32
+        lastDiscardSeat: int32
+        lastDiscardTile: str
+        reactionStage: bool
+        reactionPassed: bool[]
+        pendingHuSeats: int32[]
+        scores: int32[]
+        winnerSeats: int32[]
+        seq: int64
+        logs: str[]
+
+fn i32ToStr(value: int32): str =
+    return intToStr(value)
+
+fn splitCsv(text: str): str[] =
+    let parts: str[] = sutil.splitByChar(text, ',')
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(parts):
+        let item: str = sutil.strip(parts[idx])
+        if len(item) > 0:
+            add(outVal, item)
+    return outVal
+
+fn all81FanNames(): str[] =
+    return [
+        "大四喜", "大三元", "绿一色", "九莲宝灯", "四杠", "连七对", "十三幺",
+        "清幺九", "小四喜", "小三元", "字一色", "四暗刻", "一色双龙会",
+        "一色四同顺", "一色四节高", "一色四步高", "三杠", "混幺九",
+        "七对", "七星不靠", "全双刻", "清一色", "一色三同顺", "一色三节高",
+        "全大", "全中", "全小", "清龙", "三色双龙会", "一色三步高",
+        "全带五", "三同刻", "三暗刻", "全不靠", "组合龙", "大于五",
+        "小于五", "三风刻", "花龙", "推不倒", "三色三同顺", "三色三节高",
+        "无番和", "妙手回春", "海底捞月", "杠上开花", "抢杠和", "碰碰和",
+        "混一色", "三色三步高", "五门齐", "全求人", "双暗杠", "双箭刻",
+        "明暗杠", "全带幺", "不求人", "双明杠", "和绝张", "箭刻",
+        "圈风刻", "门风刻", "门前清", "平和", "四归一", "双同刻",
+        "双暗刻", "暗杠", "断幺", "一般高", "喜相逢", "连六",
+        "老少副", "幺九刻", "明杠", "缺一门", "无字", "边张",
+        "坎张", "单钓将", "自摸"
+    ]
+
+fn isKnownFan(name: str): bool =
+    let fans: str[] = all81FanNames()
+    for idx in 0..<len(fans):
+        if fans[idx] == name:
+            return true
+    return false
+
+fn fanValue(name: str): int32 =
+    if name == "大四喜" || name == "大三元" || name == "绿一色" || name == "九莲宝灯" || name == "四杠" || name == "连七对" || name == "十三幺":
+        return 88
+    if name == "清幺九" || name == "小四喜" || name == "小三元" || name == "字一色" || name == "四暗刻" || name == "一色双龙会":
+        return 64
+    if name == "一色四同顺" || name == "一色四节高" || name == "一色四步高" || name == "三杠" || name == "混幺九":
+        return 48
+    if name == "七对" || name == "七星不靠" || name == "全双刻" || name == "清一色" || name == "一色三同顺" || name == "一色三节高":
+        return 24
+    if name == "全大" || name == "全中" || name == "全小" || name == "清龙" || name == "三色双龙会" || name == "一色三步高" || name == "全带五" || name == "三同刻" || name == "三暗刻":
+        return 16
+    if name == "全不靠" || name == "组合龙" || name == "大于五" || name == "小于五" || name == "三风刻" || name == "花龙" || name == "推不倒" || name == "三色三同顺" || name == "三色三节高" || name == "无番和":
+        return 8
+    if name == "妙手回春" || name == "海底捞月" || name == "杠上开花" || name == "抢杠和" || name == "碰碰和" || name == "混一色" || name == "三色三步高" || name == "五门齐" || name == "全求人" || name == "双暗杠" || name == "双箭刻":
+        return 6
+    if name == "全带幺" || name == "不求人" || name == "双明杠" || name == "和绝张" || name == "箭刻" || name == "圈风刻" || name == "门风刻" || name == "门前清" || name == "平和" || name == "四归一" || name == "双同刻" || name == "双暗刻" || name == "暗杠" || name == "断幺":
+        return 2
+    return 1
+
+fn parseFanArgs(args: str): str[] =
+    let lower: str = sutil.toLowerAscii(args)
+    let keyPos: int32 = sutil.indexOfSubstr(lower, "fans=", 0)
+    if keyPos < 0:
+        return default[str[]]
+    let start: int32 = keyPos + len("fans=")
+    let tail: str = if start < len(args): sutil.sliceRange(args, start, len(args) - 1) else: ""
+    let items: str[] = splitCsv(tail)
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(items):
+        let fan: str = sutil.strip(items[idx])
+        if len(fan) > 0 && isKnownFan(fan):
+            outVal = sutil.addUniqueString(outVal, fan)
+    return outVal
+
+fn argsHasSelfDraw(args: str): bool =
+    let lower: str = sutil.toLowerAscii(args)
+    if sutil.indexOfSubstr(lower, "selfdraw=1", 0) >= 0:
+        return true
+    if sutil.indexOfSubstr(lower, "zimo=1", 0) >= 0:
+        return true
+    return false
+
+fn suitOf(tile: str): str =
+    if len(tile) <= 0:
+        return ""
+    if tile[0] == 'W':
+        return "W"
+    if tile[0] == 'T':
+        return "T"
+    if tile[0] == 'B':
+        return "B"
+    return "Z"
+
+fn detectSimpleFans(hand: str[], args: str): str[] =
+    var fans: str[] = default[str[]]
+    if argsHasSelfDraw(args):
+        add(fans, "自摸")
+
+    var onlySuit = ""
+    var hasHonor = false
+    for idx in 0..<len(hand):
+        let suit: str = suitOf(hand[idx])
+        if suit == "Z":
+            hasHonor = true
+        else:
+            if len(onlySuit) == 0:
+                onlySuit = suit
+            elif onlySuit != suit:
+                onlySuit = "*"
+                break
+    if onlySuit != "" && onlySuit != "*" && ! hasHonor:
+        add(fans, "清一色")
+    if ! hasHonor && len(onlySuit) > 0:
+        add(fans, "无字")
+    return fans
+
+fn sumFans(fans: str[]): int32 =
+    var total: int32 = 0
+    for idx in 0..<len(fans):
+        total = total + fanValue(fans[idx])
+    return total
+
+fn makeWall(seedBase: int64): str[] =
+    var wall: str[] = default[str[]]
+    let suits: str[] = ["W", "T", "B"]
+    for si in 0..<len(suits):
+        for num in 1..9:
+            for copy in 0..<4:
+                add(wall, suits[si] + i32ToStr(num))
+
+    let honors: str[] = ["E", "S", "W", "N", "C", "F", "P"]
+    for hi in 0..<len(honors):
+        for copy in 0..<4:
+            add(wall, honors[hi])
+
+    var seed: int64 = seedBase
+    let iBase = len(wall) - 1
+    if iBase > 0:
+        for iRev in 0..<iBase:
+            let i = iBase - iRev
+            seed = (seed * int64(1103515245) + int64(12345)) % int64(2147483647)
+            let j: int32 = int32(seed % int64(i + 1))
+            let tmp: str = wall[i]
+            wall[i] = wall[j]
+            wall[j] = tmp
+    return wall
+
+fn sortTiles(tiles: str[]): str[] =
+    var outVal: str[] = tiles
+    for i in 0..<len(outVal):
+        for j in i + 1..<len(outVal):
+            if outVal[j] < outVal[i]:
+                let t = outVal[i]
+                outVal[i] = outVal[j]
+                outVal[j] = t
+    return outVal
+
+fn drawTile(state: Mahjong4State, seat: int32): bool =
+    if len(state.wall) <= 0:
+        return false
+    var p: MahjongPlayer = state.players[seat]
+    add(p.hand, state.wall[0])
+    p.hand = sortTiles(p.hand)
+    state.players[seat] = p
+
+    var nextWall: str[] = default[str[]]
+    for idx in 1..<len(state.wall):
+        add(nextWall, state.wall[idx])
+    state.wall = nextWall
+    return true
+
+fn removeTile(hand: str[], tile: str): tuple[ok: bool, outHand: str[]] =
+    var outVal: str[] = default[str[]]
+    var removed = false
+    for idx in 0..<len(hand):
+        if ! removed && hand[idx] == tile:
+            removed = true
+        else:
+            add(outVal, hand[idx])
+    return (ok: removed, outHand: outVal)
+
+fn addLog(state: Mahjong4State, text: str) =
+    if len(text) == 0:
+        return
+    add(state.logs, text)
+    if len(state.logs) > 200:
+        var clipped: str[] = default[str[]]
+        for idx in len(state.logs) - 200..<len(state.logs):
+            add(clipped, state.logs[idx])
+        state.logs = clipped
+
+fn newState(): Mahjong4State =
+    var state: Mahjong4State
+    new(state)
+    state.stage = "lobby"
+    state.dealerSeat = 0
+    state.turnSeat = 0
+    state.lastDiscardSeat = -1
+    state.lastDiscardTile = ""
+    state.reactionStage = false
+    state.seq = int64(0)
+    setLen(state.players, MahjongPlayerCount)
+    setLen(state.reactionPassed, MahjongPlayerCount)
+    setLen(state.scores, MahjongPlayerCount)
+
+    for i in 0..<MahjongPlayerCount:
+        var p: MahjongPlayer
+        p.seat = i
+        p.name = "Seat" + i32ToStr(i + 1)
+        p.token = ""
+        p.online = false
+        p.ready = false
+        p.isBot = false
+        state.players[i] = p
+        state.reactionPassed[i] = false
+        state.scores[i] = 25000
+    return state
+
+fn setPlayer(state: Mahjong4State, seat: int32, name: str, token: str, online: bool, isBot: bool) =
+    if state == nil || seat < 0 || seat >= MahjongPlayerCount:
+        return
+    var p: MahjongPlayer = state.players[seat]
+    if len(name) > 0:
+        p.name = name
+    if len(token) > 0:
+        p.token = token
+    p.online = online
+    p.isBot = isBot
+    state.players[seat] = p
+
+fn setReady(state: Mahjong4State, seat: int32, ready: bool) =
+    if state == nil || seat < 0 || seat >= MahjongPlayerCount:
+        return
+    var p: MahjongPlayer = state.players[seat]
+    p.ready = ready
+    state.players[seat] = p
+
+fn allReady(state: Mahjong4State): bool =
+    for i in 0..<MahjongPlayerCount:
+        if ! state.players[i].ready:
+            return false
+    return true
+
+fn resetReaction(state: Mahjong4State) =
+    state.reactionStage = false
+    state.pendingHuSeats = default[int32[]]
+    for i in 0..<MahjongPlayerCount:
+        state.reactionPassed[i] = false
+
+fn startRound(state: Mahjong4State) =
+    state.wall = makeWall(state.seq + sutil.nowMillis())
+    state.lastDiscardSeat = -1
+    state.lastDiscardTile = ""
+    state.winnerSeats = default[int32[]]
+    resetReaction(state)
+
+    for i in 0..<MahjongPlayerCount:
+        var p: MahjongPlayer = state.players[i]
+        p.hand = default[str[]]
+        p.melds = default[str[]]
+        p.discards = default[str[]]
+        p.ready = false
+        state.players[i] = p
+
+    for i in 0..<MahjongPlayerCount:
+        for j in 0..<13:
+            drawTile(state, i)
+
+    state.turnSeat = state.dealerSeat
+    drawTile(state, state.turnSeat)
+    state.stage = "playing"
+    state.seq = state.seq + int64(1)
+    addLog(state, "开局完成，庄家先手")
+
+fn buildPublicSnapshot(state: Mahjong4State): str =
+    var lines: str[] = default[str[]]
+    add(lines, "stage=" + state.stage)
+    add(lines, "seq=" + intToStr(int32(state.seq)))
+    add(lines, "dealer=" + i32ToStr(state.dealerSeat))
+    add(lines, "turn=" + i32ToStr(state.turnSeat))
+    add(lines, "last_discard_seat=" + i32ToStr(state.lastDiscardSeat))
+    add(lines, "last_discard_tile=" + state.lastDiscardTile)
+
+    var handCounts: str[] = default[str[]]
+    var scoreParts: str[] = default[str[]]
+    for idx in 0..<MahjongPlayerCount:
+        add(handCounts, i32ToStr(len(state.players[idx].hand)))
+        add(scoreParts, i32ToStr(state.scores[idx]))
+    add(lines, "hand_counts=" + sutil.joinWith(handCounts, ","))
+    add(lines, "scores=" + sutil.joinWith(scoreParts, ","))
+    add(lines, "wall_left=" + i32ToStr(len(state.wall)))
+
+    var tail: str[] = default[str[]]
+    let tailStart: int32 = sutil.maxInt(0, len(state.logs) - 6)
+    for idx in tailStart..<len(state.logs):
+        add(tail, state.logs[idx])
+    add(lines, "logs=" + sutil.joinWith(tail, " | "))
+    return sutil.joinWith(lines, "\n")
+
+fn buildPrivateSnapshot(state: Mahjong4State, seat: int32): str =
+    if seat < 0 || seat >= MahjongPlayerCount:
+        return ""
+    let p: MahjongPlayer = state.players[seat]
+    var lines: str[] = default[str[]]
+    add(lines, "seat=" + i32ToStr(seat))
+    add(lines, "hand=" + sutil.joinWith(sortTiles(p.hand), ","))
+    add(lines, "melds=" + sutil.joinWith(p.melds, ","))
+    add(lines, "discards=" + sutil.joinWith(p.discards, ","))
+    add(lines, "score=" + i32ToStr(state.scores[seat]))
+    return sutil.joinWith(lines, "\n")
+
+fn recoverPlayerSession(state: Mahjong4State, token: str): int32 =
+    if len(token) == 0:
+        return -1
+    for idx in 0..<MahjongPlayerCount:
+        if state.players[idx].token == token:
+            return idx
+    return -1
+
+fn markReactionPass(state: Mahjong4State, seat: int32) =
+    if seat < 0 || seat >= MahjongPlayerCount:
+        return
+    state.reactionPassed[seat] = true
+
+fn allReactionDone(state: Mahjong4State): bool =
+    for idx in 0..<MahjongPlayerCount:
+        if idx != state.lastDiscardSeat && ! state.reactionPassed[idx]:
+            var alreadyHu = false
+            for h in 0..<len(state.pendingHuSeats):
+                if state.pendingHuSeats[h] == idx:
+                    alreadyHu = true
+                    break
+            if ! alreadyHu:
+                return false
+    return true
+
+fn settleHuFromDiscard(state: Mahjong4State, fans: int32) =
+    for idx in 0..<len(state.pendingHuSeats):
+        let winner: int32 = state.pendingHuSeats[idx]
+        add(state.winnerSeats, winner)
+        let delta: int32 = fans * 100
+        state.scores[winner] = state.scores[winner] + delta
+        if state.lastDiscardSeat >= 0:
+            state.scores[state.lastDiscardSeat] = state.scores[state.lastDiscardSeat] - delta
+        addLog(state, state.players[winner].name + " 点炮胡，番数=" + i32ToStr(fans))
+    if len(state.pendingHuSeats) > 0:
+        state.stage = "finished"
+
+fn settleHuSelfDraw(state: Mahjong4State, winnerSeat: int32, fans: int32) =
+    let gain: int32 = fans * 50
+    for idx in 0..<MahjongPlayerCount:
+        if idx != winnerSeat:
+            state.scores[idx] = state.scores[idx] - gain
+            state.scores[winnerSeat] = state.scores[winnerSeat] + gain
+    add(state.winnerSeats, winnerSeat)
+    addLog(state, state.players[winnerSeat].name + " 自摸，番数=" + i32ToStr(fans))
+    state.stage = "finished"
+
+fn parseDiscardTile(args: str): str =
+    let parts: str[] = splitCsv(args)
+    if len(parts) <= 0:
+        return ""
+    return parts[0]
+
+fn applyAction(state: Mahjong4State, seat: int32, action: ActionRequest): ActionApplied =
+    var applied: ActionApplied = initActionApplied()
+    applied.actionType = action.actionType
+    applied.actionArgs = action.actionArgs
+
+    let kind: str = sutil.toLowerAscii(sutil.strip(action.actionType))
+    if kind == "ready":
+        setReady(state, seat, true)
+        addLog(state, state.players[seat].name + " 已准备")
+        state.seq = state.seq + int64(1)
+        applied.applied = true
+
+    elif kind == "start":
+        if state.stage != "lobby":
+            applied.note = "当前不在大厅"
+        elif ! allReady(state):
+            applied.note = "存在未准备玩家"
+        else:
+            startRound(state)
+            applied.applied = true
+
+    elif kind == "discard":
+        if state.stage != "playing":
+            applied.note = "当前不是出牌阶段"
+        elif state.turnSeat != seat:
+            applied.note = "未到你出牌"
+        else:
+            let tile: str = parseDiscardTile(action.actionArgs)
+            if len(tile) == 0:
+                applied.note = "缺少打牌参数"
+            else:
+                var p: MahjongPlayer = state.players[seat]
+                let removed = removeTile(p.hand, tile)
+                if ! removed.ok:
+                    applied.note = "手牌中无该牌"
+                else:
+                    p.hand = sortTiles(removed.outHand)
+                    add(p.discards, tile)
+                    state.players[seat] = p
+                    state.lastDiscardSeat = seat
+                    state.lastDiscardTile = tile
+                    state.reactionStage = true
+                    state.pendingHuSeats = default[int32[]]
+                    for i in 0..<MahjongPlayerCount:
+                        state.reactionPassed[i] = i == seat
+                    addLog(state, p.name + " 打出 " + tile)
+                    state.seq = state.seq + int64(1)
+                    applied.applied = true
+
+    elif kind == "pass":
+        if ! state.reactionStage:
+            applied.note = "当前无需过牌"
+        else:
+            markReactionPass(state, seat)
+            addLog(state, state.players[seat].name + " 选择过")
+            if allReactionDone(state):
+                if len(state.pendingHuSeats) > 0:
+                    settleHuFromDiscard(state, 8)
+                else:
+                    resetReaction(state)
+                    state.turnSeat = (state.lastDiscardSeat + 1) % MahjongPlayerCount
+                    if ! drawTile(state, state.turnSeat):
+                        state.stage = "finished"
+                        addLog(state, "牌墙耗尽，流局")
+                    else:
+                        addLog(state, state.players[state.turnSeat].name + " 摸牌")
+            state.seq = state.seq + int64(1)
+            applied.applied = true
+
+    elif kind == "peng" || kind == "chi" || kind == "gang":
+        if ! state.reactionStage:
+            applied.note = "当前不是吃碰杠窗口"
+        elif seat == state.lastDiscardSeat:
+            applied.note = "不能对自己打出的牌操作"
+        elif len(state.pendingHuSeats) > 0:
+            applied.note = "已有胡牌声明，当前仅可胡/过"
+        else:
+            var p: MahjongPlayer = state.players[seat]
+            add(p.melds, kind + ":" + state.lastDiscardTile)
+            state.players[seat] = p
+            addLog(state, p.name + " " + kind + " " + state.lastDiscardTile)
+            resetReaction(state)
+            state.turnSeat = seat
+            if kind == "gang":
+                if ! drawTile(state, seat):
+                    state.stage = "finished"
+                    addLog(state, "杠后无牌，流局")
+            state.seq = state.seq + int64(1)
+            applied.applied = true
+
+    elif kind == "hu":
+        let declared: str[] = parseFanArgs(action.actionArgs)
+        let detected: str[] = detectSimpleFans(state.players[seat].hand, action.actionArgs)
+        var fans: str[] = default[str[]]
+        for i in 0..<len(declared):
+            fans = sutil.addUniqueString(fans, declared[i])
+        for i in 0..<len(detected):
+            fans = sutil.addUniqueString(fans, detected[i])
+
+        let totalFan: int32 = sumFans(fans)
+        if totalFan < 8:
+            applied.note = "番数不足8番，不能胡牌"
+        else:
+            if state.reactionStage && seat != state.lastDiscardSeat:
+                add(state.pendingHuSeats, seat)
+                markReactionPass(state, seat)
+                addLog(state, state.players[seat].name + " 声明胡牌(" + i32ToStr(totalFan) + "番)")
+                if allReactionDone(state):
+                    settleHuFromDiscard(state, totalFan)
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+            elif state.stage == "playing" && seat == state.turnSeat:
+                settleHuSelfDraw(state, seat, totalFan)
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+            else:
+                applied.note = "当前不能胡牌"
+
+    elif kind == "next_round":
+        if state.stage != "finished":
+            applied.note = "本局尚未结束"
+        else:
+            if len(state.winnerSeats) > 0:
+                state.dealerSeat = state.winnerSeats[0]
+            startRound(state)
+            applied.applied = true
+
+    else:
+        applied.note = "未知动作: " + action.actionType
+
+    applied.stateSeq = state.seq
+    applied.publicSnapshot = buildPublicSnapshot(state)
+    if ! applied.applied && len(applied.note) == 0:
+        applied.note = "动作未生效"
+    return applied
+
+fn makeBotAction(state: Mahjong4State, seat: int32): ActionRequest =
+    var action: ActionRequest = initActionRequest()
+    action.playerToken = state.players[seat].token
+    action.seat = seat
+    action.clientSeq = state.seq + int64(1)
+
+    if state.stage == "lobby":
+        action.actionType = "ready"
+        return action
+
+    if state.stage == "playing" && state.turnSeat == seat:
+        let hand: str[] = sortTiles(state.players[seat].hand)
+        action.actionType = "discard"
+        if len(hand) > 0:
+            action.actionArgs = hand[len(hand) - 1]
+        else:
+            action.actionArgs = ""
+        return action
+
+    if state.reactionStage && seat != state.lastDiscardSeat:
+        action.actionType = "pass"
+        action.actionArgs = ""
+        return action
+
+    action.actionType = "pass"
+    action.actionArgs = ""
+    return action

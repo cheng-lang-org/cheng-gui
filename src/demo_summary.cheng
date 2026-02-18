@@ -1,0 +1,346 @@
+import std/strutils
+import std/times
+import std/streams
+import std/json as stdjson
+import std/os
+import cheng/runtime/json_compat
+import cheng/runtime/json_runtime as runtimeJson
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/codeview
+import cheng/gui/widgets/logpanel
+import cheng/gui/widgets/visualization
+import cheng/gui/widgets/terminal
+import cheng/gui/widgets/debugger
+import cheng/gui/widgets/perf_panel
+import cheng/gui/widgets/task_monitor
+import cheng/gui/widgets/language_panel
+fn makeCaptureContext(width, height: float): RenderContext =
+    initRenderBackend(SurfaceHandle(nil), makeSize(width, height), rbSkiaCpuFallback)
+fn makeCursor(line: int, column: int): CursorPosition =
+    var cursor: CursorPosition
+    cursor.line = line
+    cursor.column = column cursor
+fn sampleCodeModel(): CodeViewModel =
+    let source = "fn fib(n: int): int =\n" + "if n <= 1:\n" + "    return n\n" + "  let a = fib(n - 1)\n" + "  let b = fib(n - 2)\n" + "  result = a + b\n" + "\n" + "fn main() =\n" + "echo fib(8)\n"
+    let model = newCodeViewModel(source) model.setView
+    port(0, 6)
+    var cursors = default[CursorPosition[]] cursors.add(makeCursor(3, 6)) cursors.add(makeCursor(4, 6)) model.setCursors(cursors)
+    var tokens = default[CodeSemanticToken[]]
+    var token: CodeSemanticToken
+    token.line = 0
+    token.column = 0
+    token.length = 4
+    token.kind = cvKey
+    word
+    token.detail = "fn"
+    tokens.add(token)
+    token.line = 0
+    token.column = 5
+    token.length = 3
+    token.kind = cvIdentifier
+    token.detail = "fib"
+    tokens.add(token)
+    token.line = 1
+    token.column = 2
+    token.length = 2
+    token.kind = cvKey
+    word
+    token.detail = "if"
+    tokens.add(token)
+    token.line = 6
+    token.column = 2
+    token.length = 4
+    token.kind = cvIdentifier
+    token.detail = "echo" tokens.add(token) model.applySemanticTokens(tokens)
+    var diagnostics = default[CodeDiagnostic[]]
+    var diag: CodeDiagnostic
+    diag.startLine = 3
+    diag.startColumn = 10
+    diag.endLine = 3
+    diag.endColumn = 17
+    diag.severity = cdkWarning
+    diag.message = "Duplicate call"
+    diagnostics.add(diag)
+    diag.startLine = 6
+    diag.startColumn = 2
+    diag.endLine = 6
+    diag.endColumn = 6
+    diag.severity = cdkInfo
+    diag.message = "Output result" diagnostics.add(diag) model.applyDiagnostics(diagnostics) model
+fn CodeViewDemoSummary(): str =
+    let model = sampleCodeModel() ## Trigger a render to refresh cache metrics
+    var dummyCtx = makeCaptureContext(640, 480) dummyCtx.enableCommandCapture(true)
+    let rect = makeRect(0, 0, 640, 320)
+    renderCodeView(model, dummyCtx, rect)
+    let metrics = model.metrics
+    var lines = default[str[]] lines.add model.codeViewSummary() lines.add "  viewport_height=" + intToStr(int32(metrics.visibleLines)) + "\n" lines.add "  render_commands=" + intToStr(int32(len(dummyCtx.getCommands()))) + "\n" lines.join("")
+fn sampleLogModel(): LogPanelModel =
+    let model = newLogPanelModel()
+    let now = int64(epochTime() * 1000.0)
+    var entry: LogEntryentry.timestamp = now - 1200
+    entry.level = llInfo
+    entry.category = "bootstrap"
+    entry.message = "Stage0 cached"
+    model.addEntry(entry)
+    entry.timestamp = now - 800
+    entry.level = llWarn
+    entry.category = "diff"
+    entry.message = "Pass2 AST 0.28%"
+    model.addEntry(entry)
+    entry.timestamp = now - 500
+    entry.level = llError
+    entry.category = "borrow"
+    entry.message = "borrow graph conflict 2"
+    model.addEntry(entry)
+    entry.timestamp = now - 200
+    entry.level = llDebug
+    entry.category = "runtime"
+    entry.message = "frame=16 cpu=12ms" model.addEntry(entry) model
+fn LogPanelDemoSummary(): str =
+    let model = sampleLogModel()
+    var dummyCtx = makeCaptureContext(640, 240) dummyCtx.enableCommandCapture(true)
+    let rect = makeRect(0, 0, 640, 240)
+    renderLogPanel(model, dummyCtx, rect)
+    let metrics = model.metrics
+    var lines = default[str[]] lines.add
+    logPanelSummary(model) lines.add "  total_entries=" + intToStr(int32(metrics.totalEn tries)) + " warnings=" + intToStr(int32(metrics.warnings)) + " errors=" + intToStr(int32(metrics.errors)) + "\n" lines.add "  render_commands=" + intToStr(int32(len(dummyCtx.getCommands()))) + "\n" lines.join("")
+fn sampleLanguagePanelModel(): LanguagePanelModel =
+    let model = newLanguagePanelModel()
+    var diagnostics = default[LanguageDiagnosticEntry[]]
+    var entry: LanguageDiagnosticEntryentry.severity = lsWarning
+    entry.location = "src/main.cheng:12:5"
+    entry.message = "Unused variable `delta`"
+    diagnostics.add(entry)
+    entry.severity = lsError
+    entry.location = "src/runtime/borrow.cheng:42:3"
+    entry.message = "borrow move not confirmed"
+    diagnostics.add(entry)
+    entry.severity = lsInfo
+    entry.location = "src/runtime/borrow.cheng:88:1"
+    entry.message = "Auto-annotation suggestions available" diagnostics.add(entry) model.setDiagnostics(diagnostics)
+    var outline = default[LanguageOutlineEntry[]]
+    var outlineEntry: LanguageOutlineEntry
+    outlineEntry.label = "fn main"
+    outlineEntry.detail = "app::main · L8:C3"
+    outlineEntry.depth = 0
+    outline.add(outlineEntry)
+    outlineEntry.label = "fn runWorker [mut]"
+    outlineEntry.detail = "app::worker · L26:C5"
+    outlineEntry.depth = 1
+    outline.add(outlineEntry)
+    outlineEntry.label = "worker detail"
+    outlineEntry.detail = "app::worker::node · L29:C9"
+    outlineEntry.depth = 2 outline.add(outlineEntry) model.setOut
+    line(outline)
+    var navigation = default[LanguageFileEntry[]]
+    var navEntry: LanguageFileEntrynavEntry.path = "src/main.cheng"
+    navEntry.label = "src/main.cheng"
+    navEntry.selected = true
+    navigation.add(navEntry)
+    navEntry.path = "src/worker.cheng"
+    navEntry.label = "src/worker.cheng"
+    navEntry.selected = false
+    navigation.add(navEntry)
+    navEntry.path = "src/runtime/borrow.cheng"
+    navEntry.label = "src/runtime/borrow.cheng"
+    navEntry.selected = false navigation.add(navEntry) model.setNavigation(navigation) model
+fn LanguagePanelDemoSummary(): str =
+    let model = sampleLanguagePanelModel()
+    var ctx = makeCaptureContext(360, 260) ctx.enableCommandCapture(true)
+    renderLanguagePanel(model, ctx, makeRect(0, 0, 360, 260))
+    var lines = default[str[]] lines.add
+    languagePanelSummary(model) lines.add "  render_commands=" + intToStr(int32(len(ctx.getCommands()))) + "\n" lines.join("")
+fn sampleTerminalModel(): TerminalModel =
+    let model = newTerminalModel() model.appendStatus("bootstrap ready") model.appendInput("cheng bootstrap --stage pass1") model.appendOutput("Pass1 parse ...") model.appendOutput("Pass1 sem ...") model.appendOutput("Pass1 borrow ✓ (0.32s)") model.appendInput("cheng bootstrap --stage pass2") model.appendOutput("Pass2 diff=0.18% borrow=0.31%") model.appendError("warning: borrow drift exceeds target 0.2%") model
+fn TerminalDemoSummary(): str =
+    let model = sampleTerminalModel()
+    var ctx = makeCaptureContext(600, 220) ctx.enableCommandCapture(true)
+    renderTerminal(model, ctx, makeRect(0, 0, 600, 220))
+    var lines = default[str[]] lines.add terminalSum
+    mary(model) lines.add "  render_commands=" + intToStr(int32(len(ctx.getCommands()))) + "\n" lines.join("")
+fn sampleDebuggerModel(): DebuggerModel =
+    let model = newDebuggerModel() model.setStatus(dsPaused, "breakpoint main.cheng:42")
+    var break points = default[DebuggerBreak point[]]
+    var break point: DebuggerBreak point
+    break point.file = "src/main.cheng"
+    break point.line = 42
+    break point.enabled = true
+    break point.hitCount = 3
+    break points.add(break point)
+    break point.file = "src/lib/runtime.cheng"
+    break point.line = 128
+    break point.enabled = false
+    break point.hitCount = 0
+    break points.add(break point) model.setBreak
+    points(break points)
+    var frames = default[DebuggerFrame[]]
+    var frame: DebuggerFrame
+    frame.functionName = "runBootstrap"
+    frame.location = "bootstrap.cheng:142"
+    frame.isCurrent = false
+    frames.add(frame)
+    frame.functionName = "main"
+    frame.location = "main.cheng:42"
+    frame.isCurrent = true frames.add(frame) model.setFrames(frames)
+    var var iables = default[DebuggerVariable[]]
+    var variable: DebuggerVariable
+    variable.name = "diff"
+    variable.value = "0.18"
+    variable.kind = dvkLocal
+    variable.changed = true
+    var iables.add(variable)
+    variable.name = "budgetMs"
+    variable.value = "16.0"
+    variable.kind = dvkLocal
+    variable.changed = false
+    var iables.add(variable)
+    variable.name = "lastCommand"
+    variable.value = "\"cheng bootstrap\""
+    variable.kind = dvkGlobal
+    variable.changed = false
+    var iables.add(variable) model.setVar
+    iables(var iables) model
+fn DebuggerDemo
+Summary(): str = let model = sampleDebuggerModel()
+var ctx = makeCaptureContext(520, 240) ctx.enableCommandCapture(true)
+renderDebugger(model, ctx, makeRect(0, 0, 520, 240))
+var lines = default[str[]] lines.add debuggerSum
+mary(model) lines.add "  render_commands=" + intToStr(int32(len(ctx.getCommands()))) + "\n" lines.join("")
+fn samplePerfModel(): PerfPanelModel =
+    let model = newPerfPanelModel(16.0)
+    let base = int64(epochTime() * 1000.0) - 320
+    for idx in 0..< 18:
+        let cpuMs = 5.0 + float(idx % 4)
+        let gpuMs = 4.0 + float(idx % 3)
+        let total = cpuMs + gpuMs + float(idx % 2)
+        var sample: PerfSample
+        sample.label = "frame#" + intToStr(int32(idx))
+        sample.timestampMs = base + int64(idx * 16)
+        sample.cpuMs = cpuMs
+        sample.gpuMs = gpuMs
+        sample.totalMs = total model.addSample(sample) model
+fn PerfPanelDemoSummary(): str =
+    let model = samplePerfModel()
+    var ctx = makeCaptureContext(520, 200) ctx.enableCommandCapture(true)
+    renderPerfPanel(model, ctx, makeRect(0, 0, 520, 200))
+    var lines = default[str[]] lines.add
+    perfPanelSummary(model) lines.add "  render_commands=" + intToStr(int32(len(ctx.getCommands()))) + "\n" lines.join("")
+fn sampleTaskMonitorModel(): TaskMonitorModel =
+    let model = newTaskMonitorModel()
+    let now = int64(epochTime() * 1000.0)
+    var tasks = default[TaskInfo[]]
+    var task: TaskInfo
+    task.id = "bootstrap-pass1"
+    task.label = "Pass1 bootstrap"
+    task.status = tsSucceeded
+    task.progress = 1.0
+    task.startedAtMs = now - 6000
+    task.durationMs = 2500
+    task.detail = "Diff: 0.18%"
+    tasks.add(task)
+    task.id = "bootstrap-pass2"
+    task.label = "Pass2 replay"
+    task.status = tsRunning
+    task.progress = 0.72
+    task.startedAtMs = now - 4200
+    task.durationMs = 3200
+    task.detail = "Borrow diff is converging"
+    tasks.add(task)
+    task.id = "ide-metrics"
+    task.label = "Collect metrics"
+    task.status = tsPending
+    task.progress = 0.0
+    task.startedAtMs = 0
+    task.durationMs = 0
+    task.detail = ""
+    tasks.add(task)
+    task.id = "ide-release"
+    task.label = "Generate offline package"
+    task.status = tsFailed
+    task.progress = 1.0
+    task.startedAtMs = now - 7800
+    task.durationMs = 1800
+    task.detail = "Missing pass2 manifest" tasks.add(task) model.setTasks(tasks) model
+fn TaskMonitorDemoSummary(): str =
+    let model = sampleTaskMonitorModel()
+    var ctx = makeCaptureContext(520, 220) ctx.enableCommandCapture(true)
+    renderTaskMonitor(model, ctx, makeRect(0, 0, 520, 220))
+    var lines = default[str[]] lines.add
+    taskMonitorSummary(model) lines.add "  render_commands=" + intToStr(int32(len(ctx.getCommands()))) + "\n" lines.join("")
+fn sampleVisualizationModel(): Visual
+izationModel = var pass1Children = newJArray()
+var pass1ChildFields = default[CompatJsonPair[]] pass1ChildFields.add(jsonField("id", "fn:fib"))
+pass1ChildFields.add(jsonField("label", "fn fib"))
+pass1ChildFields.add(jsonField("value", "lines 1-6"))
+pass1Children.add(jsonObject(pass1ChildFields))
+pass1ChildFields = default[CompatJsonPair[]] pass1ChildFields.add(jsonField("id", "fn:main")) pass1ChildFields.add(jsonField("label", "fn main")) pass1ChildFields.add(jsonField("value", "lines 8-9")) pass1Children.add(jsonObject(pass1ChildFields))
+var pass1Fields = default[CompatJsonPair[]] pass1Fields.add(jsonField("id", "module")) pass1Fields.add(jsonField("label", "Module pass1")) pass1Fields.add(jsonField("value", "fib-demo")) pass1Fields.add(jsonField("children", pass1Children))
+let pass1Json = jsonObject(pass1Fields)
+var pass2Diagnostics = newJArray() pass2Diagnostics.add(jsonValue("pass2: scope expanded"))
+var pass2MetricsFields = default[CompatJsonPair[]] pass2MetricsFields.add(jsonField("borrow_conflicts", 1)) pass2MetricsFields.add(jsonField("diagnostics", pass2Diagnostics))
+let pass2Metrics = jsonObject(pass2MetricsFields)
+var pass2Children = newJArray()
+var pass2ChildFields = default[CompatJsonPair[]] pass2ChildFields.add(jsonField("id", "fn:fib"))
+pass2ChildFields.add(jsonField("label", "fn fib"))
+pass2ChildFields.add(jsonField("value", "lines 1-7"))
+pass2Children.add(jsonObject(pass2ChildFields))
+pass2ChildFields = default[CompatJsonPair[]] pass2ChildFields.add(jsonField("id", "fn:main"))
+pass2ChildFields.add(jsonField("label", "fn main"))
+pass2ChildFields.add(jsonField("value", "lines 9-10"))
+pass2Children.add(jsonObject(pass2ChildFields))
+pass2ChildFields = default[CompatJsonPair[]] pass2ChildFields.add(jsonField("id", "fn:helper")) pass2ChildFields.add(jsonField("label", "fn helper")) pass2ChildFields.add(jsonField("value", "lines 12-14")) pass2Children.add(jsonObject(pass2ChildFields))
+var pass2Fields = default[CompatJsonPair[]] pass2Fields.add(jsonField("id", "module")) pass2Fields.add(jsonField("label", "Module pass2")) pass2Fields.add(jsonField("value", "fib-demo")) pass2Fields.add(jsonField("metrics", pass2Metrics)) pass2Fields.add(jsonField("children", pass2Children))
+let pass2Json = jsonObject(pass2Fields)
+let pass1Node = stdjson.parseJson(json_compat.toPretty(pass1Json))
+let pass2Node = stdjson.parseJson(json_compat.toPretty(pass2Json))
+let model = newVisualizationModel(vmSemantics) model.setSnapshotsFromJson(pass1Node, pass2Node) model
+type
+    WorkspaceMetrics =
+        entries: int
+        lines: int
+        chars: int
+        error: str
+fn loadWorkspaceMetrics(path: str): WorkspaceMetrics =
+    var result: WorkspaceMetrics
+    if len(path) == 0:
+        result.error = "path-empty"
+        return result
+        if ! os.fileExists(path):
+            result.error = "not-found"
+            return result
+            try:
+                var stream = newFileStream(path, fmRead)
+                if stream == nil:
+                    result.error = "open-failed"
+                    return result defer: stream.close()
+                    let node = runtimeJson.parseJson(stream.readAll())
+                    result.entries = if node.hasKey("entry_count"): node["entry_count"].getInt()
+                else:
+                    0
+                    result.lines = if node.hasKey("total_lines"): node["total_lines"].getInt()
+                else:
+                    0
+                    result.chars = if node.hasKey("total_chars"): node["total_chars"].getInt()
+                else:
+                    0
+                    result.error = "" result
+            except CatchableError as
+            e: result.error = e.msg result
+fn Visual
+izationDemoSummary(WorkspaceMetricsPath: str): str = let model = sampleVisualizationModel()
+var dummyCtx = makeCaptureContext(640, 320) dummyCtx.enableCommandCapture(true)
+let rect = makeRect(0, 0, 640, 320)
+renderVisualization(model, dummyCtx, rect)
+var lines = default[str[]] lines.add visualizationSum
+mary(model) lines.add "  render_commands=" + intToStr(int32(len(dummyCtx.getCommands()))) + "\n"
+if len(WorkspaceMetricsPath) > 0:
+    let metrics = loadWorkspaceMetrics(WorkspaceMetricsPath)
+    let entries = metrics.entries
+    let totals = metrics.lines
+    let chars = metrics.chars
+    let err = metrics.error
+    if len(err) > 0:
+        lines.add "  workspace_metrics_error=" + err + "\n"
+    else:
+        lines.add "  workspace_entries=" + intToStr(int32(entries)) + "\n" lines.add "  workspace_total_lines=" + intToStr(int32(totals)) + "\n" lines.add "  workspace_total_chars=" + intToStr(int32(chars)) + "\n" lines.join("")

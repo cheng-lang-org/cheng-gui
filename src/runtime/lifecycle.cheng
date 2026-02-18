@@ -1,0 +1,34 @@
+import cheng/gui/core/component
+import cheng/gui/runtime/scheduler
+
+type
+    RuntimeSnapshot =
+        appId: str
+        frameIndex: int64
+        invalidated: bool
+        stage: scheduler.FrameStage
+
+fn snapshot(ctx: component.UiContext, schedulerInst: scheduler.UiScheduler): RuntimeSnapshot =
+    var snap: RuntimeSnapshot
+    if ctx != nil:
+        snap.appId = ctx.appId
+        snap.frameIndex = ctx.frameIndex
+        snap.invalidated = ctx.invalidated
+    else:
+        snap.appId = ""
+        snap.frameIndex = 0
+        snap.invalidated = false
+    if schedulerInst != nil:
+        snap.stage = schedulerInst.stage
+    else:
+        snap.stage = scheduler.fsInput
+    return snap
+
+fn resetForHotReload(ctx: component.UiContext, schedulerInst: scheduler.UiScheduler) =
+    if ctx != nil:
+        component.clearState(ctx)
+        component.runEffectCleanups(ctx)
+        component.invalidate(ctx)
+    if schedulerInst != nil:
+        setLen(schedulerInst.pending, 0)
+        schedulerInst.stage = scheduler.fsInput

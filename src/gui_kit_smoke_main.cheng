@@ -1,0 +1,43 @@
+import cheng/gui/kit
+import cheng/gui/core/component
+import cheng/gui/widgets/v1
+
+fn appendNode(items: var component.Node[], item: component.Node) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn rootView(ctx: component.UiContext): component.Node =
+    let header = v1.text(ctx, "header", "Pure Cheng GUI V1")
+    let button = v1.button(ctx, "run", "Run")
+    let input = v1.textField(ctx, "query", "Search")
+    var listItems: component.Node[]
+    appendNode(listItems, v1.text(ctx, "item-1", "Desktop"))
+    appendNode(listItems, v1.text(ctx, "item-2", "Mobile"))
+    appendNode(listItems, v1.text(ctx, "item-3", "Web"))
+    let list = v1.listView(ctx, "list", listItems)
+
+    var rootChildren: component.Node[]
+    appendNode(rootChildren, header)
+    appendNode(rootChildren, v1.spacer(ctx, "space-1", 10.0))
+    appendNode(rootChildren, input)
+    appendNode(rootChildren, button)
+    appendNode(rootChildren, list)
+    let root = v1.view(ctx, "root", rootChildren)
+    root.name = "root"
+    return root
+
+fn main(): int32 =
+    var config = defaultAppConfig()
+    config.appId = "cheng.gui.kit.smoke"
+    config.title = "Cheng GUI Kit Smoke"
+    config.root = rootView
+    config.enableA11y = true
+
+    let app = createApp(config)
+    app.frameLimit = 1
+    runApp(app)
+    shutdownApp(app)
+    return 0
+
+main()

@@ -1,0 +1,705 @@
+import std/seqs
+import cheng/gui/platform/types_v1
+import cheng/gui/platform/native_sys_impl as nativePlat
+import cheng/gui/examples_games/common/string_utils as sutil
+
+fn chengGuiNativeDrawTextSimple(pixels: void*, width: int32, height: int32, strideBytes: int32, x: int32, y: int32, color: uint32, fontSize: int32, text: cstring): int32 @ importc("chengGuiNativeDrawTextSimple")
+
+const
+    DefaultWindowW = 1080.0
+    DefaultWindowH = 760.0
+    DefaultWindowWInt: int32 = 1080
+    DefaultWindowHInt: int32 = 760
+    SafetyFrames = 600000
+    ColBgTop: uint32 = uint32(-986119)
+    ColBgBottom: uint32 = uint32(-1446153)
+    ColCardBg: uint32 = uint32(-657412)
+    ColCardBorder: uint32 = uint32(-2301720)
+    ColCardShadow: uint32 = uint32(2027083489)
+    ColIconBg: uint32 = uint32(-1446669)
+    ColIconBorder: uint32 = uint32(-2959647)
+    ColTextMain: uint32 = uint32(-15065044)
+    ColTextSub: uint32 = uint32(-10985354)
+    ColTextRating: uint32 = uint32(-937984)
+    ColPanelBg: uint32 = uint32(-1)
+    ColPanelBorder: uint32 = uint32(-2038548)
+    ColPanelTitle: uint32 = uint32(-13353649)
+    ColBtnBg: uint32 = uint32(-1379841)
+    ColBtnBgDisabled: uint32 = uint32(-1118221)
+    ColBtnBorder: uint32 = uint32(-4272400)
+    ColBtnBorderDisabled: uint32 = uint32(-2433822)
+    ColBtnText: uint32 = uint32(-14859894)
+    ColBtnTextDisabled: uint32 = uint32(-7959658)
+    ColInputBgActive: uint32 = uint32(-1)
+    ColInputBgIdle: uint32 = uint32(-460034)
+    ColInputBorderActive: uint32 = uint32(-7952145)
+    ColInputBorderIdle: uint32 = uint32(-2695958)
+    ColInputText: uint32 = uint32(-14077371)
+    ColInputPlaceholder: uint32 = uint32(-6906710)
+
+
+type
+    GuiActionRect =
+        id: str
+        label: str
+        x: int32
+        y: int32
+        w: int32
+        h: int32
+        enabled: bool
+
+    GuiTextInputState =
+        text: str
+        placeholder: str
+        active: bool
+        maxChars: int32
+
+    GuiSceneState =
+        running: bool
+        title: str
+        subtitle: str
+        icon: str
+        rating: str
+        description: str
+        connectionLines: str[]
+        seatLines: str[]
+        statusLines: str[]
+        logLines: str[]
+        actions: GuiActionRect[]
+        inputState: GuiTextInputState
+        inputX: int32
+        inputY: int32
+        inputW: int32
+        inputH: int32
+        notice: str
+
+    GuiSceneReducer = fn(scene: GuiSceneState, eventKind: str, payload: str): GuiSceneState
+
+    PixelBuffer =
+        ptr: uint32*
+        width: int32
+        height: int32
+        strideBytes: int32
+
+    MainLayout =
+        margin: int32
+        cardH: int32
+        contentTop: int32
+        leftX: int32
+        leftY: int32
+        leftW: int32
+        leftH: int32
+        rightX: int32
+        rightY: int32
+        rightW: int32
+        actionsY: int32
+        actionsH: int32
+        inputPanelY: int32
+        inputPanelH: int32
+        notesY: int32
+        notesH: int32
+        sec1Y: int32
+        sec2Y: int32
+        sec3Y: int32
+        sec4Y: int32
+        sec4H: int32
+
+fn allocBuffer(width: int32, height: int32): PixelBuffer =
+    var buf: PixelBuffer
+    buf.width = if width >= 640: width else: DefaultWindowWInt
+    buf.height = if height >= 420: height else: DefaultWindowHInt
+    buf.strideBytes = buf.width * 4
+    let totalBytes: int32 = buf.strideBytes * buf.height
+    buf.ptr = uint32*(alloc(totalBytes))
+    return buf
+
+fn freeBuffer(buf: var PixelBuffer) =
+    if buf.ptr != nil:
+        dealloc(buf.ptr)
+        buf.ptr = nil
+
+fn fillRect(pixels: void*, width, height, strideBytes: int32, x, y, w, h: int32, color: uint32) =
+    if pixels == nil || width <= 0 || height <= 0:
+        return
+    let x0: int32 = sutil.clampInt(x, 0, width)
+    let y0: int32 = sutil.clampInt(y, 0, height)
+    let x1: int32 = sutil.clampInt(x + w, 0, width)
+    let y1: int32 = sutil.clampInt(y + h, 0, height)
+    if x1 <= x0 || y1 <= y0:
+        return
+    for yy in y0..<y1:
+        let row: void* = ptr_add(pixels, yy * strideBytes)
+        for xx in x0..<x1:
+            let p: uint32* = uint32*(ptr_add(row, xx * 4))
+            *p = color
+
+fn fillRectFast(buf: PixelBuffer, x, y, w, h: int32, color: uint32) =
+    if buf.ptr == nil || buf.width <= 0 || buf.height <= 0:
+        return
+    let x0: int32 = sutil.clampInt(x, 0, buf.width)
+    let y0: int32 = sutil.clampInt(y, 0, buf.height)
+    let x1: int32 = sutil.clampInt(x + w, 0, buf.width)
+    let y1: int32 = sutil.clampInt(y + h, 0, buf.height)
+    if x1 <= x0 || y1 <= y0:
+        return
+    for yy in y0..<y1:
+        let rowBase: int32 = yy * buf.width
+        for xx in x0..<x1:
+            let idx: int32 = rowBase + xx
+            let p: uint32* = uint32*(ptr_add(buf.ptr, idx * 4))
+            *p = color
+
+fn drawBorderFast(buf: PixelBuffer, x, y, w, h: int32, color: uint32) =
+    fillRectFast(buf, x, y, w, 1, color)
+    fillRectFast(buf, x, y + h - 1, w, 1, color)
+    fillRectFast(buf, x, y, 1, h, color)
+    fillRectFast(buf, x + w - 1, y, 1, h, color)
+
+fn drawBorder(pixels: void*, width, height, strideBytes: int32, x, y, w, h: int32, color: uint32) =
+    fillRect(pixels, width, height, strideBytes, x, y, w, 1, color)
+    fillRect(pixels, width, height, strideBytes, x, y + h - 1, w, 1, color)
+    fillRect(pixels, width, height, strideBytes, x, y, 1, h, color)
+    fillRect(pixels, width, height, strideBytes, x + w - 1, y, 1, h, color)
+
+fn clearBuffer(buf: PixelBuffer, color: uint32) =
+    if buf.ptr == nil:
+        return
+    let total: int32 = buf.width * buf.height
+    for idx in 0..<total:
+        let p: uint32* = uint32*(ptr_add(buf.ptr, idx * 4))
+        *p = color
+
+fn drawTextFallbackBand(pixels: void*, width, height, strideBytes: int32, x, y: int32, text: str, color: uint32) =
+    if len(text) == 0:
+        return
+    let w: int32 = sutil.maxInt(8, len(text) * 6)
+    fillRect(pixels, width, height, strideBytes, x, y + 11, w, 2, color)
+
+fn safeAsciiText(text: str): str =
+    if len(text) <= 0:
+        return ""
+    var outVal = ""
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        if ch >= ' ' && ch <= '~':
+            outVal = outVal + charToStr(ch)
+        elif ch == '\t':
+            outVal = outVal + " "
+        elif ch == '\n' || ch == '\r':
+            0
+        else:
+            outVal = outVal + "?"
+    return outVal
+
+fn upperAscii(ch: char): char =
+    if ch >= 'a' && ch <= 'z':
+        return char(int32(ch) - 32)
+    return ch
+
+fn glyphRows3x5(ch: char): str[] =
+    let c: char = upperAscii(ch)
+    if c == 'A':
+        return ["111", "101", "111", "101", "101"]
+    if c == 'B':
+        return ["110", "101", "110", "101", "110"]
+    if c == 'C':
+        return ["111", "100", "100", "100", "111"]
+    if c == 'D':
+        return ["110", "101", "101", "101", "110"]
+    if c == 'E':
+        return ["111", "100", "110", "100", "111"]
+    if c == 'F':
+        return ["111", "100", "110", "100", "100"]
+    if c == 'G':
+        return ["111", "100", "101", "101", "111"]
+    if c == 'H':
+        return ["101", "101", "111", "101", "101"]
+    if c == 'I':
+        return ["111", "010", "010", "010", "111"]
+    if c == 'J':
+        return ["001", "001", "001", "101", "111"]
+    if c == 'K':
+        return ["101", "101", "110", "101", "101"]
+    if c == 'L':
+        return ["100", "100", "100", "100", "111"]
+    if c == 'M':
+        return ["101", "111", "111", "101", "101"]
+    if c == 'N':
+        return ["101", "111", "111", "111", "101"]
+    if c == 'O':
+        return ["111", "101", "101", "101", "111"]
+    if c == 'P':
+        return ["111", "101", "111", "100", "100"]
+    if c == 'Q':
+        return ["111", "101", "101", "111", "001"]
+    if c == 'R':
+        return ["111", "101", "111", "110", "101"]
+    if c == 'S':
+        return ["111", "100", "111", "001", "111"]
+    if c == 'T':
+        return ["111", "010", "010", "010", "010"]
+    if c == 'U':
+        return ["101", "101", "101", "101", "111"]
+    if c == 'V':
+        return ["101", "101", "101", "101", "010"]
+    if c == 'W':
+        return ["101", "101", "111", "111", "101"]
+    if c == 'X':
+        return ["101", "101", "010", "101", "101"]
+    if c == 'Y':
+        return ["101", "101", "010", "010", "010"]
+    if c == 'Z':
+        return ["111", "001", "010", "100", "111"]
+    if c == '0':
+        return ["111", "101", "101", "101", "111"]
+    if c == '1':
+        return ["010", "110", "010", "010", "111"]
+    if c == '2':
+        return ["111", "001", "111", "100", "111"]
+    if c == '3':
+        return ["111", "001", "111", "001", "111"]
+    if c == '4':
+        return ["101", "101", "111", "001", "001"]
+    if c == '5':
+        return ["111", "100", "111", "001", "111"]
+    if c == '6':
+        return ["111", "100", "111", "101", "111"]
+    if c == '7':
+        return ["111", "001", "001", "001", "001"]
+    if c == '8':
+        return ["111", "101", "111", "101", "111"]
+    if c == '9':
+        return ["111", "101", "111", "001", "111"]
+    if c == '.':
+        return ["000", "000", "000", "000", "010"]
+    if c == ':':
+        return ["000", "010", "000", "010", "000"]
+    if c == '-':
+        return ["000", "000", "111", "000", "000"]
+    if c == '=':
+        return ["000", "111", "000", "111", "000"]
+    if c == '/':
+        return ["001", "001", "010", "100", "100"]
+    if c == '_':
+        return ["000", "000", "000", "000", "111"]
+    if c == '|':
+        return ["010", "010", "010", "010", "010"]
+    if c == ',':
+        return ["000", "000", "000", "010", "100"]
+    if c == '[':
+        return ["110", "100", "100", "100", "110"]
+    if c == ']':
+        return ["011", "001", "001", "001", "011"]
+    if c == '(':
+        return ["011", "100", "100", "100", "011"]
+    if c == ')':
+        return ["110", "001", "001", "001", "110"]
+    if c == '#':
+        return ["101", "111", "101", "111", "101"]
+    if c == '*':
+        return ["101", "111", "010", "111", "101"]
+    if c == '+':
+        return ["000", "010", "111", "010", "000"]
+    if c == ' ':
+        return ["000", "000", "000", "000", "000"]
+    return ["111", "001", "010", "000", "010"]
+
+fn drawAsciiGlyph3x5(pixels: void*, width, height, strideBytes: int32, x, y: int32, color: uint32, ch: char, scale: int32) =
+    let rows: str[] = glyphRows3x5(ch)
+    for ry in 0..<len(rows):
+        let row: str = rows[ry]
+        for rx in 0..<len(row):
+            if row[rx] == '1':
+                fillRect(pixels, width, height, strideBytes, x + rx * scale, y + ry * scale, scale, scale, color)
+
+fn drawAsciiTextLine(pixels: void*, width, height, strideBytes: int32, x, y: int32, color: uint32, fontSize: float64, text: str) =
+    let scale: int32 = sutil.maxInt(1, int32(fontSize / 7.0))
+    let adv: int32 = scale * 4
+    for idx in 0..<len(text):
+        let ch: char = text[idx]
+        drawAsciiGlyph3x5(pixels, width, height, strideBytes, x + idx * adv, y + scale, color, ch, scale)
+
+fn drawTextLine(pixels: void*, width, height, strideBytes: int32, x, y: int32, color: uint32, fontSize: float64, text: str) =
+    if len(text) == 0:
+        return
+    var buf: PixelBuffer
+    buf.ptr = uint32*(pixels)
+    buf.width = width
+    buf.height = height
+    buf.strideBytes = strideBytes
+    drawTextLineFast(buf, x, y, color, fontSize, text)
+
+fn drawTextLineFast(buf: PixelBuffer, x, y: int32, color: uint32, fontSize: float64, text: str) =
+    if len(text) == 0:
+        return
+    let nativeRc: int32 = chengGuiNativeDrawTextSimple(
+        void*(buf.ptr),
+        buf.width,
+        buf.height,
+        buf.strideBytes,
+        x,
+        y,
+        color,
+        int32(fontSize),
+        cstring(text)
+    )
+    if nativeRc == 0:
+        return
+    let safeText: str = safeAsciiText(text)
+    if len(safeText) > 0:
+        drawAsciiTextLine(void*(buf.ptr), buf.width, buf.height, buf.strideBytes, x, y, color, fontSize, safeText)
+        return
+    let bandW: int32 = sutil.maxInt(12, len(text) * 6)
+    fillRectFast(buf, x, y + 11, bandW, 2, color)
+
+fn pointInRect(px: float64, py: float64, rect: GuiActionRect): bool =
+    if px < float64(rect.x) || py < float64(rect.y):
+        return false
+    if px > float64(rect.x + rect.w) || py > float64(rect.y + rect.h):
+        return false
+    return true
+
+fn defaultInputState(): GuiTextInputState =
+    var input: GuiTextInputState
+    input.text = ""
+    input.placeholder = "Input action args then press Enter"
+    input.active = false
+    input.maxChars = 512
+    return input
+
+fn newSceneState(title: str, subtitle: str): GuiSceneState =
+    var scene: GuiSceneState
+    scene.running = true
+    scene.title = title
+    scene.subtitle = subtitle
+    scene.icon = ""
+    scene.rating = "4.9"
+    scene.description = ""
+    scene.inputState.text = ""
+    scene.inputState.placeholder = "Input action args then press Enter"
+    scene.inputState.active = false
+    scene.inputState.maxChars = 512
+    scene.inputX = 0
+    scene.inputY = 0
+    scene.inputW = 0
+    scene.inputH = 0
+    scene.notice = ""
+    return scene
+
+fn setSceneActions(scene: GuiSceneState, actions: GuiActionRect[]): GuiSceneState =
+    var next: GuiSceneState = scene
+    next.actions = actions
+    return next
+
+fn addSceneLog(scene: GuiSceneState, text: str, maxLines: int32): GuiSceneState =
+    var next: GuiSceneState = scene
+    if len(text) > 0:
+        add(next.logLines, text)
+    if maxLines > 0 && len(next.logLines) > maxLines:
+        var clipped: str[] = default[str[]]
+        for idx in len(next.logLines) - maxLines..<len(next.logLines):
+            add(clipped, next.logLines[idx])
+        next.logLines = clipped
+    return next
+
+fn clipLineText(text: str, maxChars: int32): str =
+    let raw: str = sutil.strip(text)
+    if len(raw) == 0:
+        return ""
+    if maxChars <= 0 || len(raw) <= maxChars:
+        return raw
+    if maxChars <= 3:
+        return sutil.sliceRange(raw, 0, maxChars - 1)
+    return sutil.sliceRange(raw, 0, maxChars - 4) + "..."
+
+fn drawNotesText(buf: PixelBuffer, description: str, notice: str, rightX: int32, notesY: int32, rightW: int32) =
+    let colPanelTitle: uint32 = uint32(-13353649)
+    let colTextSub: uint32 = uint32(-10985354)
+    let maxChars: int32 = sutil.maxInt(14, (rightW - 24) / 6)
+    drawTextLineFast(buf, rightX + 12, notesY + 8, colPanelTitle, 14.0, "Notes")
+    drawTextLineFast(buf, rightX + 12, notesY + 26, colTextSub, 13.0, clipLineText(description, maxChars))
+    drawTextLineFast(buf, rightX + 12, notesY + 44, colTextSub, 13.0, clipLineText(notice, maxChars))
+
+fn buildMainLayout(logicalW: int32, logicalH: int32): MainLayout =
+    var layout: MainLayout
+    layout.margin = 20
+    layout.cardH = 106
+    layout.contentTop = layout.margin + layout.cardH + 18
+    layout.leftX = layout.margin
+    layout.leftY = layout.contentTop
+    layout.rightY = layout.contentTop
+
+    layout.leftW = int32(float64(logicalW) * 0.62)
+    if layout.leftW < 300:
+        layout.leftW = 300
+    if layout.leftW > logicalW - 260:
+        layout.leftW = logicalW - 260
+    layout.rightX = layout.leftX + layout.leftW + 14
+    layout.rightW = logicalW - layout.rightX - layout.margin
+    if layout.rightW < 220:
+        layout.rightW = 220
+
+    layout.leftH = logicalH - layout.contentTop - layout.margin
+    if layout.leftH < 420:
+        layout.leftH = 420
+
+    layout.actionsY = layout.rightY
+    layout.actionsH = 300
+    layout.inputPanelY = layout.actionsY + layout.actionsH + 10
+    layout.inputPanelH = 94
+    layout.notesY = layout.inputPanelY + layout.inputPanelH + 10
+    layout.notesH = logicalH - layout.notesY - layout.margin
+    if layout.notesH < 96:
+        layout.notesH = 96
+
+    let sectionGap: int32 = 12
+    let sectionH: int32 = 92
+    layout.sec1Y = layout.contentTop + 12
+    layout.sec2Y = layout.sec1Y + sectionH + sectionGap
+    layout.sec3Y = layout.sec2Y + sectionH + sectionGap
+    layout.sec4Y = layout.sec3Y + sectionH + sectionGap
+    layout.sec4H = layout.leftH - (layout.sec4Y - layout.contentTop) - 12
+    if layout.sec4H < 84:
+        layout.sec4H = 84
+    return layout
+
+fn drawMainLeftColumn(buf: PixelBuffer, scene: GuiSceneState, layout: MainLayout) =
+    let colPanelBg: uint32 = uint32(-1)
+    let colPanelBorder: uint32 = uint32(-2038548)
+    fillRectFast(buf, layout.leftX, layout.contentTop, layout.leftW, layout.leftH, colPanelBg)
+    drawBorderFast(buf, layout.leftX, layout.contentTop, layout.leftW, layout.leftH, colPanelBorder)
+    drawSection(buf, layout.leftX + 12, layout.sec1Y, layout.leftW - 24, 92, "Connection", scene.connectionLines)
+    drawSection(buf, layout.leftX + 12, layout.sec2Y, layout.leftW - 24, 92, "Seats", scene.seatLines)
+    drawSection(buf, layout.leftX + 12, layout.sec3Y, layout.leftW - 24, 92, "Status", scene.statusLines)
+    drawSection(buf, layout.leftX + 12, layout.sec4Y, layout.leftW - 24, layout.sec4H, "Logs", scene.logLines)
+
+fn drawMainRightColumn(buf: PixelBuffer, scene: GuiSceneState, next: var GuiSceneState, layout: MainLayout) =
+    let colPanelBg: uint32 = uint32(-1)
+    let colPanelBorder: uint32 = uint32(-2038548)
+    let colPanelTitle: uint32 = uint32(-13353649)
+    fillRectFast(buf, layout.rightX, layout.rightY, layout.rightW, layout.actionsH, colPanelBg)
+    drawBorderFast(buf, layout.rightX, layout.rightY, layout.rightW, layout.actionsH, colPanelBorder)
+    drawTextLineFast(buf, layout.rightX + 12, layout.rightY + 8, colPanelTitle, 14.0, "Actions")
+    next = layoutActionRects(scene, layout.rightX + 12, layout.rightW - 24, layout.rightY + 34)
+    drawActions(buf, next)
+
+    fillRectFast(buf, layout.rightX, layout.inputPanelY, layout.rightW, layout.inputPanelH, colPanelBg)
+    drawBorderFast(buf, layout.rightX, layout.inputPanelY, layout.rightW, layout.inputPanelH, colPanelBorder)
+    drawTextLineFast(buf, layout.rightX + 12, layout.inputPanelY + 8, colPanelTitle, 14.0, "Input")
+    let inputX: int32 = layout.rightX + 12
+    let inputY: int32 = layout.inputPanelY + 38
+    let inputW: int32 = layout.rightW - 24
+    let inputH: int32 = 36
+    drawInput(buf, next, inputX, inputY, inputW, inputH)
+    next.inputX = inputX
+    next.inputY = inputY
+    next.inputW = inputW
+    next.inputH = inputH
+
+    fillRectFast(buf, layout.rightX, layout.notesY, layout.rightW, layout.notesH, colPanelBg)
+    drawBorderFast(buf, layout.rightX, layout.notesY, layout.rightW, layout.notesH, colPanelBorder)
+    drawNotesText(buf, next.description, next.notice, layout.rightX, layout.notesY, layout.rightW)
+
+fn layoutActionRects(scene: GuiSceneState, rightX: int32, rightW: int32, startY: int32): GuiSceneState =
+    var next: GuiSceneState = scene
+    for idx in 0..<len(next.actions):
+        var action: GuiActionRect = next.actions[idx]
+        action.x = rightX
+        action.y = startY + idx * 42
+        action.w = rightW
+        action.h = 34
+        next.actions[idx] = action
+    return next
+
+fn drawCardHeader(buf: PixelBuffer, scene: GuiSceneState, x, y, w, h: int32) =
+    let colCardShadow: uint32 = uint32(2027083489)
+    let colCardBg: uint32 = uint32(-657412)
+    let colCardBorder: uint32 = uint32(-2301720)
+    let colIconBg: uint32 = uint32(-1446669)
+    let colIconBorder: uint32 = uint32(-2959647)
+    let colTextMain: uint32 = uint32(-15065044)
+    let colTextSub: uint32 = uint32(-10985354)
+    let colTextRating: uint32 = uint32(-937984)
+
+    fillRectFast(buf, x + 2, y + 3, w, h, colCardShadow)
+    fillRectFast(buf, x, y, w, h, colCardBg)
+    drawBorderFast(buf, x, y, w, h, colCardBorder)
+
+    fillRectFast(buf, x + 16, y + 16, 56, 56, colIconBg)
+    drawBorderFast(buf, x + 16, y + 16, 56, 56, colIconBorder)
+
+    let iconText: str = if len(scene.icon) > 0: scene.icon else: "#"
+    drawTextLineFast(buf, x + 34, y + 35, colTextMain, 24.0, iconText)
+
+    drawTextLineFast(buf, x + 90, y + 22, colTextMain, 24.0, scene.title)
+    drawTextLineFast(buf, x + 90, y + 52, colTextSub, 18.0, scene.subtitle)
+    drawTextLineFast(buf, x + 90, y + 77, colTextRating, 16.0, "RATING " + scene.rating + "  |  GAME")
+
+fn drawSection(buf: PixelBuffer, x, y, w, h: int32, title: str, lines: str[]) =
+    let colPanelBg: uint32 = uint32(-1)
+    let colPanelBorder: uint32 = uint32(-2038548)
+    let colPanelTitle: uint32 = uint32(-13353649)
+    let colTextSub: uint32 = uint32(-10985354)
+
+    fillRectFast(buf, x, y, w, h, colPanelBg)
+    drawBorderFast(buf, x, y, w, h, colPanelBorder)
+    drawTextLineFast(buf, x + 10, y + 8, colPanelTitle, 15.0, title)
+    let maxLines: int32 = sutil.maxInt(0, (h - 34) / 22)
+    let lineLimit: int32 = sutil.minInt(len(lines), maxLines)
+    for idx in 0..<lineLimit:
+        let raw: str = lines[idx]
+        drawTextLineFast(buf, x + 10, y + 30 + idx * 22, colTextSub, 14.0, raw)
+
+fn drawActions(buf: PixelBuffer, scene: GuiSceneState) =
+    let colBtnBg: uint32 = uint32(-1379841)
+    let colBtnBgDisabled: uint32 = uint32(-1118221)
+    let colBtnBorder: uint32 = uint32(-4272400)
+    let colBtnBorderDisabled: uint32 = uint32(-2433822)
+    let colBtnText: uint32 = uint32(-14859894)
+    let colBtnTextDisabled: uint32 = uint32(-7959658)
+    for idx in 0..<len(scene.actions):
+        let action: GuiActionRect = scene.actions[idx]
+        let bg: uint32 = if action.enabled: colBtnBg else: colBtnBgDisabled
+        let bd: uint32 = if action.enabled: colBtnBorder else: colBtnBorderDisabled
+        let tc: uint32 = if action.enabled: colBtnText else: colBtnTextDisabled
+        fillRectFast(buf, action.x, action.y, action.w, action.h, bg)
+        drawBorderFast(buf, action.x, action.y, action.w, action.h, bd)
+        drawTextLineFast(buf, action.x + 10, action.y + 9, tc, 14.0, action.label)
+
+fn drawInput(buf: PixelBuffer, scene: GuiSceneState, x, y, w, h: int32) =
+    let colInputBgActive: uint32 = uint32(-1)
+    let colInputBgIdle: uint32 = uint32(-460034)
+    let colInputBorderActive: uint32 = uint32(-7952145)
+    let colInputBorderIdle: uint32 = uint32(-2695958)
+    let colInputText: uint32 = uint32(-14077371)
+    let colInputPlaceholder: uint32 = uint32(-6906710)
+
+    let bg: uint32 = if scene.inputState.active: colInputBgActive else: colInputBgIdle
+    let border: uint32 = if scene.inputState.active: colInputBorderActive else: colInputBorderIdle
+    fillRectFast(buf, x, y, w, h, bg)
+    drawBorderFast(buf, x, y, w, h, border)
+
+    if len(scene.inputState.text) > 0:
+        drawTextLineFast(buf, x + 10, y + 11, colInputText, 14.0, scene.inputState.text)
+    else:
+        drawTextLineFast(buf, x + 10, y + 11, colInputPlaceholder, 14.0, scene.inputState.placeholder)
+
+fn eventIsBackspace(ev: GuiEvent): bool =
+    return ev.keyCode == 8 || ev.keyCode == 51
+
+fn eventIsEnter(ev: GuiEvent): bool =
+    return ev.keyCode == 13 || ev.keyCode == 36
+
+fn eraseLastChar(text: str): str =
+    if len(text) <= 0:
+        return ""
+    if len(text) == 1:
+        return ""
+    return sutil.sliceRange(text, 0, len(text) - 2)
+
+fn drawMainScene(buf: PixelBuffer, scene: GuiSceneState, logicalW: int32, logicalH: int32): GuiSceneState =
+    let layout: MainLayout = buildMainLayout(logicalW, logicalH)
+    fillRectFast(buf, 0, 0, logicalW, logicalH, uint32(-986119))
+    fillRectFast(buf, 0, logicalH / 2, logicalW, logicalH / 2, uint32(-1446153))
+    drawCardHeader(buf, scene, layout.margin, layout.margin, logicalW - layout.margin * 2, layout.cardH)
+    drawMainLeftColumn(buf, scene, layout)
+    var next: GuiSceneState = scene
+    drawMainRightColumn(buf, scene, next, layout)
+    return next
+
+fn runExampleApp(initialScene: GuiSceneState, reducer: GuiSceneReducer): int32 =
+    if reducer == nil:
+        return 2
+
+    var scene: GuiSceneState = initialScene
+    if ! scene.running:
+        scene.running = true
+
+    nativePlat.initializePlat()
+
+    var cfg: GuiWindowConfig
+    cfg.title = scene.title
+    cfg.initialRect = makeRect(0.0, 0.0, DefaultWindowW, DefaultWindowH)
+    cfg.resizable = true
+    cfg.highDpi = true
+
+    let window: WindowHandle = nativePlat.createWindow(cfg)
+    if window == nil:
+        nativePlat.shutdownPlat()
+        return 3
+
+    let surface: SurfaceHandle = nativePlat.createRenderSurface(window)
+    if surface == nil:
+        nativePlat.destroyWindow(window)
+        nativePlat.shutdownPlat()
+        return 4
+
+    var frame: int32 = 0
+    while scene.running && frame < SafetyFrames:
+        let events: GuiEvent[] = nativePlat.pumpEvents(0)
+        var clickedAction = ""
+        var submittedText = ""
+        var pointerUpX: float64 = -1.0
+        var pointerUpY: float64 = -1.0
+
+        for evIdx in 0..<len(events):
+            let ev: GuiEvent = events[evIdx]
+            if ev.kind == geClose:
+                scene.running = false
+            elif ev.kind == gePointerDown:
+                scene.inputState.active = false
+            elif ev.kind == gePointerUp:
+                pointerUpX = ev.x
+                pointerUpY = ev.y
+            elif ev.kind == geTextInput:
+                if scene.inputState.active:
+                    let appendText: str = ev.text
+                    if len(appendText) > 0 && len(scene.inputState.text) + len(appendText) <= scene.inputState.maxChars:
+                        scene.inputState.text = scene.inputState.text + appendText
+            elif ev.kind == geKeyDown:
+                if scene.inputState.active && eventIsBackspace(ev):
+                    scene.inputState.text = eraseLastChar(scene.inputState.text)
+                elif scene.inputState.active && eventIsEnter(ev):
+                    submittedText = scene.inputState.text
+                    scene.inputState.text = ""
+
+        scene = reducer(scene, "tick", "")
+
+        let info: SurfaceFrameInfo = nativePlat.beginFrame(surface)
+        info
+        let logicalW: int32 = DefaultWindowWInt
+        let logicalH: int32 = DefaultWindowHInt
+        let pixelW: int32 = DefaultWindowWInt
+        let pixelH: int32 = DefaultWindowHInt
+
+        var buf: PixelBuffer = allocBuffer(pixelW, pixelH)
+        scene = drawMainScene(buf, scene, logicalW, logicalH)
+
+        if pointerUpX >= 0.0 && pointerUpY >= 0.0:
+            let hitInputX: int32 = scene.inputX
+            let hitInputY: int32 = scene.inputY
+            let hitInputW: int32 = scene.inputW
+            let hitInputH: int32 = scene.inputH
+            if hitInputW > 0 && hitInputH > 0 && pointerUpX >= float64(hitInputX) && pointerUpX <= float64(hitInputX + hitInputW) && pointerUpY >= float64(hitInputY) && pointerUpY <= float64(hitInputY + hitInputH):
+                scene.inputState.active = true
+            for aIdx in 0..<len(scene.actions):
+                let action: GuiActionRect = scene.actions[aIdx]
+                if action.enabled && pointInRect(pointerUpX, pointerUpY, action):
+                    clickedAction = action.id
+                    break
+
+        if len(clickedAction) > 0:
+            scene = reducer(scene, "action", clickedAction)
+        if len(submittedText) > 0:
+            scene = reducer(scene, "submit", submittedText)
+
+        nativePlat.presentPixels(surface, buf.ptr, buf.width, buf.height, buf.strideBytes)
+        freeBuffer(buf)
+        nativePlat.endFrame(surface)
+
+        frame = frame + 1
+
+    nativePlat.destroyRenderSurface(surface)
+    nativePlat.destroyWindow(window)
+    nativePlat.shutdownPlat()
+    return 0

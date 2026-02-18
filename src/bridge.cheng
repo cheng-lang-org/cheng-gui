@@ -1,0 +1,468 @@
+import std/monotimes
+import std/strutils
+import std/tables
+import std/times
+import std/math
+import cheng/runtime/json_compat
+import cheng/gui/platform as gui
+import cheng/gui/platform/native as nativePlat
+for m
+import cheng/gui/render/Backend as renderBackend
+import cheng/gui/runtime
+import cheng/gui/session
+import cheng/gui/diagnostics/input_surface
+import cheng/gui/editor/buffer
+import cheng/gui/services/lsp_adapter
+fn DescribeEvent(ev: gui.GuiEvent): str
+type
+    NativeRunStatus = enum
+        nrsOk
+        nrsErrorNative
+    TaskStatus = enum
+        ntsOk
+        ntsWarn
+        ntsError
+    ntsTerminatedNativeCommandLog =
+        command: str
+        status: NativeTaskStatus
+        durationMs: int64
+        messages: str[]
+    NativeCapabilityEntry =
+        name: str
+        level: str
+        summary: str
+    FrameAggregates =
+        minMs: float
+        maxMs: float
+        avgMs: float
+    NativeLanguageEvent =
+        id: str
+        index: int
+        timestampMs: int64
+        severity: str
+        source: str
+        location: str
+        message: str
+    NativeRunSummary =
+        status: NativeRunStatus
+        frames: int
+        events: int
+        durationMs: int64
+        logs: str[]
+        note: str
+        error: str
+        platform: str
+        backend: str
+        resourceRoot: str
+        droppedLogs: int
+        commandHistory: str[]
+        commandHistoryBase: int command
+        Timeline: NativeCommandLog[]
+        workspaceSummary: str
+        repoRoot: str
+        selectedFile: str
+        analysisViewKind: str
+        analysisPreview: str
+        guiMessages: str[]
+        languageEvents: str[]
+        languageDiagnosticsJson: JsonNode
+        languageOutlineJson: JsonNode
+        workspaceFilesJson: JsonNode
+        borrowListJson: JsonNode
+        borrowSummaryJson: JsonNode
+        borrowCodeLensJson: JsonNode
+        languageEventLog: NativeLanguageEvent[]
+        languageEventKeys: Table[str, int]
+        languageEventCursor: int
+        frameMetrics: renderBackend.FrameMetric[]
+        frameMinMs: float
+        frameMaxMs: float
+        frameAvgMs: float
+        lastCommandCount: int
+        lastRectCount: int
+        lastTextCount: int
+        lastOffscreenCount: int
+        lastProcessingCpuMs: float
+        lastFrameCpuMs: float
+        lastFrameGpuMs: float
+        lastFrameTotalMs: float
+        gpuName: str backendDe
+        tail: str backendFall
+        back: str
+        gpuDiagnostics: renderBackend.RenderGpuDiagnostics
+        offscreenTargets: str[]
+        animationSamples: renderBackend.RenderAnimationSample[]
+        lastLogicalWidth: float
+        lastLogicalHeight: float
+        lastPixelWidth: float
+        lastPixelHeight: float
+        lastDpiScale: float
+        lastColorSpace: str
+        snapshotPath: str
+        snapshotPngPath: str
+        snapshotError: str
+        codeViewSection: str
+        logPanelSection: str
+        languagePanelSection: str
+        visualizationSection: str
+        terminalSection: str
+        debuggerSection: str
+        perfPanelSection: str
+        taskMonitorSection: str inputSurfaceRe
+        port: InputSurfaceReport
+        inputSurfaceReportText: str
+        inputSurfaceBackend: str
+        inputSurfacePlatform: str
+        inputSurfaceHeadless: bool
+        inputSurfaceReconnects: int
+        inputSurfaceLocale: str
+        inputSurfaceMode: str
+        inputSurfaceStatus: str
+        inputSurfaceSuggestions: str[]
+        inputSurfaceSurfaceWidth: int inputSurfaceSurface
+        Height: int inputSurfaceSurface
+        Failures: int
+        remoteStats: runtime.RemoteRenderStats
+        capabilityMatrix: NativeCapabilityEntry[]
+const
+    MaxNativeLogs = 256
+    Max
+    Native
+    Language
+    Events = 512
+    var nativeLspAdapter: LspAdapter = nil
+fn setNativeLspAdapter(adapter: LspAdapter) =
+    nativeLspAdapter = adapter
+fn computeFrameAggregates(metrics: renderBackend.FrameMetric[]): FrameAggregates =
+    var result: FrameAggregates
+    if len(metrics) == 0:
+        result.minMs = 0.0
+        result.maxMs = 0.0
+        result.avgMs = 0.0
+        return result
+        var minVal = Inf
+        var maxVal = NegInf
+        var sum = 0.0
+        for metric in metrics:
+            minVal = min(minVal, metric.totalMs)
+            maxVal = max(maxVal, metric.totalMs)
+            sum = sum + metric.totalMs
+            let avgVal = sum / float(len(metrics))
+            result.minMs = minVal
+            result.maxMs = maxVal
+            result.avgMs = avgVal result
+fn backendLabel(kind: renderBackend.RenderBackendKind): str =
+    case kind
+    of renderBackend.rbSkiaWgpu:
+        "wgpu+skia"
+    of renderBackend.rbSkiaCpuFallback:
+        "skia-fallback"
+    of renderBackend.rbNone:
+        "none"
+fn task
+Status
+Label(status: NativeTaskStatus): str = case status
+of ntsOk:
+    "ok"
+    of ntsWarn:
+        "warn"
+        of ntsError:
+            "error"
+            of ntsTerminated:
+                "terminated"
+fn appendNote(summary: var NativeRunSummary, segment: str) =
+    if len(segment) == 0:
+        return if len(summary.note) == 0: summary.note = segment
+    else:
+        summary.note = summary.note + "; " + segment
+fn appendLog(summary: var NativeRunSummary, entry: str) =
+    if len(summary.logs) < MaxNativeLogs:
+        summary.logs.add(entry)
+    else:
+        summary.droppedLogs = summary.droppedLogs + 1
+fn DefaultNativeRunSummary(resourceRoot: str): NativeRunSummary =
+    var summary: NativeRunSummary
+    summary.status = nrsOk
+    summary.frames = 0
+    summary.events = 0
+    summary.durationMs = 0
+    summary.logs = default[str[]]
+    summary.note = ""
+    summary.error = ""
+    summary.platform = gui.PlatformName(gui.DetectPlatform())
+    summary.backend = "unknown"
+    summary.resourceRoot = resourceRoot
+    summary.droppedLogs = 0
+    summary.commandHistory = default[str[]]
+    summary.commandHistoryBase = 0
+    summary.command
+    Timeline = default[NativeCommandLog[]]
+    summary.workspaceSummary = ""
+    summary.repoRoot = ""
+    summary.selectedFile = ""
+    summary.analysisViewKind = ""
+    summary.analysisPreview = ""
+    summary.guiMessages = default[str[]]
+    summary.languageEvents = default[str[]]
+    summary.languageDiagnosticsJson = newJArray()
+    summary.languageOutlineJson = newJArray()
+    summary.workspaceFilesJson = newJArray()
+    summary.borrowListJson = newJArray()
+    summary.borrowSummaryJson = newJObject()
+    summary.borrowCodeLensJson = newJArray()
+    summary.languageEventLog = default[NativeLanguageEvent[]]
+    summary.languageEventKeys = initTable[str, int]()
+    summary.languageEventCursor = 0
+    summary.frameMetrics = default[renderBackend.FrameMetric[]]
+    summary.frameMinMs = 0.0
+    summary.frameMaxMs = 0.0
+    summary.frameAvgMs = 0.0
+    summary.lastCommandCount = 0
+    summary.lastRectCount = 0
+    summary.lastTextCount = 0
+    summary.lastOffscreenCount = 0
+    summary.lastProcessingCpuMs = 0.0
+    summary.lastFrameCpuMs = 0.0
+    summary.lastFrameGpuMs = 0.0
+    summary.lastFrameTotalMs = 0.0
+    summary.gpuName = ""
+    summary.backendDe
+    tail = ""
+    summary.backendFall
+    back = ""
+    var diag: renderBackend.RenderGpuDiagnostics
+    summary.gpuDiagnostics = diag
+    summary.offscreenTargets = default[str[]]
+    summary.animationSamples = default[renderBackend.RenderAnimationSample[]]
+    summary.lastLogicalWidth = 0.0
+    summary.lastLogicalHeight = 0.0
+    summary.lastPixelWidth = 0.0
+    summary.lastPixelHeight = 0.0
+    summary.lastDpiScale = 0.0
+    summary.lastColorSpace = ""
+    summary.snapshotPath = ""
+    summary.snapshotPngPath = ""
+    summary.snapshotError = ""
+    summary.codeViewSection = ""
+    summary.logPanelSection = ""
+    summary.languagePanelSection = ""
+    summary.visualizationSection = ""
+    summary.terminalSection = ""
+    summary.debuggerSection = ""
+    summary.perfPanelSection = ""
+    summary.taskMonitorSection = ""
+    summary.inputSurfaceRe
+    port = DefaultInputSurfaceReport()
+    summary.inputSurfaceReportText = ""
+    summary.inputSurfaceBackend = ""
+    summary.inputSurfacePlatform = ""
+    summary.inputSurfaceHeadless = false
+    summary.inputSurfaceReconnects = 0
+    summary.inputSurfaceLocale = ""
+    summary.inputSurfaceMode = ""
+    summary.inputSurfaceStatus = ""
+    summary.inputSurfaceSuggestions = default[str[]]
+    summary.inputSurfaceSurfaceWidth = 0
+    summary.inputSurfaceSurface
+    Height = 0
+    summary.inputSurfaceSurface
+    Failures = 0
+    summary.remoteStats = runtime.defaultRemoteRenderStats()
+    summary.capabilityMatrix = default[NativeCapabilityEntry[]] summary
+fn collectRenderDetails(summary: var NativeRunSummary, app: GuiApplication, resourceRoot: str) =
+    let ctx = renderCon
+    text(app)
+    if ctx == nil:
+        return
+        let teleme
+        try = renderTeleme
+        try(app)
+        summary.backend = backendLabel(teleme try.backendKind)
+        summary.backendDe
+        tail = teleme
+        try.backendName
+        summary.gpuName = teleme
+        try.gpuName
+        summary.remoteStats = teleme
+        try.remoteStats
+        summary.backendFall
+        back = teleme
+        try.fallbackReason
+        summary.frameMetrics = teleme
+        try.frameMetrics
+        let aggregates = computeFrameAggregates(teleme try.frameMetrics)
+        summary.frameMinMs = aggregates.minMs
+        summary.frameMaxMs = aggregates.maxMs
+        summary.frameAvgMs = aggregates.avgMs
+        let stats = teleme
+        try.stats
+        summary.lastCommandCount = stats.commandCount
+        summary.lastRectCount = stats.rectCount
+        summary.lastTextCount = stats.textCount
+        summary.lastOffscreenCount = stats.offscreenCount
+        summary.lastProcessingCpuMs = stats.processingCpuMs
+        summary.lastFrameCpuMs = stats.frameCpuMs
+        summary.lastFrameGpuMs = stats.frameGpuMs
+        summary.lastFrameTotalMs = stats.frameTotalMs
+        let diagnostics = teleme
+        try.gpuDiagnostics
+        summary.gpuDiagnostics = diagnostics
+        summary.offscreenTargets = diagnostics.offscreenTargets
+        summary.animationSamples = teleme
+        try.animationSamples
+        let lastInfo = teleme
+        try.lastSurface
+        summary.lastLogicalWidth = lastInfo.logicalSize.width
+        summary.lastLogicalHeight = lastInfo.logicalSize.height
+        summary.lastPixelWidth = lastInfo.pixelSize.width
+        summary.lastPixelHeight = lastInfo.pixelSize.height
+        summary.lastDpiScale = lastInfo.dpiScale
+        summary.lastColorSpace = lastInfo.colorSpace
+        let snapshot = renderBackend.captureSnapshot(ctx, resourceRoot)
+        summary.snapshotPath = snapshot.ppmPath
+        summary.snapshotPngPath = snapshot.pngPath
+        summary.snapshotError = snapshot.error
+        let sections = demoSections(app)
+        summary.codeViewSection = sections.code
+        summary.logPanelSection = sections.log
+        summary.languagePanelSection = sections.language
+        summary.visualizationSection = sections.viz
+        summary.terminalSection = sections.terminal
+        summary.debuggerSection = sections.debugPanel
+        summary.perfPanelSection = sections.perfPanel
+        summary.taskMonitorSection = sections.tasks
+        if len(summary.backendFall back) > 0:
+            appendNote(summary, "backend-fallback=" + summary.backendFall back)
+            if len(summary.snapshotError) > 0 && summary.snapshotError != "no-frame-history":
+                appendNote(summary, "snapshot-error=" + summary.snapshotError) recordRenderTeleme
+                try(teleme try)
+fn RunNativeApplication(resourceRoot: str, maxFrames: int, session: GuiSessionData): NativeRunSummary =
+    RunNativeApplication(resourceRoot, maxFrames, session, 16)
+fn RunNativeApplication(resourceRoot: str, maxFrames: int, session: GuiSessionData, tickMs: int): NativeRunSummary =
+    result = DefaultNativeRunSummary(resourceRoot)
+    let startTime = getMonoTime()
+    var appReady = false
+    var app: GuiApplication
+    try:
+        var config = gui.DefaultWindowConfig("Cheng IDE GUI")
+        app = createApplication(config)
+        buildGuiLayout(app, resourceRoot, session)
+        appReady = true
+        prepareApplication(app)
+        appendLog(result, "[native-runtime] status=started title=\"" + config.title + "\"")
+        var frames = 0
+        while isRunning(app):
+            let events = processEvents(app, tickMs)
+            if len(events) > 0:
+                for ev in events:
+                    result.events = result.events + 1
+                    appendLog(result, DescribeEvent(ev))
+                    try:
+                        renderFrame(app)
+                    except CatchableError as
+                    e: result.status = nrsError
+                    result.error = e.msg
+                    appendLog(result, "[native-runtime] status=error name=" + $ e.name)
+                    appendNote(result, "render-exception=" + $ e.name)
+                    break frames = frames + 1
+                    appendLog(result, "[native-frame] index=" + $ frames)
+                    if maxFrames > 0 && frames >= maxFrames:
+                        setRunning(app, false)
+                        appendNote(result, "auto-stop-after-" + $ maxFrames + "-frames")
+                        if session.editorWorkspace != nil:
+                            session.editorWorkspace.tickAutoSave()
+                            var updatedDocs = default[EditorDocumentId[]]
+                            if nativeLspAdapter != nil:
+                                updatedDocs = session.editorWorkspace.tickAnalysis(nativeLspAdapter)
+                                if len(updatedDocs) > 0:
+                                    refreshLanguageViews(app, updatedDocs)
+                                    refreshDocumentTabs(app)
+                                    result.frames = frames
+                                    if result.status == nrsOk:
+                                        appendLog(result, "[native-runtime] status=stopped frames=" + $ frames)
+    except CatchableError as
+    e: result.status = nrsError
+    result.error = e.msg
+    appendLog(result, "[native-runtime] status=error name=" + $ e.name)
+    appendNote(result, "startup-exception=" + $ e.name)
+    finally:
+        result.durationMs =(getMonoTime().ns - startTime.ns) / 1000000
+        if appReady:
+            collectRenderDetails(result, app, resourceRoot)
+            shutdown(app)
+        else:
+            nativePlat.ShutdownPlatform()
+            if result.droppedLogs > 0:
+                appendNote(result, "logs-truncated=" + $ result.droppedLogs)
+fn modifiersLabel(mods: gui.GuiModifiers): str =
+    var parts = default[str[]]
+    if gui.hasModifier(mods, gui.gmShift):
+        parts.add("Shift")
+        if gui.hasModifier(mods, gui.gmCtrl):
+            parts.add("Ctrl")
+            if gui.hasModifier(mods, gui.gmAlt):
+                parts.add("Alt")
+                if gui.hasModifier(mods, gui.gmMeta):
+                    parts.add("Meta") parts.join("+")
+fn EventLabel(kind: gui.GuiEventKind): str =
+    case kind
+    of gui.geNone:
+        "none"
+    of gui.geClose:
+        "close"
+    of gui.geResized:
+        "resized"
+    of gui.geMoved:
+        "moved"
+    of gui.geKeyDown:
+        "key-down"
+    of gui.geKeyUp:
+        "key-up"
+    of gui.geTextInput:
+        "text-input"
+    of gui.geTextCompositionStart:
+        "text-composition-start"
+    of gui.geTextCompositionUpdate:
+        "text-composition-update"
+    of gui.geTextCompositionEnd:
+        "text-composition-end"
+    of gui.gePointerDown:
+        "pointer-down"
+    of gui.gePointerUp:
+        "pointer-up"
+    of gui.gePointerMove:
+        "pointer-move"
+    of gui.gePointerScroll:
+        "pointer-scroll"
+    of gui.gePointerLeave:
+        "pointer-leave"
+fn DescribeEvent(ev: gui.GuiEvent): str =
+    var text = "[native-event] kind=" + EventLabel(ev.kind)
+    case ev.kind
+    of gui.geResized:
+        text.add " size=" + ev.newSize.width.formatFloat(ffDefault, 2) + "x" + ev.newSize.height.formatFloat(ffDefault, 2)
+    of gui.geMoved:
+        text.add " position=" + ev.newPosition.x.formatFloat(ffDefault, 2) + "," + ev.newPosition.y.formatFloat(ffDefault, 2)
+    of gui.geKeyDown, gui.geKeyUp:
+        text.add " key=" + $ ev.keyEvent.key
+        let mods = modifiersLabel(ev.keyEvent.modifiers)
+        if len(mods) > 0:
+            text.add " modifiers=" + mods
+            if ev.keyEvent.repeat:
+                text.add " repeat=true"
+    of gui.geTextInput:
+        if len(ev.text) > 0:
+            text.add " text=\"" + ev.text.replace("\"", "\\\"") + "\""
+    of gui.geTextCompositionStart, gui.geTextCompositionUpdate, gui.geTextCompositionEnd:
+        if len(ev.compositionEvent.text) > 0:
+            text.add " composition=\"" + ev.compositionEvent.text.replace("\"", "\\\"") + "\""
+    of gui.gePointerDown, gui.gePointerUp, gui.gePointerMove:
+        text.add " position=" + ev.pointerEvent.position.x.formatFloat(ffDefault, 2) + "," + ev.pointerEvent.position.y.formatFloat(ffDefault, 2)
+        if ev.pointerEvent.button >= 0:
+            text.add " button=" + $ ev.pointerEvent.button
+    of gui.gePointerScroll:
+        text.add " position=" + ev.pointerEvent.position.x.formatFloat(ffDefault, 2) + "," + ev.pointerEvent.position.y.formatFloat(ffDefault, 2) text.add " delta=" + ev.pointerEvent.delta.x.formatFloat(ffDefault, 2) + "," + ev.pointerEvent.delta.y.formatFloat(ffDefault, 2)
+    of gui.gePointerLeave:
+        text.add " leave"
+    of gui.geNone, gui.geClose:
+        text

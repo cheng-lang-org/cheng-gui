@@ -1,0 +1,663 @@
+import cheng/gui/browser/web
+import cheng/gui/browser/engine/dom/model as domModel
+import cheng/gui/browser/engine/css/cascade as cssCascade
+import cheng/gui/browser/engine/layout/flow as layoutFlow
+import cheng/gui/browser/engine/paint/display_list as paintList
+import cheng/gui/browser/engine/storage/store as storageStore
+import cheng/gui/browser/r2capp/webapi as r2cWebApi
+import cheng/gui/browser/r2capp/canvas2d as canvas2d
+import cheng/gui/platform/types_v1
+import cheng/gui/render/drawlist_ir as drawir
+
+fn rtCEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn rtCNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn rtCGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn rtCLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn rtSafeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn rtStrEq(a: str, b: str): bool =
+    let aLen = rtSafeLen(a)
+    let bLen = rtSafeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if rtCNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn rtHasPrefix(text, prefix: str): bool =
+    let pLen = rtSafeLen(prefix)
+    if pLen == int32(0):
+        return true
+    let tLen = rtSafeLen(text)
+    if tLen < pLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx < pLen:
+        if rtCNe(text[idx], prefix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn rtContainsText(text, pattern: str): bool =
+    let pLen = rtSafeLen(pattern)
+    if pLen <= int32(0):
+        return true
+    let tLen = rtSafeLen(text)
+    if tLen < pLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx + pLen <= tLen:
+        if rtMatchAt(text, pattern, idx):
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn rtMatchAt(text: str, pattern: str, offset: int32): bool =
+    if text == nil || pattern == nil:
+        return false
+    if offset < int32(0):
+        return false
+    let n = rtSafeLen(pattern)
+    if offset + n > rtSafeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if rtCNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn rtParseInt32(text: str, idx0: int32): tuple[value: int32, next: int32, ok: bool] =
+    if text == nil:
+        return (value: int32(0), next: idx0, ok: false)
+    var idx = idx0
+    var value: int32 = int32(0)
+    var saw = false
+    while idx < rtSafeLen(text):
+        let ch = text[idx]
+        if rtCGe(ch, '0') && rtCLe(ch, '9'):
+            saw = true
+            value = value * int32(10) + int32(int32(ch) - int32('0'))
+            idx = idx + int32(1)
+        else:
+            break
+    return (value: value, next: idx, ok: saw)
+
+fn rtPayloadFindKey(payload: str, key: str): int32 =
+    if payload == nil || key == nil:
+        return int32(-1)
+    let pLen = rtSafeLen(payload)
+    let kLen = rtSafeLen(key)
+    if pLen <= int32(0) || kLen <= int32(0):
+        return int32(-1)
+    var idx: int32 = int32(0)
+    while idx + kLen + int32(1) <= pLen:
+        if rtMatchAt(payload, key, idx) && rtCEq(payload[idx + kLen], '='):
+            return idx + kLen + int32(1)
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn rtPayloadGetInt32(payload: str, key: str, defaultValue: int32): int32 =
+    let start = rtPayloadFindKey(payload, key)
+    if start < int32(0):
+        return defaultValue
+    let parsed = rtParseInt32(payload, start)
+    if ! parsed.ok:
+        return defaultValue
+    return parsed.value
+
+fn rtInt32ToStr(value: int32): str =
+    if value == int32(0):
+        return "0"
+    var neg = false
+    var n = value
+    if n < int32(0):
+        neg = true
+        n = -n
+    var out: str = ""
+    while n > int32(0):
+        let digit = n % int32(10)
+        out = charToStr(char(int32('0') + digit)) + out
+        n = n / int32(10)
+    if neg:
+        out = "-" + out
+    return out
+
+fn dragOrderChar(order: str, pos: int32): char =
+    # Expected format: "A,B,C". Fall back to "A"+"pos".
+    if rtSafeLen(order) < int32(5):
+        return char(int32('A') + pos)
+    if pos == int32(0):
+        return order[0]
+    if pos == int32(1):
+        return order[2]
+    return order[4]
+
+type
+    UnimakerLanguage =
+        code: str
+        name: str
+        nativeName: str
+
+fn unimakerDefaultLanguages(): UnimakerLanguage[] =
+    var items: UnimakerLanguage[]
+    setLen[UnimakerLanguage](&items, 8)
+    items[0] = UnimakerLanguage(code: "en", name: "English", nativeName: "English")
+    items[1] = UnimakerLanguage(code: "ja", name: "Japanese", nativeName: "日本語")
+    items[2] = UnimakerLanguage(code: "ko", name: "Korean", nativeName: "한국어")
+    items[3] = UnimakerLanguage(code: "fr", name: "French", nativeName: "Français")
+    items[4] = UnimakerLanguage(code: "de", name: "German", nativeName: "Deutsch")
+    items[5] = UnimakerLanguage(code: "ar", name: "Arabic", nativeName: "العربية")
+    items[6] = UnimakerLanguage(code: "zh-CN", name: "Simplified Chinese", nativeName: "简体中文")
+    items[7] = UnimakerLanguage(code: "zh-TW", name: "Traditional Chinese", nativeName: "繁體中文")
+    return items
+
+fn unimakerLanguages(page: web.BrowserPage): UnimakerLanguage[] =
+    if page == nil:
+        return unimakerDefaultLanguages()
+    let n = len(page.r2cLangCodes)
+    if n <= 0:
+        return unimakerDefaultLanguages()
+    if len(page.r2cLangNames) != n:
+        return unimakerDefaultLanguages()
+    if len(page.r2cLangNativeNames) != n:
+        return unimakerDefaultLanguages()
+    var items: UnimakerLanguage[]
+    setLen[UnimakerLanguage](&items, n)
+    for idx in 0..<n:
+        items[idx] = UnimakerLanguage(code: page.r2cLangCodes[idx], name: page.r2cLangNames[idx], nativeName: page.r2cLangNativeNames[idx])
+    return items
+
+fn unimakerResolveViewport(page: web.BrowserPage): GuiRect =
+    var vw = float(page.options.viewportWidth)
+    var vh = float(page.options.viewportHeight)
+    if vw <= 0.0:
+        vw = 1280.0
+    if vh <= 0.0:
+        vh = 720.0
+    return makeRect(0.0, 0.0, vw, vh)
+
+fn rtMaxFloat(a, b: float): float =
+    if a >= b:
+        return a
+    return b
+
+fn unimakerDefaultTextWelcome(): str =
+    return "Welcome to UniMaker"
+
+fn unimakerDefaultTextSelectLanguage(): str =
+    return "Please select your preferred language"
+
+fn unimakerDefaultTextContinue(): str =
+    return "Continue"
+
+fn unimakerDefaultTextSelectPrompt(): str =
+    return "Select a language"
+
+fn unimakerDefaultTextSkipDefault(): str =
+    return "跳过，使用简体中文"
+
+fn unimakerTextOrDefault(text, fallback: str): str =
+    if rtSafeLen(text) > 0:
+        return text
+    return fallback
+
+fn unimakerTransGet(page: web.BrowserPage, key: str, fallback: str): str =
+    if page == nil:
+        return fallback
+    let n = len(page.r2cTransKeys)
+    if n <= 0:
+        return fallback
+    for idx in 0..<n:
+        if rtStrEq(page.r2cTransKeys[idx], key):
+            if rtStrEq(page.r2cLocale, "zh-CN") && idx < len(page.r2cTransZhCN) && rtSafeLen(page.r2cTransZhCN[idx]) > 0:
+                return page.r2cTransZhCN[idx]
+            if rtStrEq(page.r2cLocale, "en") && idx < len(page.r2cTransEn) && rtSafeLen(page.r2cTransEn[idx]) > 0:
+                return page.r2cTransEn[idx]
+            if idx < len(page.r2cTransEn) && rtSafeLen(page.r2cTransEn[idx]) > 0:
+                return page.r2cTransEn[idx]
+            if idx < len(page.r2cTransZhCN) && rtSafeLen(page.r2cTransZhCN[idx]) > 0:
+                return page.r2cTransZhCN[idx]
+            return fallback
+    return fallback
+
+fn unimakerEnsureDefaults(page: web.BrowserPage) =
+    if page == nil:
+        return
+    if len(page.r2cLangCodes) == 0:
+        let langs = unimakerDefaultLanguages()
+        let n = len(langs)
+        setLen[str](&page.r2cLangCodes, n)
+        setLen[str](&page.r2cLangNames, n)
+        setLen[str](&page.r2cLangNativeNames, n)
+        for idx in 0..<n:
+            page.r2cLangCodes[idx] = langs[idx].code
+            page.r2cLangNames[idx] = langs[idx].name
+            page.r2cLangNativeNames[idx] = langs[idx].nativeName
+    if rtSafeLen(page.r2cTextWelcome) == 0:
+        page.r2cTextWelcome = unimakerDefaultTextWelcome()
+    if rtSafeLen(page.r2cTextSelectLanguage) == 0:
+        page.r2cTextSelectLanguage = unimakerDefaultTextSelectLanguage()
+    if rtSafeLen(page.r2cTextContinue) == 0:
+        page.r2cTextContinue = unimakerDefaultTextContinue()
+    if rtSafeLen(page.r2cTextSelectPrompt) == 0:
+        page.r2cTextSelectPrompt = unimakerDefaultTextSelectPrompt()
+    if rtSafeLen(page.r2cTextSkipDefault) == 0:
+        page.r2cTextSkipDefault = unimakerDefaultTextSkipDefault()
+    if len(page.r2cDragOrderText) == 0:
+        page.r2cDragOrderText = "A,B,C"
+    if len(page.r2cCookieText) == 0:
+        let cookie = storageStore.getValue(page.storage, "cookie")
+        if len(cookie) > 0:
+            page.r2cCookieText = cookie
+
+fn unimakerRerender(page: web.BrowserPage) =
+    if page == nil:
+        return
+
+    unimakerEnsureDefaults(page)
+
+    let doc = domModel.newDocument("about:r2capp", "UniMaker")
+    let html = domModel.appendChild(doc.root, domModel.newElementNode("html"))
+    let body = domModel.appendChild(html, domModel.newElementNode("body"))
+    body.styleText = "background-color: #ffffff; color: #000000; padding: 16px;"
+
+    if page.r2cShowLanguageSelector:
+        let h1 = domModel.appendChild(body, domModel.newElementNode("h1"))
+        domModel.appendChild(h1, domModel.newTextNode(unimakerTextOrDefault(page.r2cTextWelcome, unimakerDefaultTextWelcome())))
+
+        let p = domModel.appendChild(body, domModel.newElementNode("p"))
+        domModel.appendChild(p, domModel.newTextNode(unimakerTextOrDefault(page.r2cTextSelectLanguage, unimakerDefaultTextSelectLanguage())))
+
+        let list = domModel.appendChild(body, domModel.newElementNode("div"))
+        list.styleText = "padding: 8px; margin: 8px;"
+
+        let langs = unimakerLanguages(page)
+        for idx in 0..<len(langs):
+            let lang = langs[idx]
+            let btn = domModel.appendChild(list, domModel.newElementNode("button"))
+            btn.id = "lang-" + lang.code
+            btn.styleText = "padding: 8px; margin: 4px; background-color: #f3f4f6; color: #111827;"
+            if len(page.r2cSelectedLanguage) > 0 && rtStrEq(page.r2cSelectedLanguage, lang.code):
+                btn.styleText = "padding: 8px; margin: 4px; background-color: #7c3aed; color: #ffffff;"
+            domModel.appendChild(btn, domModel.newTextNode(lang.nativeName + " (" + lang.name + ")"))
+
+        let confirm = domModel.appendChild(body, domModel.newElementNode("button"))
+        confirm.id = "confirm"
+        if len(page.r2cSelectedLanguage) > 0:
+            confirm.styleText = "padding: 10px; margin: 8px; background-color: #7c3aed; color: #ffffff;"
+            domModel.appendChild(confirm, domModel.newTextNode(unimakerTextOrDefault(page.r2cTextContinue, unimakerDefaultTextContinue())))
+        else:
+            confirm.styleText = "padding: 10px; margin: 8px; background-color: #e5e7eb; color: #6b7280;"
+            domModel.appendChild(confirm, domModel.newTextNode(unimakerTextOrDefault(page.r2cTextSelectPrompt, unimakerDefaultTextSelectPrompt())))
+
+        let skip = domModel.appendChild(body, domModel.newElementNode("button"))
+        skip.id = "skip"
+        skip.styleText = "padding: 6px; margin: 6px; background-color: #ffffff; color: #6b7280;"
+        domModel.appendChild(skip, domModel.newTextNode(unimakerTextOrDefault(page.r2cTextSkipDefault, unimakerDefaultTextSkipDefault())))
+    else:
+        let h1 = domModel.appendChild(body, domModel.newElementNode("h1"))
+        domModel.appendChild(h1, domModel.newTextNode("UNIMAKER_HOME"))
+
+        let info = domModel.appendChild(body, domModel.newElementNode("p"))
+        domModel.appendChild(info, domModel.newTextNode("LOCALE:" + page.r2cLocale))
+
+        let tabInfo = domModel.appendChild(body, domModel.newElementNode("p"))
+        domModel.appendChild(tabInfo, domModel.newTextNode("TAB:" + page.r2cCurrentTab))
+
+        let viewport = unimakerResolveViewport(page)
+        let vp = domModel.appendChild(body, domModel.newElementNode("p"))
+        domModel.appendChild(vp, domModel.newTextNode("VIEWPORT:" + rtInt32ToStr(page.options.viewportWidth) + "x" + rtInt32ToStr(page.options.viewportHeight)))
+
+        let ro = domModel.appendChild(body, domModel.newElementNode("p"))
+        domModel.appendChild(ro, domModel.newTextNode("RESIZE_COUNT:" + rtInt32ToStr(page.r2cResizeCount)))
+
+        let mql = r2cWebApi.matchMedia(viewport.size.width, "(min-width: 1000px)")
+        var mqlText: str = "false"
+        if mql:
+            mqlText = "true"
+        let mq = domModel.appendChild(body, domModel.newElementNode("p"))
+        domModel.appendChild(mq, domModel.newTextNode("MQL_MIN_1000:" + mqlText))
+
+        if rtStrEq(page.r2cCurrentTab, "home"):
+            let webApi = domModel.appendChild(body, domModel.newElementNode("div"))
+            webApi.styleText = "padding: 8px; margin: 8px; background-color: #f9fafb;"
+
+            let timerBtn = domModel.appendChild(webApi, domModel.newElementNode("button"))
+            timerBtn.id = "timer-start"
+            timerBtn.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+            domModel.appendChild(timerBtn, domModel.newTextNode("Start Timers"))
+
+            let ticks = domModel.appendChild(webApi, domModel.newElementNode("p"))
+            domModel.appendChild(ticks, domModel.newTextNode("TIMER_TICKS:" + rtInt32ToStr(page.r2cTimerTicks)))
+
+            var timeoutText: str = "false"
+            if page.r2cTimeoutFired:
+                timeoutText = "true"
+            let timeoutP = domModel.appendChild(webApi, domModel.newElementNode("p"))
+            domModel.appendChild(timeoutP, domModel.newTextNode("TIMEOUT_FIRED:" + timeoutText))
+
+            let clipBtn = domModel.appendChild(webApi, domModel.newElementNode("button"))
+            clipBtn.id = "clipboard-copy"
+            clipBtn.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+            domModel.appendChild(clipBtn, domModel.newTextNode("Copy to Clipboard"))
+
+            let clip = domModel.appendChild(webApi, domModel.newElementNode("p"))
+            domModel.appendChild(clip, domModel.newTextNode("CLIPBOARD:" + page.r2cClipboardText))
+
+            let geoBtn = domModel.appendChild(webApi, domModel.newElementNode("button"))
+            geoBtn.id = "geo-request"
+            geoBtn.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+            domModel.appendChild(geoBtn, domModel.newTextNode("Request Location"))
+
+            let geo = domModel.appendChild(webApi, domModel.newElementNode("p"))
+            domModel.appendChild(geo, domModel.newTextNode("GEO:" + page.r2cGeoText))
+
+            let cookieBtn = domModel.appendChild(webApi, domModel.newElementNode("button"))
+            cookieBtn.id = "cookie-set"
+            cookieBtn.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+            domModel.appendChild(cookieBtn, domModel.newTextNode("Set Cookie"))
+
+            let cookie = domModel.appendChild(webApi, domModel.newElementNode("p"))
+            domModel.appendChild(cookie, domModel.newTextNode("COOKIE:" + page.r2cCookieText))
+        elif rtStrEq(page.r2cCurrentTab, "nodes"):
+            let nodes = domModel.appendChild(body, domModel.newElementNode("p"))
+            domModel.appendChild(nodes, domModel.newTextNode("DRAG_ORDER:" + page.r2cDragOrderText))
+        elif rtStrEq(page.r2cCurrentTab, "publish"):
+            let pub = domModel.appendChild(body, domModel.newElementNode("div"))
+            pub.styleText = "padding: 8px; margin: 8px; background-color: #f9fafb;"
+
+            if len(page.r2cPublishTypeIds) > 0:
+                let typesInfo = domModel.appendChild(pub, domModel.newElementNode("p"))
+                domModel.appendChild(typesInfo, domModel.newTextNode("PUBLISH_TYPES:" + $ len(page.r2cPublishTypeIds)))
+
+            let fileBtn = domModel.appendChild(pub, domModel.newElementNode("button"))
+            fileBtn.id = "file-select"
+            fileBtn.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+            domModel.appendChild(fileBtn, domModel.newTextNode("Select File"))
+
+            if len(page.r2cFileDataUrl) > 0:
+                let ok = domModel.appendChild(pub, domModel.newElementNode("p"))
+                domModel.appendChild(ok, domModel.newTextNode("FILE_PREVIEW_OK"))
+                let dataUrl = domModel.appendChild(pub, domModel.newElementNode("p"))
+                domModel.appendChild(dataUrl, domModel.newTextNode("DATA_URL:" + page.r2cFileDataUrl))
+        elif rtStrEq(page.r2cCurrentTab, "trading"):
+            let demo = domModel.appendChild(body, domModel.newElementNode("p"))
+            domModel.appendChild(demo, domModel.newTextNode("CANVAS_OK"))
+
+            var crossText: str = "none"
+            if page.r2cCrosshairActive:
+                let xi = int(page.r2cCrosshairX)
+                let yi = int(page.r2cCrosshairY)
+                crossText = rtInt32ToStr(int32(xi)) + "," + rtInt32ToStr(int32(yi))
+            let cross = domModel.appendChild(body, domModel.newElementNode("p"))
+            domModel.appendChild(cross, domModel.newTextNode("CROSSHAIR:" + crossText))
+
+        let nav = domModel.appendChild(body, domModel.newElementNode("nav"))
+        nav.styleText = "padding: 8px; margin: 8px; background-color: #f9fafb;"
+
+        let btnHome = domModel.appendChild(nav, domModel.newElementNode("button"))
+        btnHome.id = "tab-home"
+        btnHome.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+        domModel.appendChild(btnHome, domModel.newTextNode(unimakerTransGet(page, "nav_home", "Home")))
+
+        let btnMsg = domModel.appendChild(nav, domModel.newElementNode("button"))
+        btnMsg.id = "tab-messages"
+        btnMsg.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+        domModel.appendChild(btnMsg, domModel.newTextNode(unimakerTransGet(page, "nav_messages", "Messages")))
+
+        let btnNodes = domModel.appendChild(nav, domModel.newElementNode("button"))
+        btnNodes.id = "tab-nodes"
+        btnNodes.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+        domModel.appendChild(btnNodes, domModel.newTextNode(unimakerTransGet(page, "nav_nodes", "Nodes")))
+
+        let btnPublish = domModel.appendChild(nav, domModel.newElementNode("button"))
+        btnPublish.id = "tab-publish"
+        btnPublish.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+        domModel.appendChild(btnPublish, domModel.newTextNode(unimakerTransGet(page, "nav_publish", "Publish")))
+
+        let btnProfile = domModel.appendChild(nav, domModel.newElementNode("button"))
+        btnProfile.id = "tab-profile"
+        btnProfile.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+        domModel.appendChild(btnProfile, domModel.newTextNode(unimakerTransGet(page, "nav_profile", "Profile")))
+
+        let btnTrading = domModel.appendChild(nav, domModel.newElementNode("button"))
+        btnTrading.id = "tab-trading"
+        btnTrading.styleText = "padding: 6px; margin: 4px; background-color: #ffffff;"
+        domModel.appendChild(btnTrading, domModel.newTextNode(unimakerTransGet(page, "sidebar_trading", "Trading")))
+
+    doc.stylesText = ""
+    page.domDoc = doc
+    page.styleState = cssCascade.computeCascadeAndApply(doc, false)
+    page.layoutState = layoutFlow.computeLayout(doc, page.options.viewportWidth, page.options.viewportHeight)
+    let viewport = unimakerResolveViewport(page)
+    page.paintState = paintList.buildWebDrawList(doc, viewport)
+    drawir.pushLine(page.paintState, viewport.origin.x, viewport.origin.y, viewport.origin.x + 24.0, viewport.origin.y + 24.0, uint32(0xFF4B5563), 1.0)
+    drawir.pushLine(page.paintState, viewport.origin.x + 8.0, viewport.origin.y, viewport.origin.x + 8.0, viewport.origin.y + 24.0, uint32(0xFFF59E0B), 2.0)
+    let plainText = paintList.buildPlainText(doc)
+    if rtContainsText(plainText, "CANVAS_OK"):
+        var chart = viewport
+        chart.origin.x = viewport.origin.x + 16.0
+        chart.origin.y = viewport.origin.y + 220.0
+        chart.size.width = rtMaxFloat(1.0, viewport.size.width - 32.0)
+        chart.size.height = rtMaxFloat(1.0, viewport.size.height - 240.0)
+        canvas2d.drawTradingDemo(page.paintState, chart)
+        canvas2d.drawCrosshair(page.paintState, chart, page.r2cCrosshairX, page.r2cCrosshairY)
+    page.snapshotText = plainText
+    page.title = doc.title
+
+fn unimakerDispatch(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+    if page == nil:
+        return false
+    payload
+    if ! rtStrEq(page.r2cApp, "unimaker"):
+        return false
+    if rtStrEq(eventName, "tick"):
+        if page.r2cTimerRunning:
+            let ms = rtPayloadGetInt32(payload, "ms", int32(500))
+            page.r2cNowMs = page.r2cNowMs + int64(ms)
+            page.r2cTimerTicks = page.r2cTimerTicks + int32(1)
+            if ! page.r2cTimeoutFired && page.r2cNowMs >= int64(1000):
+                page.r2cTimeoutFired = true
+            unimakerRerender(page)
+        return true
+    if rtStrEq(eventName, "resize"):
+        let w = rtPayloadGetInt32(payload, "w", page.options.viewportWidth)
+        let h = rtPayloadGetInt32(payload, "h", page.options.viewportHeight)
+        if w > int32(0):
+            page.options.viewportWidth = w
+        if h > int32(0):
+            page.options.viewportHeight = h
+        page.r2cResizeCount = page.r2cResizeCount + int32(1)
+        unimakerRerender(page)
+        return true
+    if rtStrEq(eventName, "pointer-move") || rtStrEq(eventName, "pointermove") || rtStrEq(eventName, "mousemove"):
+        let x = rtPayloadGetInt32(payload, "x", int32(0))
+        let y = rtPayloadGetInt32(payload, "y", int32(0))
+        page.r2cCrosshairActive = true
+        page.r2cCrosshairX = float(x)
+        page.r2cCrosshairY = float(y)
+        unimakerRerender(page)
+        return true
+    if rtStrEq(eventName, "drag-end") || rtStrEq(eventName, "dragend"):
+        let fromIdx = rtPayloadGetInt32(payload, "from", int32(0))
+        let toIdx = rtPayloadGetInt32(payload, "to", int32(0))
+        if fromIdx < int32(0) || toIdx < int32(0) || fromIdx > int32(2) || toIdx > int32(2) || fromIdx == toIdx:
+            return true
+        let a = dragOrderChar(page.r2cDragOrderText, int32(0))
+        let b = dragOrderChar(page.r2cDragOrderText, int32(1))
+        let c = dragOrderChar(page.r2cDragOrderText, int32(2))
+        var na = a
+        var nb = b
+        var nc = c
+        if (fromIdx == int32(0) && toIdx == int32(1)) || (fromIdx == int32(1) && toIdx == int32(0)):
+            na = b
+            nb = a
+            nc = c
+        elif fromIdx == int32(0) && toIdx == int32(2):
+            na = b
+            nb = c
+            nc = a
+        elif (fromIdx == int32(1) && toIdx == int32(2)) || (fromIdx == int32(2) && toIdx == int32(1)):
+            na = a
+            nb = c
+            nc = b
+        elif fromIdx == int32(2) && toIdx == int32(0):
+            na = c
+            nb = a
+            nc = b
+        page.r2cDragOrderText = charToStr(na) + "," + charToStr(nb) + "," + charToStr(nc)
+        unimakerRerender(page)
+        return true
+
+    if ! rtStrEq(eventName, "click"):
+        return true
+    if len(targetSelector) == 0:
+        return true
+    var id = targetSelector
+    if rtCEq(id[0], '#'):
+        id = id[1..<len(id)]
+
+    if rtStrEq(id, "skip"):
+        page.r2cLocale = "zh-CN"
+        storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
+        storageStore.setValue(page.storage, "app_language_set", "true")
+        page.r2cShowLanguageSelector = false
+        page.r2cSelectedLanguage = ""
+        page.r2cCurrentTab = "home"
+        unimakerRerender(page)
+        return true
+    if rtStrEq(id, "confirm"):
+        if len(page.r2cSelectedLanguage) == 0:
+            return true
+        page.r2cLocale = page.r2cSelectedLanguage
+        storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
+        storageStore.setValue(page.storage, "app_language_set", "true")
+        page.r2cShowLanguageSelector = false
+        page.r2cSelectedLanguage = ""
+        page.r2cCurrentTab = "home"
+        unimakerRerender(page)
+        return true
+
+    if rtStrEq(id, "timer-start"):
+        page.r2cTimerRunning = true
+        page.r2cTimerTicks = int32(0)
+        page.r2cNowMs = int64(0)
+        page.r2cTimeoutFired = false
+        unimakerRerender(page)
+        return true
+    if rtStrEq(id, "clipboard-copy"):
+        page.r2cClipboardText = "UNIMAKER_CLIPBOARD_OK"
+        unimakerRerender(page)
+        return true
+    if rtStrEq(id, "geo-request"):
+        page.r2cGeoText = "37.7749,-122.4194"
+        unimakerRerender(page)
+        return true
+    if rtStrEq(id, "cookie-set"):
+        page.r2cCookieText = "a=1"
+        storageStore.setValue(page.storage, "cookie", page.r2cCookieText)
+        unimakerRerender(page)
+        return true
+    if rtStrEq(id, "file-select"):
+        page.r2cFileDataUrl = "data:text/plain;base64,SEVMTE8="
+        unimakerRerender(page)
+        return true
+
+    if rtHasPrefix(id, "lang-"):
+        page.r2cSelectedLanguage = id[5..<len(id)]
+        unimakerRerender(page)
+        return true
+
+    if rtHasPrefix(id, "tab-"):
+        page.r2cCurrentTab = id[4..<len(id)]
+        unimakerRerender(page)
+        return true
+
+    return true
+
+fn mountUnimakerAot(page: web.BrowserPage): bool =
+    if page == nil:
+        return false
+    unimakerEnsureDefaults(page)
+    page.r2cDispatch = unimakerDispatch
+    page.r2cApp = "unimaker"
+
+    var locale = storageStore.getValue(page.storage, "app_locale")
+    if len(locale) == 0:
+        locale = "zh-CN"
+    page.r2cLocale = locale
+
+    let languageSet = storageStore.getValue(page.storage, "app_language_set")
+    page.r2cShowLanguageSelector = len(languageSet) == 0
+    page.r2cSelectedLanguage = ""
+    page.r2cCurrentTab = "home"
+    page.r2cTimerRunning = false
+    page.r2cTimerTicks = int32(0)
+    page.r2cNowMs = int64(0)
+    page.r2cTimeoutFired = false
+    page.r2cResizeCount = int32(0)
+    page.r2cClipboardText = ""
+    page.r2cGeoText = ""
+    page.r2cCookieText = storageStore.getValue(page.storage, "cookie")
+    page.r2cFileDataUrl = ""
+    page.r2cCrosshairActive = false
+    page.r2cCrosshairX = 0.0
+    page.r2cCrosshairY = 0.0
+    page.r2cDragOrderText = "A,B,C"
+    unimakerRerender(page)
+    return true
+
+fn mountUnimakerStub(page: web.BrowserPage): bool =
+    if page == nil:
+        return false
+    page.r2cDispatch = nil
+    page.r2cApp = ""
+    let doc = domModel.newDocument("about:r2capp", "Unimaker AOT (stub)")
+
+    let html = domModel.appendChild(doc.root, domModel.newElementNode("html"))
+    let body = domModel.appendChild(html, domModel.newElementNode("body"))
+    body.styleText = "background-color: #ffffff; color: #000000; padding: 16px;"
+
+    let h1 = domModel.appendChild(body, domModel.newElementNode("h1"))
+    domModel.appendChild(h1, domModel.newTextNode("UNIMAKER_AOT_STUB"))
+
+    let p = domModel.appendChild(body, domModel.newElementNode("p"))
+    domModel.appendChild(p, domModel.newTextNode("V0: AOT compiler outputs a stub app (no JS/Node)."))
+
+    doc.stylesText = ""
+    page.domDoc = doc
+
+    page.styleState = cssCascade.computeCascadeAndApply(doc, false)
+    page.layoutState = layoutFlow.computeLayout(doc, page.options.viewportWidth, page.options.viewportHeight)
+
+    let viewport = unimakerResolveViewport(page)
+    page.paintState = paintList.buildWebDrawList(doc, viewport)
+    page.snapshotText = paintList.buildPlainText(doc)
+    page.title = doc.title
+
+    return true

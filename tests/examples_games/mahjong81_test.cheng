@@ -1,0 +1,42 @@
+import cheng/gui/examples_games/common/protocol
+import cheng/gui/examples_games/mahjong4/state as mj
+
+fn makeReq(seat: int32, kind: str, args: str): ActionRequest =
+    var req: ActionRequest = initActionRequest()
+    req.seat = seat
+    req.actionType = kind
+    req.actionArgs = args
+    req.playerToken = "m" + intToStr(seat)
+    req.clientSeq = int64(1)
+    return req
+
+fn main(): int32 =
+    let fans = mj.all81FanNames()
+    if len(fans) != 81:
+        return int32(30)
+    if mj.fanValue("大四喜") < 88:
+        return int32(31)
+    if mj.fanValue("自摸") <= 0:
+        return int32(32)
+
+    let state = mj.newState()
+    for i in 0..<mj.MahjongPlayerCount:
+        mj.setPlayer(state, i, "M" + intToStr(i), "m" + intToStr(i), true, false)
+        let r = mj.applyAction(state, i, makeReq(i, "ready", ""))
+        if ! r.applied:
+            return int32(33)
+
+    let startRes = mj.applyAction(state, 0, makeReq(0, "start", ""))
+    if ! startRes.applied || state.stage != "playing":
+        return int32(34)
+
+    let huReq = makeReq(state.turnSeat, "hu", "fans=清一色,自摸,selfdraw=1")
+    let huRes = mj.applyAction(state, state.turnSeat, huReq)
+    if ! huRes.applied:
+        return int32(35)
+    if state.stage != "finished":
+        return int32(36)
+
+    return int32(0)
+
+main()

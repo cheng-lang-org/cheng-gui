@@ -1,0 +1,38 @@
+import cheng/gui/ime/cangwu_engine
+import cheng/gui/ime/cangwu_types
+
+fn miniAssets(): CwAssets =
+    var assets: CwAssets
+    assets.dict.chars = []
+    assets.dict.codepoints = []
+    assets.dict.cpToIndex = []
+    assets.dict.bmpIndex = []
+    assets.dict.nonBmpCp = []
+    assets.dict.nonBmpIdx = []
+    assets.singles = []
+    assets.phrases = []
+    assets.reverse = []
+
+    var p: CwPhraseEntry
+    p.text = "PH"
+    p.code = "ABCD"
+    p.freq = 888
+    add(assets.phrases, p)
+    return assets
+
+fn testPhraseQuery(): int32 =
+    let engine = cwCreateEngine(miniAssets())
+    let r = cwQuery(engine, "ABCD", cfAny, 0, 12)
+    var found = false
+    for idx in 0..<len(r.candidates):
+        if r.candidates[idx].text == "PH":
+            found = true
+            break
+    if ! found:
+        return 101
+    return 0
+
+fn main(): int32 =
+    return testPhraseQuery()
+
+main()

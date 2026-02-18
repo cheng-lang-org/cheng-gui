@@ -1,0 +1,575 @@
+import std/os
+import std/strings
+
+import cheng/gui/tools/r2c_aot/ts_literals as tsLit
+import cheng/gui/tools/r2c_aot/tsx_extract as tsxExtract
+
+var debugOutRootSlot: str = ""
+var extractedWelcome: str = ""
+var extractedSelectLanguage: str = ""
+var extractedContinueText: str = ""
+var extractedSelectPrompt: str = ""
+var extractedSkipDefault: str = ""
+
+type
+    ReadTextResult = ref
+        text: str
+        err: str
+
+    UnimakerLangLists = ref
+        codes: str[]
+        names: str[]
+        nativeNames: str[]
+
+    UnimakerTranslations = ref
+        keys: str[]
+        enValues: str[]
+        zhCNValues: str[]
+
+    UnimakerPublishTypes = ref
+        typeIds: str[]
+        labelKeys: str[]
+        fallbackLabels: str[]
+
+fn ensureDir(path: str): bool =
+    if len(path) == 0:
+        return false
+    if os.dirExists(path):
+        return true
+    os.createDir(path)
+    return os.dirExists(path)
+
+fn writeText(path: str, content: str): bool =
+    if len(path) == 0:
+        return false
+    os.writeFile(path, content)
+    return os.fileExists(path)
+
+fn debugMark(outPkgRoot: str, mark: str) =
+    if len(os.getEnv("CHENG_R2C_DEBUG")) == 0:
+        return
+    if len(outPkgRoot) == 0:
+        return
+    os.writeFile(outPkgRoot + "/r2capp_debug_mark.txt", mark + "\n")
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn strMatchAt(text, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if text == nil || pattern == nil:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn strFindFrom(text, pattern: str, start: int): int =
+    if len(pattern) == 0:
+        return start
+    var idx = start
+    if idx < 0:
+        idx = 0
+    while idx + len(pattern) <= len(text):
+        if strMatchAt(text, pattern, idx):
+            return idx
+        idx = idx + 1
+    return -1
+
+fn strIsSpace(ch: char): bool =
+    return cEq(ch, ' ') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t')
+
+fn skipSpaces(text: str, idx0: int): int =
+    var idx = idx0
+    while idx < len(text) && strIsSpace(text[idx]):
+        idx = idx + 1
+    return idx
+
+fn shellQuote(value: str): str =
+    if len(value) == 0:
+        return "''"
+    var out = "'"
+    for idx in 0..<len(value):
+        if cEq(value[idx], '\''):
+            out = out + "'\"'\"'"
+        else:
+            out = out + charToStr(value[idx])
+    out = out + "'"
+    return out
+
+fn readTextFile(path: str): ReadTextResult =
+    var out: ReadTextResult
+    new(out)
+    out.text = ""
+    out.err = ""
+    if len(path) == 0:
+        out.err = "empty-path"
+        return out
+    if ! os.fileExists(path):
+        out.err = "missing-file"
+        return out
+    var output: str = os.readFile(path)
+    if len(output) == 0:
+        output = ""
+    out.text = output
+    return out
+
+fn appendString(items: var str[], item: str) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn skipSpacesBounded(text: str, idx0: int, endIdx: int): int =
+    var idx = idx0
+    while idx < endIdx && idx < len(text) && strIsSpace(text[idx]):
+        idx = idx + 1
+    return idx
+
+fn parseFieldStringRange(text: str, startIdx: int, endIdx: int, pat: str): str =
+    if text == nil:
+        return ""
+    let patLen = len(pat)
+    if patLen <= 0:
+        return ""
+    var idx = startIdx
+    if idx < 0:
+        idx = 0
+    var stop = endIdx
+    if stop > len(text):
+        stop = len(text)
+    while idx + patLen <= stop:
+        if strMatchAt(text, pat, idx):
+            idx = idx + patLen
+            idx = skipSpacesBounded(text, idx, stop)
+            if idx >= stop:
+                return ""
+            let quote = text[idx]
+            if cNe(quote, '\'') && cNe(quote, '"'):
+                return ""
+            idx = idx + 1
+            var out: str = ""
+            while idx < stop && cNe(text[idx], quote):
+                out = out + charToStr(text[idx])
+                idx = idx + 1
+            if idx >= stop:
+                return ""
+            return out
+        idx = idx + 1
+    return ""
+
+fn extractUnimakerLanguages(tsxText: str, outLists: UnimakerLangLists): str =
+    if outLists == nil:
+        return "nil-outlists"
+    setLen[str](&outLists.codes, 0)
+    setLen[str](&outLists.names, 0)
+    setLen[str](&outLists.nativeNames, 0)
+    if len(tsxText) == 0:
+        return "empty-tsx"
+    let idxConst = strFindFrom(tsxText, "const languages", 0)
+    if idxConst < 0:
+        return "missing-const-languages"
+    let idxEq = strFindFrom(tsxText, "=", idxConst)
+    if idxEq < 0:
+        return "missing-languages-eq"
+    let parsed = tsLit.parseValue(tsxText, idxEq + 1)
+    if len(parsed.err) > 0:
+        return "parse-languages-literal:" + parsed.err
+    let root = parsed.value
+    if root == nil || root.kind != tsLit.tvArray:
+        return "languages-not-array"
+    for idx in 0..<len(root.items):
+        let item = root.items[idx]
+        if item != nil && item.kind == tsLit.tvObject:
+            let code = tsLit.objectGetString(item, "code")
+            let name = tsLit.objectGetString(item, "name")
+            let nativeName = tsLit.objectGetString(item, "nativeName")
+            if len(code) == 0 || len(name) == 0 || len(nativeName) == 0:
+                return "missing-language-fields"
+            appendString(outLists.codes, code)
+            appendString(outLists.names, name)
+            appendString(outLists.nativeNames, nativeName)
+    if len(outLists.codes) == 0:
+        return "no-languages-found"
+    return ""
+
+fn resetTranslations(outTrans: UnimakerTranslations) =
+    if outTrans == nil:
+        return
+    setLen[str](&outTrans.keys, 0)
+    setLen[str](&outTrans.enValues, 0)
+    setLen[str](&outTrans.zhCNValues, 0)
+
+fn isIdentCont(ch: char): bool =
+    return (cGe(ch, 'a') && cLe(ch, 'z')) || (cGe(ch, 'A') && cLe(ch, 'Z')) || cEq(ch, '_') || cEq(ch, '$') || (cGe(ch, '0') && cLe(ch, '9'))
+
+fn findObjectLiteralClose(text: str, idxOpenBrace: int): int =
+    if text == nil:
+        return -1
+    if idxOpenBrace < 0 || idxOpenBrace >= len(text):
+        return -1
+    if cNe(text[idxOpenBrace], '{'):
+        return -1
+    var idx = idxOpenBrace
+    var depth: int32 = int32(0)
+    var quote: char = '\0'
+    while idx < len(text):
+        let ch = text[idx]
+        if cNe(quote, '\0'):
+            if cEq(ch, '\\') && idx + 1 < len(text):
+                idx = idx + 2
+                continue
+            if cEq(ch, quote):
+                quote = '\0'
+            idx = idx + 1
+            continue
+        if cEq(ch, '\'') || cEq(ch, '"'):
+            quote = ch
+            idx = idx + 1
+            continue
+        if cEq(ch, '{'):
+            depth = depth + int32(1)
+        elif cEq(ch, '}'):
+            depth = depth - int32(1)
+            if depth == int32(0):
+                return idx + 1
+        idx = idx + 1
+    return -1
+
+fn extractConstObjectRange(tsText: str, marker: str): tuple[start: int, endExclusive: int, ok: bool] =
+    if tsText == nil || len(tsText) == 0:
+        return (start: 0, endExclusive: 0, ok: false)
+    let idxConst = strFindFrom(tsText, marker, 0)
+    if idxConst < 0:
+        return (start: 0, endExclusive: 0, ok: false)
+    debugMark(debugOutRootSlot, "const-range:marker")
+    let idxEq = strFindFrom(tsText, "=", idxConst)
+    if idxEq < 0:
+        return (start: 0, endExclusive: 0, ok: false)
+    debugMark(debugOutRootSlot, "const-range:eq")
+    let idxOpen = strFindFrom(tsText, "{", idxEq)
+    if idxOpen < 0:
+        return (start: 0, endExclusive: 0, ok: false)
+    debugMark(debugOutRootSlot, "const-range:open")
+    # Robust enough for translations.ts: values are simple string literals.
+    let idxClose = strFindFrom(tsText, "};", idxOpen)
+    if idxClose < 0:
+        return (start: idxOpen, endExclusive: 0, ok: false)
+    debugMark(debugOutRootSlot, "const-range:close")
+    return (start: idxOpen, endExclusive: idxClose, ok: true)
+
+fn findKeyValueStart(tsText: str, startIdx: int, endExclusive: int, key: str): int =
+    debugMark(debugOutRootSlot, "findkey:start")
+    if tsText == nil || key == nil:
+        return -1
+    debugMark(debugOutRootSlot, "findkey:after-nil")
+    if len(key) == 0:
+        return -1
+    debugMark(debugOutRootSlot, "findkey:after-lenkey")
+    var idx = startIdx
+    if idx < 0:
+        idx = 0
+    var stop = endExclusive
+    if stop > len(tsText):
+        stop = len(tsText)
+    debugMark(debugOutRootSlot, "findkey:stop")
+    while idx + len(key) + 1 <= stop:
+        if idx == startIdx:
+            debugMark(debugOutRootSlot, "findkey:loop0")
+        if strMatchAt(tsText, key, idx) && cEq(tsText[idx + len(key)], ':'):
+            if idx > 0 && isIdentCont(tsText[idx - 1]):
+                idx = idx + 1
+                continue
+            return idx + len(key) + 1
+        idx = idx + 1
+    return -1
+
+fn parseStringAfterColon(tsText: str, idx0: int, endExclusive: int): tuple[value: str, err: str] =
+    if tsText == nil:
+        return (value: "", err: "nil-text")
+    var idx = idx0
+    var stop = endExclusive
+    if stop > len(tsText):
+        stop = len(tsText)
+    idx = skipSpacesBounded(tsText, idx, stop)
+    if idx >= stop:
+        return (value: "", err: "eof")
+    if cNe(tsText[idx], '\'') && cNe(tsText[idx], '"'):
+        return (value: "", err: "expected-quote")
+    let res = tsLit.tsParseStringLiteral(tsText, idx)
+    if len(res.err) > 0:
+        return (value: "", err: res.err)
+    if res.next > stop:
+        return (value: "", err: "string-outside-range")
+    return (value: res.value, err: "")
+
+fn extractTranslationsSubset(tsText: str, outTrans: UnimakerTranslations): str =
+    resetTranslations(outTrans)
+    if tsText == nil || len(tsText) == 0:
+        return "empty-translations"
+    # Parse the translation objects via the TS literal parser. This avoids the
+    # older hand-rolled scanner which was found unstable on some toolchains.
+    let enObjRes = extractConstObjectLiteral(tsText, "const en")
+    if len(enObjRes.err) > 0:
+        return "en:" + enObjRes.err
+    let zhObjRes = extractConstObjectLiteral(tsText, "const zhCN")
+    if len(zhObjRes.err) > 0:
+        return "zhCN:" + zhObjRes.err
+    let enObj = enObjRes.value
+    let zhObj = zhObjRes.value
+
+    appendString(outTrans.keys, "nav_home")
+    appendString(outTrans.keys, "nav_messages")
+    appendString(outTrans.keys, "nav_publish")
+    appendString(outTrans.keys, "nav_nodes")
+    appendString(outTrans.keys, "nav_profile")
+    appendString(outTrans.keys, "sidebar_trading")
+
+    for idx in 0..<len(outTrans.keys):
+        let key = outTrans.keys[idx]
+        appendString(outTrans.enValues, tsLit.objectGetString(enObj, key))
+        appendString(outTrans.zhCNValues, tsLit.objectGetString(zhObj, key))
+    return ""
+
+fn extractConstObjectLiteral(tsText: str, marker: str): tuple[value: tsLit.TsValue, err: str] =
+    if len(tsText) == 0:
+        return (value: nil, err: "empty-text")
+    let idxConst = strFindFrom(tsText, marker, 0)
+    if idxConst < 0:
+        return (value: nil, err: "missing-marker:" + marker)
+    let idxEq = strFindFrom(tsText, "=", idxConst)
+    if idxEq < 0:
+        return (value: nil, err: "missing-eq")
+    let parsed = tsLit.parseValue(tsText, idxEq + 1)
+    if len(parsed.err) > 0:
+        return (value: nil, err: "parse:" + parsed.err)
+    let root = parsed.value
+    if root == nil || root.kind != tsLit.tvObject:
+        return (value: nil, err: "not-object")
+    return (value: root, err: "")
+
+fn extractConstArrayLiteral(tsText: str, marker: str): tuple[value: tsLit.TsValue, err: str] =
+    if len(tsText) == 0:
+        return (value: nil, err: "empty-text")
+    let idxConst = strFindFrom(tsText, marker, 0)
+    if idxConst < 0:
+        return (value: nil, err: "missing-marker:" + marker)
+    let idxEq = strFindFrom(tsText, "=", idxConst)
+    if idxEq < 0:
+        return (value: nil, err: "missing-eq")
+    let parsed = tsLit.parseValue(tsText, idxEq + 1)
+    if len(parsed.err) > 0:
+        return (value: nil, err: "parse:" + parsed.err)
+    let root = parsed.value
+    if root == nil || root.kind != tsLit.tvArray:
+        return (value: nil, err: "not-array")
+    return (value: root, err: "")
+
+fn extractUnimakerPublishTypes(tsxText: str, outTypes: UnimakerPublishTypes): str =
+    if outTypes == nil:
+        return "nil-publish-types"
+    setLen[str](&outTypes.typeIds, 0)
+    setLen[str](&outTypes.labelKeys, 0)
+    setLen[str](&outTypes.fallbackLabels, 0)
+    if len(tsxText) == 0:
+        return "empty-publish-types"
+    let res = extractConstArrayLiteral(tsxText, "export const publishTypes")
+    if len(res.err) > 0:
+        return res.err
+    let root = res.value
+    for idx in 0..<len(root.items):
+        let item = root.items[idx]
+        if item != nil && item.kind == tsLit.tvObject:
+            let typeId = tsLit.objectGetString(item, "type")
+            let labelKey = tsLit.objectGetString(item, "labelKey")
+            let fallbackLabel = tsLit.objectGetString(item, "fallbackLabel")
+            if len(typeId) == 0 || len(labelKey) == 0:
+                return "missing-publish-fields"
+            appendString(outTypes.typeIds, typeId)
+            appendString(outTypes.labelKeys, labelKey)
+            appendString(outTypes.fallbackLabels, fallbackLabel)
+    if len(outTypes.typeIds) == 0:
+        return "no-publish-types"
+    return ""
+
+fn escapeChengString(value: str): str =
+    if len(value) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(value):
+        let ch = value[idx]
+        if cEq(ch, '\\'):
+            out = out + "\\\\"
+        elif cEq(ch, '"'):
+            out = out + "\\\""
+        elif cEq(ch, '\n'):
+            out = out + "\\n"
+        elif cEq(ch, '\r'):
+            out = out + "\\r"
+        elif cEq(ch, '\t'):
+            out = out + "\\t"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn buildEntryModuleSourceUnimaker(lists: UnimakerLangLists, trans: UnimakerTranslations, pubs: UnimakerPublishTypes, profileName: str): str =
+    # This is a glue module generated by the (currently minimal) AOT compiler.
+    debugMark(debugOutRootSlot, "in-entry-start")
+    var out: str = ""
+    out = out + "import cheng/gui/browser/web\n"
+    out = out + "import cheng/gui/browser/r2capp/runtime as r2cRuntime\n"
+    out = out + "\n"
+    out = out + "fn fillUnimakerData(page: web.BrowserPage) =\n"
+    debugMark(debugOutRootSlot, "in-entry-after-header")
+    let n = len(lists.codes)
+    out = out + "    setLen[str](&page.r2cLangCodes, " + strings.intToStr(n) + ")\n"
+    out = out + "    setLen[str](&page.r2cLangNames, " + strings.intToStr(n) + ")\n"
+    out = out + "    setLen[str](&page.r2cLangNativeNames, " + strings.intToStr(n) + ")\n"
+    for idx in 0..<n:
+        out = out + "    page.r2cLangCodes[" + strings.intToStr(idx) + "] = \"" + escapeChengString(lists.codes[idx]) + "\"\n"
+        out = out + "    page.r2cLangNames[" + strings.intToStr(idx) + "] = \"" + escapeChengString(lists.names[idx]) + "\"\n"
+        out = out + "    page.r2cLangNativeNames[" + strings.intToStr(idx) + "] = \"" + escapeChengString(lists.nativeNames[idx]) + "\"\n"
+    debugMark(debugOutRootSlot, "in-entry-after-langs")
+    out = out + "    page.r2cTextWelcome = \""
+    out = out + escapeChengString(extractedWelcome)
+    out = out + "\"\n"
+    out = out + "    page.r2cTextSelectLanguage = \""
+    out = out + escapeChengString(extractedSelectLanguage)
+    out = out + "\"\n"
+    out = out + "    page.r2cTextContinue = \""
+    out = out + escapeChengString(extractedContinueText)
+    out = out + "\"\n"
+    out = out + "    page.r2cTextSelectPrompt = \""
+    out = out + escapeChengString(extractedSelectPrompt)
+    out = out + "\"\n"
+    out = out + "    page.r2cTextSkipDefault = \""
+    out = out + escapeChengString(extractedSkipDefault)
+    out = out + "\"\n"
+    debugMark(debugOutRootSlot, "in-entry-after-texts")
+    var tn = len(trans.keys)
+    if len(trans.enValues) < tn:
+        tn = len(trans.enValues)
+    if len(trans.zhCNValues) < tn:
+        tn = len(trans.zhCNValues)
+    out = out + "    setLen[str](&page.r2cTransKeys, " + strings.intToStr(tn) + ")\n"
+    out = out + "    setLen[str](&page.r2cTransEn, " + strings.intToStr(tn) + ")\n"
+    out = out + "    setLen[str](&page.r2cTransZhCN, " + strings.intToStr(tn) + ")\n"
+    for tIdx in 0..<tn:
+        out = out + "    page.r2cTransKeys[" + strings.intToStr(tIdx) + "] = \"" + escapeChengString(trans.keys[tIdx]) + "\"\n"
+        out = out + "    page.r2cTransEn[" + strings.intToStr(tIdx) + "] = \"" + escapeChengString(trans.enValues[tIdx]) + "\"\n"
+        out = out + "    page.r2cTransZhCN[" + strings.intToStr(tIdx) + "] = \"" + escapeChengString(trans.zhCNValues[tIdx]) + "\"\n"
+    debugMark(debugOutRootSlot, "in-entry-after-trans")
+    let pn = len(pubs.typeIds)
+    out = out + "    setLen[str](&page.r2cPublishTypeIds, " + strings.intToStr(pn) + ")\n"
+    out = out + "    setLen[str](&page.r2cPublishTypeLabelKeys, " + strings.intToStr(pn) + ")\n"
+    out = out + "    setLen[str](&page.r2cPublishTypeFallbackLabels, " + strings.intToStr(pn) + ")\n"
+    for pIdx in 0..<pn:
+        out = out + "    page.r2cPublishTypeIds[" + strings.intToStr(pIdx) + "] = \"" + escapeChengString(pubs.typeIds[pIdx]) + "\"\n"
+        out = out + "    page.r2cPublishTypeLabelKeys[" + strings.intToStr(pIdx) + "] = \"" + escapeChengString(pubs.labelKeys[pIdx]) + "\"\n"
+        out = out + "    page.r2cPublishTypeFallbackLabels[" + strings.intToStr(pIdx) + "] = \"" + escapeChengString(pubs.fallbackLabels[pIdx]) + "\"\n"
+    debugMark(debugOutRootSlot, "in-entry-after-publish-types")
+    out = out + "\n"
+    out = out + "fn mount(page: web.BrowserPage): bool =\n"
+    out = out + "    fillUnimakerData(page)\n"
+    out = out + "    return r2cRuntime.mountUnimakerAot(page)\n"
+    out = out + "\n"
+    out = out + "fn compileProfile(): str =\n"
+    out = out + "    return \"" + escapeChengString(profileName) + "\"\n"
+    out = out + "\n"
+    out = out + "fn compiledModuleCount(): int32 =\n"
+    out = out + "    return int32(1)\n"
+    out = out + "\n"
+    debugMark(debugOutRootSlot, "in-entry-done")
+    return out
+
+fn buildManifestJson(entry: str): str =
+    # Keep it JSON-ish but minimal; consumers should treat it as opaque V1.
+    var out: str = ""
+    out = out + "{\n"
+    out = out + "  \"format\": \"r2capp-manifest-v1\",\n"
+    out = out + "  \"entry\": \"" + entry + "\",\n"
+    out = out + "  \"note\": \"stub compiler output\"\n"
+    out = out + "}\n"
+    return out
+
+fn buildRuntimeGeneratedSource(profileName: str): str =
+    var out: str = ""
+    out = out + "import cheng/gui/browser/web\n"
+    out = out + "import cheng/gui/browser/r2capp/runtime as legacy\n\n"
+    out = out + "fn profileId(): str =\n"
+    out = out + "    return \"" + escapeChengString(profileName) + "\"\n\n"
+    out = out + "fn mountGenerated(page: web.BrowserPage): bool =\n"
+    out = out + "    return legacy.mountUnimakerAot(page)\n\n"
+    out = out + "fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
+    out = out + "    return legacy.unimakerDispatch(page, eventName, targetSelector, payload)\n\n"
+    out = out + "fn drainEffects(limit: int32): int32 =\n"
+    out = out + "    limit\n"
+    out = out + "    return int32(0)\n\n"
+    out = out + "fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =\n"
+    out = out + "    page\n"
+    out = out + "    x\n"
+    out = out + "    y\n"
+    out = out + "    return \"\"\n"
+    return out
+
+fn compileStub(inRoot: str, outPkgRoot: str, entry: str): str =
+    if len(inRoot) == 0:
+        return "missing-in-root"
+    if len(outPkgRoot) == 0:
+        return "missing-out-root"
+    if len(entry) == 0:
+        return "missing-entry"
+
+    if ! ensureDir(outPkgRoot):
+        return "mkdir-out-root-failed"
+    debugOutRootSlot = outPkgRoot
+    let srcDir = outPkgRoot + "/src"
+    if ! ensureDir(srcDir):
+        return "mkdir-src-failed"
+
+    let pkgToml = "package_id = \"pkg://cheng/r2capp\"\n"
+    if ! writeText(outPkgRoot + "/cheng-package.toml", pkgToml):
+        return "write-package-toml-failed"
+
+    let manifest = buildManifestJson(entry)
+    if ! writeText(outPkgRoot + "/r2capp_manifest.json", manifest):
+        return "write-manifest-failed"
+    debugMark(outPkgRoot, "after-manifest")
+    let entrySrc = "import cheng/gui/browser/web\nimport cheng/r2capp/runtime_generated as generatedRuntime\n\nfn mount(page: web.BrowserPage): bool =\n    return generatedRuntime.mountGenerated(page)\n\nfn compileProfile(): str =\n    return \"stub\"\n\nfn compiledModuleCount(): int32 =\n    return int32(1)\n"
+    if ! writeText(srcDir + "/entry.cheng", entrySrc):
+        return "write-entry-failed"
+    let runtimeSrc = "import cheng/gui/browser/web\nimport cheng/gui/browser/r2capp/runtime as legacy\n\nfn profileId(): str =\n    return \"stub\"\n\nfn mountGenerated(page: web.BrowserPage): bool =\n    return legacy.mountUnimakerAot(page)\n\nfn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n    return legacy.unimakerDispatch(page, eventName, targetSelector, payload)\n\nfn drainEffects(limit: int32): int32 =\n    limit\n    return int32(0)\n\nfn resolveTargetAt(page: web.BrowserPage, x, y: float): str =\n    page\n    x\n    y\n    return \"\"\n"
+    if ! writeText(srcDir + "/runtime_generated.cheng", runtimeSrc):
+        return "write-runtime-generated-failed"
+    inRoot
+    return ""

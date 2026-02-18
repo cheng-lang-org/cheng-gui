@@ -1,0 +1,326 @@
+import std/strutils
+import cheng/runtime/json_ast
+type
+    HealthStatus = enum
+        StatusPassed
+        StatusDegraded
+        StatusFailed
+    InputBackend = enum
+        InputBackendNone
+        InputBackendXim
+        InputBackendWlTextInput
+        InputBackendBasic
+    SurfaceMode = enum
+        SurfaceUnknown
+        SurfaceWgpu
+        SurfaceCpuFallback
+    InputDependencyStatus =
+        Id: str
+        Title: str
+        Status: HealthStatus
+        Message: str
+        Tags: str[]
+    ChecklistItem =
+        Id: str
+        Status: HealthStatus
+        Category: str
+        Message: str
+    SurfaceHealth =
+        Mode: SurfaceMode
+        Status: HealthStatus
+        Width: int
+        Height: int
+        Failures: int
+        LastError: str
+    InputSurfaceContext =
+        Platform: str
+        Headless: bool
+        XimAvailable: bool
+        XimReady: bool
+        XimReconnects: int
+        WlTextInputAvailable: bool
+        WlTextInputReady: bool
+        WlSeatActive: bool
+        Backend: InputBackend
+        SurfaceModeKind: SurfaceMode
+        SurfaceWidth: int
+        SurfaceHeight: int
+        SurfaceFailures: int
+        SurfaceLastError: str
+    InputSurfaceReport =
+        Platform: str
+        Headless: bool
+        OverallStatus: HealthStatus
+        Dependencies: InputDependencyStatus[]
+        Checklist: ChecklistItem[]
+        Surface: SurfaceHealth
+        Suggestions: str[]
+    JsonField =(str, JsonValue)
+fn jsonField(key: str, value: JsonValue): JsonField =
+    (key, value)
+fn statusToString(status: HealthStatus): str =
+    case status
+    of StatusPassed:
+        "passed"
+    of StatusDegraded:
+        "degraded"
+    of StatusFailed:
+        "failed"
+fn surfaceModeToString(mode: SurfaceMode): str =
+    case mode
+    of SurfaceUnknown:
+        "unknown"
+    of SurfaceWgpu:
+        "wgpu"
+    of SurfaceCpuFallback:
+        "cpu-fallback"
+fn backendToStr
+ing(backend: InputBackend): str = case backend
+of InputBackendNone:
+    "none"
+    of InputBackendXim:
+        "xim"
+        of InputBackendWlTextInput:
+            "wl-text-input"
+            of InputBackendBasic:
+                "basic"
+fn combineStatus(a, b: HealthStatus): HealthStatus =
+    if a == StatusFailed || b == StatusFailed:
+        return StatusFailed
+        if a == StatusDegraded || b == StatusDegraded:
+            return StatusDegraded StatusPassed
+fn uniqueAdd(suggestions: var str[], value: str) =
+    if len(value) == 0:
+        return if suggestions.contains(value): return suggestions.add(value)
+fn evaluateHead
+less(ctx: InputSurfaceContext): InputSurfaceReport = var surface: SurfaceHealthsurface.Mode = SurfaceUnknown
+surface.Status = StatusPassed
+surface.Width = 0
+surface.Height = 0
+surface.Failures = 0
+surface.LastError = ""
+var dependencies = default[InputDependencyStatus[]]
+var dep: InputDependencyStatus
+dep.Id = "headless"
+dep.Title = "Headless mode"
+dep.Status = StatusPassed
+dep.Message = "headless environment skips IME and surface checks"
+dep.Tags = default[str[]] dep.Tags.add("skip-headless") dependencies.add(dep)
+var checklist = default[ChecklistItem[]]
+var item: ChecklistItem
+item.Id = "headless-skip"
+item.Status = StatusPassed
+item.Category = "meta"
+item.Message = "Mark headless run; checklist items set to skipped" checklist.add(item)
+var report: InputSurfaceReport
+report.Platform = ctx.Platform
+report.Headless = true
+report.OverallStatus = StatusPassed
+report.Dependencies = dependencies
+report.Checklist = checklist
+report.Surface = surface
+report.Suggestions = default[str[]] report
+fn evaluateInputDeps(ctx: InputSurfaceContext, suggestions: var str[]): InputDependencyStatus[] =
+    var deps = default[InputDependencyStatus[]]
+    if ctx.XimAvailable || ctx.Platform == "x11":
+        let status = if ctx.XimAvailableand ctx.XimReady: StatusPassed
+    elif ctx.XimAvailable:
+        StatusDegraded
+    else:
+        if ctx.Platform == "x11":
+            StatusFailed
+        else:
+            StatusDegraded
+            var message = if ctx.XimAvailableand ctx.XimReady: "XIM session established"
+        elif ctx.XimAvailable:
+            "XIM detected but session not ready"
+        else:
+            "Missing XIM input method daemon or library"
+            if ctx.XimReconnects > 0:
+                message = message + ", reconnects=" + $ ctx.XimReconnects
+                if status == StatusPassed && ctx.XimReconnects > 1:
+                    message = message + " (check stability)"
+                    if status != StatusPassed:
+                        uniqueAdd(suggestions, "restart-xim-daemon")
+                        var dep: InputDependencyStatus
+                        dep.Id = "xim"
+                        dep.Title = "XIM input method"
+                        dep.Status = status
+                        dep.Message = message
+                        dep.Tags = default[str[]] dep.Tags.add("xim") deps.add(dep)
+                        if ctx.Platform == "wayland":
+                            let status = if ctx.WlTextInputAvailableand ctx.WlTextInputReadyandctx.WlSeatActive: StatusPassed
+                        elif ctx.WlTextInputAvailable:
+                            StatusDegraded
+                        else:
+                            StatusFailed
+                            var message = if ctx.WlTextInputAvailableand ctx.WlTextInputReadyandctx.WlSeatActive: "Wayland Text Input is active"
+                        elif ctx.WlTextInputAvailable:
+                            "Wayland Text Input protocol present but not active"
+                        else:
+                            "Missing Wayland Text Input protocol"
+                            if ! ctx.WlSeatActive:
+                                message = message + " (seat not active)"
+                                if status != StatusPassed:
+                                    uniqueAdd(suggestions, "enable-wl-text-input")
+                                    if ctx.XimAvailableand(! ctx.WlTextInputReadyornotctx.WlTextInputAvailable):
+                                        uniqueAdd(suggestions, "switch-to-xim")
+                                        var dep: InputDependencyStatus
+                                        dep.Id = "wl-text-input"
+                                        dep.Title = "Wayland Text Input"
+                                        dep.Status = status
+                                        dep.Message = message
+                                        dep.Tags = default[str[]] dep.Tags.add("wayland") dep.Tags.add("text-input") deps.add(dep)
+                                        return deps
+fn evaluateSurface(ctx: InputSurfaceContext, suggestions: var str[]): SurfaceHealth =
+    var status = StatusFailed
+    var message = ""
+    var failures = ctx.SurfaceFailures
+    let width = ctx.SurfaceWidth
+    let height = ctx.SurfaceHeight
+    case ctx.SurfaceModeKind
+    of SurfaceWgpu:
+        if width > 0 && height > 0 && failures == 0 && len(ctx.SurfaceLastError) == 0:
+            status = StatusPassed
+            message = "WGPU surface running normally"
+        elif width > 0 && height > 0 && failures == 0:
+            status = StatusDegraded
+            message = "WGPU surface available with warnings: " + ctx.SurfaceLastError
+        else:
+            status = StatusDegraded
+            if len(ctx.SurfaceLastError) > 0:
+                message = ctx.SurfaceLastError
+            else:
+                message = "WGPU surface initialization incomplete"
+                uniqueAdd(suggestions, "restart-gpu-surface")
+    of SurfaceCpuFallback:
+        status = StatusDegraded
+        message = "Currently running on CPU fallback"
+        if len(ctx.SurfaceLastError) > 0:
+            message = message + ", reason: " + ctx.SurfaceLastError
+            uniqueAdd(suggestions, "restart-gpu-surface")
+            uniqueAdd(suggestions, "tryFallbackCpu")
+    of SurfaceUnknown:
+        status = StatusFailed
+        message = "Surface not created yet"
+        uniqueAdd(suggestions, "restart-gpu-surface")
+        uniqueAdd(suggestions, "tryFallbackCpu")
+        result.Mode = ctx.SurfaceModeKind
+        result.Status = status
+        result.Width = width
+        result.Height = height
+        result.Failures = failures
+        result.LastError = message
+fn buildCheck
+list(ctx: InputSurfaceContext, deps: InputDependencyStatus[], surface: SurfaceHealth): ChecklistItem[] = var items = default[ChecklistItem[]]
+for dep in deps:
+    var item: ChecklistItem
+    item.Id = dep.Id + "-ready"
+    item.Status = dep.Status
+    item.Category = "input"
+    item.Message = dep.Messageitems.add(item)
+    var modeItem: ChecklistItem
+    modeItem.Id = "surface-mode"
+    modeItem.Status = surface.Status
+    modeItem.Category = "surface"
+    modeItem.Message = "surface=" + surfaceModeToString(surface.Mode) items.add(modeItem)
+    if surface.Width > 0 && surface.Height > 0:
+        var sizeItem: ChecklistItem
+        sizeItem.Id = "surface-size"
+        sizeItem.Status = surface.Status
+        sizeItem.Category = "surface"
+        sizeItem.Message = "size=" + $ surface.Width + "x" + $ surface.Heightitems.add(sizeItem)
+    else:
+        var sizeItem: ChecklistItem
+        sizeItem.Id = "surface-size"
+        sizeItem.Status = StatusDegraded
+        sizeItem.Category = "surface"
+        sizeItem.Message = "Invalid surface size" items.add(sizeItem)
+        if surface.Failures > 0:
+            var failureItem: ChecklistItem
+            failureItem.Id = "surface-failures"
+            failureItem.Status = StatusDegraded
+            failureItem.Category = "surface"
+            failureItem.Message = "surface failures=" + $ surface.Failuresitems.add(failureItem)
+            return items
+fn computeOverall(deps: InputDependencyStatus[], items: ChecklistItem[], surface: SurfaceHealth): HealthStatus =
+    var status = StatusPassed
+    for dep in deps:
+        status = combineStatus(status, dep.Status)
+        for item in items:
+            status = combineStatus(status, item.Status)
+            status = combineStatus(status, surface.Status) status
+fn RunInput
+Surface
+Diagnostics(ctx: InputSurfaceContext): InputSurfaceReport = if ctx.Headless: return evaluateHead
+less(ctx)
+var suggestions = default[str[]]
+let deps = evaluateInputDeps(ctx, suggestions)
+var surface = evaluateSurface(ctx, suggestions)
+let checklist = buildCheck
+list(ctx, deps, surface)
+let overall = computeOverall(deps, checklist, surface)
+var report: InputSurfaceReport
+report.Platform = ctx.Platform
+report.Headless = ctx.Headless
+report.OverallStatus = overall
+report.Dependencies = deps
+report.Checklist = checklist
+report.Surface = surface
+report.Suggestions = suggestions report
+fn DefaultInputSurfaceReport(): InputSurfaceReport =
+    var report: InputSurfaceReport
+    report.Platform = ""
+    report.Headless = false
+    report.OverallStatus = StatusPassed
+    report.Dependencies = default[InputDependencyStatus[]]
+    report.Checklist = default[ChecklistItem[]]
+    var surface: SurfaceHealthsurface.Mode = SurfaceUnknown
+    surface.Status = StatusPassed
+    surface.Width = 0
+    surface.Height = 0
+    surface.Failures = 0
+    surface.LastError = ""
+    report.Surface = surface
+    report.Suggestions = default[str[]] report
+fn FormatReport
+Text(report: InputSurfaceReport): str = var lines = default[str[]] lines.add("[input-surface-report]") lines.add("platform=" + report.Platform) lines.add("headless=" &(if report.Headless: "true" else: "false")) lines.add("overall=" + statusToString(report.OverallStatus)) lines.add("surface.mode=" + surfaceModeToString(report.Surface.Mode)) lines.add("surface.status=" + statusToString(report.Surface.Status)) lines.add("surface.size=" + $ report.Surface.Width + "x" + $ report.Surface.Height) lines.add("surface.failures=" + $ report.Surface.Failures)
+if len(report.Surface.LastError) > 0:
+    lines.add("surface.message=" + report.Surface.LastError)
+    if len(report.Dependencies) > 0:
+        lines.add("[dependencies]")
+        for dep in report.Dependencies:
+            var line = dep.Id + "=" + statusToString(dep.Status)
+            if len(dep.Tags) > 0:
+                line = line + "|" + dep.Tags.join(",")
+                line = line + "|" + dep.Messagelines.add(line)
+                if len(report.Checklist) > 0:
+                    lines.add("[checklist]")
+                    for item in report.Checklist:
+                        lines.add(item.Id + "=" + statusToString(item.Status) + "|" + item.Message)
+                        if len(report.Suggestions) > 0:
+                            lines.add("[suggestions]")
+                            for suggestion in report.Suggestions:
+                                lines.add("- " + suggestion) lines.join("\n")
+fn InputSurfaceReportToJson(report: InputSurfaceReport): JsonValue =
+    var fields = default[JsonField[]] fields.add(jsonField("platform", jsonString(report.Platform))) fields.add(jsonField("headless", jsonBool(report.Headless))) fields.add(jsonField("overall", jsonString(statusToString(report.OverallStatus))))
+    var surfaceFields = default[JsonField[]] surfaceFields.add(jsonField("mode", jsonString(surfaceModeToString(report.Surface.Mode)))) surfaceFields.add(jsonField("status", jsonString(statusToString(report.Surface.Status)))) surfaceFields.add(jsonField("width", jsonNumber(float(report.Surface.Width)))) surfaceFields.add(jsonField("height", jsonNumber(float(report.Surface.Height)))) surfaceFields.add(jsonField("failures", jsonNumber(float(report.Surface.Failures))))
+    if len(report.Surface.LastError) > 0:
+        surfaceFields.add(jsonField("message", jsonString(report.Surface.LastError))) fields.add(jsonField("surface", jsonObject(surfaceFields)))
+        if len(report.Dependencies) > 0:
+            var deps = default[JsonValue[]]
+            for dep in report.Dependencies:
+                var depFields = default[JsonField[]] depFields.add(jsonField("id", jsonString(dep.Id))) depFields.add(jsonField("title", jsonString(dep.Title))) depFields.add(jsonField("status", jsonString(statusToString(dep.Status)))) depFields.add(jsonField("message", jsonString(dep.Message)))
+                if len(dep.Tags) > 0:
+                    var tagValues = default[JsonValue[]]
+                    for tag in dep.Tags:
+                        tagValues.add(jsonString(tag)) depFields.add(jsonField("tags", jsonArray(tagValues))) deps.add(jsonObject(depFields)) fields.add(jsonField("dependencies", jsonArray(deps)))
+                        if len(report.Checklist) > 0:
+                            var checklistValues = default[JsonValue[]]
+                            for item in report.Checklist:
+                                var itemFields = default[JsonField[]] itemFields.add(jsonField("id", jsonString(item.Id))) itemFields.add(jsonField("category", jsonString(item.Category))) itemFields.add(jsonField("status", jsonString(statusToString(item.Status)))) itemFields.add(jsonField("message", jsonString(item.Message))) checklistValues.add(jsonObject(itemFields)) fields.add(jsonField("checklist", jsonArray(checklistValues)))
+                                if len(report.Suggestions) > 0:
+                                    var suggValues = default[JsonValue[]]
+                                    for sug in report.Suggestions:
+                                        suggValues.add(jsonString(sug)) fields.add(jsonField("suggestions", jsonArray(suggValues)))
+                                        jsonObject(fields)

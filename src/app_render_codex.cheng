@@ -1,0 +1,3453 @@
+import std/os
+import std/times
+import tables
+import cheng/decentralized/json_parse as jparse
+import cheng/runtime/json_ast as json
+import ide/textutils
+import cheng/gui/services/syntax as syntax
+import cheng/gui/services/diagnostics as diag
+
+fn drawCodexChip(pixels: void*, width, height, strideBytes: int32, layout: GuiLayout, x, y: float64, text: str, fg: uint32, bg: uint32, border: uint32) =
+    let padX: float64 = codexChipPadX(layout)
+    let padY: float64 = codexChipPadY(layout)
+    let h: float64 = codexChipHeight(layout)
+    let w: float64 = codexChipWidth(text, layout)
+    let xi: int32 = int32(x)
+    let yi: int32 = int32(y)
+    let wi: int32 = maxInt(1, int32(w))
+    let hi: int32 = maxInt(1, int32(h))
+    fillRect(pixels, width, height, strideBytes, xi, yi, wi, hi, border)
+    if wi > 2 && hi > 2:
+        fillRect(pixels, width, height, strideBytes, xi + 1, yi + 1, wi - 2, hi - 2, bg)
+    let textX: float64 = x + padX
+    let textY: float64 = y + padY
+    drawTextLine(pixels, width, height, strideBytes, textX, textY, fg, layout.smallFont, text)
+
+fn codexComputeMetaY(state: GuiState, layout: GuiLayout, contentX, contentMaxW, contentListY: float64): float64 =
+    var metaY: float64 = contentListY
+    let scale: float64 = layout.scale
+    let statusText = trimLine(state.codex.status)
+    let statusLabel = if len(statusText) > 0: statusText else: "ready"
+    let authLabel = if state.codex.authPending: "pending" else: guiCodexAuthStatusText()
+    let chipGapX: float64 = 6.0 * scale
+    let chipGapY: float64 = 6.0 * scale
+    let chipH: float64 = codexChipHeight(layout)
+    var chipX: float64 = contentX
+    var chipY: float64 = metaY
+    var chipRowUsed: bool = false
+    if len(statusLabel) > 0:
+        let statusChip = "Status: " + statusLabel
+        let chipW: float64 = codexChipWidth(statusChip, layout)
+        if chipX + chipW > contentX + contentMaxW && chipRowUsed:
+            chipX = contentX
+            chipY = chipY + chipH + chipGapY
+            chipRowUsed = false
+        chipX = chipX + chipW + chipGapX
+        chipRowUsed = true
+    if len(authLabel) > 0:
+        let authChip = "Auth: " + authLabel
+        let chipW: float64 = codexChipWidth(authChip, layout)
+        if chipX + chipW > contentX + contentMaxW && chipRowUsed:
+            chipX = contentX
+            chipY = chipY + chipH + chipGapY
+            chipRowUsed = false
+        chipX = chipX + chipW + chipGapX
+        chipRowUsed = true
+    if chipRowUsed:
+        metaY = chipY + chipH + chipGapY
+    let contextCount: int32 = seqLenString(state.codex.contextItems)
+    if contextCount > 0:
+        var ctxX: float64 = contentX
+        var ctxY: float64 = metaY
+        var ctxRowUsed: bool = false
+        let maxItems: int32 = minInt(contextCount, 2)
+        for ctxIdx in 0..<maxItems:
+            let item = seqGetString(state.codex.contextItems, ctxIdx)
+            var label = codexContextLabel(item)
+            if len(label) == 0:
+                continue
+            label = truncateTextToWidth(label, contentMaxW * 0.7, layout.smallFont)
+            let ctxW: float64 = codexChipWidth(label, layout)
+            if ctxX + ctxW > contentX + contentMaxW && ctxRowUsed:
+                ctxX = contentX
+                ctxY = ctxY + chipH + chipGapY
+                ctxRowUsed = false
+            ctxX = ctxX + ctxW + chipGapX
+            ctxRowUsed = true
+        if contextCount > maxItems:
+            let moreLabel = "+" + intToStr(contextCount - maxItems) + " more"
+            let moreW: float64 = codexChipWidth(moreLabel, layout)
+            if ctxX + moreW > contentX + contentMaxW && ctxRowUsed:
+                ctxX = contentX
+                ctxY = ctxY + chipH + chipGapY
+                ctxRowUsed = false
+            ctxX = ctxX + moreW + chipGapX
+            ctxRowUsed = true
+        if ctxRowUsed:
+            metaY = ctxY + chipH + chipGapY
+    return metaY
+
+fn codexComputeActionLayout(state: GuiState, layout: GuiLayout, contentX, contentMaxW, metaY: float64, outCalloutTitle: var str, outCalloutBody: var str, outCalloutX, outCalloutY, outCalloutW, outCalloutH: var float64, outCalloutRects: var CodexActionRect[], outExtraRects: var CodexActionRect[], outActionBottom: var float64) =
+    let scale: float64 = layout.scale
+    let signedIn: bool = guiCodexIsAuthed(state)
+    let showLogin: bool = ! signedIn
+    let inlineActions: CodexAction[] = codexInlineActions(state, showLogin)
+    var calloutActions: CodexAction[] = default[CodexAction[]]
+    var extraActions: CodexAction[] = default[CodexAction[]]
+    var calloutTitle = ""
+    var calloutBody = ""
+    var calloutX: float64 = contentX
+    var calloutY: float64 = metaY
+    var calloutW: float64 = contentMaxW
+    var calloutH: float64 = 0.0
+    var calloutRects: CodexActionRect[] = default[CodexActionRect[]]
+    var extraRects: CodexActionRect[] = default[CodexActionRect[]]
+    var actionBottom: float64 = metaY
+    if showLogin:
+        calloutTitle = "Sign in to use Codex"
+        calloutBody = "Sign in with ChatGPT to start chatting and coding."
+        calloutActions = inlineActions
+    elif ! state.codex.ptyActive:
+        calloutTitle = "Start Codex"
+        calloutBody = "Connect the local Codex service to enable chat and actions."
+        calloutActions = inlineActions
+    else:
+        extraActions = inlineActions
+    if len(calloutTitle) > 0:
+        let calloutPad: float64 = 10.0 * scale
+        let titleY: float64 = calloutY + calloutPad
+        let bodyY: float64 = titleY + layout.smallFont + 4.0 * scale
+        let actionsY: float64 = bodyY + layout.smallFont + 8.0 * scale
+        calloutRects = codexInlineActionRects(calloutActions, layout, calloutX + calloutPad, actionsY, calloutW - calloutPad * 2.0)
+        var calloutBottom: float64 = bodyY + layout.smallFont
+        for cIdx in 0..<calloutRects.len:
+            let rect = calloutRects[cIdx]
+            let bottom = rect.y + rect.h
+            if bottom > calloutBottom:
+                calloutBottom = bottom
+        calloutBottom = calloutBottom + calloutPad
+        if calloutBottom < calloutY + layout.lineHeight:
+            calloutBottom = calloutY + layout.lineHeight
+        calloutH = calloutBottom - calloutY
+        actionBottom = calloutY + calloutH + 8.0 * scale
+    if extraActions.len > 0:
+        extraRects = codexInlineActionRects(extraActions, layout, contentX, metaY, contentMaxW)
+        var bottom: float64 = actionBottom
+        for aIdx in 0..<extraRects.len:
+            let rect = extraRects[aIdx]
+            let rectBottom = rect.y + rect.h
+            if rectBottom > bottom:
+                bottom = rectBottom
+        actionBottom = bottom + 8.0 * scale
+    outCalloutTitle = calloutTitle
+    outCalloutBody = calloutBody
+    outCalloutX = calloutX
+    outCalloutY = calloutY
+    outCalloutW = calloutW
+    outCalloutH = calloutH
+    outCalloutRects = calloutRects
+    outExtraRects = extraRects
+    outActionBottom = actionBottom
+
+fn drawCodexPanel(pixels: void*, width, height, strideBytes: int32, theme: GuiTheme, state: GuiState, layout: GuiLayout, panelX: int32, panelTop: int32, panelW: int32, panelH: int32, headerTop: int32, hoverRow: int32) =
+    if panelW <= 0 || panelH <= 0:
+        return
+    let scale: float64 = layout.scale
+    let signedIn: bool = guiCodexIsAuthed(state)
+    let headerH: int32 = panelHeaderHeight(layout)
+    var contentX: float64 = float64(panelX) + panelPaddingX(layout)
+    var contentMaxW: float64 = float64(panelW) - 2.0 * panelPaddingX(layout)
+    if contentMaxW < 0.0:
+        contentMaxW = 0.0
+    let codexCount: int32 = seqLenString(state.codex.lines)
+    let queueCount: int32 = seqLenString(state.codex.queue)
+    let codexHeader: str = if codexCount > 0: "Codex (" + intToStr(codexCount) + ")" else: "Codex"
+    let titleY: float64 = panelHeaderTextY(layout, headerTop)
+    var headerTextX: float64 = contentX
+    if ensureCodexIconMask():
+        let mask = codexIconMask
+        var iconScale: float64 = 1.0
+        if mask.w > 0:
+            iconScale = layout.headerFont / float64(mask.w)
+        let iconW: int32 = maxInt(1, int32(float64(mask.w) * iconScale))
+        let iconH: int32 = maxInt(1, int32(float64(mask.h) * iconScale))
+        let iconX: int32 = int32(contentX)
+        let iconY: int32 = headerTop + maxInt(0, (headerH - iconH) / 2)
+        drawIconMaskScaled(pixels, width, height, strideBytes, mask, iconX, iconY, iconScale, theme.subText)
+        headerTextX = contentX + float64(iconW) + 6.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, headerTextX, titleY, theme.subText, layout.headerFont, codexHeader)
+    let headerActions: CodexActionRect[] = codexToolbarActionRects(state, layout, contentX, contentX + contentMaxW, headerTop, headerH)
+    for hIdx in 0..<headerActions.len:
+        let rect = headerActions[hIdx]
+        let mask = codexHeaderActionMask(rect.action)
+        if iconMaskValid(mask):
+            let iconScale: float64 = codexHeaderActionScale(layout, mask)
+            let iconW: float64 = float64(mask.w) * iconScale
+            let iconH: float64 = float64(mask.h) * iconScale
+            let iconX: int32 = int32(rect.x + (rect.w - iconW) * 0.5)
+            let iconY: int32 = int32(rect.y + (rect.h - iconH) * 0.5)
+            let iconColor: uint32 = if rect.action.enabled: theme.subText else: theme.panelAlt
+            drawIconMaskScaled(pixels, width, height, strideBytes, mask, iconX, iconY, iconScale, iconColor)
+        else:
+            let glyph = codexActionGlyph(rect.action)
+            if len(glyph) > 0:
+                let glyphColor: uint32 = if rect.action.enabled: theme.subText else: theme.panelAlt
+                drawTextLine(pixels, width, height, strideBytes, rect.x + explorerHeaderActionPad(layout), titleY, glyphColor, explorerHeaderActionFont(layout), glyph)
+    if headerH > 0:
+        fillRect(pixels, width, height, strideBytes, panelX, headerTop + headerH - 1, panelW, 1, theme.border)
+    let contentListY: float64 = panelListStartY(layout, headerTop)
+    var metaY: float64 = contentListY
+    let statusText = trimLine(state.codex.status)
+    let statusLabel = if len(statusText) > 0: statusText else: "ready"
+    let authLabel = if state.codex.authPending: "pending" else: guiCodexAuthStatusText()
+    let statusLower = textutils.toLowerAscii(statusText)
+    var statusColor: uint32 = theme.subText
+    if indexOfSubstr(statusLower, "error", 0) >= 0 || indexOfSubstr(statusLower, "fail", 0) >= 0:
+        statusColor = theme.diagError
+    elif indexOfSubstr(statusLower, "run", 0) >= 0 || indexOfSubstr(statusLower, "apply", 0) >= 0 || indexOfSubstr(statusLower, "review", 0) >= 0:
+        statusColor = theme.accent
+    let chipGapX: float64 = 6.0 * scale
+    let chipGapY: float64 = 6.0 * scale
+    let chipH: float64 = codexChipHeight(layout)
+    var chipX: float64 = contentX
+    var chipY: float64 = metaY
+    var chipRowUsed: bool = false
+    if len(statusLabel) > 0:
+        let statusChip = "Status: " + statusLabel
+        let chipW: float64 = codexChipWidth(statusChip, layout)
+        if chipX + chipW > contentX + contentMaxW && chipRowUsed:
+            chipX = contentX
+            chipY = chipY + chipH + chipGapY
+            chipRowUsed = false
+        drawCodexChip(pixels, width, height, strideBytes, layout, chipX, chipY, statusChip, statusColor, theme.panelAlt, theme.border)
+        chipX = chipX + chipW + chipGapX
+        chipRowUsed = true
+    if len(authLabel) > 0:
+        let authChip = "Auth: " + authLabel
+        let chipW: float64 = codexChipWidth(authChip, layout)
+        if chipX + chipW > contentX + contentMaxW && chipRowUsed:
+            chipX = contentX
+            chipY = chipY + chipH + chipGapY
+            chipRowUsed = false
+        drawCodexChip(pixels, width, height, strideBytes, layout, chipX, chipY, authChip, theme.subText, theme.panelAlt, theme.border)
+        chipX = chipX + chipW + chipGapX
+        chipRowUsed = true
+    if chipRowUsed:
+        metaY = chipY + chipH + chipGapY
+    let contextCount: int32 = seqLenString(state.codex.contextItems)
+    if contextCount > 0:
+        var ctxX: float64 = contentX
+        var ctxY: float64 = metaY
+        var ctxRowUsed: bool = false
+        let maxItems: int32 = minInt(contextCount, 2)
+        for ctxIdx in 0..<maxItems:
+            let item = seqGetString(state.codex.contextItems, ctxIdx)
+            var label = codexContextLabel(item)
+            if len(label) == 0:
+                continue
+            label = truncateTextToWidth(label, contentMaxW * 0.7, layout.smallFont)
+            let ctxW: float64 = codexChipWidth(label, layout)
+            if ctxX + ctxW > contentX + contentMaxW && ctxRowUsed:
+                ctxX = contentX
+                ctxY = ctxY + chipH + chipGapY
+                ctxRowUsed = false
+            drawCodexChip(pixels, width, height, strideBytes, layout, ctxX, ctxY, label, theme.subText, theme.panelAlt, theme.border)
+            ctxX = ctxX + ctxW + chipGapX
+            ctxRowUsed = true
+        if contextCount > maxItems:
+            let moreLabel = "+" + intToStr(contextCount - maxItems) + " more"
+            let moreW: float64 = codexChipWidth(moreLabel, layout)
+            if ctxX + moreW > contentX + contentMaxW && ctxRowUsed:
+                ctxX = contentX
+                ctxY = ctxY + chipH + chipGapY
+                ctxRowUsed = false
+            drawCodexChip(pixels, width, height, strideBytes, layout, ctxX, ctxY, moreLabel, theme.subText, theme.panelAlt, theme.border)
+            ctxRowUsed = true
+        if ctxRowUsed:
+            metaY = ctxY + chipH + chipGapY
+    var calloutTitle: str = ""
+    var calloutBody: str = ""
+    var calloutX: float64 = 0.0
+    var calloutY: float64 = 0.0
+    var calloutW: float64 = 0.0
+    var calloutH: float64 = 0.0
+    var calloutRects: CodexActionRect[] = default[CodexActionRect[]]
+    var extraRects: CodexActionRect[] = default[CodexActionRect[]]
+    var actionBottom: float64 = metaY
+    codexComputeActionLayout(state, layout, contentX, contentMaxW, metaY, calloutTitle, calloutBody, calloutX, calloutY, calloutW, calloutH, calloutRects, extraRects, actionBottom)
+    if len(calloutTitle) > 0:
+        let calloutPad: float64 = 10.0 * scale
+        let titleY: float64 = calloutY + calloutPad
+        let bodyY: float64 = titleY + layout.smallFont + 4.0 * scale
+        fillRect(pixels, width, height, strideBytes, int32(calloutX), int32(calloutY), maxInt(1, int32(calloutW)), maxInt(1, int32(calloutH)), theme.border)
+        if calloutW > 2.0 && calloutH > 2.0:
+            fillRect(pixels, width, height, strideBytes, int32(calloutX + 1.0), int32(calloutY + 1.0), maxInt(1, int32(calloutW - 2.0)), maxInt(1, int32(calloutH - 2.0)), theme.panelAlt)
+        drawTextLine(pixels, width, height, strideBytes, calloutX + calloutPad, titleY, theme.text, layout.smallFont, calloutTitle)
+        drawTextLine(pixels, width, height, strideBytes, calloutX + calloutPad, bodyY, theme.subText, layout.smallFont, calloutBody)
+        for aIdx in 0..<calloutRects.len:
+            let rect = calloutRects[aIdx]
+            let rx: int32 = int32(rect.x)
+            let ry: int32 = int32(rect.y)
+            let rw: int32 = maxInt(1, int32(rect.w))
+            let rh: int32 = maxInt(1, int32(rect.h))
+            let enabled: bool = rect.action.enabled
+            let cmd = rect.action.cmd
+            var fillColor: uint32 = if enabled: theme.panel else: theme.panelAlt
+            var borderColor: uint32 = theme.border
+            var textColor: uint32 = if enabled: theme.text else: theme.subText
+            if enabled && (cmd == "login" || cmd == "connect"):
+                fillColor = theme.accent
+                borderColor = theme.accent
+                textColor = theme.statusBarFg
+            elif enabled && cmd == "apikey":
+                fillColor = theme.panel
+                borderColor = theme.border
+                textColor = theme.text
+            fillRect(pixels, width, height, strideBytes, rx, ry, rw, rh, borderColor)
+            if rw > 2 && rh > 2:
+                fillRect(pixels, width, height, strideBytes, rx + 1, ry + 1, rw - 2, rh - 2, fillColor)
+            var textX: float64 = rect.x + 8.0 * scale
+            let textY: float64 = tabTextY(rect.y, rh, layout)
+            let icon = codexActionGlyph(rect.action)
+            if len(icon) > 0:
+                let iconW: float64 = textWidthForFont(icon, layout.smallFont, layout)
+                drawTextLine(pixels, width, height, strideBytes, textX, textY, textColor, layout.smallFont, icon)
+                textX = textX + iconW + 6.0 * scale
+            drawTextLine(pixels, width, height, strideBytes, textX, textY, textColor, layout.smallFont, rect.action.label)
+    if extraRects.len > 0:
+        for aIdx in 0..<extraRects.len:
+            let rect = extraRects[aIdx]
+            let rx: int32 = int32(rect.x)
+            let ry: int32 = int32(rect.y)
+            let rw: int32 = maxInt(1, int32(rect.w))
+            let rh: int32 = maxInt(1, int32(rect.h))
+            let enabled: bool = rect.action.enabled
+            let cmd = rect.action.cmd
+            var fillColor: uint32 = if enabled: theme.panel else: theme.panelAlt
+            var borderColor: uint32 = theme.border
+            var textColor: uint32 = if enabled: theme.text else: theme.subText
+            if enabled && (cmd == "approve" || cmd == "apply"):
+                fillColor = theme.accent
+                borderColor = theme.accent
+                textColor = theme.statusBarFg
+            elif enabled && cmd == "decline":
+                fillColor = theme.diagError
+                borderColor = theme.diagError
+                textColor = theme.statusBarFg
+            fillRect(pixels, width, height, strideBytes, rx, ry, rw, rh, borderColor)
+            if rw > 2 && rh > 2:
+                fillRect(pixels, width, height, strideBytes, rx + 1, ry + 1, rw - 2, rh - 2, fillColor)
+            var textX: float64 = rect.x + 8.0 * scale
+            let textY: float64 = tabTextY(rect.y, rh, layout)
+            let icon = codexActionGlyph(rect.action)
+            if len(icon) > 0:
+                let iconW: float64 = textWidthForFont(icon, layout.smallFont, layout)
+                drawTextLine(pixels, width, height, strideBytes, textX, textY, textColor, layout.smallFont, icon)
+                textX = textX + iconW + 6.0 * scale
+            drawTextLine(pixels, width, height, strideBytes, textX, textY, textColor, layout.smallFont, rect.action.label)
+    let paneBottom: float64 = float64(panelTop + panelH)
+    let inputH: float64 = codexInputHeight(layout)
+    var inputY: float64 = paneBottom - inputH - 8.0 * scale
+    if inputY < actionBottom + 8.0 * scale:
+        inputY = actionBottom + 8.0 * scale
+    let inputX: float64 = contentX
+    let inputW: float64 = contentMaxW
+    let messagesTop: float64 = actionBottom
+    var messagesBottom: float64 = inputY - 8.0 * scale
+    var queueLineH: float64 = 0.0
+    var queueY: float64 = 0.0
+    if queueCount > 0:
+        queueLineH = layout.smallFont + 4.0 * scale
+        queueY = messagesBottom - queueLineH
+        messagesBottom = queueY - 4.0 * scale
+    let msgH: float64 = codexMessageHeight(layout)
+    let msgGap: float64 = 6.0 * scale
+    let msgStride: float64 = msgH + msgGap
+    let availH: float64 = messagesBottom - messagesTop
+    if codexCount == 0 && len(calloutTitle) == 0 && availH > layout.smallFont:
+        var emptyText = "Ask Codex to do anything"
+        if ! signedIn:
+            emptyText = "Sign in to start"
+        elif ! state.codex.ptyActive:
+            emptyText = "Connect to start"
+        drawTextLine(pixels, width, height, strideBytes, contentX, messagesTop, theme.subText, layout.smallFont, emptyText)
+    elif codexCount > 0 && availH >= msgH:
+        let visible: int32 = maxInt(1, int32(availH / msgStride))
+        let maxStart: int32 = maxInt(0, codexCount - visible)
+        let scroll: int32 = clampInt(state.codex.scroll, 0, maxStart)
+        let startIdx: int32 = maxStart - scroll
+        let rowPadX: float64 = 10.0 * scale
+        let rowPadY: float64 = 6.0 * scale
+        let labelGap: float64 = 4.0 * scale
+        let bodyLineH: float64 = layout.smallFont + 2.0 * scale
+        for msgIdx in 0..<visible:
+            if startIdx + msgIdx >= codexCount:
+                break
+            let lineText = seqGetString(state.codex.lines, startIdx + msgIdx)
+            let absoluteIdx: int32 = startIdx + msgIdx
+            let rowY: float64 = messagesTop + float64(msgIdx) * msgStride
+            let rowH: float64 = msgH
+            let kind: CodexMessageKind = codexLineKind(lineText)
+            var rowFill: uint32 = theme.panelAlt
+            if absoluteIdx == state.codex.selected:
+                rowFill = theme.selection
+            elif absoluteIdx == hoverRow:
+                rowFill = theme.lineHighlight
+            fillRect(pixels, width, height, strideBytes, int32(contentX), int32(rowY), maxInt(1, int32(contentMaxW)), maxInt(1, int32(rowH)), rowFill)
+            fillRect(pixels, width, height, strideBytes, int32(contentX), int32(rowY + rowH - 1.0), maxInt(1, int32(contentMaxW)), 1, theme.border)
+            var stripeColor: uint32 = theme.border
+            if kind == ckUser:
+                stripeColor = theme.accent
+            elif kind == ckTool:
+                stripeColor = theme.diagInfo
+            elif kind == ckSystem:
+                stripeColor = theme.subText
+            fillRect(pixels, width, height, strideBytes, int32(contentX), int32(rowY), maxInt(1, int32(2.0 * scale)), maxInt(1, int32(rowH)), stripeColor)
+            let label = codexLineLabel(kind)
+            var labelColor: uint32 = theme.subText
+            if kind == ckUser:
+                labelColor = theme.accent
+            elif kind == ckAssistant:
+                labelColor = theme.text
+            elif kind == ckTool:
+                labelColor = theme.diagInfo
+            let labelX: float64 = contentX + rowPadX
+            let labelY: float64 = rowY + rowPadY
+            drawTextLine(pixels, width, height, strideBytes, labelX, labelY, labelColor, layout.smallFont, label)
+            var messageText: str = codexStripPrefix(lineText)
+            if len(messageText) == 0:
+                messageText = lineText
+            let openTarget = guiCodexOpenTargetFromLine(lineText)
+            let openUrl = guiCodexUrlFromLine(lineText)
+            var messageColor: uint32 = theme.text
+            if kind == ckTool || kind == ckSystem:
+                messageColor = theme.subText
+            if len(openTarget) > 0 || len(openUrl) > 0:
+                messageColor = theme.accent
+            let textMaxW: float64 = contentMaxW - rowPadX * 2.0
+            let bodyLines: str[] = splitLinesSimple(messageText)
+            for bodyIdx in 0..<2:
+                if bodyIdx >= seqLenString(bodyLines):
+                    break
+                let rawLine = seqGetString(bodyLines, bodyIdx)
+                var lineMaxW: float64 = textMaxW
+                if lineMaxW < 0.0:
+                    lineMaxW = 0.0
+                let shown = truncateTextToWidth(rawLine, lineMaxW, layout.smallFont)
+                let bodyY: float64 = labelY + layout.smallFont + labelGap + float64(bodyIdx) * bodyLineH
+                drawTextLine(pixels, width, height, strideBytes, labelX, bodyY, messageColor, layout.smallFont, shown)
+    if queueCount > 0:
+        let last = seqGetString(state.codex.queue, queueCount - 1)
+        var queueText = "Queued (" + intToStr(queueCount) + "): " + last
+        queueText = truncateTextToWidth(queueText, contentMaxW, layout.smallFont)
+        let queueTextY: float64 = queueY + (queueLineH - layout.smallFont) * 0.5
+        drawTextLine(pixels, width, height, strideBytes, contentX, queueTextY, theme.subText, layout.smallFont, queueText)
+    let borderColor: uint32 = if state.focus == fkCodex: theme.accent else: theme.border
+    let inputXI: int32 = int32(inputX)
+    let inputYI: int32 = int32(inputY)
+    let inputWI: int32 = maxInt(1, int32(inputW))
+    let inputHI: int32 = maxInt(1, int32(inputH))
+    let sendGap: float64 = 6.0 * scale
+    var sendW: float64 = inputH
+    if sendW + sendGap > inputW:
+        sendW = 0.0
+    let sendX: float64 = inputX + inputW - sendW
+    let sendY: float64 = inputY
+    var inputTextW: float64 = inputW
+    if sendW > 0.0:
+        inputTextW = inputW - sendW - sendGap
+    if inputTextW < 0.0:
+        inputTextW = 0.0
+    let sendEnabled: bool = signedIn && len(trimLine(state.codex.input)) > 0
+    fillRect(pixels, width, height, strideBytes, inputXI, inputYI, inputWI, inputHI, borderColor)
+    if inputWI > 2 && inputHI > 2:
+        fillRect(pixels, width, height, strideBytes, inputXI + 1, inputYI + 1, inputWI - 2, inputHI - 2, theme.panel)
+    if sendW > 0.0:
+        let sendXI: int32 = int32(sendX)
+        let sendWI: int32 = maxInt(1, int32(sendW))
+        fillRect(pixels, width, height, strideBytes, sendXI, inputYI, 1, inputHI, theme.border)
+        if sendWI > 2 && inputHI > 2:
+            let sendFill: uint32 = if sendEnabled: theme.panelAlt else: theme.panel
+            fillRect(pixels, width, height, strideBytes, sendXI + 1, inputYI + 1, sendWI - 2, inputHI - 2, sendFill)
+        var sendGlyph = ">"
+        if useCodicons():
+            let glyph = codiconGlyph(CodiconSend)
+            if len(glyph) > 0:
+                sendGlyph = glyph
+        let glyphFont: float64 = layout.smallFont
+        let glyphW: float64 = textWidthForFont(sendGlyph, glyphFont, layout)
+        let glyphX: float64 = sendX + (sendW - glyphW) * 0.5
+        let glyphY: float64 = sendY + (inputH - glyphFont) * 0.5
+        let glyphColor: uint32 = if sendEnabled: theme.text else: theme.subText
+        drawTextLine(pixels, width, height, strideBytes, glyphX, glyphY, glyphColor, glyphFont, sendGlyph)
+    let inputPadX: float64 = 10.0 * scale
+    let inputPadY: float64 = 6.0 * scale
+    let inputTextX: float64 = inputX + inputPadX
+    let inputTextY: float64 = inputY + inputPadY
+    let inputLineH: float64 = layout.smallFont + 2.0 * scale
+    if len(state.codex.input) == 0:
+        var placeholder = "Ask Codex to do anything"
+        if ! signedIn:
+            placeholder = "Sign in to start"
+        elif ! state.codex.ptyActive:
+            placeholder = "Connect to start"
+        let shownPlaceholder = truncateTextToWidth(placeholder, inputTextW - 2.0 * inputPadX, layout.smallFont)
+        drawTextLine(pixels, width, height, strideBytes, inputTextX, inputTextY, theme.subText, layout.smallFont, shownPlaceholder)
+        if state.focus == fkCodex:
+            let caretW: int32 = maxInt(1, int32(scale))
+            fillRect(pixels, width, height, strideBytes, int32(inputTextX), int32(inputTextY), caretW, maxInt(1, int32(layout.smallFont)), theme.text)
+    else:
+        let inputLines: str[] = splitLinesSimple(state.codex.input)
+        let inputLineCount: int32 = minInt(seqLenString(inputLines), 2)
+        for lineIdx in 0..<inputLineCount:
+            let rawLine = seqGetString(inputLines, lineIdx)
+            let shown = truncateTextToWidth(rawLine, inputTextW - 2.0 * inputPadX, layout.smallFont)
+            let lineY = inputTextY + float64(lineIdx) * inputLineH
+            drawTextLine(pixels, width, height, strideBytes, inputTextX, lineY, theme.text, layout.smallFont, shown)
+            if lineIdx == inputLineCount - 1:
+                caretLine = shown
+                caretY = lineY
+        if state.focus == fkCodex:
+            let caretW: int32 = maxInt(1, int32(scale))
+            let caretX: float64 = inputTextX + textWidthForFont(caretLine, layout.smallFont, layout)
+            fillRect(pixels, width, height, strideBytes, int32(caretX), int32(caretY), caretW, maxInt(1, int32(layout.smallFont)), theme.text)
+    if state.codex.overlayActive:
+        let overlayPad: float64 = 10.0 * scale
+        let overlayX: float64 = contentX
+        let overlayY: float64 = contentListY
+        let overlayW: float64 = contentMaxW
+        let overlayH: float64 = paneBottom - contentListY
+        let overlayXI: int32 = int32(overlayX)
+        let overlayYI: int32 = int32(overlayY)
+        let overlayWI: int32 = maxInt(1, int32(overlayW))
+        let overlayHI: int32 = maxInt(1, int32(overlayH))
+        fillRect(pixels, width, height, strideBytes, overlayXI, overlayYI, overlayWI, overlayHI, theme.border)
+        if overlayWI > 2 && overlayHI > 2:
+            fillRect(pixels, width, height, strideBytes, overlayXI + 1, overlayYI + 1, overlayWI - 2, overlayHI - 2, theme.panel)
+        let title = "Transcript (Esc to close)"
+        let titleY: float64 = overlayY + overlayPad
+        drawTextLine(pixels, width, height, strideBytes, overlayX + overlayPad, titleY, theme.text, layout.smallFont, title)
+        let bodyY: float64 = titleY + layout.smallFont + 6.0 * scale
+        let lineH: float64 = layout.smallFont + 2.0 * scale
+        let availBodyH: float64 = paneBottom - bodyY - overlayPad
+        if availBodyH > 0.0:
+            let visible: int32 = maxInt(1, int32(availBodyH / lineH))
+            let total: int32 = seqLenString(state.codex.lines)
+            let maxStart: int32 = maxInt(0, total - visible)
+            let scroll: int32 = clampInt(state.codex.overlayScroll, 0, maxStart)
+            let startIdx: int32 = maxStart - scroll
+            for lineIdx in 0..<visible:
+                if startIdx + lineIdx >= total:
+                    break
+                let text = seqGetString(state.codex.lines, startIdx + lineIdx)
+                let shown = truncateTextToWidth(text, overlayW - overlayPad * 2.0, layout.smallFont)
+                let lineY: float64 = bodyY + float64(lineIdx) * lineH
+                drawTextLine(pixels, width, height, strideBytes, overlayX + overlayPad, lineY, theme.subText, layout.smallFont, shown)
+
+fn guiCodexJoinContext(items: str[]): str =
+    var outVal = ""
+    for idx in 0..<seqLenString(items):
+        if len(outVal) > 0:
+            outVal = outVal + "\n\n"
+        outVal = outVal + seqGetString(items, idx)
+    return outVal
+
+fn guiCodexBuildPrompt(state: GuiState, prompt: str): str =
+    let contextCount = seqLenString(state.codex.contextItems)
+    let lang = guiCodexPreferredLanguage()
+    if contextCount == 0 && len(lang) == 0:
+        return prompt
+    var parts: str[] = default[str[]]
+    if len(lang) > 0:
+        parts.add("Language: " + lang)
+    if contextCount > 0:
+        let contextText = guiCodexJoinContext(state.codex.contextItems)
+        parts.add("Context:\n" + contextText)
+    return textutils.joinStrings(parts, "\n\n") + "\n\nUser:\n" + prompt
+
+fn guiCodexAddContextItem(state: GuiState, displayLabel: str, promptLabel: str, body: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let trimmed = trimLine(body)
+    if len(trimmed) == 0:
+        next.statusMsg = "codex: context empty"
+        return next
+    let labelText = if len(promptLabel) > 0: promptLabel else: displayLabel
+    var contextItem = labelText
+    if len(body) > 0:
+        contextItem = labelText + "\n" + body
+    addPtr_string(&next.codex.contextItems, contextItem)
+    if len(displayLabel) > 0:
+        next = guiCodexAppendLine(next, "context: " + displayLabel)
+    else:
+        next = guiCodexAppendLine(next, "context: add")
+    next = guiCodexAppendLine(next, body)
+    next.statusMsg = "codex: add context"
+    return next
+
+fn guiCodexAnchorSuffix(anchor: str): str =
+    let trimmed = trimLine(anchor)
+    if len(trimmed) == 0:
+        return ""
+    let lower = textutils.toLowerAscii(trimmed)
+    if lower[0] != 'l':
+        return ""
+    var i: int32 = 1
+    var lineText = ""
+    while i < len(trimmed) && syntax.isDigitChar(trimmed[i]):
+        lineText = lineText + $ trimmed[i]
+        i = i + 1
+    if len(lineText) == 0:
+        return ""
+    var colText = ""
+    if i < len(trimmed) && lower[i] == 'c':
+        i = i + 1
+        while i < len(trimmed) && syntax.isDigitChar(trimmed[i]):
+            colText = colText + $ trimmed[i]
+            i = i + 1
+    if len(colText) > 0:
+        return ":" + lineText + ":" + colText
+    return ":" + lineText
+
+fn guiCodexLooksLikePath(path: str): bool =
+    let trimmed = trimLine(path)
+    if len(trimmed) == 0:
+        return false
+    if startsWithPrefix(trimmed, "/") || startsWithPrefix(trimmed, "./") || startsWithPrefix(trimmed, "../") || startsWithPrefix(trimmed, "~"):
+        return true
+    if indexOfSubstr(trimmed, "/", 0) >= 0:
+        return true
+    if indexOfSubstr(trimmed, "\\", 0) >= 0:
+        return true
+    if trimmed[0] == '.':
+        return true
+    var lastDot: int32 = -1
+    for idx in 0..<len(trimmed):
+        if trimmed[idx] == '.':
+            lastDot = idx
+    if lastDot > 0 && lastDot < len(trimmed) - 1:
+        let ext = sliceFrom(trimmed, lastDot + 1)
+        if len(ext) > 0 && len(ext) <= 8:
+            var ok = true
+            for eidx in 0..<len(ext):
+                if ! (syntax.isAlphaChar(ext[eidx]) || syntax.isDigitChar(ext[eidx])):
+                    ok = false
+                    break
+            if ok:
+                return true
+    return false
+
+fn guiCodexNormalizeOpenTarget(target: str): str =
+    let trimmed = trimLine(target)
+    if len(trimmed) == 0:
+        return ""
+    var outVal = trimmed
+    let lower = textutils.toLowerAscii(outVal)
+    if startsWithPrefix(lower, "file://"):
+        outVal = sliceFrom(outVal, len("file://"))
+        let outLower = textutils.toLowerAscii(outVal)
+        if startsWithPrefix(outLower, "localhost/"):
+            outVal = sliceFrom(outVal, len("localhost/"))
+    let hashIdx = indexOfSubstr(outVal, "#", 0)
+    if hashIdx > 0:
+        let path = sliceRange(outVal, 0, hashIdx - 1)
+        let anchor = sliceFrom(outVal, hashIdx + 1)
+        let suffix = guiCodexAnchorSuffix(anchor)
+        if len(suffix) > 0:
+            return path + suffix
+        return path
+    return outVal
+
+fn guiCodexOpenTarget(state: GuiState, target: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let normalized = guiCodexNormalizeOpenTarget(target)
+    if len(normalized) == 0:
+        next.statusMsg = "codex: open <path[:line[:col]]>"
+        return next
+    return openEditorInput(next, normalized)
+
+fn guiCodexOpenTargetFromLine(line: str): str =
+    let tokens: str[] = splitCommandArgs(line)
+    let idxBase = seqLenString(tokens) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            let raw = seqGetString(tokens, idx)
+            let cleaned = trimDebugToken(raw)
+            if len(cleaned) == 0:
+                continue
+            let lower = textutils.toLowerAscii(cleaned)
+            if startsWithPrefix(lower, "file://") || indexOfSubstr(lower, "#l", 0) >= 0:
+                let normalized = guiCodexNormalizeOpenTarget(cleaned)
+                if len(normalized) > 0 && guiCodexLooksLikePath(normalized):
+                    return normalized
+            let parsed: PathLineCol = parsePathLineCol(cleaned)
+            if len(parsed.path) > 0 && guiCodexLooksLikePath(parsed.path):
+                return cleaned
+    return ""
+
+fn guiCodexUrlFromLine(line: str): str =
+    let tokens: str[] = splitCommandArgs(line)
+    for idx in 0..<seqLenString(tokens):
+        let raw = seqGetString(tokens, idx)
+        let cleaned = trimDebugToken(raw)
+        if len(cleaned) == 0:
+            continue
+        let lower = textutils.toLowerAscii(cleaned)
+        if startsWithPrefix(lower, "http://") || startsWithPrefix(lower, "https://"):
+            return cleaned
+    return ""
+
+fn guiCodexAppendAuthStatus(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let status = guiCodexAuthStatusText()
+    next.codex.authStatus = status
+    next = guiCodexAppendLine(next, "auth: " + status)
+    next.statusMsg = "codex: auth"
+    return next
+
+fn guiJsonEscape(value: str): str =
+    var outVal = ""
+    for i in 0..<len(value):
+        let ch = value[i]
+        if ch == '\\':
+            outVal = outVal + "\\\\"
+        elif ch == '"':
+            outVal = outVal + "\\\""
+        elif ch == '\n':
+            outVal = outVal + "\\n"
+        elif ch == '\r':
+            outVal = outVal + "\\r"
+        elif ch == '\t':
+            outVal = outVal + "\\t"
+        else:
+            outVal = outVal + charToStr(ch)
+    return outVal
+
+fn guiJsonStringValue(value: str): str =
+    return "\"" + guiJsonEscape(value) + "\""
+
+fn guiJsonPair(key: str, value: str): str =
+    return guiJsonStringValue(key) + ":" + value
+
+fn guiJsonObject(fields: str[]): str =
+    var outVal = "{"
+    for i in 0..<len(fields):
+        if i > 0:
+            outVal = outVal + ","
+        outVal = outVal + fields[i]
+    outVal = outVal + "}"
+    return outVal
+
+fn guiJsonArray(items: str[]): str =
+    var outVal = "["
+    for i in 0..<len(items):
+        if i > 0:
+            outVal = outVal + ","
+        outVal = outVal + items[i]
+    outVal = outVal + "]"
+    return outVal
+
+fn guiJsonSkipSpaces(payload: str, startIdx: int32): int32 =
+    var idx = startIdx
+    for scanIdx in startIdx..<len(payload):
+        let ch = payload[scanIdx]
+        if ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r':
+            return scanIdx
+        idx = scanIdx + 1
+    return idx
+
+fn guiJsonFindKeyAfter(payload: str, key: str, startIdx: int32): int32 =
+    let needle = "\"" + key + "\""
+    return indexOfSubstr(payload, needle, startIdx)
+
+fn guiJsonExtractStringAfter(payload: str, key: str, startIdx: int32): str =
+    let keyIdx = guiJsonFindKeyAfter(payload, key, startIdx)
+    if keyIdx < 0:
+        return ""
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return ""
+    idx = guiJsonSkipSpaces(payload, idx + 1)
+    if idx >= len(payload) || payload[idx] != '"':
+        return ""
+    idx = idx + 1
+    var outVal = ""
+    while idx < len(payload):
+        let ch = payload[idx]
+        if ch == '\\':
+            if idx + 1 < len(payload):
+                let next = payload[idx + 1]
+                if next == 'n':
+                    outVal = outVal + "\n"
+                elif next == 'r':
+                    outVal = outVal + "\r"
+                elif next == 't':
+                    outVal = outVal + "\t"
+                else:
+                    outVal = outVal + charToStr(next)
+                idx = idx + 2
+                continue
+            break
+        if ch == '"':
+            break
+        outVal = outVal + charToStr(ch)
+        idx = idx + 1
+    return outVal
+
+fn guiJsonExtractString(payload: str, key: str): str =
+    return guiJsonExtractStringAfter(payload, key, 0)
+
+fn guiJsonExtractBoolAfter(payload: str, key: str, startIdx: int32, defaultValue: bool): bool =
+    let keyIdx = guiJsonFindKeyAfter(payload, key, startIdx)
+    if keyIdx < 0:
+        return defaultValue
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return defaultValue
+    idx = guiJsonSkipSpaces(payload, idx + 1)
+    if idx + 4 <= len(payload) && sliceRange(payload, idx, idx + 3) == "true":
+        return true
+    if idx + 5 <= len(payload) && sliceRange(payload, idx, idx + 4) == "false":
+        return false
+    return defaultValue
+
+fn guiJsonExtractId(payload: str, startIdx: int32, isString: bool*): str =
+    let keyIdx = guiJsonFindKeyAfter(payload, "id", startIdx)
+    if keyIdx < 0:
+        return ""
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + 4)
+    if idx < 0:
+        return ""
+    idx = guiJsonSkipSpaces(payload, idx + 1)
+    if idx >= len(payload):
+        return ""
+    if payload[idx] == '"':
+        if isString != nil:
+            *isString = true
+        return guiJsonExtractStringAfter(payload, "id", startIdx)
+    if isString != nil:
+        *isString = false
+    var startVal: int32 = idx
+    if payload[idx] == '-':
+        idx = idx + 1
+    while idx < len(payload):
+        let ch = payload[idx]
+        if ch < '0' || ch > '9':
+            break
+        idx = idx + 1
+    if idx <= startVal:
+        return ""
+    return sliceRange(payload, startVal, idx - 1)
+
+fn guiJsonIdPair(idText: str, isString: bool): str =
+    if isString:
+        return guiJsonPair("id", guiJsonStringValue(idText))
+    return guiJsonPair("id", idText)
+
+fn guiJsonExtractIntAfter(payload: str, key: str, startIdx: int32, defaultValue: int32): int32 =
+    let keyIdx = guiJsonFindKeyAfter(payload, key, startIdx)
+    if keyIdx < 0:
+        return defaultValue
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return defaultValue
+    idx = guiJsonSkipSpaces(payload, idx + 1)
+    var sign = 1
+    if idx < len(payload) && payload[idx] == '-':
+        sign = -1
+        idx = idx + 1
+    var value = 0
+    var saw = false
+    while idx < len(payload):
+        let ch = payload[idx]
+        if ch < '0' || ch > '9':
+            break
+        value = value * 10 + (ord(ch) - ord('0'))
+        saw = true
+        idx = idx + 1
+    if ! saw:
+        return defaultValue
+    return value * sign
+
+fn guiJsonExtractInt(payload: str, key: str, defaultValue: int32): int32 =
+    let needle = "\"" + key + "\""
+    let keyIdx: int32 = indexOfSubstr(payload, needle, 0)
+    if keyIdx < 0:
+        return defaultValue
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(needle))
+    if idx < 0:
+        return defaultValue
+    idx = guiJsonSkipSpaces(payload, idx + 1)
+    var sign = 1
+    if idx < len(payload) && payload[idx] == '-':
+        sign = -1
+        idx = idx + 1
+    var value = 0
+    var saw = false
+    while idx < len(payload):
+        let ch = payload[idx]
+        if ch < '0' || ch > '9':
+            break
+        value = value * 10 + (ord(ch) - ord('0'))
+        saw = true
+        idx = idx + 1
+    if ! saw:
+        return defaultValue
+    return value * sign
+
+fn guiCodexHomeDir(): str =
+    let envHome = getEnv("CODEX_HOME")
+    if len(envHome) > 0:
+        return envHome
+    let home = getEnv("HOME")
+    if len(home) > 0:
+        let preferred = joinPath(home, ".codex-cheng")
+        let legacy = joinPath(home, ".codex")
+        if dirExists(preferred) || fileExists(joinPath(preferred, "config.toml")):
+            return preferred
+        if dirExists(legacy) || fileExists(joinPath(legacy, "config.toml")):
+            return legacy
+        return preferred
+    return joinPath(getCurrentDir(), ".codex-cheng")
+
+fn guiCodexThreadsDir(): str =
+    return joinPath(guiCodexHomeDir(), "threads")
+
+fn guiCodexConfigPath(): str =
+    return joinPath(guiCodexHomeDir(), "config.toml")
+
+fn guiCodexOpenConfig(state: GuiState): GuiState =
+    var next: GuiState = state
+    let path = guiCodexConfigPath()
+    if len(path) == 0:
+        next.statusMsg = "codex: config path"
+        return next
+    let dir = parentDir(path)
+    if len(dir) > 0:
+        guiEnsureDirExists(dir)
+    if ! fileExists(path):
+        writeFile(path, "")
+    next = openEditorPath(next, path)
+    next.focus = fkEditor
+    next.statusMsg = "codex: config"
+    return next
+
+fn guiCodexUnescapeConfigValue(raw: str): str =
+    let trimmed = trimLine(raw)
+    if len(trimmed) < 2 || trimmed[0] != '"' || trimmed[len(trimmed) - 1] != '"':
+        return trimmed
+    var outVal = ""
+    var i: int32 = 1
+    let endIdx: int32 = len(trimmed) - 1
+    while i < endIdx:
+        let ch = trimmed[i]
+        if ch == '\\' && i + 1 < endIdx:
+            let next = trimmed[i + 1]
+            if next == 'n':
+                outVal = outVal + "\n"
+            elif next == 'r':
+                outVal = outVal + "\r"
+            elif next == 't':
+                outVal = outVal + "\t"
+            else:
+                outVal = outVal + $ next
+            i = i + 2
+            continue
+        outVal = outVal + $ ch
+        i = i + 1
+    return outVal
+
+fn guiCodexReadConfigValueFromLines(lines: str[], key: str): str =
+    if len(key) == 0:
+        return ""
+    for idx in 0..<seqLenString(lines):
+        let line = trimLine(seqGetString(lines, idx))
+        if len(line) == 0 || line[0] == '#':
+            continue
+        let eq = indexOfSubstr(line, "=", 0)
+        if eq <= 0:
+            continue
+        let keyText = trimLine(sliceRange(line, 0, eq - 1))
+        if keyText == key:
+            let valueText = trimLine(sliceRange(line, eq + 1, len(line) - 1))
+            return guiCodexUnescapeConfigValue(valueText)
+    return ""
+
+fn guiCodexReadConfigValue(key: str): str =
+    if len(key) == 0:
+        return ""
+    let path = guiCodexConfigPath()
+    if len(path) == 0 || ! fileExists(path):
+        return ""
+    let content = readFile(path)
+    if len(content) == 0:
+        return ""
+    let lines: str[] = splitLinesSimple(content)
+    if ! startsWithPrefix(key, "profiles.") && key != "profile":
+        let profile = guiCodexReadConfigValueFromLines(lines, "profile")
+        if len(profile) > 0:
+            let profileValue = guiCodexReadConfigValueFromLines(lines, "profiles." + profile + "." + key)
+            if len(profileValue) > 0:
+                return profileValue
+    return guiCodexReadConfigValueFromLines(lines, key)
+
+fn guiCodexConfigBoolValue(key: str, defaultValue: bool): bool =
+    let value = guiCodexReadConfigValue(key)
+    return envFlagEnabled(value, defaultValue)
+
+fn guiCodexPreferredLanguage(): str =
+    let envLang = getEnv("CHENG_CODEX_LANGUAGE")
+    if len(envLang) > 0:
+        return envLang
+    let altLang = getEnv("CODEX_LANGUAGE")
+    if len(altLang) > 0:
+        return altLang
+    var value = guiCodexReadConfigValue("language")
+    if len(value) == 0:
+        value = guiCodexReadConfigValue("language_preference")
+    if len(value) == 0:
+        value = guiCodexReadConfigValue("preferred_language")
+    return value
+
+fn guiCodexStartFocusValue(): str =
+    let envFocus = getEnv("CHENG_CODEX_START_FOCUS")
+    if len(envFocus) > 0:
+        return envFocus
+    let altFocus = getEnv("CODEX_START_FOCUS")
+    if len(altFocus) > 0:
+        return altFocus
+    var value = guiCodexReadConfigValue("start_focus")
+    if len(value) == 0:
+        value = guiCodexReadConfigValue("startFocus")
+    if len(value) == 0:
+        value = guiCodexReadConfigValue("focus")
+    return value
+
+fn guiCodexIsRunning(state: GuiState): bool =
+    if ! state.codex.ptyActive:
+        return false
+    let statusLower = textutils.toLowerAscii(trimLine(state.codex.status))
+    if indexOfSubstr(statusLower, "run", 0) >= 0:
+        return true
+    if indexOfSubstr(statusLower, "review", 0) >= 0:
+        return true
+    if indexOfSubstr(statusLower, "apply", 0) >= 0:
+        return true
+    if indexOfSubstr(statusLower, "compact", 0) >= 0:
+        return true
+    return false
+
+fn guiCodexIsBusy(state: GuiState): bool =
+    if ! state.codex.ptyActive:
+        return false
+    if state.codex.approval.active:
+        return true
+    let statusLower = textutils.toLowerAscii(trimLine(state.codex.status))
+    if indexOfSubstr(statusLower, "approval", 0) >= 0:
+        return true
+    if indexOfSubstr(statusLower, "start", 0) >= 0 || indexOfSubstr(statusLower, "init", 0) >= 0:
+        return true
+    return guiCodexIsRunning(state)
+
+fn guiCodexRecordHistory(state: GuiState, text: str): GuiState =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return state
+    let count: int32 = seqLenString(state.codex.inputHistory)
+    if count > 0:
+        let last = seqGetString(state.codex.inputHistory, count - 1)
+        if last == trimmed:
+            state.codex.inputHistoryIndex = -1
+            state.codex.inputHistoryStash = ""
+            return state
+    addPtr_string(&state.codex.inputHistory, trimmed)
+    state.codex.inputHistoryIndex = -1
+    state.codex.inputHistoryStash = ""
+    return state
+
+fn guiCodexHistoryPrev(state: GuiState): GuiState =
+    let count: int32 = seqLenString(state.codex.inputHistory)
+    if count <= 0:
+        return state
+    if state.codex.inputHistoryIndex < 0:
+        state.codex.inputHistoryStash = state.codex.input
+        state.codex.inputHistoryIndex = count - 1
+    else:
+        state.codex.inputHistoryIndex = maxInt(0, state.codex.inputHistoryIndex - 1)
+    state.codex.input = seqGetString(state.codex.inputHistory, state.codex.inputHistoryIndex)
+    return state
+
+fn guiCodexHistoryNext(state: GuiState): GuiState =
+    let count: int32 = seqLenString(state.codex.inputHistory)
+    if count <= 0:
+        return state
+    if state.codex.inputHistoryIndex < 0:
+        return state
+    if state.codex.inputHistoryIndex + 1 >= count:
+        state.codex.inputHistoryIndex = -1
+        state.codex.input = state.codex.inputHistoryStash
+        state.codex.inputHistoryStash = ""
+        return state
+    state.codex.inputHistoryIndex = state.codex.inputHistoryIndex + 1
+    state.codex.input = seqGetString(state.codex.inputHistory, state.codex.inputHistoryIndex)
+    return state
+
+fn guiCodexQueuePrompt(state: GuiState, prompt: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let trimmed = trimLine(prompt)
+    if len(trimmed) == 0:
+        next.statusMsg = "codex: empty"
+        return next
+    next = guiCodexRecordHistory(next, trimmed)
+    addPtr_string(&next.codex.queue, trimmed)
+    next.statusMsg = "codex: queued"
+    return next
+
+fn guiCodexRecallQueued(state: GuiState): GuiState =
+    let count: int32 = seqLenString(state.codex.queue)
+    if count <= 0:
+        return state
+    let idx: int32 = count - 1
+    let text = seqGetString(state.codex.queue, idx)
+    seqDeleteString(&state.codex.queue, idx)
+    state.codex.input = text
+    state.codex.inputHistoryIndex = -1
+    state.codex.inputHistoryStash = ""
+    state.focus = fkCodex
+    state.statusMsg = "codex: queued"
+    return state
+
+fn guiCodexDequeuePrompt(state: GuiState, outPrompt: var str): GuiState =
+    outPrompt = ""
+    if seqLenString(state.codex.queue) == 0:
+        return state
+    outPrompt = seqGetString(state.codex.queue, 0)
+    seqDeleteString(&state.codex.queue, 0)
+    return state
+
+fn guiCodexMaybeSendQueued(state: GuiState): GuiState =
+    if seqLenString(state.codex.queue) == 0:
+        return state
+    if guiCodexIsBusy(state):
+        return state
+    var prompt = ""
+    var next: GuiState = guiCodexDequeuePrompt(state, prompt)
+    if len(prompt) == 0:
+        return next
+    return guiCodexAskInternal(next, prompt, false)
+
+fn guiCodexDraftPath(): str =
+    let tempDir = guiTempDir()
+    if len(tempDir) == 0:
+        return ""
+    let stamp = int64ToStr(guiNowMs())
+    return joinPath(tempDir, "cheng_codex_draft_" + stamp + ".txt")
+
+fn guiCodexStartDraft(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    var path = next.codex.draftPath
+    if ! next.codex.draftActive || len(path) == 0 || ! fileExists(path):
+        path = guiCodexDraftPath()
+        if len(path) == 0:
+            next.statusMsg = "codex: draft temp"
+            return next
+        writeFile(path, next.codex.input)
+        next.codex.draftActive = true
+        next.codex.draftPath = path
+        next.codex.draftPrevFocus = next.focus
+        next.codex.draftPrevBuffer = next.activeBuffer
+    next = openEditorPath(next, path)
+    next.focus = fkEditor
+    next.statusMsg = "codex: draft"
+    return next
+
+fn guiCodexSyncDraftFromEditor(state: GuiState): GuiState =
+    if ! state.codex.draftActive:
+        return state
+    if len(state.codex.draftPath) == 0:
+        return state
+    if state.editor.filePath != state.codex.draftPath:
+        return state
+    state.codex.input = joinLines(state.editor.lines)
+    state.codex.inputHistoryIndex = -1
+    state.codex.inputHistoryStash = ""
+    return state
+
+fn guiCodexFinishDraftFromBuffer(state: GuiState, buffer: EditorState): GuiState =
+    if ! state.codex.draftActive:
+        return state
+    if len(state.codex.draftPath) == 0:
+        return state
+    if buffer.filePath != state.codex.draftPath:
+        return state
+    state.codex.input = joinLines(buffer.lines)
+    state.codex.inputHistoryIndex = -1
+    state.codex.inputHistoryStash = ""
+    state.codex.draftActive = false
+    state.codex.draftPath = ""
+    state.codex.draftPrevFocus = fkEditor
+    state.codex.draftPrevBuffer = -1
+    state.renderDirty = true
+    return state
+
+fn guiCodexStatusOutput(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let statusText = trimLine(next.codex.status)
+    let statusLabel = if len(statusText) > 0: statusText else: "ready"
+    let authLabel = if next.codex.authPending: "pending" else: guiCodexAuthStatusText()
+    let model = guiCodexReadConfigValue("model")
+    next = guiCodexAppendLine(next, "status: " + statusLabel)
+    if len(authLabel) > 0:
+        next = guiCodexAppendLine(next, "auth: " + authLabel)
+    if len(next.codex.threadId) > 0:
+        next = guiCodexAppendLine(next, "thread: " + next.codex.threadId)
+    if len(next.codex.turnId) > 0:
+        next = guiCodexAppendLine(next, "turn: " + next.codex.turnId)
+    if len(model) > 0:
+        next = guiCodexAppendLine(next, "model: " + model)
+    if next.codex.tokenTotal > 0:
+        let totalText = intToStr(next.codex.tokenTotal)
+        let inputText = intToStr(next.codex.tokenInput)
+        let outputText = intToStr(next.codex.tokenOutput)
+        next = guiCodexAppendLine(next, "tokens: " + totalText + " total (" + inputText + " input, " + outputText + " output)")
+    if next.codex.tokenLastTotal > 0:
+        let totalText = intToStr(next.codex.tokenLastTotal)
+        let inputText = intToStr(next.codex.tokenLastInput)
+        let outputText = intToStr(next.codex.tokenLastOutput)
+        next = guiCodexAppendLine(next, "tokens last: " + totalText + " total (" + inputText + " input, " + outputText + " output)")
+    if next.codex.tokenContextWindow > 0:
+        next = guiCodexAppendLine(next, "context window: " + intToStr(next.codex.tokenContextWindow))
+    let queued: int32 = seqLenString(next.codex.queue)
+    if queued > 0:
+        next = guiCodexAppendLine(next, "queue: " + intToStr(queued))
+    let ctxCount: int32 = seqLenString(next.codex.contextItems)
+    if ctxCount > 0:
+        next = guiCodexAppendLine(next, "context: " + intToStr(ctxCount))
+    next.statusMsg = "codex: status"
+    return next
+
+fn guiCodexPsOutput(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    next = guiTerminalEnsureSessions(next)
+    next = guiTerminalSyncActiveSession(next)
+    let count: int32 = terminalSessionLen(next.terminalSessions)
+    next = guiCodexAppendLine(next, "ps: terminals=" + intToStr(count))
+    for idx in 0..<count:
+        let session: TerminalState = terminalSessionGet(next.terminalSessions, idx)
+        let mark = if idx == next.terminalSessionActive: "*" else: " "
+        let label = if len(session.label) > 0: session.label else: "term-" + intToStr(idx + 1)
+        next = guiCodexAppendLine(next, "ps: " + mark + " " + intToStr(idx + 1) + " " + label)
+    next.statusMsg = "codex: ps"
+    return next
+
+fn guiCodexInitPromptText(): str =
+    return "Generate a file named AGENTS.md that serves as a contributor guide for this repository.\nYour goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.\nFollow the outline below, but adapt as needed - add sections if relevant, and omit those that do not apply to this project.\n\nDocument Requirements\n\n- Title the document \"Repository Guidelines\".\n- Use Markdown headings (#, ##, etc.) for structure.\n- Keep the document concise. 200-400 words is optimal.\n- Keep explanations short, direct, and specific to this repository.\n- Provide examples where helpful (commands, directory paths, naming patterns).\n- Maintain a professional, instructional tone.\n\nRecommended Sections\n\nProject Structure & Module Organization\n\n- Outline the project structure, including where the source code, tests, and assets are located.\n\nBuild, Test, and Development Commands\n\n- List key commands for building, testing, and running locally (e.g., npm test, make build).\n- Briefly explain what each command does.\n\nCoding Style & Naming Conventions\n\n- Specify indentation rules, language-specific style preferences, and naming patterns.\n- Include any formatting or linting tools used.\n\nTesting Guidelines\n\n- Identify testing frameworks and coverage requirements.\n- State test naming conventions and how to run tests.\n\nCommit & Pull Request Guidelines\n\n- Summarize commit message conventions found in the project's Git history.\n- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).\n\n(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions."
+
+fn guiCodexInit(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let root = if len(guiWorkspaceActiveRoot(next)) > 0: guiWorkspaceActiveRoot(next) else: getCurrentDir()
+    let target = joinPath(root, "AGENTS.md")
+    if fileExists(target):
+        next = guiCodexAppendLine(next, "init: AGENTS.md already exists")
+        next.statusMsg = "codex: init"
+        return next
+    let prompt = guiCodexInitPromptText()
+    return guiCodexAsk(next, prompt)
+
+fn guiCodexForkThread(state: GuiState, threadId: str): GuiState =
+    var next: GuiState = guiCodexConnect(state)
+    if ! next.codex.ptyActive:
+        return next
+    if len(threadId) == 0:
+        next.statusMsg = "codex: fork <thread>"
+        return next
+    var fields: str[] = default[str[]]
+    addPtr_string(&fields, guiJsonPair("threadId", guiJsonStringValue(threadId)))
+    next = guiCodexSendRpc(next, "thread/fork", guiJsonObject(fields))
+    next.codex.pendingRpcId = next.codex.rpcId
+    next.codex.pendingRpcKind = "thread/fork"
+    next.codex.status = "forking"
+    next.statusMsg = "codex: fork"
+    return next
+
+fn guiCodexForkCurrent(state: GuiState): GuiState =
+    if len(state.codex.threadId) == 0:
+        state.statusMsg = "codex: no thread"
+        return state
+    return guiCodexForkThread(state, state.codex.threadId)
+
+fn guiCodexRollout(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if len(next.codex.threadId) == 0:
+        next.statusMsg = "codex: no thread"
+        return next
+    let path = guiCodexThreadPath(next.codex.threadId)
+    if len(path) == 0:
+        next.statusMsg = "codex: rollout"
+        return next
+    next = guiCodexAppendLine(next, "rollout: " + path)
+    next.statusMsg = "codex: rollout"
+    return next
+
+fn guiCodexCompact(state: GuiState): GuiState =
+    var next: GuiState = guiCodexConnect(state)
+    if ! next.codex.ptyActive:
+        return next
+    if len(next.codex.threadId) == 0:
+        next.statusMsg = "codex: no thread"
+        return next
+    next.codex.tokenTotal = 0
+    next.codex.tokenInput = 0
+    next.codex.tokenOutput = 0
+    next.codex.tokenLastTotal = 0
+    next.codex.tokenLastInput = 0
+    next.codex.tokenLastOutput = 0
+    next.codex.tokenContextWindow = 0
+    var fields: str[] = default[str[]]
+    addPtr_string(&fields, guiJsonPair("threadId", guiJsonStringValue(next.codex.threadId)))
+    next = guiCodexSendRpc(next, "thread/compact", guiJsonObject(fields))
+    next.codex.status = "compacting"
+    next.statusMsg = "codex: compact"
+    return next
+
+fn guiCodexFeedbackCategoryFromInput(input: str): str =
+    let lowered = textutils.toLowerAscii(trimLine(input))
+    if lowered == "1" || lowered == "bug":
+        return "bug"
+    if lowered == "2" || lowered == "bad" || lowered == "bad result" || lowered == "bad_result" || lowered == "bad-result":
+        return "bad_result"
+    if lowered == "3" || lowered == "good" || lowered == "good result" || lowered == "good_result" || lowered == "good-result":
+        return "good_result"
+    if lowered == "4" || lowered == "other":
+        return "other"
+    return ""
+
+fn guiCodexFeedbackIsCancel(input: str): bool =
+    let lowered = textutils.toLowerAscii(trimLine(input))
+    return lowered == "q" || lowered == "quit" || lowered == "exit" || lowered == "cancel"
+
+fn guiCodexFeedbackCancel(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    next.codex.feedbackStep = cfsNone
+    next.codex.feedbackCategory = ""
+    next.codex.feedbackIncludeLogs = false
+    next = guiCodexAppendLine(next, "feedback: canceled")
+    next.statusMsg = "codex: feedback"
+    return next
+
+fn guiCodexFeedbackPromptConsent(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    next.codex.feedbackStep = cfsConsent
+    next = guiCodexAppendLine(next, "feedback: include logs? (y/n)")
+    next = guiCodexAppendLine(next, "feedback: logs include codex-logs.log")
+    if len(next.codex.threadId) > 0:
+        let rolloutPath = guiCodexThreadPath(next.codex.threadId)
+        if len(rolloutPath) > 0:
+            next = guiCodexAppendLine(next, "feedback: logs include " + rolloutPath)
+    next.statusMsg = "codex: feedback"
+    return next
+
+fn guiCodexFeedbackPromptNote(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    next.codex.feedbackStep = cfsNote
+    next = guiCodexAppendLine(next, "feedback: add a note (optional). Press Enter to submit.")
+    next = guiCodexAppendLine(next, "feedback: leave empty to skip.")
+    next.statusMsg = "codex: feedback"
+    return next
+
+fn guiCodexFeedbackSend(state: GuiState, classification: str, reason: str, includeLogs: bool): GuiState =
+    var next: GuiState = guiCodexConnect(state)
+    if ! next.codex.ptyActive:
+        next = guiCodexAppendLine(next, "feedback: codex not running")
+        next.statusMsg = "codex: feedback"
+        return next
+    var fields: str[] = default[str[]]
+    addPtr_string(&fields, guiJsonPair("classification", guiJsonStringValue(classification)))
+    if len(reason) > 0:
+        addPtr_string(&fields, guiJsonPair("reason", guiJsonStringValue(reason)))
+    if len(next.codex.threadId) > 0:
+        addPtr_string(&fields, guiJsonPair("threadId", guiJsonStringValue(next.codex.threadId)))
+    addPtr_string(&fields, guiJsonPair("includeLogs", if includeLogs: "true" else: "false"))
+    next = guiCodexSendRpc(next, "feedback/upload", guiJsonObject(fields))
+    next.codex.status = "feedback"
+    next.statusMsg = "codex: feedback"
+    return next
+
+fn guiCodexFeedbackHandleInput(state: GuiState, input: str, outHandled: var bool, outClearInput: var bool): GuiState =
+    outHandled = false
+    outClearInput = false
+    let step = state.codex.feedbackStep
+    if step == cfsNone:
+        return state
+    outHandled = true
+    outClearInput = true
+    if guiCodexFeedbackIsCancel(input):
+        return guiCodexFeedbackCancel(state)
+    let trimmed = trimLine(input)
+    if len(trimmed) == 0:
+        var next: GuiState = guiCodexShow(state)
+        next = guiCodexAppendLine(next, "feedback: input required")
+        next.statusMsg = "codex: feedback"
+        return next
+    if step == cfsCategory:
+        let category = guiCodexFeedbackCategoryFromInput(trimmed)
+        if len(category) == 0:
+            var next: GuiState = guiCodexShow(state)
+            next = guiCodexAppendLine(next, "feedback: invalid category")
+            next.statusMsg = "codex: feedback"
+            return next
+        var next: GuiState = state
+        next.codex.feedbackCategory = category
+        return guiCodexFeedbackPromptConsent(next)
+    if step == cfsConsent:
+        let lowered = textutils.toLowerAscii(trimmed)
+        if lowered == "y" || lowered == "yes":
+            var next: GuiState = state
+            next.codex.feedbackIncludeLogs = true
+            return guiCodexFeedbackPromptNote(next)
+        if lowered == "n" || lowered == "no":
+            var next: GuiState = state
+            next.codex.feedbackIncludeLogs = false
+            return guiCodexFeedbackPromptNote(next)
+        var next: GuiState = guiCodexShow(state)
+        next = guiCodexAppendLine(next, "feedback: enter y or n")
+        next.statusMsg = "codex: feedback"
+        return next
+    if step == cfsNote:
+        let category = if len(state.codex.feedbackCategory) > 0: state.codex.feedbackCategory else: "other"
+        let includeLogs = state.codex.feedbackIncludeLogs
+        var next: GuiState = state
+        next.codex.feedbackStep = cfsNone
+        next.codex.feedbackCategory = ""
+        next.codex.feedbackIncludeLogs = false
+        next = guiCodexFeedbackSend(next, category, trimmed, includeLogs)
+        next = guiCodexAppendLine(next, "feedback: uploading")
+        return next
+    return state
+
+fn guiCodexFeedbackEnabledFromLines(lines: str[]): bool =
+    var inFeedback = false
+    for idx in 0..<seqLenString(lines):
+        let line = trimLine(seqGetString(lines, idx))
+        if len(line) == 0 || line[0] == '#':
+            continue
+        if line[0] == '[' && len(line) > 2 && line[len(line) - 1] == ']':
+            let section = trimLine(sliceRange(line, 1, len(line) - 2))
+            inFeedback = section == "feedback"
+            continue
+        if inFeedback:
+            let eq = indexOfSubstr(line, "=", 0)
+            if eq > 0:
+                let key = trimLine(sliceRange(line, 0, eq - 1))
+                if key == "enabled":
+                    let value = trimLine(sliceFrom(line, eq + 1))
+                    return envFlagEnabled(value, true)
+    return true
+
+fn guiCodexFeedbackEnabled(): bool =
+    let direct = guiCodexReadConfigValue("feedback.enabled")
+    if len(direct) > 0:
+        return envFlagEnabled(direct, true)
+    let alt = guiCodexReadConfigValue("feedback_enabled")
+    if len(alt) > 0:
+        return envFlagEnabled(alt, true)
+    let path = guiCodexConfigPath()
+    if len(path) == 0 || ! fileExists(path):
+        return true
+    let content = readFile(path)
+    if len(content) == 0:
+        return true
+    return guiCodexFeedbackEnabledFromLines(splitLinesSimple(content))
+
+fn guiCodexFeedback(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if ! guiCodexFeedbackEnabled():
+        next = guiCodexAppendLine(next, "feedback: disabled by config")
+        next.statusMsg = "codex: feedback"
+        return next
+    next.codex.feedbackStep = cfsCategory
+    next.codex.feedbackCategory = ""
+    next.codex.feedbackIncludeLogs = false
+    next = guiCodexAppendLine(next, "feedback: How was this?")
+    next = guiCodexAppendLine(next, "1) bug - Crash, error message, hang, or broken UI/behavior.")
+    next = guiCodexAppendLine(next, "2) bad result - Output was off-target, incorrect, incomplete, or unhelpful.")
+    next = guiCodexAppendLine(next, "3) good result - Helpful, correct, high-quality, or delightful result.")
+    next = guiCodexAppendLine(next, "4) other - Slowness, feature suggestion, UX feedback, or anything else.")
+    next = guiCodexAppendLine(next, "Type 1-4 or 'q' to cancel.")
+    next.statusMsg = "codex: feedback"
+    return next
+
+fn guiCodexDiffOutput(state: GuiState, arg: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let workDir = guiWorkspaceActiveRoot(next)
+    let repoCheck: ExecCmdResult = execCmdEx("git rev-parse --is-inside-work-tree", {poStdErrToStdOut}, workDir)
+    if repoCheck.exitCode != 0:
+        next = guiCodexAppendLine(next, "`/diff` - _not inside a git repository_")
+        next.statusMsg = "codex: diff"
+        return next
+    var diffText = ""
+    let extra = trimLine(arg)
+    let diffCmd = if len(extra) > 0: "git diff " + extra else: "git diff"
+    let diffRes: ExecCmdResult = execCmdEx(diffCmd, {poStdErrToStdOut}, workDir)
+    if diffRes.exitCode == 0 || diffRes.exitCode == 1:
+        diffText = diffText + diffRes.output
+    let untracked: ExecCmdResult = execCmdEx("git ls-files --others --exclude-standard", {poStdErrToStdOut}, workDir)
+    if untracked.exitCode == 0:
+        let nullPath = if guiIsWindows(): "NUL" else: "/dev/null"
+        let files: str[] = splitLinesSimple(untracked.output)
+        for idx in 0..<seqLenString(files):
+            let file = trimLine(seqGetString(files, idx))
+            if len(file) > 0:
+                let cmd = "git diff --no-index -- " + guiShellQuote(nullPath) + " " + guiShellQuote(file)
+                let res: ExecCmdResult = execCmdEx(cmd, {poStdErrToStdOut}, workDir)
+                if res.exitCode == 0 || res.exitCode == 1:
+                    diffText = diffText + res.output
+    if len(diffText) == 0:
+        next = guiCodexAppendLine(next, "diff: clean")
+        next.statusMsg = "codex: diff"
+        return next
+    let lines: str[] = splitLinesSimple(diffText)
+    for lidx in 0..<seqLenString(lines):
+        let lineText = seqGetString(lines, lidx)
+        next = guiCodexAppendLine(next, lineText)
+    next.statusMsg = "codex: diff"
+    return next
+
+fn guiCodexHandleSlashCommand(state: GuiState, input: str, outHandled: var bool, outClearInput: var bool): GuiState =
+    outHandled = false
+    outClearInput = false
+    let trimmed = trimLine(input)
+    if len(trimmed) == 0 || trimmed[0] != '/':
+        return state
+    outHandled = true
+    let cmdLine = trimLine(sliceFrom(trimmed, 1))
+    if len(cmdLine) == 0:
+        state.statusMsg = "codex: command"
+        return state
+    let parts: str[] = splitCommandArgs(cmdLine)
+    if seqLenString(parts) == 0:
+        state.statusMsg = "codex: command"
+        return state
+    let cmd = textutils.toLowerAscii(seqGetString(parts, 0))
+    var argsRaw = ""
+    let spaceIdx: int32 = indexOfSubstr(cmdLine, " ", 0)
+    if spaceIdx >= 0 && spaceIdx + 1 < len(cmdLine):
+        argsRaw = trimLine(sliceFrom(cmdLine, spaceIdx + 1))
+    let busy = guiCodexIsBusy(state)
+    let allowDuringTask = cmd == "diff" || cmd == "mention" || cmd == "skills" || cmd == "status" || cmd == "ps" || cmd == "mcp" || cmd == "quit" || cmd == "exit" || cmd == "rollout" || cmd == "feedback"
+    if busy && ! allowDuringTask:
+        var next: GuiState = guiCodexShow(state)
+        next.statusMsg = "codex: busy"
+        return next
+    if cmd == "diff":
+        outClearInput = true
+        return guiCodexDiffOutput(state, argsRaw)
+    if cmd == "status":
+        outClearInput = true
+        return guiCodexStatusOutput(state)
+    if cmd == "ps":
+        outClearInput = true
+        return guiCodexPsOutput(state)
+    if cmd == "mention":
+        var next: GuiState = guiCodexShow(state)
+        next.codex.input = next.codex.input + "@"
+        next.codex.inputHistoryIndex = -1
+        next.codex.inputHistoryStash = ""
+        return next
+    if cmd == "skills":
+        var next: GuiState = guiCodexShow(state)
+        next.codex.input = next.codex.input + "$"
+        next.codex.inputHistoryIndex = -1
+        next.codex.inputHistoryStash = ""
+        return next
+    if cmd == "new":
+        outClearInput = true
+        return guiCodexNewThread(state, "")
+    if cmd == "resume":
+        outClearInput = true
+        return guiCodexListThreads(state)
+    if cmd == "fork":
+        outClearInput = true
+        return guiCodexForkCurrent(state)
+    if cmd == "init":
+        outClearInput = true
+        return guiCodexInit(state)
+    if cmd == "compact":
+        outClearInput = true
+        return guiCodexCompact(state)
+    if cmd == "review":
+        if len(argsRaw) == 0:
+            var next: GuiState = guiCodexShow(state)
+            next.statusMsg = "codex: review <text>"
+            return next
+        outClearInput = true
+        return guiCodexReview(state, argsRaw)
+    if cmd == "model" || cmd == "approvals" || cmd == "experimental":
+        outClearInput = true
+        return guiCodexOpenConfig(state)
+    if cmd == "logout":
+        outClearInput = true
+        var next: GuiState = guiCodexLogout(state)
+        next.quitRequested = true
+        return next
+    if cmd == "quit" || cmd == "exit":
+        outClearInput = true
+        state.quitRequested = true
+        return state
+    if cmd == "feedback":
+        outClearInput = true
+        return guiCodexFeedback(state)
+    if cmd == "rollout":
+        outClearInput = true
+        return guiCodexRollout(state)
+    if cmd == "setup-elevated-sandbox" || cmd == "elevate-sandbox":
+        outClearInput = true
+        var next: GuiState = guiCodexShow(state)
+        next = guiCodexAppendLine(next, "sandbox: unsupported")
+        next.statusMsg = "codex: sandbox"
+        return next
+    if cmd == "test-approval":
+        outClearInput = true
+        var next: GuiState = guiCodexShow(state)
+        next = guiCodexAppendLine(next, "approval: test unsupported")
+        next.statusMsg = "codex: approval"
+        return next
+    if cmd == "mcp":
+        outClearInput = true
+        var next: GuiState = guiCodexShow(state)
+        next = guiCodexAppendLine(next, "mcp: disabled")
+        next.statusMsg = "codex: mcp disabled"
+        return next
+    var next: GuiState = guiCodexShow(state)
+    next = guiCodexAppendLine(next, "codex: unknown command /" + cmd)
+    next.statusMsg = "codex: command"
+    return next
+
+fn guiCodexLoginPreferCli(tokenKind: str): bool =
+    let mode = textutils.toLowerAscii(trimLine(getEnv("CHENG_IDE_CODEX_LOGIN_MODE")))
+    if len(mode) > 0:
+        return mode == "cli"
+    let flag = getEnv("CHENG_IDE_CODEX_LOGIN_CLI")
+    if len(flag) > 0:
+        return envFlagEnabled(flag, false)
+    return false
+
+fn guiCodexWslEnabled(): bool =
+    let envWsl = getEnv("CHENG_CODEX_WSL")
+    if len(envWsl) > 0:
+        return envFlagEnabled(envWsl, false)
+    let altWsl = getEnv("CODEX_WSL")
+    if len(altWsl) > 0:
+        return envFlagEnabled(altWsl, false)
+    if guiCodexConfigBoolValue("wsl", false):
+        return true
+    if guiCodexConfigBoolValue("wsl_mode", false):
+        return true
+    if guiCodexConfigBoolValue("windows_wsl", false):
+        return true
+    return false
+
+fn guiCodexCliCommand(): str =
+    let cli = guiCodexCliPath()
+    if len(cli) == 0:
+        return ""
+    if guiCodexWslEnabled():
+        return "wsl " + guiShellQuote(cli)
+    return guiShellQuote(cli)
+
+fn guiCodexCliCommandOrEmpty(state: GuiState, action: str, outCmd: var str): GuiState =
+    let cmd = guiCodexCliCommand()
+    outCmd = cmd
+    if len(cmd) > 0:
+        return state
+    var next: GuiState = guiCodexShow(state)
+    next.statusMsg = "codex: missing codex-cheng"
+    var msg = "codex: missing codex-cheng"
+    if len(action) > 0:
+        msg = msg + " (" + action + ")"
+    next = guiCodexAppendLine(next, msg)
+    return next
+
+fn guiCodexAuthToken(): str =
+    return guiCodexReadConfigValue("auth.token")
+
+fn guiCodexAuthMode(): str =
+    return guiCodexReadConfigValue("auth.mode")
+
+fn guiCodexIsPlaceholderToken(token: str): bool =
+    let normalized = textutils.toLowerAscii(trimLine(token))
+    return normalized == "chatgpt" || normalized == "browser"
+
+fn guiCodexAuthJsonPath(): str =
+    let home = getEnv("HOME")
+    if len(home) == 0:
+        return ""
+    let primary = joinPath(joinPath(home, ".codex-cheng"), "auth.json")
+    if fileExists(primary):
+        return primary
+    let legacy = joinPath(joinPath(home, ".codex"), "auth.json")
+    if fileExists(legacy):
+        return legacy
+    return primary
+
+fn guiCodexAuthJsonHasToken(): bool =
+    let path = guiCodexAuthJsonPath()
+    if len(path) == 0 || ! fileExists(path):
+        return false
+    let content = readFile(path)
+    if len(content) == 0:
+        return false
+    let lowered = textutils.toLowerAscii(content)
+    if indexOfSubstr(lowered, "\"access_token\"", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "\"refresh_token\"", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "\"openai_api_key\"", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "\"api_key\"", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "\"apikey\"", 0) >= 0:
+        return true
+    return false
+
+fn guiCodexHasAuthToken(): bool =
+    let envCodex = getEnv("CODEX_API_KEY")
+    if len(envCodex) > 0 && ! guiCodexIsPlaceholderToken(envCodex):
+        return true
+    let envOpenai = getEnv("OPENAI_API_KEY")
+    if len(envOpenai) > 0 && ! guiCodexIsPlaceholderToken(envOpenai):
+        return true
+    let authToken = guiCodexAuthToken()
+    if len(authToken) > 0 && ! guiCodexIsPlaceholderToken(authToken):
+        return true
+    let mode = textutils.toLowerAscii(trimLine(guiCodexAuthMode()))
+    if mode == "apikey" || mode == "chatgpt":
+        return true
+    if guiCodexAuthJsonHasToken():
+        return true
+    return false
+
+fn guiCodexAuthStatusText(): str =
+    let mode = textutils.toLowerAscii(trimLine(guiCodexAuthMode()))
+    if mode == "apikey" || mode == "chatgpt":
+        return mode
+    if guiCodexHasAuthToken():
+        return "signed-in"
+    return "signed-out"
+
+fn guiCodexThreadPath(threadId: str): str =
+    if len(threadId) == 0:
+        return ""
+    return joinPath(guiCodexThreadsDir(), threadId + ".jsonl")
+
+fn guiCodexLastDiffFromThread(threadId: str): str =
+    let path = guiCodexThreadPath(threadId)
+    if len(path) == 0 || ! fileExists(path):
+        return ""
+    let content = readFile(path)
+    if len(content) == 0:
+        return ""
+    let lines: str[] = splitLinesSimple(content)
+    for idx in 1..<seqLenString(lines):
+        let line = seqGetString(lines, idx)
+        let diffText = guiJsonExtractString(line, "diff")
+        if len(diffText) > 0:
+            last = diffText
+    return last
+
+fn guiCodexUpdateLastDiff(current: str, delta: str): str =
+    if len(delta) == 0:
+        return current
+    if indexOfSubstr(delta, "diff --git", 0) >= 0:
+        return delta
+    if len(current) == 0:
+        return delta
+    return current + delta
+
+fn guiCodexWriteTempPatch(diffText: str): str =
+    if len(diffText) == 0:
+        return ""
+    let tempDir = guiTempDir()
+    if len(tempDir) == 0:
+        return ""
+    let path = joinPath(tempDir, "cheng_codex_last.patch")
+    writeFile(path, diffText)
+    return path
+
+fn guiCodexStripThreadExtension(name: str): str =
+    let suffix = ".jsonl"
+    let suffixLen: int32 = len(suffix)
+    if len(name) > suffixLen && endsWithSuffix(name, suffix):
+        return sliceRange(name, 0, len(name) - suffixLen - 1)
+    return name
+
+fn guiCodexThreadLineFromFile(path: str): str =
+    if ! fileExists(path):
+        return ""
+    let content = readFile(path)
+    if len(content) == 0:
+        return ""
+    let lines: str[] = splitLinesSimple(content)
+    if seqLenString(lines) == 0:
+        return ""
+    let first = seqGetString(lines, 0)
+    var threadId = guiJsonExtractString(first, "id")
+    if len(threadId) == 0:
+        let base = extractFilename(path)
+        threadId = guiCodexStripThreadExtension(base)
+    let preview = guiJsonExtractString(first, "preview")
+    let createdAt = guiJsonExtractInt(first, "createdAt", 0)
+    var line = threadId
+    if createdAt > 0:
+        line = line + " | " + intToStr(createdAt)
+    if len(preview) > 0:
+        line = line + " | " + preview
+    return line
+
+fn guiCodexHistoryLines(threadId: str): str[] =
+    var outVal: str[] = default[str[]]
+    let path = guiCodexThreadPath(threadId)
+    if len(path) == 0 || ! fileExists(path):
+        return outVal
+    let content = readFile(path)
+    if len(content) == 0:
+        return outVal
+    let lines: str[] = splitLinesSimple(content)
+    for idx in 1..<seqLenString(lines):
+        let line = seqGetString(lines, idx)
+        let eventType = guiJsonExtractString(line, "type")
+        if eventType == "turn":
+            let inputText = guiJsonExtractString(line, "input")
+            if len(inputText) > 0:
+                addPtr_string(&outVal, "you: " + inputText)
+            let agentOutput = guiJsonExtractString(line, "agentOutput")
+            if len(agentOutput) > 0:
+                var prefix = guiJsonExtractString(line, "agentPrefix")
+                if len(prefix) == 0 || startsWithPrefix(prefix, "codex-cheng"):
+                    prefix = "codex: "
+                addPtr_string(&outVal, prefix + agentOutput)
+            let commandText = guiJsonExtractString(line, "command")
+            if len(commandText) > 0:
+                addPtr_string(&outVal, "exec: " + commandText)
+                let commandOutput = guiJsonExtractString(line, "commandOutput")
+                if len(commandOutput) > 0:
+                    let cmdLines = splitLinesSimple(commandOutput)
+                    for cidx in 0..<seqLenString(cmdLines):
+                        addPtr_string(&outVal, "exec: " + seqGetString(cmdLines, cidx))
+                let exitCode = guiJsonExtractInt(line, "commandExit", -1)
+                if exitCode >= 0:
+                    addPtr_string(&outVal, "exec: exit=" + intToStr(exitCode))
+            let diffText = guiJsonExtractString(line, "diff")
+            if len(diffText) > 0:
+                let diffLines = splitLinesSimple(diffText)
+                for didx in 0..<seqLenString(diffLines):
+                    addPtr_string(&outVal, "patch: " + seqGetString(diffLines, didx))
+            let mockText = guiJsonExtractString(line, "mock")
+            if len(mockText) > 0:
+                addPtr_string(&outVal, "tool: mock")
+                addPtr_string(&outVal, "tool: " + mockText)
+        elif eventType == "tool":
+            let toolName = guiJsonExtractString(line, "tool")
+            if len(toolName) > 0:
+                addPtr_string(&outVal, "tool: " + toolName)
+            let commandText = guiJsonExtractString(line, "command")
+            if len(commandText) > 0:
+                addPtr_string(&outVal, "exec: " + commandText)
+                let commandOutput = guiJsonExtractString(line, "commandOutput")
+                if len(commandOutput) > 0:
+                    let cmdLines = splitLinesSimple(commandOutput)
+                    for cidx in 0..<seqLenString(cmdLines):
+                        addPtr_string(&outVal, "exec: " + seqGetString(cmdLines, cidx))
+                let exitCode = guiJsonExtractInt(line, "commandExit", -1)
+                if exitCode >= 0:
+                    addPtr_string(&outVal, "exec: exit=" + intToStr(exitCode))
+            let diffText = guiJsonExtractString(line, "diff")
+            if len(diffText) > 0:
+                let diffLines = splitLinesSimple(diffText)
+                for didx in 0..<seqLenString(diffLines):
+                    addPtr_string(&outVal, "patch: " + seqGetString(diffLines, didx))
+            let outText = guiJsonExtractString(line, "output")
+            if len(outText) > 0:
+                addPtr_string(&outVal, "tool: " + outText)
+    return outVal
+
+fn guiCodexThreadLines(): str[] =
+    var outVal: str[] = default[str[]]
+    let dir = guiCodexThreadsDir()
+    if len(dir) == 0 || ! dirExists(dir):
+        return outVal
+    let files: str[] = walkDirRec(dir)
+    for idx in 0..<seqLenString(files):
+        let path = seqGetString(files, idx)
+        if endsWithSuffix(path, ".jsonl"):
+            let line = guiCodexThreadLineFromFile(path)
+            if len(line) > 0:
+                addPtr_string(&outVal, line)
+    sortStringList(&outVal)
+    return outVal
+
+fn guiCodexThreadListLinesFromResponse(payload: str): str[] =
+    var outVal: str[] = default[str[]]
+    let dataIdx = guiJsonFindKeyAfter(payload, "data", 0)
+    var idx: int32 = if dataIdx >= 0: dataIdx else: 0
+    while idx < len(payload):
+        let idIdx = guiJsonFindKeyAfter(payload, "id", idx)
+        if idIdx < 0:
+            break
+        let threadId = guiJsonExtractStringAfter(payload, "id", idIdx)
+        if len(threadId) == 0:
+            idx = idIdx + 4
+            continue
+        let preview = guiJsonExtractStringAfter(payload, "preview", idIdx)
+        var lineText = threadId
+        if len(preview) > 0:
+            lineText = lineText + " | " + preview
+        addPtr_string(&outVal, lineText)
+        idx = idIdx + 4
+    return outVal
+
+fn guiCodexListThreads(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    next.codex.lines = default[str[]]
+    next.codex.selected = -1
+    next.codex.scroll = 0
+    if next.codex.ptyActive:
+        next = guiCodexSendRpc(next, "thread/list", guiJsonObject(default[str[]]))
+        next.codex.pendingRpcId = next.codex.rpcId
+        next.codex.pendingRpcKind = "thread/list"
+        next.codex.status = "threads"
+        next.statusMsg = "codex: threads"
+        return next
+    let lines = guiCodexThreadLines()
+    if seqLenString(lines) == 0:
+        next = guiCodexAppendLine(next, "threads: none")
+    else:
+        for idx in 0..<seqLenString(lines):
+            next = guiCodexAppendLine(next, seqGetString(lines, idx))
+    next.codex.status = "threads"
+    next.statusMsg = "codex: threads"
+    return next
+
+fn guiCodexThreadIdFromLine(line: str): str =
+    if len(line) == 0:
+        return ""
+    let sep = indexOfSubstr(line, " | ", 0)
+    if sep > 0:
+        return sliceRange(line, 0, sep - 1)
+    for i in 0..<len(line):
+        let ch = line[i]
+        if ch == ' ' || ch == '\t':
+            if i <= 0:
+                return line
+            return sliceRange(line, 0, i - 1)
+    return line
+
+fn guiCodexSelectThread(state: GuiState, threadId: str): GuiState =
+    if len(threadId) == 0:
+        return state
+    var next: GuiState = guiCodexShow(state)
+    next.codex.threadId = threadId
+    next.codex.status = "thread " + threadId
+    next.statusMsg = "codex: thread " + threadId
+    return next
+
+fn guiCodexResumeThread(state: GuiState, threadId: str): GuiState =
+    if len(threadId) == 0:
+        return state
+    var next: GuiState = guiCodexSelectThread(state, threadId)
+    let history = guiCodexHistoryLines(threadId)
+    if seqLenString(history) > 0:
+        next.codex.lines = default[str[]]
+        next.codex.selected = -1
+        next.codex.scroll = 0
+        for hidx in 0..<seqLenString(history):
+            next = guiCodexAppendLine(next, seqGetString(history, hidx))
+    next.codex.lastDiff = guiCodexLastDiffFromThread(threadId)
+    next.codex.contextItems = default[str[]]
+    next = guiCodexConnect(next)
+    if next.codex.ptyActive:
+        var fields: str[] = default[str[]]
+        addPtr_string(&fields, guiJsonPair("threadId", guiJsonStringValue(threadId)))
+        next = guiCodexSendRpc(next, "thread/resume", guiJsonObject(fields))
+        next.statusMsg = "codex: resume"
+        next.codex.status = "thread " + threadId
+    return next
+
+fn guiCodexNewThread(state: GuiState, preview: str): GuiState =
+    var next: GuiState = guiCodexConnect(state)
+    if ! next.codex.ptyActive:
+        return next
+    let trimmed = trimLine(preview)
+    var fields: str[] = default[str[]]
+    if len(trimmed) > 0:
+        addPtr_string(&fields, guiJsonPair("preview", guiJsonStringValue(trimmed)))
+    next.codex.threadId = ""
+    next.codex.turnId = ""
+    next.codex.lastDiff = ""
+    next.codex.contextItems = default[str[]]
+    next = guiCodexSendRpc(next, "thread/start", guiJsonObject(fields))
+    next.codex.status = "starting"
+    next.statusMsg = "codex: new"
+    return next
+
+fn guiCodexApplyStartFocus(state: GuiState): GuiState =
+    let focus = textutils.toLowerAscii(trimLine(guiCodexStartFocusValue()))
+    if len(focus) == 0 || focus == "editor":
+        return state
+    if focus == "codex" || focus == "ai":
+        return guiCodexShow(state)
+    if focus == "terminal":
+        var next: GuiState = state
+        next.bottomPaneVisible = true
+        next.bottomPaneTab = bpTerminal
+        next.focus = fkTerminal
+        return next
+    if focus == "explorer":
+        var next: GuiState = state
+        next.leftPaneVisible = true
+        next.leftPaneTab = lpExplorer
+        next.focus = fkExplorer
+        return next
+    return state
+
+fn guiCodexLastLine(state: GuiState): str =
+    let count: int32 = seqLenString(state.codex.lines)
+    if count <= 0:
+        return ""
+    return seqGetString(state.codex.lines, count - 1)
+
+fn guiCodexReplaceLastLine(state: GuiState, line: str): GuiState =
+    let count: int32 = seqLenString(state.codex.lines)
+    if count <= 0:
+        return guiCodexAppendLine(state, line)
+    seqSetString(&state.codex.lines, count - 1, line)
+    return state
+
+fn guiCodexAppendUniqueLine(state: GuiState, line: str): GuiState =
+    if len(line) == 0:
+        return state
+    if guiCodexLastLine(state) == line:
+        return state
+    return guiCodexAppendLine(state, line)
+
+fn guiCodexSendRaw(state: GuiState, payload: str): GuiState =
+    if ! state.codex.ptyActive:
+        return state
+    var next: GuiState = state
+    if len(payload) == 0:
+        return next
+    let fullPayload = payload + "\n"
+    if seqLenString(next.codex.sendQueue) > 0:
+        addPtr_string(&next.codex.sendQueue, fullPayload)
+        if codexLogIoEnabled():
+            codexLogIo("queue len=" + intToStr(seqLenString(next.codex.sendQueue)))
+        return next
+    if codexLogIoEnabled():
+        var preview = fullPayload
+        if len(preview) > 512:
+            preview = sliceRange(preview, 0, 511)
+        codexLogIo("send: " + preview)
+    let writeFd = if next.codex.ptyWriteFd >= 0: next.codex.ptyWriteFd else: next.codex.ptyFd
+    let wrote = ptyWrite(writeFd, fullPayload)
+    if wrote < 0:
+        codexLog("rpc write failed")
+        addPtr_string(&next.codex.sendQueue, fullPayload)
+        if codexLogIoEnabled():
+            codexLogIo("queue len=" + intToStr(seqLenString(next.codex.sendQueue)))
+        next.codex.sendQueueFailures = next.codex.sendQueueFailures + 1
+        let delayMs: int32 = minInt(500, 50 * next.codex.sendQueueFailures)
+        next.codex.sendQueueNextMs = guiNowMs() + int64(delayMs)
+        var exitCode: int32 = -1
+        let waitRc: int32 = ptyWait(next.codex.ptyPid, &exitCode)
+        if waitRc > 0:
+            codexLog("connect: app-server exited code=" + intToStr(exitCode))
+            return guiCodexStop(next, "exit")
+        return next
+    if wrote < len(fullPayload):
+        let remainder = sliceRange(fullPayload, wrote, len(fullPayload) - 1)
+        next.codex.sendQueue = default[str[]]
+        addPtr_string(&next.codex.sendQueue, remainder)
+        next.codex.sendQueueFailures = next.codex.sendQueueFailures + 1
+        next.codex.sendQueueNextMs = guiNowMs() + int64(10)
+        return next
+    return next
+
+fn codexPendingAdd(state: var GuiState, id: int32, kind: str) =
+    if id <= 0 || len(kind) == 0:
+        return
+    for i in 0..<len(state.codex.pendingRpcIds):
+        if state.codex.pendingRpcIds[i] == id:
+            state.codex.pendingRpcKinds[i] = kind
+            return
+    state.codex.pendingRpcIds.add(id)
+    state.codex.pendingRpcKinds.add(kind)
+    if len(state.codex.pendingRpcIds) > CodexPendingMax:
+        seqDeleteInt32(&state.codex.pendingRpcIds, 0)
+        seqDeleteString(&state.codex.pendingRpcKinds, 0)
+
+fn codexPendingDrop(state: var GuiState, id: int32) =
+    for i in 0..<len(state.codex.pendingRpcIds):
+        if state.codex.pendingRpcIds[i] == id:
+            seqDeleteInt32(&state.codex.pendingRpcIds, i)
+            seqDeleteString(&state.codex.pendingRpcKinds, i)
+            return
+
+fn codexPendingTake(state: var GuiState, id: int32, outKind: var str): bool =
+    for i in 0..<len(state.codex.pendingRpcIds):
+        if state.codex.pendingRpcIds[i] == id:
+            outKind = state.codex.pendingRpcKinds[i]
+            seqDeleteInt32(&state.codex.pendingRpcIds, i)
+            seqDeleteString(&state.codex.pendingRpcKinds, i)
+            return true
+    let empty = ""
+    outKind = empty
+    return false
+
+fn guiCodexNextRpcId(state: var GuiState): int32 =
+    state.codex.rpcId = state.codex.rpcId + 1
+    if state.codex.rpcId <= 0:
+        state.codex.rpcId = 1
+    return state.codex.rpcId
+
+fn guiCodexSendRpc(state: GuiState, methodName: str, paramsJson: str): GuiState =
+    if len(methodName) == 0:
+        return state
+    var next: GuiState = state
+    codexLog("rpc send " + methodName + " params=" + intToStr(len(paramsJson)))
+    let id = guiCodexNextRpcId(next)
+    codexPendingAdd(next, id, methodName)
+    var fields: str[] = default[str[]]
+    addPtr_string(&fields, guiJsonPair("id", intToStr(id)))
+    addPtr_string(&fields, guiJsonPair("method", guiJsonStringValue(methodName)))
+    if len(paramsJson) > 0:
+        addPtr_string(&fields, guiJsonPair("params", paramsJson))
+    let payload = guiJsonObject(fields)
+    return guiCodexSendRaw(next, payload)
+
+fn guiCodexPrimeHandshake(state: GuiState): GuiState =
+    if ! state.codex.ptyActive || ! state.codex.pipeMode:
+        return state
+    var next: GuiState = state
+    for loops in 0..<40:
+        var eof: int32 = 0
+        let chunk: str = fdReadWait(next.codex.ptyFd, 4096, 5, &eof)
+        if eof != 0:
+            return guiCodexStop(next, "exit")
+        if len(chunk) > 0:
+            if codexLogIoEnabled():
+                codexLogIo("read bytes=" + intToStr(len(chunk)))
+            next = guiCodexConsumeOutput(next, chunk)
+            if ! next.codex.initPending:
+                break
+    return next
+
+fn guiCodexSendNotification(state: GuiState, methodName: str, paramsJson: str): GuiState =
+    if len(methodName) == 0:
+        return state
+    codexLog("rpc notify " + methodName)
+    var fields: str[] = default[str[]]
+    addPtr_string(&fields, guiJsonPair("method", guiJsonStringValue(methodName)))
+    if len(paramsJson) > 0:
+        addPtr_string(&fields, guiJsonPair("params", paramsJson))
+    let payload = guiJsonObject(fields)
+    return guiCodexSendRaw(state, payload)
+
+fn guiCodexSendResponse(state: GuiState, requestId: str, idIsString: bool, resultJson: str): GuiState =
+    if ! state.codex.ptyActive:
+        return state
+    if len(requestId) == 0:
+        return state
+    var fields: str[] = default[str[]]
+    addPtr_string(&fields, guiJsonIdPair(requestId, idIsString))
+    addPtr_string(&fields, guiJsonPair("result", resultJson))
+    let payload = guiJsonObject(fields)
+    return guiCodexSendRaw(state, payload)
+
+fn guiCodexConnect(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if guiCodexDisabled():
+        if next.codex.ptyActive:
+            next = guiCodexStop(next, "disabled")
+        next.statusMsg = "codex: disabled"
+        return next
+    if next.codex.ptyActive:
+        next.statusMsg = "codex: already connected"
+        return next
+    var baseCmd = ""
+    next = guiCodexCliCommandOrEmpty(next, "app-server", baseCmd)
+    if len(baseCmd) == 0:
+        return next
+    var cmd = baseCmd + " app-server"
+    if guiIsWindows():
+        cmd = "set CHENG_CODEX_APP_SERVER=1 && set CHENG_CODEX_LOGIN_STRICT_STATE=0 && " + cmd
+    else:
+        cmd = "CHENG_CODEX_APP_SERVER=1 CHENG_CODEX_LOGIN_STRICT_STATE=0 " + cmd
+    var readFd: int32 = -1
+    var writeFd: int32 = -1
+    var pid: int64 = 0
+    let workDir = guiWorkspaceActiveRoot(next)
+    codexLog("connect: cli=" + baseCmd)
+    codexLog("connect: spawn app-server wd=" + workDir)
+    var ok: bool = false
+    var usePty: bool = false
+    let preferPtyDefault = false
+    let preferPty = envFlagEnabled(getEnv("CHENG_IDE_CODEX_PTY"), preferPtyDefault)
+    if ! preferPty:
+        ok = pipeSpawn(cmd, workDir, &readFd, &writeFd, &pid)
+    if ! ok && ptySupported():
+        var fd: int32 = -1
+        ok = ptySpawn(cmd, workDir, &fd, &pid)
+        usePty = ok
+        if ok:
+            readFd = fd
+            writeFd = fd
+    if ! ok && preferPty:
+        ok = pipeSpawn(cmd, workDir, &readFd, &writeFd, &pid)
+    if ! ok:
+        if ! ptySupported():
+            codexLog("connect: pty unsupported")
+            next.statusMsg = "codex: pty unsupported"
+            return next
+    if ! ok:
+        codexLog("connect: spawn failed")
+        next.statusMsg = "codex: start failed"
+        return next
+    var exitCode: int32 = -1
+    let waitRc: int32 = ptyWait(pid, &exitCode)
+    if waitRc > 0:
+        codexLog("connect: app-server exited code=" + intToStr(exitCode))
+        if readFd >= 0:
+            ptyClose(readFd)
+        if writeFd >= 0 && writeFd != readFd:
+            ptyClose(writeFd)
+        next.codex.status = "error"
+        next.statusMsg = "codex: start failed"
+        if exitCode >= 0:
+            next = guiCodexAppendLine(next, "codex: app-server exit " + intToStr(exitCode))
+        else:
+            next = guiCodexAppendLine(next, "codex: app-server exit")
+        return next
+    next.codex.ptyActive = true
+    next.codex.pipeMode = ! usePty
+    next.codex.ptyFd = readFd
+    next.codex.ptyWriteFd = writeFd
+    next.codex.ptyPid = pid
+    next.codex.ptyRemainder = ""
+    next.codex.ptyAnsiRemainder = ""
+    next.codex.rpcId = 0
+    next.codex.initialized = false
+    next.codex.initPending = true
+    next.codex.initStartMs = guiNowMs()
+    next.codex.connectWarnNextMs = 0
+    next.codex.status = "connected"
+    next.statusMsg = "codex: connected"
+    codexLog("connect: pid=" + intToStr(int32(pid)))
+    let modeText = if usePty: "pty" else: "pipe"
+    codexLog("connect: mode=" + modeText)
+    codexLog("connect: fd read=" + intToStr(readFd) + " write=" + intToStr(writeFd))
+    codexLog("connect: active")
+    var clientFields: str[] = default[str[]]
+    addPtr_string(&clientFields, guiJsonPair("name", guiJsonStringValue("cheng-ide")))
+    addPtr_string(&clientFields, guiJsonPair("title", guiJsonStringValue("Cheng IDE")))
+    addPtr_string(&clientFields, guiJsonPair("version", guiJsonStringValue("0.1.0")))
+    let clientInfo = guiJsonObject(clientFields)
+    var initFields: str[] = default[str[]]
+    addPtr_string(&initFields, guiJsonPair("clientInfo", clientInfo))
+    let initParams = guiJsonObject(initFields)
+    next = guiCodexSendRpc(next, "initialize", initParams)
+    next.codex.pendingRpcId = next.codex.rpcId
+    next.codex.pendingRpcKind = "initialize"
+    next.codex.status = "initializing"
+    next = guiCodexPrimeHandshake(next)
+    return next
+
+fn guiCodexStop(state: GuiState, reason: str): GuiState =
+    var next: GuiState = state
+    if ! next.codex.ptyActive:
+        next.statusMsg = "codex: not running"
+        return next
+    if next.codex.ptyWriteFd >= 0 && next.codex.ptyWriteFd != next.codex.ptyFd:
+        ptyClose(next.codex.ptyWriteFd)
+    ptyClose(next.codex.ptyFd)
+    var exitCode: int32 = -1
+    ptyWait(next.codex.ptyPid, &exitCode)
+    next.codex.ptyActive = false
+    next.codex.pipeMode = false
+    next.codex.ptyFd = -1
+    next.codex.ptyWriteFd = -1
+    next.codex.ptyPid = 0
+    next.codex.ptyRemainder = ""
+    next.codex.ptyAnsiRemainder = ""
+    next.codex.status = if len(reason) > 0: reason else: "stopped"
+    next.codex.pendingRpcId = 0
+    next.codex.pendingRpcKind = ""
+    next.codex.pendingRpcIds = default[int32[]]
+    next.codex.pendingRpcKinds = default[str[]]
+    next.codex.initialized = false
+    next.codex.initPending = false
+    next.codex.initStartMs = 0
+    next.codex.connectWarnNextMs = 0
+    next.codex.sendQueue = default[str[]]
+    next.codex.sendQueueNextMs = 0
+    next.codex.sendQueueFailures = 0
+    next = guiCodexClearApproval(next)
+    next.codex.authPending = false
+    next.codex.loginQueued = false
+    next.codex.loginToken = ""
+    next.codex.loginQueuedAtMs = 0
+    next.codex.loginStartMs = 0
+    next.codex.loginAwaitUrl = false
+    next.codex.loginFallbackUsed = false
+    next.codex.inputHistoryIndex = -1
+    next.codex.inputHistoryStash = ""
+    next.codex.queue = default[str[]]
+    next.codex.overlayActive = false
+    next.codex.overlayScroll = 0
+    next.codex.draftActive = false
+    next.codex.draftPath = ""
+    next.codex.draftPrevFocus = fkEditor
+    next.codex.draftPrevBuffer = -1
+    next.codex.feedbackStep = cfsNone
+    next.codex.feedbackCategory = ""
+    next.codex.feedbackIncludeLogs = false
+    next.codex.tokenTotal = 0
+    next.codex.tokenInput = 0
+    next.codex.tokenOutput = 0
+    next.codex.tokenLastTotal = 0
+    next.codex.tokenLastInput = 0
+    next.codex.tokenLastOutput = 0
+    next.codex.tokenContextWindow = 0
+    next.codex.quitArmed = false
+    next.codex.quitArmedKey = ""
+    next.codex.quitArmedUntilMs = 0
+    next.statusMsg = "codex: stopped"
+    next.renderDirty = true
+    return next
+
+fn guiCodexInterrupt(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if ! next.codex.ptyActive:
+        next.statusMsg = "codex: not running"
+        return next
+    if len(next.codex.threadId) == 0 || len(next.codex.turnId) == 0:
+        next.statusMsg = "codex: no active turn"
+        return next
+    var fields: str[] = default[str[]]
+    addPtr_string(&fields, guiJsonPair("threadId", guiJsonStringValue(next.codex.threadId)))
+    addPtr_string(&fields, guiJsonPair("turnId", guiJsonStringValue(next.codex.turnId)))
+    next = guiCodexSendRpc(next, "turn/interrupt", guiJsonObject(fields))
+    next.codex.status = "interrupting"
+    next.statusMsg = "codex: interrupt"
+    return next
+
+fn guiCodexThreadIdFromPayload(payload: str): str =
+    let direct = guiJsonExtractString(payload, "threadId")
+    if len(direct) > 0:
+        return direct
+    let threadIdx = guiJsonFindKeyAfter(payload, "thread", 0)
+    if threadIdx >= 0:
+        return guiJsonExtractStringAfter(payload, "id", threadIdx)
+    return ""
+
+fn guiCodexTurnIdFromPayload(payload: str): str =
+    let direct = guiJsonExtractString(payload, "turnId")
+    if len(direct) > 0:
+        return direct
+    let turnIdx = guiJsonFindKeyAfter(payload, "turn", 0)
+    if turnIdx >= 0:
+        return guiJsonExtractStringAfter(payload, "id", turnIdx)
+    return ""
+
+fn guiCodexExtractContentText(payload: str, startIdx: int32): str =
+    var text = guiJsonExtractStringAfter(payload, "text", startIdx)
+    if len(text) > 0:
+        return text
+    let contentIdx = guiJsonFindKeyAfter(payload, "content", startIdx)
+    if contentIdx >= 0:
+        text = guiJsonExtractStringAfter(payload, "text", contentIdx)
+    return text
+
+fn guiCodexHandleLine(state: GuiState, line: str): GuiState =
+    let trimmed = trimLine(line)
+    if len(trimmed) == 0:
+        return state
+    let methodName = guiJsonExtractString(trimmed, "method")
+    if len(methodName) > 0:
+        codexLog("rpc recv " + methodName)
+    var next: GuiState = state
+    if len(methodName) == 0:
+        var idIsString = false
+        let idText = guiJsonExtractId(trimmed, 0, &idIsString)
+        if len(idText) > 0 && ! idIsString:
+            let idVal = parseInt32(idText, -1)
+            var kind = ""
+            var matched = false
+            if next.codex.pendingRpcId > 0 && idVal == next.codex.pendingRpcId:
+                kind = next.codex.pendingRpcKind
+                next.codex.pendingRpcId = 0
+                next.codex.pendingRpcKind = ""
+                codexPendingDrop(next, idVal)
+                matched = true
+            elif codexPendingTake(next, idVal, kind):
+                matched = true
+            if matched:
+                let hasError = guiJsonFindKeyAfter(trimmed, "error", 0) >= 0
+                var errorFlag = "0"
+                if hasError:
+                    errorFlag = "1"
+                codexLog("rpc reply kind=" + kind + " error=" + errorFlag)
+                if hasError && kind == "account/read":
+                    let loginActive = next.codex.loginAwaitUrl || next.codex.loginQueued || next.codex.loginFallbackUsed
+                    if ! loginActive:
+                        next.codex.authPending = false
+                    let errMsg = guiJsonExtractStringAfter(trimmed, "message", 0)
+                    let errLower = textutils.toLowerAscii(errMsg)
+                    if indexOfSubstr(errLower, "unknown method", 0) >= 0 || indexOfSubstr(errLower, "not initialized", 0) >= 0:
+                        next.codex.authStatus = if guiCodexHasAuthToken(): "signed-in" else: "not-required"
+                    else:
+                        next.codex.authStatus = guiCodexAuthStatusText()
+                    next = guiCodexAppendUniqueLine(next, "auth: " + next.codex.authStatus)
+                    return next
+                if hasError && kind == "account/login/start":
+                    next.codex.authPending = false
+                    next.codex.authStatus = "error"
+                    var errMsg = guiJsonExtractStringAfter(trimmed, "message", 0)
+                    if len(errMsg) == 0:
+                        errMsg = "login failed"
+                    next = guiCodexAppendUniqueLine(next, "auth: " + errMsg)
+                    next = startOverlay(next, okCommand)
+                    next.overlay.input = "codex login "
+                    next.statusMsg = "codex: login <token>"
+                    return next
+                if kind == "feedback/upload":
+                    if hasError:
+                        var errMsg = guiJsonExtractStringAfter(trimmed, "message", 0)
+                        if len(errMsg) == 0:
+                            errMsg = "feedback upload failed"
+                        let errLower = textutils.toLowerAscii(errMsg)
+                        if indexOfSubstr(errLower, "unknown method", 0) >= 0:
+                            next = guiCodexAppendUniqueLine(next, "feedback: unsupported in app-server")
+                        else:
+                            next = guiCodexAppendUniqueLine(next, "feedback: " + errMsg)
+                        next.codex.status = "ready"
+                        return next
+                    let threadId = guiCodexThreadIdFromPayload(trimmed)
+                    if len(threadId) > 0:
+                        next = guiCodexAppendUniqueLine(next, "feedback: uploaded (thread " + threadId + ")")
+                    else:
+                        next = guiCodexAppendUniqueLine(next, "feedback: uploaded")
+                    next.codex.status = "ready"
+                    return next
+                if kind == "thread/compact":
+                    if hasError:
+                        var errMsg = guiJsonExtractStringAfter(trimmed, "message", 0)
+                        if len(errMsg) == 0:
+                            errMsg = "compact failed"
+                        let errLower = textutils.toLowerAscii(errMsg)
+                        if indexOfSubstr(errLower, "unknown method", 0) >= 0:
+                            next = guiCodexAppendUniqueLine(next, "compact: unsupported in app-server")
+                        else:
+                            next = guiCodexAppendUniqueLine(next, "compact: " + errMsg)
+                        next.codex.status = "ready"
+                        return next
+                    next = guiCodexAppendUniqueLine(next, "compact: requested")
+                    return next
+                if hasError:
+                    if kind == "initialize":
+                        next.codex.initPending = false
+                        next.codex.initialized = false
+                        next.codex.initStartMs = 0
+                    let errMsg = guiJsonExtractStringAfter(trimmed, "message", 0)
+                    if len(errMsg) > 0:
+                        next = guiCodexAppendUniqueLine(next, "error: " + errMsg)
+                    next.codex.status = "error"
+                    return next
+                if kind == "initialize":
+                    next.codex.initPending = false
+                    next.codex.initialized = true
+                    next.codex.initStartMs = 0
+                    next = guiCodexSendNotification(next, "initialized", "")
+                    var authFields: str[] = default[str[]]
+                    addPtr_string(&authFields, guiJsonPair("refreshToken", "false"))
+                    next = guiCodexSendRpc(next, "account/read", guiJsonObject(authFields))
+                    next.codex.pendingRpcId = next.codex.rpcId
+                    next.codex.pendingRpcKind = "account/read"
+                    next.codex.authStatus = "checking"
+                    next.codex.status = "connected"
+                    return next
+                if kind == "account/read":
+                    let accIdx = guiJsonFindKeyAfter(trimmed, "account", 0)
+                    let accType = if accIdx >= 0: guiJsonExtractStringAfter(trimmed, "type", accIdx) else: ""
+                    let requiresAuth = guiJsonExtractBoolAfter(trimmed, "requiresOpenaiAuth", 0, true)
+                    let loginActive = next.codex.loginAwaitUrl || next.codex.loginQueued || next.codex.loginFallbackUsed
+                    if ! loginActive:
+                        next.codex.authPending = false
+                    if len(accType) > 0:
+                        next.codex.authStatus = accType
+                        next = guiCodexAppendUniqueLine(next, "auth: " + accType)
+                    elif ! requiresAuth:
+                        next.codex.authStatus = "not-required"
+                        next = guiCodexAppendUniqueLine(next, "auth: not-required")
+                    else:
+                        next.codex.authStatus = "signed-out"
+                        next = guiCodexAppendUniqueLine(next, "auth: signed-out")
+                    if next.codex.loginQueued && ! next.codex.authPending:
+                        let statusLower = textutils.toLowerAscii(trimLine(next.codex.authStatus))
+                        if statusLower == "signed-in" || statusLower == "chatgpt" || statusLower == "apikey" || statusLower == "not-required":
+                            next.codex.loginQueued = false
+                            next.codex.loginToken = ""
+                            return next
+                        if len(next.codex.loginToken) > 0:
+                            return guiCodexLogin(next, next.codex.loginToken)
+                    return next
+                if kind == "account/login/start":
+                    let authUrl = guiJsonExtractString(trimmed, "authUrl")
+                    if len(authUrl) > 0:
+                        codexLog("auth: url received")
+                        next = guiCodexAppendUniqueLine(next, "auth: url " + authUrl)
+                        next = guiOpenUrl(next, authUrl)
+                    next.codex.loginStartMs = 0
+                    next.codex.loginAwaitUrl = false
+                    next.codex.loginFallbackUsed = false
+                    let userCode = guiJsonExtractString(trimmed, "userCode")
+                    if len(userCode) > 0:
+                        next = guiCodexAppendUniqueLine(next, "auth: code " + userCode)
+                    return next
+                if kind == "account/logout":
+                    next.codex.authPending = false
+                    next.codex.authStatus = "signed-out"
+                    next = guiCodexAppendUniqueLine(next, "auth: signed-out")
+                    return next
+                if kind == "thread/list":
+                    next.codex.lines = default[str[]]
+                    next.codex.selected = -1
+                    next.codex.scroll = 0
+                    let lines = guiCodexThreadListLinesFromResponse(trimmed)
+                    if seqLenString(lines) == 0:
+                        next = guiCodexAppendLine(next, "threads: none")
+                    else:
+                        for lidx in 0..<seqLenString(lines):
+                            next = guiCodexAppendLine(next, seqGetString(lines, lidx))
+                    next.codex.status = "threads"
+                    next.statusMsg = "codex: threads"
+                    return next
+                if kind == "thread/fork":
+                    let threadId = guiCodexThreadIdFromPayload(trimmed)
+                    if len(threadId) > 0:
+                        next.codex.threadId = threadId
+                        next.codex.status = "ready"
+                        next.codex.tokenTotal = 0
+                        next.codex.tokenInput = 0
+                        next.codex.tokenOutput = 0
+                        next.codex.tokenLastTotal = 0
+                        next.codex.tokenLastInput = 0
+                        next.codex.tokenLastOutput = 0
+                        next.codex.tokenContextWindow = 0
+                        next.statusMsg = "codex: fork"
+                        next = guiCodexAppendUniqueLine(next, "thread: " + threadId)
+                    return next
+        if guiJsonFindKeyAfter(trimmed, "error", 0) >= 0:
+            let errMsg = guiJsonExtractStringAfter(trimmed, "message", 0)
+            if len(errMsg) > 0:
+                next = guiCodexAppendUniqueLine(next, "error: " + errMsg)
+            next.codex.status = "error"
+            return next
+        if trimmed[0] != '{' && trimmed[0] != '[':
+            return guiCodexAppendUniqueLine(next, trimmed)
+        return next
+    if methodName == "thread/started":
+        let threadId = guiCodexThreadIdFromPayload(trimmed)
+        if len(threadId) > 0:
+            next.codex.threadId = threadId
+            next.codex.status = "ready"
+            next.codex.lastDiff = ""
+            next.codex.contextItems = default[str[]]
+            next.codex.tokenTotal = 0
+            next.codex.tokenInput = 0
+            next.codex.tokenOutput = 0
+            next.codex.tokenLastTotal = 0
+            next.codex.tokenLastInput = 0
+            next.codex.tokenLastOutput = 0
+            next.codex.tokenContextWindow = 0
+            next.statusMsg = "codex: thread"
+            next = guiCodexAppendUniqueLine(next, "thread: " + threadId)
+        return next
+    if methodName == "thread/tokenUsage/updated":
+        let usageIdx = guiJsonFindKeyAfter(trimmed, "tokenUsage", 0)
+        if usageIdx >= 0:
+            let totalIdx = guiJsonFindKeyAfter(trimmed, "total", usageIdx)
+            if totalIdx >= 0:
+                next.codex.tokenTotal = guiJsonExtractIntAfter(trimmed, "totalTokens", totalIdx, next.codex.tokenTotal)
+                next.codex.tokenInput = guiJsonExtractIntAfter(trimmed, "inputTokens", totalIdx, next.codex.tokenInput)
+                next.codex.tokenOutput = guiJsonExtractIntAfter(trimmed, "outputTokens", totalIdx, next.codex.tokenOutput)
+            let lastIdx = guiJsonFindKeyAfter(trimmed, "last", usageIdx)
+            if lastIdx >= 0:
+                next.codex.tokenLastTotal = guiJsonExtractIntAfter(trimmed, "totalTokens", lastIdx, next.codex.tokenLastTotal)
+                next.codex.tokenLastInput = guiJsonExtractIntAfter(trimmed, "inputTokens", lastIdx, next.codex.tokenLastInput)
+                next.codex.tokenLastOutput = guiJsonExtractIntAfter(trimmed, "outputTokens", lastIdx, next.codex.tokenLastOutput)
+            next.codex.tokenContextWindow = guiJsonExtractIntAfter(trimmed, "modelContextWindow", usageIdx, next.codex.tokenContextWindow)
+        return next
+    if methodName == "thread/compacted":
+        next = guiCodexAppendUniqueLine(next, "status: context compacted")
+        next.codex.status = "ready"
+        return next
+    if methodName == "turn/started":
+        let turnId = guiCodexTurnIdFromPayload(trimmed)
+        if len(turnId) > 0:
+            next.codex.turnId = turnId
+            next.codex.status = "running"
+        return next
+    if methodName == "turn/completed":
+        next.codex.status = "ready"
+        return guiCodexMaybeSendQueued(next)
+    if methodName == "item/commandExecution/outputDelta":
+        let delta = guiJsonExtractString(trimmed, "delta")
+        if len(delta) > 0:
+            let lines = splitLinesSimple(delta)
+            for didx in 0..<seqLenString(lines):
+                next = guiCodexAppendLine(next, "exec: " + seqGetString(lines, didx))
+        return next
+    if methodName == "item/fileChange/outputDelta":
+        let delta = guiJsonExtractString(trimmed, "delta")
+        if len(delta) > 0:
+            next.codex.lastDiff = guiCodexUpdateLastDiff(next.codex.lastDiff, delta)
+            let lines = splitLinesSimple(delta)
+            for didx in 0..<seqLenString(lines):
+                next = guiCodexAppendLine(next, "patch: " + seqGetString(lines, didx))
+        return next
+    if methodName == "turn/plan/updated":
+        let explanation = guiJsonExtractString(trimmed, "explanation")
+        if len(explanation) > 0:
+            next = guiCodexAppendUniqueLine(next, "plan: " + explanation)
+        var idx: int32 = 0
+        while idx < len(trimmed):
+            let stepIdx = guiJsonFindKeyAfter(trimmed, "step", idx)
+            if stepIdx < 0:
+                break
+            let stepText = guiJsonExtractStringAfter(trimmed, "step", stepIdx)
+            let statusText = guiJsonExtractStringAfter(trimmed, "status", stepIdx)
+            if len(stepText) > 0:
+                var lineText = "plan: "
+                if len(statusText) > 0:
+                    lineText = lineText + "[" + statusText + "] "
+                lineText = lineText + stepText
+                next = guiCodexAppendUniqueLine(next, lineText)
+            idx = stepIdx + 4
+        return next
+    if methodName == "turn/diff/updated":
+        let diffText = guiJsonExtractString(trimmed, "diff")
+        if len(diffText) > 0:
+            next.codex.lastDiff = diffText
+            let lines = splitLinesSimple(diffText)
+            for didx in 0..<seqLenString(lines):
+                let lineText = "diff: " + seqGetString(lines, didx)
+                next = guiCodexAppendLine(next, lineText)
+        return next
+    if methodName == "item/started":
+        let itemIdx = guiJsonFindKeyAfter(trimmed, "item", 0)
+        let itemType = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "type", itemIdx) else: ""
+        if itemType == "userMessage":
+            let text = if itemIdx >= 0: guiCodexExtractContentText(trimmed, itemIdx) else: ""
+            if len(text) > 0:
+                next = guiCodexAppendUniqueLine(next, "you: " + text)
+        elif itemType == "commandExecution":
+            let cmd = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "command", itemIdx) else: ""
+            if len(cmd) > 0:
+                next = guiCodexAppendUniqueLine(next, "exec: " + cmd)
+        elif itemType == "fileChange":
+            next = guiCodexAppendUniqueLine(next, "patch: change")
+        elif itemType == "webSearch":
+            let query = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "query", itemIdx) else: ""
+            var lineText = "tool: web_search"
+            if len(query) > 0:
+                lineText = lineText + " " + query
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "imageView":
+            let path = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "path", itemIdx) else: ""
+            var lineText = "tool: image_view"
+            if len(path) > 0:
+                lineText = lineText + " " + path
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "enteredReviewMode":
+            let review = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "review", itemIdx) else: ""
+            var lineText = "tool: review start"
+            if len(review) > 0:
+                lineText = lineText + " " + review
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "mcpToolCall":
+            let tool = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "tool", itemIdx) else: ""
+            if len(tool) > 0:
+                next = guiCodexAppendUniqueLine(next, "tool: " + tool)
+        return next
+    if methodName == "item/completed":
+        let itemIdx = guiJsonFindKeyAfter(trimmed, "item", 0)
+        let itemType = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "type", itemIdx) else: ""
+        if itemType == "commandExecution":
+            let status = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "status", itemIdx) else: ""
+            let exitCode: int32 = if itemIdx >= 0: guiJsonExtractIntAfter(trimmed, "exitCode", itemIdx, -1) else: -1
+            var lineText = "exec: "
+            if len(status) > 0:
+                lineText = lineText + status
+            else:
+                lineText = lineText + "done"
+            if exitCode >= 0:
+                lineText = lineText + " (exit=" + intToStr(exitCode) + ")"
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "fileChange":
+            let status = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "status", itemIdx) else: ""
+            var lineText = "patch: "
+            if len(status) > 0:
+                lineText = lineText + status
+            else:
+                lineText = lineText + "done"
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "webSearch":
+            let status = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "status", itemIdx) else: ""
+            let query = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "query", itemIdx) else: ""
+            var lineText = "tool: web_search"
+            if len(status) > 0:
+                lineText = lineText + " " + status
+            if len(query) > 0:
+                lineText = lineText + " " + query
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "imageView":
+            let status = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "status", itemIdx) else: ""
+            let path = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "path", itemIdx) else: ""
+            var lineText = "tool: image_view"
+            if len(status) > 0:
+                lineText = lineText + " " + status
+            if len(path) > 0:
+                lineText = lineText + " " + path
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "exitedReviewMode":
+            let review = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "review", itemIdx) else: ""
+            var lineText = "tool: review completed"
+            if len(review) > 0:
+                lineText = lineText + " " + review
+            next = guiCodexAppendUniqueLine(next, lineText)
+        elif itemType == "mcpToolCall":
+            let status = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "status", itemIdx) else: ""
+            let tool = if itemIdx >= 0: guiJsonExtractStringAfter(trimmed, "tool", itemIdx) else: ""
+            var lineText = "tool: "
+            if len(tool) > 0:
+                lineText = lineText + tool
+            else:
+                lineText = lineText + "call"
+            if len(status) > 0:
+                lineText = lineText + " (" + status + ")"
+            next = guiCodexAppendUniqueLine(next, lineText)
+        return next
+    if methodName == "item/agentMessage/delta":
+        let deltaIdx = guiJsonFindKeyAfter(trimmed, "delta", 0)
+        let text = if deltaIdx >= 0: guiCodexExtractContentText(trimmed, deltaIdx) else: ""
+        if len(text) > 0:
+            let lastLine = guiCodexLastLine(next)
+            if startsWithPrefix(lastLine, "codex: "):
+                let prefix = "codex: "
+                let prior = sliceFrom(lastLine, len(prefix))
+                if len(prior) > 0 && startsWithPrefix(text, prior):
+                    next = guiCodexReplaceLastLine(next, prefix + text)
+                elif len(text) > 0 && startsWithPrefix(prior, text):
+                    0
+                else:
+                    next = guiCodexReplaceLastLine(next, prefix + prior + text)
+            else:
+                next = guiCodexAppendUniqueLine(next, "codex: " + text)
+        return next
+    if methodName == "account/updated":
+        let authMode = guiJsonExtractString(trimmed, "authMode")
+        next.codex.authPending = false
+        next.codex.loginStartMs = 0
+        next.codex.loginAwaitUrl = false
+        if len(authMode) > 0:
+            next.codex.authStatus = authMode
+            next = guiCodexAppendUniqueLine(next, "auth: " + authMode)
+        else:
+            next.codex.authStatus = "signed-out"
+            next = guiCodexAppendUniqueLine(next, "auth: signed-out")
+        return next
+    if methodName == "account/login/completed":
+        let ok = guiJsonExtractBoolAfter(trimmed, "success", 0, false)
+        next.codex.authPending = false
+        next.codex.loginStartMs = 0
+        next.codex.loginAwaitUrl = false
+        if ok:
+            next.codex.authStatus = "signed-in"
+            next = guiCodexAppendUniqueLine(next, "auth: signed-in")
+        else:
+            let err = guiJsonExtractString(trimmed, "error")
+            next.codex.authStatus = "error"
+            if len(err) > 0:
+                next = guiCodexAppendUniqueLine(next, "auth: " + err)
+            else:
+                next = guiCodexAppendUniqueLine(next, "auth: failed")
+        return next
+    if methodName == "item/commandExecution/requestApproval":
+        var idIsString = false
+        let reqId = guiJsonExtractId(trimmed, 0, &idIsString)
+        next.codex.approval.active = true
+        next.codex.approval.kind = cakCommand
+        next.codex.approval.requestId = reqId
+        next.codex.approval.requestIdIsString = idIsString
+        next.codex.approval.threadId = guiJsonExtractString(trimmed, "threadId")
+        next.codex.approval.turnId = guiJsonExtractString(trimmed, "turnId")
+        next.codex.approval.itemId = guiJsonExtractString(trimmed, "itemId")
+        next.codex.approval.reason = guiJsonExtractString(trimmed, "reason")
+        next.codex.status = "approval"
+        next.statusMsg = "codex: approval"
+        next = guiCodexAppendUniqueLine(next, "approval: command")
+        if len(next.codex.approval.reason) > 0:
+            next = guiCodexAppendUniqueLine(next, "reason: " + next.codex.approval.reason)
+        return next
+    if methodName == "item/fileChange/requestApproval":
+        var idIsString = false
+        let reqId = guiJsonExtractId(trimmed, 0, &idIsString)
+        next.codex.approval.active = true
+        next.codex.approval.kind = cakFile
+        next.codex.approval.requestId = reqId
+        next.codex.approval.requestIdIsString = idIsString
+        next.codex.approval.threadId = guiJsonExtractString(trimmed, "threadId")
+        next.codex.approval.turnId = guiJsonExtractString(trimmed, "turnId")
+        next.codex.approval.itemId = guiJsonExtractString(trimmed, "itemId")
+        next.codex.approval.reason = guiJsonExtractString(trimmed, "reason")
+        next.codex.status = "approval"
+        next.statusMsg = "codex: approval"
+        next = guiCodexAppendUniqueLine(next, "approval: file change")
+        if len(next.codex.approval.reason) > 0:
+            next = guiCodexAppendUniqueLine(next, "reason: " + next.codex.approval.reason)
+        return next
+    return next
+
+fn guiCodexClearApproval(state: GuiState): GuiState =
+    var next: GuiState = state
+    next.codex.approval.active = false
+    next.codex.approval.kind = cakNone
+    next.codex.approval.requestId = ""
+    next.codex.approval.requestIdIsString = false
+    next.codex.approval.threadId = ""
+    next.codex.approval.turnId = ""
+    next.codex.approval.itemId = ""
+    next.codex.approval.reason = ""
+    return next
+
+fn guiCodexRespondApproval(state: GuiState, accept: bool): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if ! next.codex.approval.active:
+        next.statusMsg = "codex: no approval"
+        return next
+    let decision = if accept: "accept" else: "decline"
+    var resultFields: str[] = default[str[]]
+    addPtr_string(&resultFields, guiJsonPair("decision", guiJsonStringValue(decision)))
+    let resultJson = guiJsonObject(resultFields)
+    next = guiCodexSendResponse(next, next.codex.approval.requestId, next.codex.approval.requestIdIsString, resultJson)
+    next = guiCodexAppendUniqueLine(next, "approval: " + decision)
+    next = guiCodexClearApproval(next)
+    next.codex.status = "ready"
+    next.statusMsg = "codex: approval " + decision
+    return next
+
+fn guiCodexApprove(state: GuiState): GuiState =
+    return guiCodexRespondApproval(state, true)
+
+fn guiCodexDecline(state: GuiState): GuiState =
+    return guiCodexRespondApproval(state, false)
+
+fn guiCodexConsumeOutput(state: GuiState, output: str): GuiState =
+    if len(output) == 0:
+        return state
+    var text = state.codex.ptyRemainder + output
+    state.codex.ptyRemainder = ""
+    var lineBuf = ""
+    var idx: int32 = 0
+    var segStart: int32 = 0
+    let total: int32 = len(text)
+    while idx < total:
+        let ch = text[idx]
+        if ch == '\r' || ch == '\n':
+            if segStart < idx:
+                lineBuf = lineBuf + sliceRange(text, segStart, idx - 1)
+            if ch == '\r' && idx + 1 < total && text[idx + 1] == '\n':
+                idx = idx + 1
+            if len(lineBuf) > 0:
+                if codexLogIoEnabled():
+                    codexLogIo("line: " + lineBuf)
+                state = guiCodexHandleLine(state, lineBuf)
+                lineBuf = ""
+            idx = idx + 1
+            segStart = idx
+            continue
+        idx = idx + 1
+    if idx > segStart:
+        lineBuf = lineBuf + sliceRange(text, segStart, idx - 1)
+    state.codex.ptyRemainder = lineBuf
+    return state
+
+fn guiCodexTick(state: GuiState): GuiState =
+    if ! state.codex.ptyActive:
+        return state
+    var next: GuiState = state
+    let nowTick = guiNowMs()
+    if next.codex.connectWarnNextMs == 0 || nowTick >= next.codex.connectWarnNextMs:
+        next.codex.connectWarnNextMs = nowTick + 1000
+        var exitCode: int32 = -1
+        let waitRc: int32 = ptyWait(next.codex.ptyPid, &exitCode)
+        if waitRc > 0:
+            codexLog("connect: app-server exited code=" + intToStr(exitCode))
+            return guiCodexStop(next, "exit")
+    for loops in 0..<8:
+        var eof: int32 = 0
+        var chunk: str = ""
+        if next.codex.pipeMode:
+            let waitMs: int32 = if initWait: 5 else: 1
+            chunk = fdReadWait(next.codex.ptyFd, 4096, waitMs, &eof)
+        else:
+            chunk = ptyRead(next.codex.ptyFd, 4096, &eof)
+        if eof != 0:
+            return guiCodexStop(next, "exit")
+        if len(chunk) == 0:
+            break
+        if codexLogIoEnabled():
+            codexLogIo("read bytes=" + intToStr(len(chunk)))
+        next = guiCodexConsumeOutput(next, chunk)
+    next = guiCodexMaybeSendQueued(next)
+    return next
+
+fn guiCodexAskInternal(state: GuiState, prompt: str, recordHistory: bool): GuiState =
+    let trimmed = trimLine(prompt)
+    if len(trimmed) == 0:
+        var next: GuiState = guiCodexShow(state)
+        next.statusMsg = "codex: empty"
+        return next
+    var next: GuiState = guiCodexConnect(state)
+    if ! next.codex.ptyActive:
+        return next
+    if recordHistory:
+        next = guiCodexRecordHistory(next, trimmed)
+    var params: str[] = default[str[]]
+    if len(next.codex.threadId) > 0:
+        addPtr_string(&params, guiJsonPair("threadId", guiJsonStringValue(next.codex.threadId)))
+    let fullPrompt = guiCodexBuildPrompt(next, trimmed)
+    var inputFields: str[] = default[str[]]
+    addPtr_string(&inputFields, guiJsonPair("type", guiJsonStringValue("text")))
+    addPtr_string(&inputFields, guiJsonPair("text", guiJsonStringValue(fullPrompt)))
+    let inputItem = guiJsonObject(inputFields)
+    var inputItems: str[] = default[str[]]
+    addPtr_string(&inputItems, inputItem)
+    addPtr_string(&params, guiJsonPair("input", guiJsonArray(inputItems)))
+    addPtr_string(&params, guiJsonPair("text", guiJsonStringValue(fullPrompt)))
+    let cwd = guiWorkspaceActiveRoot(next)
+    if len(cwd) > 0:
+        addPtr_string(&params, guiJsonPair("cwd", guiJsonStringValue(cwd)))
+    next = guiCodexAppendLine(next, "you: " + trimmed)
+    if seqLenString(next.codex.contextItems) > 0:
+        next.codex.contextItems = default[str[]]
+    next = guiCodexSendRpc(next, "turn/start", guiJsonObject(params))
+    next.codex.status = "running"
+    next.statusMsg = "codex: ask"
+    return next
+
+fn guiCodexAsk(state: GuiState, prompt: str): GuiState =
+    return guiCodexAskInternal(state, prompt, true)
+
+fn guiCodexReview(state: GuiState, prompt: str): GuiState =
+    let trimmed = trimLine(prompt)
+    if len(trimmed) == 0:
+        var next: GuiState = guiCodexShow(state)
+        next.statusMsg = "codex: review <text>"
+        return next
+    var next: GuiState = guiCodexConnect(state)
+    if ! next.codex.ptyActive:
+        return next
+    next = guiCodexRecordHistory(next, trimmed)
+    var params: str[] = default[str[]]
+    if len(next.codex.threadId) > 0:
+        addPtr_string(&params, guiJsonPair("threadId", guiJsonStringValue(next.codex.threadId)))
+    let fullPrompt = guiCodexBuildPrompt(next, trimmed)
+    var targetFields: str[] = default[str[]]
+    addPtr_string(&targetFields, guiJsonPair("type", guiJsonStringValue("custom")))
+    addPtr_string(&targetFields, guiJsonPair("instructions", guiJsonStringValue(fullPrompt)))
+    let targetObj = guiJsonObject(targetFields)
+    addPtr_string(&params, guiJsonPair("target", targetObj))
+    addPtr_string(&params, guiJsonPair("text", guiJsonStringValue(fullPrompt)))
+    next = guiCodexAppendLine(next, "review: " + trimmed)
+    if seqLenString(next.codex.contextItems) > 0:
+        next.codex.contextItems = default[str[]]
+    next = guiCodexSendRpc(next, "review/start", guiJsonObject(params))
+    next.codex.status = "reviewing"
+    next.statusMsg = "codex: review"
+    return next
+
+fn guiCodexReviewSelection(state: GuiState): GuiState =
+    let text = guiCodexSelectionText(state)
+    if len(text) == 0:
+        state.statusMsg = "codex: selection empty"
+        return state
+    return guiCodexReview(state, text)
+
+fn guiCodexReviewFile(state: GuiState): GuiState =
+    let path = state.editor.filePath
+    if len(path) == 0:
+        state.statusMsg = "codex: no file"
+        return state
+    let content = joinLines(state.editor.lines)
+    if len(content) == 0:
+        state.statusMsg = "codex: empty file"
+        return state
+    let prompt = "Please review the following file:\n" + path + "\n\n" + content
+    return guiCodexReview(state, prompt)
+
+fn guiCodexExtractOutput(payload: str): str =
+    let direct = guiJsonExtractString(payload, "output")
+    if len(direct) > 0:
+        return direct
+    let lines = splitLinesSimple(payload)
+    var lastText = ""
+    for idx in 0..<seqLenString(lines):
+        let line = trimLine(seqGetString(lines, idx))
+        if len(line) == 0:
+            continue
+        let eventType = guiJsonExtractString(line, "type")
+        if len(eventType) == 0:
+            continue
+        let itemIdx = guiJsonFindKeyAfter(line, "item", 0)
+        if itemIdx >= 0:
+            let itemType = guiJsonExtractStringAfter(line, "type", itemIdx)
+            if itemType == "agent_message":
+                let text = guiJsonExtractStringAfter(line, "text", itemIdx)
+                if len(text) > 0:
+                    lastText = text
+    return lastText
+
+fn guiCodexFallbackBrowserLogin(state: GuiState): GuiState =
+    var next: GuiState = state
+    var baseCmd = ""
+    next = guiCodexCliCommandOrEmpty(next, "login", baseCmd)
+    if len(baseCmd) == 0:
+        return next
+    next.codex.loginStartMs = 0
+    next.codex.loginAwaitUrl = false
+    next.codex.loginFallbackUsed = true
+    var cmd = baseCmd + " login"
+    let logPath = joinPath(guiCodexHomeDir(), "login.log")
+    let logDir = parentDir(logPath)
+    if len(logDir) > 0:
+        guiEnsureDirExists(logDir)
+    if guiIsWindows():
+        var envPrefix = "set CHENG_CODEX_LOGIN_QUIET=1 && set CHENG_CODEX_LOGIN_STRICT_STATE=0 && set CHENG_CODEX_APP_SERVER=1"
+        if len(logPath) > 0:
+            envPrefix = envPrefix + " && set CHENG_CODEX_LOGIN_LOG=" + guiShellQuote(logPath)
+        cmd = envPrefix + " && " + cmd
+    else:
+        var envPrefix = "CHENG_CODEX_LOGIN_QUIET=1 CHENG_CODEX_LOGIN_STRICT_STATE=0 CHENG_CODEX_APP_SERVER=1 "
+        if len(logPath) > 0:
+            envPrefix = envPrefix + "CHENG_CODEX_LOGIN_LOG=" + guiShellQuote(logPath) + " "
+        cmd = envPrefix + cmd
+    let workDir = guiWorkspaceActiveRoot(next)
+    if guiSpawnDetached(cmd, workDir):
+        next.codex.authStatus = "pending"
+        next.codex.authPending = true
+        let now = guiNowMs()
+        next.codex.authStartMs = now
+        next.codex.authCheckNextMs = now + int64(CodexAuthCheckIntervalMs)
+        next = guiCodexAppendUniqueLine(next, "auth: open browser")
+        if len(logPath) > 0:
+            next = guiCodexAppendUniqueLine(next, "auth: log " + logPath)
+        next.statusMsg = "codex: login (fallback)"
+    else:
+        next = guiCodexAppendUniqueLine(next, "auth: login spawn failed")
+        next.statusMsg = "codex: login failed"
+    return next
+
+fn guiCodexLogin(state: GuiState, token: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if next.codex.authPending:
+        next.statusMsg = "codex: login pending"
+        return next
+    let trimmed = trimLine(token)
+    next.codex.loginStartMs = 0
+    next.codex.loginAwaitUrl = false
+    next.codex.loginFallbackUsed = false
+    if len(trimmed) == 0:
+        next.statusMsg = "codex: login <token>"
+        return next
+    var tokenKind = "apikey"
+    if trimmed == "chatgpt" || trimmed == "browser":
+        tokenKind = trimmed
+    var ptyFlag = "0"
+    if next.codex.ptyActive:
+        ptyFlag = "1"
+    codexLog("login: start kind=" + tokenKind + " pty=" + ptyFlag)
+    next.codex.loginQueued = false
+    next.codex.loginToken = ""
+    next.codex.loginQueuedAtMs = 0
+    if (tokenKind == "chatgpt" || tokenKind == "browser") && guiCodexLoginPreferCli(tokenKind):
+        return guiCodexFallbackBrowserLogin(next)
+    if (tokenKind == "chatgpt" || tokenKind == "browser") && ! next.codex.ptyActive:
+        return guiCodexFallbackBrowserLogin(next)
+    if next.codex.ptyActive:
+        var fields: str[] = default[str[]]
+        if trimmed == "chatgpt" || trimmed == "browser":
+            addPtr_string(&fields, guiJsonPair("type", guiJsonStringValue("chatgpt")))
+        else:
+            addPtr_string(&fields, guiJsonPair("type", guiJsonStringValue("apiKey")))
+            addPtr_string(&fields, guiJsonPair("apiKey", guiJsonStringValue(trimmed)))
+        next = guiCodexSendRpc(next, "account/login/start", guiJsonObject(fields))
+        next.codex.pendingRpcId = next.codex.rpcId
+        next.codex.pendingRpcKind = "account/login/start"
+        next.codex.authStatus = "pending"
+        next.codex.authPending = true
+        let now = guiNowMs()
+        next.codex.authStartMs = now
+        next.codex.authCheckNextMs = now + int64(CodexAuthCheckIntervalMs)
+        next.codex.loginStartMs = now
+        next.codex.loginAwaitUrl = true
+        next.codex.loginFallbackUsed = false
+        next = guiCodexAppendLine(next, "auth: pending")
+        next.statusMsg = "codex: login"
+        return next
+    var baseCmd = ""
+    next = guiCodexCliCommandOrEmpty(next, "login", baseCmd)
+    if len(baseCmd) == 0:
+        return next
+    var cmd = baseCmd + " login --token " + guiShellQuote(trimmed)
+    if guiIsWindows():
+        cmd = "set CHENG_CODEX_LOGIN_QUIET=1 && set CHENG_CODEX_LOGIN_STRICT_STATE=0 && set CHENG_CODEX_APP_SERVER=1 && " + cmd
+    else:
+        cmd = "CHENG_CODEX_LOGIN_QUIET=1 CHENG_CODEX_LOGIN_STRICT_STATE=0 CHENG_CODEX_APP_SERVER=1 " + cmd
+    let workDir = guiWorkspaceActiveRoot(next)
+    if guiSpawnDetached(cmd, workDir):
+        codexLog("login: cli spawned")
+        next.codex.authStatus = "pending"
+        next.codex.authPending = true
+        let now = guiNowMs()
+        next.codex.authStartMs = now
+        next.codex.authCheckNextMs = now + int64(CodexAuthCheckIntervalMs)
+        next = guiCodexAppendLine(next, "auth: pending")
+        next.statusMsg = "codex: login started"
+    else:
+        codexLog("login: cli spawn failed")
+        next.codex.authStatus = "error"
+        next.codex.authPending = false
+        next = guiCodexAppendLine(next, "auth: login failed")
+        next.statusMsg = "codex: login failed"
+    return next
+
+fn guiCodexStartLoginFlow(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if next.codex.authPending:
+        next.statusMsg = "codex: login pending"
+        return next
+    if next.codex.loginQueued:
+        if next.codex.initPending || ! next.codex.initialized:
+            next.statusMsg = "codex: login queued"
+            return next
+        next.codex.loginQueued = false
+        next.codex.loginToken = ""
+        next.codex.loginQueuedAtMs = 0
+    if ! next.codex.ptyActive:
+        next = guiCodexConnect(next)
+    var loginPty = "0"
+    if next.codex.ptyActive:
+        loginPty = "1"
+    codexLog("login: click pty=" + loginPty)
+    if next.codex.ptyActive:
+        if next.codex.initPending || ! next.codex.initialized:
+            next.codex.loginQueued = true
+            next.codex.loginToken = "chatgpt"
+            next.codex.loginQueuedAtMs = guiNowMs()
+            codexLog("login: queued (init)")
+            next.statusMsg = "codex: login queued"
+            return next
+        next = guiCodexLogin(next, "chatgpt")
+        if next.codex.authPending:
+            return next
+    next = startOverlay(next, okCommand)
+    next.overlay.input = "codex login "
+    next.statusMsg = "codex: login <token>"
+    return next
+
+fn guiCodexLogout(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if next.codex.ptyActive:
+        next = guiCodexSendRpc(next, "account/logout", guiJsonObject(default[str[]]))
+        next.codex.pendingRpcId = next.codex.rpcId
+        next.codex.pendingRpcKind = "account/logout"
+        next.codex.authPending = false
+        next.codex.authStatus = "signed-out"
+        if next.codex.ptyActive:
+            next = guiCodexStop(next, "logout")
+        next.statusMsg = "codex: logout"
+        return next
+    var baseCmd = ""
+    next = guiCodexCliCommandOrEmpty(next, "logout", baseCmd)
+    if len(baseCmd) == 0:
+        return next
+    let cmd = baseCmd + " logout"
+    let result: ExecCmdResult = execCmdEx(cmd, {poStdErrToStdOut}, guiWorkspaceActiveRoot(next))
+    if result.exitCode == 0:
+        next.codex.authStatus = "signed-out"
+        next.codex.authPending = false
+        next.codex.authCheckNextMs = 0
+        next.codex.authStartMs = 0
+        next = guiCodexAppendLine(next, "auth: signed-out")
+    else:
+        let errLine = trimLine(result.output)
+        if len(errLine) > 0:
+            next = guiCodexAppendLine(next, errLine)
+        next.codex.authStatus = "error"
+    if next.codex.ptyActive:
+        next = guiCodexStop(next, "logout")
+    next.statusMsg = "codex: logout"
+    return next
+
+fn guiCodexAuthTick(state: GuiState): GuiState =
+    var next: GuiState = state
+    if ! next.codex.authPending && ! next.codex.loginAwaitUrl:
+        if next.codex.loginQueued && next.codex.ptyActive:
+            if next.codex.initPending || ! next.codex.initialized:
+                return state
+            let now = guiNowMs()
+            let waitedMs: int64 = if next.codex.loginQueuedAtMs > 0: now - next.codex.loginQueuedAtMs else: 0
+            if next.codex.pendingRpcKind != "account/read" || waitedMs >= 2000:
+                if len(next.codex.loginToken) > 0:
+                    codexLog("login: queued fire waitMs=" + intToStr(int32(waitedMs)))
+                    return guiCodexLogin(next, next.codex.loginToken)
+        return state
+    let now = guiNowMs()
+    if next.codex.loginAwaitUrl && ! next.codex.loginFallbackUsed && next.codex.loginStartMs > 0:
+        let waitedMs: int64 = now - next.codex.loginStartMs
+        if waitedMs >= int64(CodexLoginFallbackMs):
+            next.codex.loginFallbackUsed = true
+            return guiCodexFallbackBrowserLogin(next)
+    if ! next.codex.authPending:
+        return next
+    if next.codex.authCheckNextMs < 0:
+        if next.codex.authStartMs > 0 && now - next.codex.authStartMs >= int64(CodexAuthTimeoutMs):
+            next.codex.authPending = false
+            next.codex.authStatus = "error"
+            next = guiCodexAppendLine(next, "auth: login timeout")
+            next.statusMsg = "codex: login timeout"
+            codexLog("login: timeout")
+        return next
+    if next.codex.authCheckNextMs > 0 && now < next.codex.authCheckNextMs:
+        return next
+    next.codex.authCheckNextMs = now + int64(CodexAuthCheckIntervalMs)
+    if guiCodexHasAuthToken():
+        next.codex.authPending = false
+        next.codex.authStatus = "signed-in"
+        next = guiCodexAppendLine(next, "auth: signed-in")
+        next.statusMsg = "codex: signed-in"
+        return next
+    if next.codex.authStartMs > 0 && now - next.codex.authStartMs >= int64(CodexAuthTimeoutMs):
+        next.codex.authPending = false
+        next.codex.authStatus = "error"
+        next = guiCodexAppendLine(next, "auth: login timeout")
+        next.statusMsg = "codex: login timeout"
+        codexLog("login: timeout")
+    return next
+
+fn guiCodexExec(state: GuiState, prompt: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let trimmed = trimLine(prompt)
+    if len(trimmed) == 0:
+        next.statusMsg = "codex: empty"
+        return next
+    var baseCmd = ""
+    next = guiCodexCliCommandOrEmpty(next, "exec", baseCmd)
+    if len(baseCmd) == 0:
+        return next
+    let cmd = baseCmd + " exec --json --prompt " + guiShellQuote(trimmed)
+    next = guiCodexAppendLine(next, "you: " + trimmed)
+    var job: TaskJob
+    job.kind = tkCodexExec
+    job.command = cmd
+    job.workDir = guiWorkspaceActiveRoot(next)
+    return guiTaskRunnerEnqueue(next, job)
+
+fn guiCodexApply(state: GuiState, patchPath: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let trimmed = trimLine(patchPath)
+    if len(trimmed) == 0:
+        next.statusMsg = "codex: apply <path>"
+        return next
+    var baseCmd = ""
+    next = guiCodexCliCommandOrEmpty(next, "apply", baseCmd)
+    if len(baseCmd) == 0:
+        return next
+    let cmd = baseCmd + " apply --patch " + guiShellQuote(trimmed)
+    next = guiCodexAppendLine(next, "apply: " + trimmed)
+    var job: TaskJob
+    job.kind = tkCodexApply
+    job.command = cmd
+    job.workDir = guiWorkspaceActiveRoot(next)
+    return guiTaskRunnerEnqueue(next, job)
+
+fn guiCodexPreviewLastDiff(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if len(next.codex.lastDiff) == 0:
+        next.statusMsg = "codex: no diff"
+        return next
+    let patchPath = guiCodexWriteTempPatch(next.codex.lastDiff)
+    if len(patchPath) == 0:
+        next.statusMsg = "codex: patch write failed"
+        return next
+    return guiCodexPreviewPatch(next, patchPath)
+
+fn guiCodexApplyLastDiff(state: GuiState): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    if len(next.codex.lastDiff) == 0:
+        next.statusMsg = "codex: no diff"
+        return next
+    let patchPath = guiCodexWriteTempPatch(next.codex.lastDiff)
+    if len(patchPath) == 0:
+        next.statusMsg = "codex: patch write failed"
+        return next
+    return guiCodexApply(next, patchPath)
+
+fn guiCodexSelectionText(state: GuiState): str =
+    let selected = selectionText(state.editor)
+    if len(selected) > 0:
+        return selected
+    if state.editor.cursorLine >= 0 && state.editor.cursorLine < seqLenString(state.editor.lines):
+        return seqGetString(state.editor.lines, state.editor.cursorLine)
+    return ""
+
+fn guiCodexAddText(state: GuiState, text: str): GuiState =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        state.statusMsg = "codex: add <text>"
+        return state
+    var next: GuiState = guiCodexAddContextItem(state, "note", "Note:", trimmed)
+    next.statusMsg = "codex: add"
+    return next
+
+fn guiCodexAddSelection(state: GuiState): GuiState =
+    let text = guiCodexSelectionText(state)
+    if len(text) == 0:
+        state.statusMsg = "codex: selection empty"
+        return state
+    var next: GuiState = guiCodexAddContextItem(state, "selection", "Selection:", text)
+    next.statusMsg = "codex: add selection"
+    return next
+
+fn guiCodexAskSelection(state: GuiState): GuiState =
+    let text = guiCodexSelectionText(state)
+    if len(text) == 0:
+        state.statusMsg = "codex: selection empty"
+        return state
+    return guiCodexAsk(state, text)
+
+fn guiCodexAddFile(state: GuiState): GuiState =
+    let path = state.editor.filePath
+    if len(path) == 0:
+        state.statusMsg = "codex: no file"
+        return state
+    let content = joinLines(state.editor.lines)
+    if len(content) == 0:
+        state.statusMsg = "codex: empty file"
+        return state
+    let displayLabel = "file " + path
+    let promptLabel = "File: " + path
+    var next: GuiState = guiCodexAddContextItem(state, displayLabel, promptLabel, content)
+    next.statusMsg = "codex: add file"
+    return next
+
+fn guiCodexAskFile(state: GuiState): GuiState =
+    let path = state.editor.filePath
+    if len(path) == 0:
+        state.statusMsg = "codex: no file"
+        return state
+    let content = joinLines(state.editor.lines)
+    if len(content) == 0:
+        state.statusMsg = "codex: empty file"
+        return state
+    let prompt = "Please provide suggestions based on the following file:\n" + path + "\n\n" + content
+    return guiCodexAsk(state, prompt)
+
+fn guiCodexPreviewPatch(state: GuiState, patchPath: str): GuiState =
+    var next: GuiState = guiCodexShow(state)
+    let trimmed = trimLine(patchPath)
+    if len(trimmed) == 0:
+        next.statusMsg = "codex: preview <path>"
+        return next
+    if ! fileExists(trimmed):
+        next.statusMsg = "codex: preview missing"
+        return next
+    let content = readFile(trimmed)
+    let lines = splitLinesSimple(content)
+    next.codex.lines = default[str[]]
+    next.codex.selected = -1
+    next.codex.scroll = 0
+    for idx in 0..<seqLenString(lines):
+        if ! (seqLenString(next.codex.lines) < MaxTaskLogLines):
+            break
+        let lineText = seqGetString(lines, idx)
+        next = guiCodexAppendLine(next, lineText)
+    next.codex.status = "preview"
+    next.statusMsg = "codex: preview"
+    return next
+
+fn guiCodexTodoLine(lineText: str): bool =
+    let lowered = textutils.toLowerAscii(lineText)
+    if indexOfSubstr(lowered, "todo", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "fixme", 0) >= 0:
+        return true
+    return false
+
+fn guiCodexTodoPromptForLine(state: GuiState, lineIdx: int32, lineText: str): str =
+    let fileLabel = if len(state.editor.filePath) > 0: state.editor.filePath else: "current file"
+    return "Please address TODO/FIXME (" + fileLabel + ":" + intToStr(lineIdx + 1) + "):\n" + lineText
+
+fn guiCodexTodo(state: GuiState): GuiState =
+    var items: str[] = default[str[]]
+    for idx in 0..<seqLenString(state.editor.lines):
+        let lineText = seqGetString(state.editor.lines, idx)
+        if guiCodexTodoLine(lineText):
+            addPtr_string(&items, intToStr(idx + 1) + ": " + lineText)
+            if seqLenString(items) >= 20:
+                break
+    if seqLenString(items) == 0:
+        state.statusMsg = "codex: todo empty"
+        return state
+    let prompt = "Please address the following TODO/FIXME:\n" + joinLines(items)
+    return guiCodexAsk(state, prompt)
+
+fn guiCodexClear(state: GuiState): GuiState =
+    state.codex.lines = default[str[]]
+    state.codex.selected = -1
+    state.codex.scroll = 0
+    state.codex.lastDiff = ""
+    state.codex.contextItems = default[str[]]
+    state.codex.input = ""
+    state.codex.inputHistory = default[str[]]
+    state.codex.inputHistoryIndex = -1
+    state.codex.inputHistoryStash = ""
+    state.codex.queue = default[str[]]
+    state.codex.overlayActive = false
+    state.codex.overlayScroll = 0
+    state.codex.draftActive = false
+    state.codex.draftPath = ""
+    state.codex.draftPrevFocus = fkEditor
+    state.codex.draftPrevBuffer = -1
+    state.codex.feedbackStep = cfsNone
+    state.codex.feedbackCategory = ""
+    state.codex.feedbackIncludeLogs = false
+    state.codex.tokenTotal = 0
+    state.codex.tokenInput = 0
+    state.codex.tokenOutput = 0
+    state.codex.tokenLastTotal = 0
+    state.codex.tokenLastInput = 0
+    state.codex.tokenLastOutput = 0
+    state.codex.tokenContextWindow = 0
+    state.codex.quitArmed = false
+    state.codex.quitArmedKey = ""
+    state.codex.quitArmedUntilMs = 0
+    state.codex.pendingRpcId = 0
+    state.codex.pendingRpcKind = ""
+    state.codex.loginStartMs = 0
+    state.codex.loginAwaitUrl = false
+    state.codex.loginFallbackUsed = false
+    state = guiCodexClearApproval(state)
+    state.statusMsg = "codex: cleared"
+    return state

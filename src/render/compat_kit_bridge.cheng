@@ -1,0 +1,19 @@
+import cheng/gui/kit
+import cheng/gui/core/component
+
+type
+    LegacyUiBuilder = fn (ctx: component.UiContext): component.Node
+
+fn runLegacyOnKit(appId, title: str, builder: LegacyUiBuilder) =
+    if builder == nil:
+        return
+    var config = defaultAppConfig()
+    config.appId = appId
+    config.title = title
+    config.root = builder
+    let app = createApp(config)
+    runApp(app)
+    shutdownApp(app)
+
+fn runLegacyOnKit(title: str, builder: LegacyUiBuilder) =
+    runLegacyOnKit("cheng.gui.legacy", title, builder)

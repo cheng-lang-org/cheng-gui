@@ -1,0 +1,54 @@
+when defined(android) || defined(ios) || defined(mobile_host):
+    import ide/textutils
+
+    fn guiP2PStart(listenAddr: str): str =
+        listenAddr
+        return ""
+
+    fn guiP2PStop() =
+        return
+
+    fn guiP2PMaybeInit() =
+        return
+else:
+    import std/os
+    import cheng/libp2p/main as libp2p
+    import cheng/libp2p/utils/result as result
+    import ide/textutils
+
+    type
+        GuiP2PState =
+            started: bool
+            host: libp2p.Switch
+
+    var guiP2PState: GuiP2PState
+
+    fn guiP2PStart(listenAddr: str): str =
+        if guiP2PState.started:
+            return ""
+        let hostRes: result.Result[libp2p.Switch] = libp2p.newHostWithAddressText(listenAddr)
+        if result.IsErr(hostRes):
+            return result.Error(hostRes)
+        var host: libp2p.Switch = result.Value(hostRes)
+        let startRes: result.Result[bool] = libp2p.hostStart(host)
+        if result.IsErr(startRes):
+            return result.Error(startRes)
+        guiP2PState.host = host
+        guiP2PState.started = true
+        return ""
+
+    fn guiP2PStop() =
+        if ! guiP2PState.started:
+            return
+        libp2p.hostStop(guiP2PState.host)
+        guiP2PState.started = false
+
+    fn guiP2PMaybeInit() =
+        let listenAddr = getEnv("CHENG_IDE_P2P_LISTEN")
+        if len(listenAddr) == 0:
+            return
+        let err = guiP2PStart(listenAddr)
+        if len(err) > 0:
+            textutils.print("[p2p] start failed: " + err + "\n")
+        else:
+            textutils.print("[p2p] listen " + listenAddr + "\n")

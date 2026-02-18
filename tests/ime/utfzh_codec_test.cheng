@@ -1,0 +1,73 @@
+import cheng/gui/ime/utfzh_codec
+import cheng/gui/ime/cangwu_types
+
+fn miniDict(): UtfZhDict =
+    var dict: UtfZhDict
+    dict.chars = []
+    dict.codepoints = []
+    dict.cpToIndex = []
+    dict.bmpIndex = []
+    dict.nonBmpCp = []
+    dict.nonBmpIdx = []
+
+    add(dict.chars, utfzhEncodeUtf8Codepoint(20013))
+    add(dict.codepoints, 20013)
+    var e1: CwIntMapEntry
+    e1.key = "20013"
+    e1.value = 0
+    add(dict.cpToIndex, e1)
+
+    add(dict.chars, utfzhEncodeUtf8Codepoint(25991))
+    add(dict.codepoints, 25991)
+    var e2: CwIntMapEntry
+    e2.key = "25991"
+    e2.value = 1
+    add(dict.cpToIndex, e2)
+    return dict
+
+fn testBasic(): int32 =
+    let dict = miniDict()
+    let text = "abc"
+    let enc = utfZhEncodeStrict(text, dict)
+    if ! enc.ok:
+        return 101
+    if len(enc.bytes) != len(text):
+        return 102
+    return 0
+
+fn testDictHead(): int32 =
+    let dict = miniDict()
+    let text = utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991)
+    let enc = utfZhEncodeStrict(text, dict)
+    if ! enc.ok:
+        return 201
+    let dec = utfZhDecodeStrict(enc.bytes, dict)
+    if ! dec.ok || dec.text != text:
+        return 202
+    return 0
+
+fn testOverlongAndContinuation(): int32 =
+    let dict = miniDict()
+    let overlongAscii = charToStr(char(0xFB)) + charToStr(char(0x80)) + charToStr(char(0x81)) + charToStr(char(0x81))
+    let dec1 = utfZhDecodeStrict(overlongAscii, dict)
+    if dec1.errorCount <= 0:
+        return 301
+    let badCont = charToStr(char(0xE2)) + charToStr(char(0x41))
+    let dec2 = utfZhDecodeStrict(badCont, dict)
+    if dec2.errorCount <= 0:
+        return 302
+    return 0
+
+fn main(): int32 =
+    var rc = testBasic()
+    if rc != 0:
+        return rc
+    rc = testDictHead()
+    if rc != 0:
+        return rc
+    rc = testOverlongAndContinuation()
+    if rc != 0:
+        return rc
+    return 0
+
+main()

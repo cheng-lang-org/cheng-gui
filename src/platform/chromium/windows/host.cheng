@@ -1,0 +1,14 @@
+import cheng/gui/browser/types
+
+type
+    WindowsHostInfo =
+        platformName: str
+        supportsGpu: bool
+        supportsSandbox: bool
+
+fn windowsHostInfo(profile: types.SandboxProfile): WindowsHostInfo =
+    var info: WindowsHostInfo
+    info.platformName = "windows"
+    info.supportsGpu = true
+    info.supportsSandbox = profile != types.spCompat
+    return info

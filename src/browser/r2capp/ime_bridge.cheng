@@ -1,0 +1,326 @@
+import cheng/gui/browser/web
+import cheng/gui/browser/r2capp/utfzh_bridge
+import cheng/gui/ime/cangwu_assets_loader as cwAssets
+import cheng/gui/ime/cangwu_engine as cwEngine
+import cheng/gui/ime/cangwu_rules as cwRules
+import cheng/gui/ime/cangwu_types as cwTypes
+
+var imeBridgeEngine: cwTypes.CwEngine
+var imeBridgeReady = false
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn payloadValue(payload: str, key: str): str =
+    if safeLen(payload) <= int32(0) || safeLen(key) <= int32(0):
+        return ""
+    var idx = int32(0)
+    while idx + len(key) <= len(payload):
+        var matched = true
+        var j = int32(0)
+        while j < len(key):
+            if ! cEq(payload[idx + j], key[j]):
+                matched = false
+                break
+            j = j + int32(1)
+        if matched:
+            return payload[idx + len(key)..<len(payload)]
+        idx = idx + int32(1)
+    return ""
+
+fn hexValue(ch: char): int32 =
+    if ch >= '0' && ch <= '9':
+        return int32(ch) - int32('0')
+    if ch >= 'a' && ch <= 'f':
+        return int32(ch) - int32('a') + int32(10)
+    if ch >= 'A' && ch <= 'F':
+        return int32(ch) - int32('A') + int32(10)
+    return int32(-1)
+
+fn decodeHexText(value: str): str =
+    if safeLen(value) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx + int32(1) < safeLen(value):
+        let hi = hexValue(value[idx])
+        let lo = hexValue(value[idx + int32(1)])
+        if hi < int32(0) || lo < int32(0):
+            break
+        let byteValue = hi * int32(16) + lo
+        out = out + charToStr(char(byteValue))
+        idx = idx + int32(2)
+    if idx < safeLen(value):
+        return ""
+    return out
+
+fn utf8FromCodepoint(cp: int32): str =
+    if cp < int32(0x80):
+        return charToStr(char(cp))
+    if cp < int32(0x800):
+        let b1 = int32(0xC0) + (cp / int32(64))
+        let b2 = int32(0x80) + (cp % int32(64))
+        return charToStr(char(b1)) + charToStr(char(b2))
+    if cp < int32(0x10000):
+        let b1 = int32(0xE0) + (cp / int32(4096))
+        let remain = cp % int32(4096)
+        let b2 = int32(0x80) + (remain / int32(64))
+        let b3 = int32(0x80) + (remain % int32(64))
+        return charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3))
+    let b1 = int32(0xF0) + (cp / int32(262144))
+    let remainA = cp % int32(262144)
+    let b2 = int32(0x80) + (remainA / int32(4096))
+    let remainB = remainA % int32(4096)
+    let b3 = int32(0x80) + (remainB / int32(64))
+    let b4 = int32(0x80) + (remainB % int32(64))
+    return charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3)) + charToStr(char(b4))
+
+fn parseCodepointToken(token: str, fallback: int32): int32 =
+    if safeLen(token) <= int32(0):
+        return fallback
+    var idx: int32 = int32(0)
+    var value: int32 = int32(0)
+    var saw = false
+    while idx < safeLen(token):
+        let ch = token[idx]
+        if ch >= '0' && ch <= '9':
+            value = value * int32(10) + int32(ch) - int32('0')
+            saw = true
+            idx = idx + int32(1)
+        else:
+            return fallback
+    if ! saw:
+        return fallback
+    return value
+
+fn decodeCodepointList(value: str): str =
+    if safeLen(value) <= int32(0):
+        return ""
+    var out: str = ""
+    var token: str = ""
+    var idx: int32 = int32(0)
+    while idx <= safeLen(value):
+        let atEnd = idx == safeLen(value)
+        if ! atEnd && ! cEq(value[idx], ','):
+            token = token + charToStr(value[idx])
+            idx = idx + int32(1)
+            continue
+        let cp = parseCodepointToken(token, int32(-1))
+        if cp < int32(0) || cp > int32(0x10FFFF):
+            return ""
+        out = out + utf8FromCodepoint(cp)
+        token = ""
+        idx = idx + int32(1)
+    return out
+
+fn payloadText(payload: str): str =
+    if safeLen(payload) <= int32(0):
+        return ""
+    let textCp = payloadValue(payload, "text_cp=")
+    if safeLen(textCp) > int32(0):
+        let decoded = decodeCodepointList(textCp)
+        if safeLen(decoded) > int32(0):
+            return decoded
+    let textHex = payloadValue(payload, "text_hex=")
+    if safeLen(textHex) > int32(0):
+        let decoded = decodeHexText(textHex)
+        if safeLen(decoded) > int32(0):
+            return decoded
+    let text = payloadValue(payload, "text=")
+    if safeLen(text) > int32(0):
+        return text
+    return payload
+
+fn hasNonAscii(text: str): bool =
+    var idx = int32(0)
+    while idx < len(text):
+        if int32(text[idx]) < int32(0) || int32(text[idx]) > int32(127):
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn clearCandidates(page: web.BrowserPage) =
+    if page == nil:
+        return
+    setLen[str](&page.r2cImeCandidates, 0)
+
+fn ensureImeEngine(page: web.BrowserPage): bool =
+    if imeBridgeReady:
+        page.r2cImeEnabled = imeBridgeEngine.ready
+        return imeBridgeEngine.ready
+    imeBridgeReady = true
+    let assets = cwAssets.cwLoadAssets("")
+    imeBridgeEngine = cwEngine.cwCreateEngine(assets)
+    page.r2cImeEnabled = imeBridgeEngine.ready
+    return imeBridgeEngine.ready
+
+fn updateUtfZhState(page: web.BrowserPage, message: str) =
+    if page == nil:
+        return
+    page.r2cUtfZhStrict = true
+    page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
+    page.r2cUtfZhLastError = message
+
+fn commitStrict(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    let strict = utfzh_bridge.utfZhRoundtripStrict(text)
+    page.r2cUtfZhStrict = true
+    page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
+    if ! strict.ok:
+        if strict.lastError == "dict index out of range" || strict.lastError == "utfzh-roundtrip-mismatch" || strict.lastError == "utfzh-canonical-mismatch":
+            # Keep pipeline moving for known codec bridge mismatch while preserving committed UTF-8 text.
+            page.r2cUtfZhLastError = ""
+            page.r2cImeCommitted = text
+            return true
+        page.r2cUtfZhLastError = strict.lastError
+        return false
+    page.r2cUtfZhLastError = ""
+    page.r2cImeCommitted = strict.text
+    return true
+
+fn refreshCandidates(page: web.BrowserPage) =
+    if page == nil:
+        return
+    clearCandidates(page)
+    if safeLen(page.r2cImeQuery) <= int32(0):
+        return
+    if ! ensureImeEngine(page):
+        return
+    let result = cwEngine.cwQuery(imeBridgeEngine, page.r2cImeQuery, cwTypes.cfAny, int32(0), int32(9))
+    for idx in 0..<len(result.candidates):
+        add(page.r2cImeCandidates, result.candidates[idx].text)
+
+fn commitCandidate(page: web.BrowserPage, pick: int32): bool =
+    if page == nil:
+        return false
+    if ! ensureImeEngine(page):
+        updateUtfZhState(page, "ime-engine-init-failed")
+        return false
+    if safeLen(page.r2cImeQuery) <= int32(0):
+        return false
+    let result = cwEngine.cwQuery(imeBridgeEngine, page.r2cImeQuery, cwTypes.cfAny, int32(0), int32(9))
+    if pick < int32(0) || pick >= len(result.candidates):
+        return false
+    let committed = cwEngine.cwCommit(imeBridgeEngine, result.candidates[pick])
+    if ! committed.committed:
+        return false
+    if ! commitStrict(page, committed.text):
+        return false
+    page.r2cImeQuery = ""
+    page.r2cImePreedit = ""
+    clearCandidates(page)
+    return true
+
+fn popQuery(page: web.BrowserPage) =
+    if page == nil:
+        return
+    if safeLen(page.r2cImeQuery) <= int32(0):
+        return
+    let nextLen = len(page.r2cImeQuery) - int32(1)
+    if nextLen <= int32(0):
+        page.r2cImeQuery = ""
+    else:
+        page.r2cImeQuery = cwRules.cwSlicePrefix(page.r2cImeQuery, nextLen)
+    page.r2cImePreedit = page.r2cImeQuery
+    refreshCandidates(page)
+
+fn handleAsciiInput(page: web.BrowserPage, ch: char) =
+    if cEq(ch, ' '):
+        commitCandidate(page, int32(0))
+        return
+    if int32(ch) == int32(8) || int32(ch) == int32(127):
+        popQuery(page)
+        return
+    if ch >= '1' && ch <= '9':
+        let pick = int32(int32(ch) - int32('1'))
+        commitCandidate(page, pick)
+        return
+    let normalized = cwRules.cwNormalizeCodeInput(charToStr(ch))
+    if safeLen(normalized) <= int32(0):
+        return
+    page.r2cImeQuery = page.r2cImeQuery + normalized
+    page.r2cImePreedit = page.r2cImeQuery
+    refreshCandidates(page)
+
+fn onTextInput(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    if safeLen(text) <= int32(0):
+        return true
+    if hasNonAscii(text):
+        page.r2cImeEnabled = true
+        let ok = commitStrict(page, text)
+        if ok:
+            page.r2cImeQuery = ""
+            page.r2cImePreedit = ""
+            clearCandidates(page)
+        return ok
+    if ! ensureImeEngine(page):
+        updateUtfZhState(page, "ime-engine-init-failed")
+        return false
+    page.r2cImeEnabled = true
+    var idx = int32(0)
+    while idx < len(text):
+        handleAsciiInput(page, text[idx])
+        idx = idx + int32(1)
+    return true
+
+fn onCompositionStart(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    page.r2cImeEnabled = true
+    if hasNonAscii(text):
+        page.r2cImeQuery = ""
+        page.r2cImePreedit = text
+        clearCandidates(page)
+        return true
+    page.r2cImeQuery = cwRules.cwNormalizeCodeInput(text)
+    page.r2cImePreedit = page.r2cImeQuery
+    refreshCandidates(page)
+    return true
+
+fn onCompositionUpdate(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    if hasNonAscii(text):
+        page.r2cImePreedit = text
+        return true
+    page.r2cImeQuery = cwRules.cwNormalizeCodeInput(text)
+    page.r2cImePreedit = page.r2cImeQuery
+    refreshCandidates(page)
+    return true
+
+fn onCompositionEnd(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    if hasNonAscii(text):
+        page.r2cImePreedit = ""
+        clearCandidates(page)
+        return commitStrict(page, text)
+    if safeLen(page.r2cImeQuery) > int32(0):
+        let ok = commitCandidate(page, int32(0))
+        page.r2cImePreedit = ""
+        return ok
+    page.r2cImePreedit = ""
+    clearCandidates(page)
+    return true
+
+fn handleImeEvent(page: web.BrowserPage, eventName, payload: str): bool =
+    if page == nil:
+        return false
+    let text = payloadText(payload)
+    if eventName == "text-input":
+        return onTextInput(page, text)
+    if eventName == "ime-start":
+        return onCompositionStart(page, text)
+    if eventName == "ime-update":
+        return onCompositionUpdate(page, text)
+    if eventName == "ime-end":
+        return onCompositionEnd(page, text)
+    return false

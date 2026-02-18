@@ -1,0 +1,146 @@
+import std/os
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+import cheng/gui/browser/r2capp/runtime_generic as r2cRuntime
+
+fn resolveManifestPath(): str =
+    let envPath = os.getEnv("CHENG_R2CAPP_MANIFEST")
+    if len(envPath) > 0:
+        return envPath
+    return "r2capp/r2capp_manifest.json"
+
+fn snapshotHas(page: types.BrowserPage, pattern: str): bool =
+    return claudeSmokeContainsText(web.captureSnapshot(page), pattern)
+
+fn claudeSmokeCLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn claudeSmokeCGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn claudeSmokeCNe(a: char, b: char): bool =
+    return claudeSmokeCLt(a, b) || claudeSmokeCGt(a, b)
+
+fn claudeSmokeSafeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn claudeSmokeMatchAt(text, pattern: str, offset: int): bool =
+    if offset < 0 || text == nil || pattern == nil:
+        return false
+    let n = claudeSmokeSafeLen(pattern)
+    if offset + n > claudeSmokeSafeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if claudeSmokeCNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn claudeSmokeContainsText(text, pattern: str): bool =
+    let pLen = claudeSmokeSafeLen(pattern)
+    if pLen <= int32(0):
+        return true
+    let tLen = claudeSmokeSafeLen(text)
+    if tLen < pLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx + pLen <= tLen:
+        if claudeSmokeMatchAt(text, pattern, int(idx)):
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn main(): int32 =
+    let httpUrl = os.getEnv("CHENG_CLAUDE_HTTP_URL")
+    let httpsUrl = os.getEnv("CHENG_CLAUDE_HTTPS_URL")
+    if claudeSmokeSafeLen(httpUrl) == int32(0) || claudeSmokeSafeLen(httpsUrl) == int32(0):
+        return int32(2)
+
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        return int32(60)
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        return int32(61)
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    if page == nil:
+        return int32(62)
+
+    if ! web.navigate(page, httpUrl):
+        return int32(63)
+    if ! snapshotHas(page, "main.tsx"):
+        return int32(64)
+
+    if ! r2cRuntime.mountCompiledApp(page, resolveManifestPath()):
+        return int32(65)
+    let snapshot = web.captureSnapshot(page)
+    if ! claudeSmokeContainsText(snapshot, "Welcome to claude_fixture") && ! claudeSmokeContainsText(snapshot, "Welcome to claude") && ! claudeSmokeContainsText(snapshot, "Welcome to UniMaker"):
+        os.writeFile("/tmp/claude_smoke_snapshot_initial.txt", snapshot)
+        return int32(66)
+
+    if ! web.dispatchDomEvent(page, "click", "#lang-en", ""):
+        return int32(67)
+    if ! web.dispatchDomEvent(page, "click", "#confirm", ""):
+        return int32(68)
+    let afterConfirm = web.captureSnapshot(page)
+    if ! claudeSmokeContainsText(afterConfirm, "APP:claude_fixture") &&
+            ! claudeSmokeContainsText(afterConfirm, "APP:claude") &&
+            ! claudeSmokeContainsText(afterConfirm, "APP:unimaker") &&
+            ! claudeSmokeContainsText(afterConfirm, "APP:UniMaker") &&
+            ! claudeSmokeContainsText(afterConfirm, "UNIMAKER_HOME"):
+        return int32(69)
+    if ! claudeSmokeContainsText(afterConfirm, "LOCALE:en"):
+        return int32(70)
+
+    if ! web.dispatchDomEvent(page, "click", "#tab-publish", ""):
+        return int32(71)
+    if ! web.dispatchDomEvent(page, "click", "#file-select", ""):
+        return int32(72)
+    let afterFile = web.captureSnapshot(page)
+    if ! claudeSmokeContainsText(afterFile, "FILE_PREVIEW_OK"):
+        return int32(73)
+
+    if ! web.dispatchDomEvent(page, "click", "#tab-trading", ""):
+        return int32(74)
+    if ! web.dispatchDomEvent(page, "pointer-move", "#chart", "x=140;y=96"):
+        return int32(75)
+    let afterTrade = web.captureSnapshot(page)
+    if ! claudeSmokeContainsText(afterTrade, "CROSSHAIR:"):
+        return int32(76)
+
+    if ! web.dispatchDomEvent(page, "click", "#tab-home", ""):
+        return int32(77)
+    if ! web.dispatchDomEvent(page, "click", "#timer-start", ""):
+        return int32(78)
+    if ! web.dispatchDomEvent(page, "tick", "", "ms=500"):
+        return int32(79)
+    if ! web.dispatchDomEvent(page, "tick", "", "ms=500"):
+        return int32(80)
+    let afterTick = web.captureSnapshot(page)
+    if ! claudeSmokeContainsText(afterTick, "TIMER_TICKS:"):
+        return int32(81)
+    if ! claudeSmokeContainsText(afterTick, "TIMEOUT_FIRED:true"):
+        return int32(82)
+
+    if ! web.dispatchDomEvent(page, "resize", "", "w=900;h=600"):
+        return int32(83)
+    let afterResize = web.captureSnapshot(page)
+    if ! claudeSmokeContainsText(afterResize, "VIEWPORT:900x600"):
+        return int32(84)
+    if ! claudeSmokeContainsText(afterResize, "MQL_MIN_1000:false"):
+        return int32(85)
+
+    if ! web.navigate(page, httpsUrl):
+        return int32(89)
+    if ! snapshotHas(page, "main.tsx"):
+        return int32(90)
+
+    web.destroyPage(page)
+    web.destroyContext(ctx)
+    web.shutdownBrowserEngine(engine)
+    return int32(0)
+
+main()

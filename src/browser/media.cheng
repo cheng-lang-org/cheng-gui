@@ -1,0 +1,291 @@
+import cheng/gui/core/component
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+
+type
+    MediaPlayer = ref
+        engine: web.BrowserEngine
+        context: web.BrowserContext
+        page: web.BrowserPage
+        kind: types.MediaKind
+        source: types.MediaSource
+        options: types.MediaOptions
+        state: types.MediaPlaybackState
+        durationSec: float
+        positionSec: float
+        trackId: int32
+        sourceBuffer: str
+        lastError: str
+        metrics: types.MediaPlaybackMetrics
+
+fn appendMediaNode(items: var component.Node[], item: component.Node) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn clampMediaFloat(value, lower, upper: float): float =
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+fn mediaHasPrefix(text, prefix: str): bool =
+    if len(prefix) == 0:
+        return true
+    if len(text) < len(prefix):
+        return false
+    return text[0..<len(prefix)] == prefix
+
+fn mediaIsNetworkUri(uri: str): bool =
+    if mediaHasPrefix(uri, "http://"):
+        return true
+    if mediaHasPrefix(uri, "https://"):
+        return true
+    if mediaHasPrefix(uri, "http3://"):
+        return true
+    if mediaHasPrefix(uri, "h3://"):
+        return true
+    return false
+
+fn attachMediaElement(page: web.BrowserPage, kind: types.MediaKind, sourceInput: types.MediaSource, optionsInput: types.MediaOptions): MediaPlayer =
+    let source = types.normalizeMediaSource(sourceInput)
+    let options = types.normalizeMediaOptions(optionsInput)
+
+    var player: MediaPlayer
+    new(player)
+    player.engine = nil
+    player.context = nil
+    player.page = page
+    player.kind = kind
+    player.source = source
+    player.options = options
+    player.state = types.mpsPreparing
+    if kind == types.mkAudio:
+        player.durationSec = 180.0
+    else:
+        player.durationSec = 600.0
+    player.positionSec = 0.0
+    player.trackId = int32(0)
+    player.sourceBuffer = ""
+    player.lastError = ""
+    player.metrics = types.defaultMediaPlaybackMetrics()
+    player.metrics.state = player.state
+    player.metrics.bufferedSec = 0.0
+
+    if page != nil && len(source.uri) > 0:
+        if mediaIsNetworkUri(source.uri):
+            web.navigate(page, source.uri)
+
+    if options.autoplay:
+        play(player)
+    return player
+
+fn createMediaPlayer(kind: types.MediaKind, sourceInput: types.MediaSource, optionsInput: types.MediaOptions): MediaPlayer =
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    let player = attachMediaElement(page, kind, sourceInput, optionsInput)
+    player.engine = engine
+    player.context = ctx
+    return player
+
+fn destroyMediaPlayer(player: MediaPlayer) =
+    if player == nil:
+        return
+    if player.engine != nil:
+        web.destroyPage(player.page)
+        web.destroyContext(player.context)
+        web.shutdownBrowserEngine(player.engine)
+    player.page = nil
+    player.context = nil
+    player.engine = nil
+    player.state = types.mpsIdle
+    player.durationSec = 0.0
+    player.positionSec = 0.0
+    player.lastError = ""
+    player.metrics = types.defaultMediaPlaybackMetrics()
+
+fn setMediaSourceBuffer(player: MediaPlayer, bytesChunk: str): bool =
+    if player == nil:
+        return false
+    player.sourceBuffer = player.sourceBuffer + bytesChunk
+    player.metrics.bufferedSec = player.metrics.bufferedSec + 0.5
+    return true
+
+fn play(player: MediaPlayer): bool =
+    if player == nil:
+        return false
+    if len(player.source.uri) > 0:
+        if ! mediaIsNetworkUri(player.source.uri):
+            player.state = types.mpsError
+            player.lastError = "unsupported-media-uri"
+            player.metrics.state = player.state
+            return false
+    if len(player.source.uri) == 0:
+        if len(player.source.bytes) == 0:
+            if len(player.sourceBuffer) == 0:
+                player.state = types.mpsError
+                player.lastError = "missing-media-source"
+                player.metrics.state = player.state
+                return false
+    if player.positionSec >= player.durationSec:
+        player.positionSec = 0.0
+    player.state = types.mpsPlaying
+    player.metrics.state = player.state
+    if player.page != nil:
+        web.dispatchDomEvent(player.page, "append-html", "media", "<div>media-play</div>")
+    return true
+
+fn pause(player: MediaPlayer): bool =
+    if player == nil:
+        return false
+    if player.state == types.mpsPlaying:
+        player.state = types.mpsPaused
+    player.metrics.state = player.state
+    return true
+
+fn seek(player: MediaPlayer, positionSec: float): bool =
+    if player == nil:
+        return false
+    player.positionSec = clampMediaFloat(positionSec, 0.0, player.durationSec)
+    if player.state == types.mpsEnded:
+        if player.positionSec < player.durationSec:
+            player.state = types.mpsPaused
+    player.metrics.state = player.state
+    return true
+
+fn setTrack(player: MediaPlayer, trackId: int32): bool =
+    if player == nil:
+        return false
+    if trackId < int32(0):
+        player.trackId = int32(0)
+    else:
+        player.trackId = trackId
+    return true
+
+fn getPlaybackMetrics(player: MediaPlayer): types.MediaPlaybackMetrics =
+    if player == nil:
+        return types.defaultMediaPlaybackMetrics()
+    return player.metrics
+
+fn playMedia(player: MediaPlayer): bool =
+    return play(player)
+
+fn pauseMedia(player: MediaPlayer): bool =
+    return pause(player)
+
+fn stopMedia(player: MediaPlayer): bool =
+    if player == nil:
+        return false
+    player.state = types.mpsIdle
+    player.positionSec = 0.0
+    player.metrics.state = player.state
+    return true
+
+fn seekMedia(player: MediaPlayer, positionSec: float): bool =
+    return seek(player, positionSec)
+
+fn setMediaVolume(player: MediaPlayer, volume: float): bool =
+    if player == nil:
+        return false
+    player.options.volume = clampMediaFloat(volume, 0.0, 1.0)
+    return true
+
+fn setMediaMuted(player: MediaPlayer, muted: bool): bool =
+    if player == nil:
+        return false
+    player.options.muted = muted
+    return true
+
+fn setMediaPlaybackRate(player: MediaPlayer, rate: float): bool =
+    if player == nil:
+        return false
+    player.options.playbackRate = clampMediaFloat(rate, 0.25, 4.0)
+    return true
+
+fn pollMediaPlayer(player: MediaPlayer) =
+    if player == nil:
+        return
+    if player.state == types.mpsPlaying:
+        player.positionSec = player.positionSec + 0.25 * player.options.playbackRate
+        player.metrics.decodedFrames = player.metrics.decodedFrames + int32(6)
+        player.metrics.avgDecodeMs = 3.0
+        if player.positionSec >= player.durationSec:
+            if player.options.loop:
+                player.positionSec = 0.0
+            else:
+                player.positionSec = player.durationSec
+                player.state = types.mpsEnded
+    if player.state == types.mpsPreparing:
+        player.state = types.mpsPaused
+    player.metrics.state = player.state
+
+fn isMediaPlaying(player: MediaPlayer): bool =
+    if player == nil:
+        return false
+    return player.state == types.mpsPlaying
+
+fn mediaStateLabel(state: types.MediaPlaybackState): str =
+    case state
+    of types.mpsPreparing:
+        return "preparing"
+    of types.mpsPlaying:
+        return "playing"
+    of types.mpsPaused:
+        return "paused"
+    of types.mpsEnded:
+        return "ended"
+    of types.mpsError:
+        return "error"
+    else:
+        return "idle"
+
+fn buildMediaLabel(player: MediaPlayer): str =
+    if player == nil:
+        return "Media"
+    if player.kind == types.mkAudio:
+        if player.state == types.mpsPlaying:
+            return "Audio Playing"
+        if player.state == types.mpsPaused:
+            return "Audio Paused"
+        if player.state == types.mpsError:
+            return "Audio Error"
+        return "Audio"
+    if player.state == types.mpsPlaying:
+        return "Video Playing"
+    if player.state == types.mpsPaused:
+        return "Video Paused"
+    if player.state == types.mpsError:
+        return "Video Error"
+    return "Video"
+
+fn mediaViewNode(ctx: component.UiContext, key: str, player: MediaPlayer): component.Node =
+    var kind = component.nkVideoPlayer
+    if player != nil:
+        if player.kind == types.mkAudio:
+            kind = component.nkAudioPlayer
+    let node = component.newNode(ctx, kind, key)
+    node.focusable = true
+    node.text = buildMediaLabel(player)
+    if player == nil:
+        return node
+
+    var children: component.Node[]
+    let info = component.newNode(ctx, component.nkText, key + ":state")
+    info.text = mediaStateLabel(player.state)
+    info.name = "state"
+    info.focusable = false
+    appendMediaNode(children, info)
+    component.setChildren(node, children)
+    return node
+
+fn audioViewNode(ctx: component.UiContext, key: str, player: MediaPlayer): component.Node =
+    if player != nil:
+        player.kind = types.mkAudio
+    return mediaViewNode(ctx, key, player)
+
+fn videoViewNode(ctx: component.UiContext, key: str, player: MediaPlayer): component.Node =
+    if player != nil:
+        player.kind = types.mkVideo
+    return mediaViewNode(ctx, key, player)

@@ -1,0 +1,73 @@
+import std/os
+import cheng/gui/ime/cangwu_engine
+import cheng/gui/ime/panel_state
+import cheng/gui/ime/cangwu_types
+
+fn miniAssets(): CwAssets =
+    var assets: CwAssets
+    assets.dict.chars = []
+    assets.dict.codepoints = []
+    assets.dict.cpToIndex = []
+    assets.dict.bmpIndex = []
+    assets.dict.nonBmpCp = []
+    assets.dict.nonBmpIdx = []
+    assets.singles = []
+    assets.phrases = []
+    assets.reverse = []
+
+    var s1: CwSingleEntry
+    s1.text = "A"
+    s1.code = "ABCD"
+    s1.canonical = "ABCD"
+    s1.structKind = csUD
+    s1.freq = 1200
+    s1.pinyin = "zhong"
+    add(assets.singles, s1)
+
+    var r1: CwReverseEntry
+    r1.mode = "char"
+    r1.key = "A"
+    r1.text = "A"
+    r1.code = "ABCD"
+    r1.canonical = "ABCD"
+    r1.structKind = csUD
+    r1.freq = 1200
+    r1.pinyin = "zhong"
+    add(assets.reverse, r1)
+
+    return assets
+
+fn main(): int32 =
+    let engine = cwCreateEngine(miniAssets())
+    var state = cwPanelDefault(engine)
+    cwPanelRefresh(state)
+
+    cwPanelAppendQuery(state, "AB")
+    if state.mode != pmNormal:
+        return 101
+    if len(state.results.candidates) <= 0:
+        return 102
+
+    cwPanelCommitCandidate(state, 0)
+    if len(state.outputText) <= 0:
+        return 103
+
+    if ! cwPanelSaveUtf8(state, "build/cangwu_panel_smoke.txt"):
+        return 104
+    if ! cwPanelSaveUtfZh(state, "build/cangwu_panel_smoke.bin"):
+        return 105
+    if ! fileExists("build/cangwu_panel_smoke.txt"):
+        return 106
+    if ! fileExists("build/cangwu_panel_smoke.bin"):
+        return 107
+
+    cwPanelAppendQuery(state, "z")
+    cwPanelAppendQuery(state, "A")
+    if state.mode != pmReverse:
+        return 108
+    if len(state.reverseResults.items) <= 0:
+        return 109
+
+    return 0
+
+main()

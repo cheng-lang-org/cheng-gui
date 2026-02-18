@@ -1,0 +1,462 @@
+type
+    TsStripConfig =
+        # When true, reject advanced TS features early to avoid silently-wrong output.
+        strict: bool
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn isSpace(ch: char): bool =
+    return cEq(ch, ' ') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t')
+
+fn isIdentStart(ch: char): bool =
+    return (cGe(ch, 'a') && cLe(ch, 'z')) || (cGe(ch, 'A') && cLe(ch, 'Z')) || cEq(ch, '_') || cEq(ch, '$')
+
+fn isIdentCont(ch: char): bool =
+    return isIdentStart(ch) || (cGe(ch, '0') && cLe(ch, '9'))
+
+fn matchAt(text, pattern: str, offset: int32): bool =
+    if text == nil || pattern == nil:
+        return false
+    if offset < int32(0):
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn scanIdent(text: str, idx0: int32): tuple[value: str, next: int32] =
+    if text == nil:
+        return (value: "", next: idx0)
+    var idx = idx0
+    if idx < int32(0):
+        idx = int32(0)
+    if idx >= safeLen(text):
+        return (value: "", next: idx)
+    if ! isIdentStart(text[idx]):
+        return (value: "", next: idx)
+    var out: str = ""
+    while idx < safeLen(text) && isIdentCont(text[idx]):
+        out = out + charToStr(text[idx])
+        idx = idx + int32(1)
+    return (value: out, next: idx)
+
+fn isKeywordBoundary(ch: char): bool =
+    # Note: ':' and '.' are not identifier chars, but we treat them as boundaries.
+    return ! isIdentCont(ch)
+
+fn matchKeywordAt(text: str, keyword: str, offset: int32): bool =
+    if ! matchAt(text, keyword, offset):
+        return false
+    let beforeOk = offset == int32(0) || isKeywordBoundary(text[offset - int32(1)])
+    if ! beforeOk:
+        return false
+    let after = offset + safeLen(keyword)
+    let afterOk = after >= safeLen(text) || isKeywordBoundary(text[after])
+    return afterOk
+
+fn skipLineComment(text: str, idx0: int32): int32 =
+    var idx = idx0
+    while idx < safeLen(text):
+        if cEq(text[idx], '\n'):
+            return idx + int32(1)
+        idx = idx + int32(1)
+    return idx
+
+fn skipBlockComment(text: str, idx0: int32): tuple[next: int32, ok: bool] =
+    var idx = idx0
+    while idx + int32(1) < safeLen(text):
+        if cEq(text[idx], '*') && cEq(text[idx + int32(1)], '/'):
+            return (next: idx + int32(2), ok: true)
+        idx = idx + int32(1)
+    return (next: idx, ok: false)
+
+fn skipTrivia(text: str, idx0: int32): tuple[next: int32, err: str] =
+    if text == nil:
+        return (next: idx0, err: "nil-text")
+    var idx = idx0
+    while idx < safeLen(text):
+        if isSpace(text[idx]):
+            idx = idx + int32(1)
+            continue
+        if cEq(text[idx], '/') && idx + int32(1) < safeLen(text):
+            if cEq(text[idx + int32(1)], '/'):
+                idx = skipLineComment(text, idx + int32(2))
+                continue
+            if cEq(text[idx + int32(1)], '*'):
+                let res = skipBlockComment(text, idx + int32(2))
+                if ! res.ok:
+                    return (next: idx, err: "unterminated-block-comment")
+                idx = res.next
+                continue
+        break
+    return (next: idx, err: "")
+
+fn parseSimpleTypeName(text: str, idx0: int32): tuple[next: int32, ok: bool] =
+    # V1: identifiers, dotted names, and repeated [] suffix.
+    if text == nil:
+        return (next: idx0, ok: false)
+    var idx = idx0
+    let triv = skipTrivia(text, idx)
+    idx = triv.next
+    if len(triv.err) > 0:
+        return (next: idx, ok: false)
+    let name = scanIdent(text, idx)
+    if len(name.value) == 0:
+        return (next: idx0, ok: false)
+    idx = name.next
+    while idx < safeLen(text):
+        let triv2 = skipTrivia(text, idx)
+        idx = triv2.next
+        if len(triv2.err) > 0:
+            break
+        if idx + int32(1) < safeLen(text) && cEq(text[idx], '.') && isIdentStart(text[idx + int32(1)]):
+            let seg = scanIdent(text, idx + int32(1))
+            if len(seg.value) == 0:
+                break
+            idx = seg.next
+            continue
+        if idx + int32(1) < safeLen(text) && cEq(text[idx], '[') && cEq(text[idx + int32(1)], ']'):
+            idx = idx + int32(2)
+            continue
+        break
+    return (next: idx, ok: true)
+
+fn stripImportType(text: str, idxImport: int32): tuple[next: int32, ok: bool] =
+    # Assumes current token starts at `import`.
+    var idx = idxImport
+    let afterImport = idx + safeLen("import")
+    let triv = skipTrivia(text, afterImport)
+    if len(triv.err) > 0:
+        return (next: idxImport, ok: false)
+    idx = triv.next
+    if ! matchKeywordAt(text, "type", idx):
+        return (next: idxImport, ok: false)
+
+    # Skip until ';' or '\n' outside strings.
+    idx = idxImport
+    var quote: char = '\0'
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cNe(quote, '\0'):
+            if cEq(ch, '\\') && idx + int32(1) < safeLen(text):
+                idx = idx + int32(2)
+                continue
+            if cEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, '\'') || cEq(ch, '"') || cEq(ch, '`'):
+            quote = ch
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, ';'):
+            return (next: idx + int32(1), ok: true)
+        if cEq(ch, '\n'):
+            return (next: idx + int32(1), ok: true)
+        idx = idx + int32(1)
+    return (next: idx, ok: true)
+
+fn stripTypeAlias(text: str, idxType: int32): tuple[next: int32, ok: bool] =
+    # Assumes current token starts at `type` and is at statement start.
+    var idx = idxType
+    var quote: char = '\0'
+    var braceDepth: int32 = int32(0)
+    var parenDepth: int32 = int32(0)
+    var bracketDepth: int32 = int32(0)
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cNe(quote, '\0'):
+            if cEq(ch, '\\') && idx + int32(1) < safeLen(text):
+                idx = idx + int32(2)
+                continue
+            if cEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, '\'') || cEq(ch, '"') || cEq(ch, '`'):
+            quote = ch
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, '/') && idx + int32(1) < safeLen(text):
+            if cEq(text[idx + int32(1)], '/'):
+                idx = skipLineComment(text, idx + int32(2))
+                continue
+            if cEq(text[idx + int32(1)], '*'):
+                let res = skipBlockComment(text, idx + int32(2))
+                idx = res.next
+                continue
+        if cEq(ch, '{'):
+            braceDepth = braceDepth + int32(1)
+        elif cEq(ch, '}'):
+            if braceDepth > int32(0):
+                braceDepth = braceDepth - int32(1)
+        elif cEq(ch, '('):
+            parenDepth = parenDepth + int32(1)
+        elif cEq(ch, ')'):
+            if parenDepth > int32(0):
+                parenDepth = parenDepth - int32(1)
+        elif cEq(ch, '['):
+            bracketDepth = bracketDepth + int32(1)
+        elif cEq(ch, ']'):
+            if bracketDepth > int32(0):
+                bracketDepth = bracketDepth - int32(1)
+        elif cEq(ch, ';') && braceDepth == int32(0) && parenDepth == int32(0) && bracketDepth == int32(0):
+            return (next: idx + int32(1), ok: true)
+        elif cEq(ch, '\n') && braceDepth == int32(0) && parenDepth == int32(0) && bracketDepth == int32(0):
+            # Some projects omit semicolons.
+            return (next: idx + int32(1), ok: true)
+        idx = idx + int32(1)
+    return (next: idx, ok: true)
+
+fn stripInterface(text: str, idxInterface: int32): tuple[next: int32, ok: bool] =
+    # Assumes current token starts at `interface` and is at statement start.
+    var idx = idxInterface
+    # Find first '{', then skip until the matching '}'.
+    var quote: char = '\0'
+    var depth: int32 = int32(0)
+    var sawOpen = false
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cNe(quote, '\0'):
+            if cEq(ch, '\\') && idx + int32(1) < safeLen(text):
+                idx = idx + int32(2)
+                continue
+            if cEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, '\'') || cEq(ch, '"') || cEq(ch, '`'):
+            quote = ch
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, '/') && idx + int32(1) < safeLen(text):
+            if cEq(text[idx + int32(1)], '/'):
+                idx = skipLineComment(text, idx + int32(2))
+                continue
+            if cEq(text[idx + int32(1)], '*'):
+                let res = skipBlockComment(text, idx + int32(2))
+                idx = res.next
+                continue
+        if cEq(ch, '{'):
+            sawOpen = true
+            depth = depth + int32(1)
+        elif cEq(ch, '}'):
+            if depth > int32(0):
+                depth = depth - int32(1)
+                if sawOpen && depth == int32(0):
+                    # Consume optional trailing ';'.
+                    idx = idx + int32(1)
+                    if idx < safeLen(text) && cEq(text[idx], ';'):
+                        return (next: idx + int32(1), ok: true)
+                    return (next: idx, ok: true)
+        idx = idx + int32(1)
+    return (next: idx, ok: sawOpen)
+
+fn stripAsAssertion(text: str, idxAs: int32): tuple[next: int32, ok: bool] =
+    # Strip `as Type` when Type matches the simple type pattern.
+    if ! matchKeywordAt(text, "as", idxAs):
+        return (next: idxAs, ok: false)
+    let afterAs = idxAs + safeLen("as")
+    let parsed = parseSimpleTypeName(text, afterAs)
+    if ! parsed.ok:
+        return (next: idxAs, ok: false)
+    return (next: parsed.next, ok: true)
+
+fn stripFnReturnType(text: str, idxColon: int32): tuple[next: int32, ok: bool] =
+    # Strip `): Type {` and `): Type =>` patterns.
+    if text == nil:
+        return (next: idxColon, ok: false)
+    if idxColon < int32(1) || idxColon >= safeLen(text):
+        return (next: idxColon, ok: false)
+    var back = idxColon - int32(1)
+    while back >= int32(0) && isSpace(text[back]):
+        back = back - int32(1)
+    if back < int32(0) || cNe(text[back], ')'):
+        return (next: idxColon, ok: false)
+
+    let parsed = parseSimpleTypeName(text, idxColon + int32(1))
+    if ! parsed.ok:
+        return (next: idxColon, ok: false)
+    let triv = skipTrivia(text, parsed.next)
+    if len(triv.err) > 0:
+        return (next: idxColon, ok: false)
+    let idx = triv.next
+    if idx >= safeLen(text):
+        return (next: idxColon, ok: false)
+    if cEq(text[idx], '{'):
+        return (next: idx, ok: true)
+    if idx + int32(1) < safeLen(text) && cEq(text[idx], '=') && cEq(text[idx + int32(1)], '>'):
+        return (next: idx, ok: true)
+    return (next: idxColon, ok: false)
+
+fn stripTypescriptWithConfig(text: str, config: TsStripConfig): tuple[out: str, err: str] =
+    if text == nil:
+        return (out: "", err: "nil-text")
+    let n = safeLen(text)
+    if n <= int32(0):
+        return (out: "", err: "")
+
+    var out: str = ""
+    var idx: int32 = int32(0)
+    var quote: char = '\0'
+    var inLineComment = false
+    var inBlockComment = false
+    var statementStart = true
+
+    while idx < n:
+        let ch = text[idx]
+
+        if inLineComment:
+            out = out + charToStr(ch)
+            idx = idx + int32(1)
+            if cEq(ch, '\n'):
+                inLineComment = false
+                statementStart = true
+            continue
+
+        if inBlockComment:
+            out = out + charToStr(ch)
+            if cEq(ch, '*') && idx + int32(1) < n && cEq(text[idx + int32(1)], '/'):
+                out = out + "/"
+                idx = idx + int32(2)
+                inBlockComment = false
+                continue
+            idx = idx + int32(1)
+            continue
+
+        if cNe(quote, '\0'):
+            out = out + charToStr(ch)
+            if cEq(ch, '\\') && idx + int32(1) < n:
+                out = out + charToStr(text[idx + int32(1)])
+                idx = idx + int32(2)
+                continue
+            if cEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+
+        if cEq(ch, '\'') || cEq(ch, '"') || cEq(ch, '`'):
+            quote = ch
+            out = out + charToStr(ch)
+            idx = idx + int32(1)
+            statementStart = false
+            continue
+
+        if cEq(ch, '/') && idx + int32(1) < n:
+            if cEq(text[idx + int32(1)], '/'):
+                inLineComment = true
+                out = out + "//"
+                idx = idx + int32(2)
+                statementStart = false
+                continue
+            if cEq(text[idx + int32(1)], '*'):
+                inBlockComment = true
+                out = out + "/*"
+                idx = idx + int32(2)
+                statementStart = false
+                continue
+
+        if config.strict:
+            if matchKeywordAt(text, "enum", idx) || matchKeywordAt(text, "namespace", idx) || matchKeywordAt(text, "satisfies", idx):
+                return (out: out, err: "unsupported-ts-feature")
+            if cEq(ch, '@'):
+                return (out: out, err: "unsupported-decorator")
+
+        if statementStart:
+            if matchKeywordAt(text, "import", idx):
+                let strip = stripImportType(text, idx)
+                if strip.ok:
+                    # Preserve a newline if we skipped to a newline.
+                    if strip.next > idx && strip.next <= n && strip.next - int32(1) >= int32(0) && cEq(text[strip.next - int32(1)], '\n'):
+                        out = out + "\n"
+                    idx = strip.next
+                    statementStart = true
+                    continue
+            if matchKeywordAt(text, "export", idx):
+                let triv = skipTrivia(text, idx + safeLen("export"))
+                if len(triv.err) == 0:
+                    if matchKeywordAt(text, "type", triv.next):
+                        let strip = stripTypeAlias(text, idx)
+                        if strip.ok:
+                            out = out + "\n"
+                            idx = strip.next
+                            statementStart = true
+                            continue
+                    if matchKeywordAt(text, "interface", triv.next):
+                        let strip = stripInterface(text, idx)
+                        if strip.ok:
+                            out = out + "\n"
+                            idx = strip.next
+                            statementStart = true
+                            continue
+            if matchKeywordAt(text, "type", idx):
+                let strip = stripTypeAlias(text, idx)
+                if strip.ok:
+                    out = out + "\n"
+                    idx = strip.next
+                    statementStart = true
+                    continue
+            if matchKeywordAt(text, "interface", idx):
+                let strip = stripInterface(text, idx)
+                if strip.ok:
+                    out = out + "\n"
+                    idx = strip.next
+                    statementStart = true
+                    continue
+
+        if cEq(ch, ':'):
+            let strip = stripFnReturnType(text, idx)
+            if strip.ok:
+                # Drop `: Type` and continue from the next token.
+                idx = strip.next
+                statementStart = false
+                continue
+
+        if matchKeywordAt(text, "as", idx):
+            let strip = stripAsAssertion(text, idx)
+            if strip.ok:
+                # Replace `as Type` with nothing, preserving a single space.
+                out = out + " "
+                idx = strip.next
+                statementStart = false
+                continue
+
+        out = out + charToStr(ch)
+        if cEq(ch, '\n') || cEq(ch, ';'):
+            statementStart = true
+        elif ! isSpace(ch):
+            statementStart = false
+        idx = idx + int32(1)
+
+    return (out: out, err: "")
+
+fn stripTypescript(text: str): tuple[out: str, err: str] =
+    var config: TsStripConfig
+    config.strict = false
+    return stripTypescriptWithConfig(text, config)

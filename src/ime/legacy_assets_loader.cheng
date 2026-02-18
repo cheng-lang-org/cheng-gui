@@ -1,0 +1,123 @@
+import std/os
+import cheng/gui/ime/cangwu_types
+
+fn legacySliceRange(text: str, start: int32, stopExclusive: int32): str =
+    if len(text) <= 0:
+        return ""
+    var s = start
+    var e = stopExclusive
+    if s < 0:
+        s = 0
+    if e < s:
+        e = s
+    if s > len(text):
+        s = len(text)
+    if e > len(text):
+        e = len(text)
+    var out = ""
+    var idx = s
+    while idx < e:
+        out = out + charToStr(text[idx])
+        idx = idx + 1
+    return out
+
+fn legacyTrimLine(line: str): str =
+    if len(line) == 0:
+        return ""
+    var start: int32 = 0
+    var stop: int32 = len(line) - 1
+    while start <= stop && (line[start] == ' ' || line[start] == '\t' || line[start] == '\r' || line[start] == '\n'):
+        start = start + 1
+    while stop >= start && (line[stop] == ' ' || line[stop] == '\t' || line[stop] == '\r' || line[stop] == '\n'):
+        stop = stop - 1
+    if stop < start:
+        return ""
+    return legacySliceRange(line, start, stop + 1)
+
+fn legacySplitTsvLine(line: str): str[] =
+    var out: str[]
+    var start: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(line):
+        if idx == len(line) || line[idx] == '\t':
+            add(out, legacySliceRange(line, start, idx))
+            start = idx + 1
+        idx = idx + 1
+    return out
+
+fn legacyParseInt32(text: str, fallback: int32): int32 =
+    if len(text) == 0:
+        return fallback
+    var idx: int32 = 0
+    var sign: int32 = 1
+    if text[0] == '-':
+        sign = -1
+        idx = 1
+    var value: int32 = 0
+    var saw = false
+    while idx < len(text):
+        let ch = text[idx]
+        if ch >= '0' && ch <= '9':
+            value = value * 10 + int32(ch) - int32('0')
+            saw = true
+            idx = idx + 1
+        else:
+            break
+    if ! saw:
+        return fallback
+    return value * sign
+
+fn legacyDataPath(root: str, fileName: str): str =
+    if len(root) == 0:
+        return "src/ime/data/" + fileName
+    return root + "/" + fileName
+
+fn legacyUpperChar(ch: char): char =
+    let code = int32(ch)
+    if code >= int32('a') && code <= int32('f'):
+        return char(code - int32('a') + int32('A'))
+    if code >= int32('A') && code <= int32('F'):
+        return ch
+    if code >= int32('0') && code <= int32('9'):
+        return ch
+    return '\0'
+
+fn legacyNormalizeHexKey(text: str): str =
+    var out = ""
+    for idx in 0..<len(text):
+        let up = legacyUpperChar(text[idx])
+        if up != '\0':
+            out = out + charToStr(up)
+    return out
+
+fn legacyLoadMap(path: str): CwIntMapEntry[] =
+    var out: CwIntMapEntry[]
+    if ! fileExists(path):
+        return out
+    let content = readFile(path)
+    var lineStart: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(content):
+        if idx == len(content) || content[idx] == '\n':
+            let clean = legacyTrimLine(legacySliceRange(content, lineStart, idx))
+            if len(clean) > 0 && clean[0] != '#':
+                let cols = legacySplitTsvLine(clean)
+                if len(cols) >= 2:
+                    let key = legacyNormalizeHexKey(cols[0])
+                    let cp = legacyParseInt32(cols[1], -1)
+                    if len(key) == 4 && cp >= 0 && cp <= 0x10FFFF:
+                        var entry: CwIntMapEntry
+                        entry.key = key
+                        entry.value = cp
+                        add(out, entry)
+            lineStart = idx + 1
+        idx = idx + 1
+    return out
+
+fn legacyLoadAssets(dataRoot: str): LegacyAssets =
+    var assets: LegacyAssets
+    let gbkPath = legacyDataPath(dataRoot, "legacy_gbk_to_u_v1.tsv")
+    let gb2312Path = legacyDataPath(dataRoot, "legacy_gb2312_to_u_v1.tsv")
+    assets.gbkToUnicode = legacyLoadMap(gbkPath)
+    assets.gb2312ToUnicode = legacyLoadMap(gb2312Path)
+    return assets

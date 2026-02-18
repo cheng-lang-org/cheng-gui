@@ -1,0 +1,193 @@
+import std/os
+import std/tables
+import std/unicode
+import system/ctypes
+import cheng/gui/platform/types
+
+fn toCstring(s: str): cstring =
+    cstring(s)
+
+type
+    GuiPlatform = enum
+        gpUnknown
+        gpMacOS
+        gpWindows
+        gpLinux
+        gpAndroid
+        gpIos
+
+    GuiError =
+        of CatchableError
+        code: GuiResult
+
+    HalFeature = enum
+        hfWindow
+        hfPointer
+        hfKeyboard
+        hfTextInputBasic
+        hfTextInputIme
+        hfHighDpiBasic
+        hfHighDpiAdvanced
+        hfRenderSurfaceBasic
+        hfRenderSurfaceGpu
+        hfHeadlessFallback
+        hfRemoteStream
+
+    HalFeatureSet = int32
+
+    CapabilityEntry =
+        name: str
+        level: str
+        summary: str
+
+fn makePointerEvent(kind: GuiEventKind, pos: GuiPosition, button: int, delta: GuiPosition, mods: GuiModifiers): GuiEvent =
+    let pointer = GuiPointerEvent(position: pos, delta: delta, button: button, modifiers: mods)
+    return GuiEvent(kind: kind, pointerEvent: void*)
+
+fn featureMask(feature: HalFeature): HalFeatureSet =
+    HalFeatureSet(1 << int(feature))
+
+fn hasFeature(features: HalFeatureSet, feature: HalFeature): bool =
+    let mask = featureMask(feature)
+    if mask == 0:
+        return false
+    return ((features / mask) % 2) != 0
+
+let MacHalFeatureSet = featureMask(hfWindow) + featureMask(hfPointer) + featureMask(hfKeyboard) +
+    featureMask(hfTextInputBasic) + featureMask(hfTextInputIme) + featureMask(hfHighDpiBasic) +
+    featureMask(hfHighDpiAdvanced) + featureMask(hfRenderSurfaceBasic) + featureMask(hfHeadlessFallback)
+let WindowsHalFeatureSet = featureMask(hfWindow) + featureMask(hfPointer) + featureMask(hfKeyboard) +
+    featureMask(hfTextInputBasic) + featureMask(hfHighDpiAdvanced) + featureMask(hfRenderSurfaceBasic) +
+    featureMask(hfHeadlessFallback)
+let LinuxHalFeatureSet = featureMask(hfWindow) + featureMask(hfPointer) + featureMask(hfKeyboard) +
+    featureMask(hfTextInputBasic) + featureMask(hfHighDpiBasic) + featureMask(hfRenderSurfaceBasic) +
+    featureMask(hfHeadlessFallback)
+let AndroidHalFeatureSet = featureMask(hfWindow) + featureMask(hfPointer) + featureMask(hfKeyboard) +
+    featureMask(hfTextInputBasic) + featureMask(hfTextInputIme) + featureMask(hfHighDpiBasic) +
+    featureMask(hfRenderSurfaceBasic) + featureMask(hfRenderSurfaceGpu) + featureMask(hfHeadlessFallback) +
+    featureMask(hfRemoteStream)
+let IosHalFeatureSet = featureMask(hfWindow) + featureMask(hfPointer) + featureMask(hfKeyboard) +
+    featureMask(hfTextInputBasic) + featureMask(hfTextInputIme) + featureMask(hfHighDpiAdvanced) +
+    featureMask(hfRenderSurfaceBasic) + featureMask(hfRenderSurfaceGpu) + featureMask(hfHeadlessFallback) +
+    featureMask(hfRemoteStream)
+let EmptyHalFeatureSet: HalFeatureSet = 0
+
+fn raiseGuiError(message: str, code: GuiResult) =
+    code
+    panic("[gui] " + message)
+
+when defined(macosx) || defined(macos):
+    const CurrentPlatform = gpMacOS
+elif defined(windows):
+    const CurrentPlatform = gpWindows
+elif defined(linux):
+    const CurrentPlatform = gpLinux
+elif defined(android):
+    const CurrentPlatform = gpAndroid
+elif defined(ios):
+    const CurrentPlatform = gpIos
+else:
+    const CurrentPlatform = gpUnknown
+
+fn halFeatureSet(platform: GuiPlatform): HalFeatureSet =
+    case platform
+    of gpMacOS:
+        MacHalFeatureSet
+    of gpWindows:
+        WindowsHalFeatureSet
+    of gpLinux:
+        LinuxHalFeatureSet
+    of gpAndroid:
+        AndroidHalFeatureSet
+    of gpIos:
+        IosHalFeatureSet
+    else:
+        EmptyHalFeatureSet
+
+fn HalFeatures(platform: GuiPlatform): HalFeatureSet =
+    halFeatureSet(platform)
+
+fn HalFeatures(): HalFeatureSet =
+    halFeatureSet(CurrentPlatform)
+
+fn capabilitySummary(platform: GuiPlatform, capability: str, level: str): str =
+    platform
+    if len(capability) == 0:
+        return ""
+    if level == "available":
+        return "Capability available"
+    if level == "partial":
+        return "Capability partially available"
+    return "Capability unavailable"
+
+fn makeCapability(name, level: str, platform: GuiPlatform): CapabilityEntry =
+    var entry: CapabilityEntry
+    entry.name = name
+    entry.level = level
+    entry.summary = capabilitySummary(platform, name, level)
+    return entry
+
+fn HalCapabilityMatrix(platform: GuiPlatform): CapabilityEntry[] =
+    var entries = default[CapabilityEntry[]]
+    if platform == gpMacOS || platform == gpWindows || platform == gpLinux:
+        entries.add(makeCapability("window", "available", platform))
+        entries.add(makeCapability("pointer-events", "available", platform))
+        entries.add(makeCapability("keyboard", "available", platform))
+        entries.add(makeCapability("text-input", "partial", platform))
+        entries.add(makeCapability("high-dpi", "partial", platform))
+        entries.add(makeCapability("render-surface", "available", platform))
+        entries.add(makeCapability("headless-fallback", "available", platform))
+    elif platform == gpAndroid || platform == gpIos:
+        entries.add(makeCapability("window", "partial", platform))
+        entries.add(makeCapability("pointer-events", "partial", platform))
+        entries.add(makeCapability("keyboard", "partial", platform))
+        entries.add(makeCapability("text-input", "partial", platform))
+        entries.add(makeCapability("high-dpi", "partial", platform))
+        entries.add(makeCapability("render-surface", "partial", platform))
+        entries.add(makeCapability("headless-fallback", "available", platform))
+    return entries
+
+when defined(cheng_sys_gui):
+    import cheng/gui/platform/native_sys_impl
+elif defined(macosx) || defined(macos):
+    import cheng/gui/platform/native_macos_impl
+elif defined(windows):
+    import cheng/gui/platform/native_windows_impl
+elif defined(linux):
+    import cheng/gui/platform/native_linux_impl
+else:
+    import cheng/gui/platform/native_mobile_impl
+
+fn InitializePlat() =
+    initializePlat()
+
+fn ShutdownPlatform() =
+    shutdownPlat()
+
+fn CreateWindow(config: GuiWindowConfig): WindowHandle =
+    createWindow(config)
+
+fn DestroyWindow(handle: WindowHandle) =
+    destroyWindow(handle)
+
+fn PumpEvents(timeoutMs: int): GuiEvent[] =
+    pumpEvents(timeoutMs)
+
+fn PumpEvents(): GuiEvent[] =
+    pumpEvents()
+
+fn CreateRenderSurface(window: WindowHandle): SurfaceHandle =
+    createRenderSurface(window)
+
+fn DestroyRenderSurface(surface: SurfaceHandle) =
+    destroyRenderSurface(surface)
+
+fn BeginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    beginFrame(surface)
+
+fn EndFrame(surface: SurfaceHandle) =
+    endFrame(surface)
+
+fn PresentPixels(surface: SurfaceHandle; pixels: uint32*; width, height: int; strideBytes: int): int32 =
+    presentPixels(surface, pixels, width, height, strideBytes)
+    return 0

@@ -1,0 +1,14 @@
+import cheng/gui/browser/types
+
+type
+    AndroidHostInfo =
+        platformName: str
+        supportsGpu: bool
+        supportsSandbox: bool
+
+fn androidHostInfo(profile: types.SandboxProfile): AndroidHostInfo =
+    var info: AndroidHostInfo
+    info.platformName = "android"
+    info.supportsGpu = true
+    info.supportsSandbox = profile == types.spStrict || profile == types.spBalanced
+    return info

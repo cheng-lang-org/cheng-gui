@@ -1,0 +1,48 @@
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+
+fn main(): int32 =
+    var config = types.defaultBrowserEngineConfig()
+    config.siteIsolation = true
+    config.sandbox = types.spStrict
+
+    let engine = web.createBrowserEngine(config)
+    if engine == nil:
+        return int32(30)
+
+    var ctxAOptions = types.defaultBrowserContextOptions()
+    ctxAOptions.partition = "persist:a"
+    let ctxA = web.createContext(engine, ctxAOptions)
+    if ctxA == nil:
+        return int32(31)
+
+    var ctxBOptions = types.defaultBrowserContextOptions()
+    ctxBOptions.partition = "persist:b"
+    let ctxB = web.createContext(engine, ctxBOptions)
+    if ctxB == nil:
+        return int32(32)
+
+    let pageA = web.createPage(ctxA, types.defaultPageOptions())
+    let pageB = web.createPage(ctxB, types.defaultPageOptions())
+    if pageA == nil || pageB == nil:
+        return int32(33)
+
+    if ! web.injectProcessCrash(engine, types.prRenderer, "crash-injection"):
+        return int32(34)
+
+    let crash = web.latestCrashReport(engine)
+    if ! crash.recovered:
+        return int32(35)
+
+    let metrics = web.browserMetrics(engine)
+    if metrics.crashCount < int32(1):
+        return int32(36)
+
+    web.destroyPage(pageA)
+    web.destroyPage(pageB)
+    web.destroyContext(ctxA)
+    web.destroyContext(ctxB)
+    web.shutdownBrowserEngine(engine)
+    return int32(0)
+
+main()

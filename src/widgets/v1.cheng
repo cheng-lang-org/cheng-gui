@@ -1,0 +1,170 @@
+import cheng/gui/core/component
+
+fn setNodeLabel(node: component.Node, label: str) =
+    if node == nil:
+        return
+    node.text = label
+    node.propsHash = component.hashStr(label)
+
+fn view(ctx: component.UiContext, key: str, children: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkView, key)
+    node.focusable = false
+    component.setChildren(node, children)
+    return node
+
+fn text(ctx: component.UiContext, key: str, content: str): component.Node =
+    let node = component.newNode(ctx, component.nkText, key)
+    node.focusable = false
+    setNodeLabel(node, content)
+    return node
+
+fn image(ctx: component.UiContext, key: str, assetKey: str): component.Node =
+    let node = component.newNode(ctx, component.nkImage, key)
+    node.focusable = false
+    setNodeLabel(node, assetKey)
+    return node
+
+fn icon(ctx: component.UiContext, key: str, name: str): component.Node =
+    let node = component.newNode(ctx, component.nkIcon, key)
+    node.focusable = false
+    setNodeLabel(node, name)
+    return node
+
+fn spacer(ctx: component.UiContext, key: str, sizePx: float): component.Node =
+    let node = component.newNode(ctx, component.nkSpacer, key)
+    node.focusable = false
+    node.frame.size.height = sizePx
+    return node
+
+fn scrollView(ctx: component.UiContext, key: str, children: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkScrollView, key)
+    component.setChildren(node, children)
+    return node
+
+fn listView(ctx: component.UiContext, key: str, rows: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkListView, key)
+    component.setChildren(node, rows)
+    return node
+
+fn gridView(ctx: component.UiContext, key: str, cells: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkGridView, key)
+    component.setChildren(node, cells)
+    return node
+
+fn button(ctx: component.UiContext, key: str, label: str): component.Node =
+    let node = component.newNode(ctx, component.nkButton, key)
+    node.focusable = true
+    setNodeLabel(node, label)
+    return node
+
+fn textField(ctx: component.UiContext, key: str, value: str): component.Node =
+    let node = component.newNode(ctx, component.nkTextField, key)
+    node.focusable = true
+    setNodeLabel(node, value)
+    return node
+
+fn checkbox(ctx: component.UiContext, key: str, label: str, checked: bool): component.Node =
+    let node = component.newNode(ctx, component.nkCheckbox, key)
+    node.focusable = true
+    let state = if checked: "[x] " else: "[ ] "
+    setNodeLabel(node, state + label)
+    return node
+
+fn radio(ctx: component.UiContext, key: str, label: str, selected: bool): component.Node =
+    let node = component.newNode(ctx, component.nkRadio, key)
+    node.focusable = true
+    let state = if selected: "(o) " else: "( ) "
+    setNodeLabel(node, state + label)
+    return node
+
+fn switch(ctx: component.UiContext, key: str, label: str, on: bool): component.Node =
+    let node = component.newNode(ctx, component.nkSwitch, key)
+    node.focusable = true
+    let state = if on: "ON " else: "OFF "
+    setNodeLabel(node, state + label)
+    return node
+
+fn slider(ctx: component.UiContext, key: str, value: float): component.Node =
+    let node = component.newNode(ctx, component.nkSlider, key)
+    node.focusable = true
+    setNodeLabel(node, "value=" + $ value)
+    return node
+
+fn select(ctx: component.UiContext, key: str, selectedLabel: str): component.Node =
+    let node = component.newNode(ctx, component.nkSelect, key)
+    node.focusable = true
+    setNodeLabel(node, selectedLabel)
+    return node
+
+fn dialog(ctx: component.UiContext, key: str, title: str, children: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkDialog, key)
+    node.focusable = true
+    setNodeLabel(node, title)
+    component.setChildren(node, children)
+    return node
+
+fn popover(ctx: component.UiContext, key: str, title: str, children: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkPopover, key)
+    node.focusable = true
+    setNodeLabel(node, title)
+    component.setChildren(node, children)
+    return node
+
+fn tooltip(ctx: component.UiContext, key: str, content: str): component.Node =
+    let node = component.newNode(ctx, component.nkTooltip, key)
+    setNodeLabel(node, content)
+    return node
+
+fn tabs(ctx: component.UiContext, key: str, children: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkTabs, key)
+    node.focusable = true
+    component.setChildren(node, children)
+    return node
+
+fn navStack(ctx: component.UiContext, key: str, pages: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkNavStack, key)
+    component.setChildren(node, pages)
+    return node
+
+fn dataTable(ctx: component.UiContext, key: str, children: component.Node[]): component.Node =
+    let node = component.newNode(ctx, component.nkDataTable, key)
+    node.focusable = true
+    component.setChildren(node, children)
+    return node
+
+fn chart(ctx: component.UiContext, key: str, title: str): component.Node =
+    let node = component.newNode(ctx, component.nkChart, key)
+    setNodeLabel(node, title)
+    return node
+
+fn richTextEditor(ctx: component.UiContext, key: str, content: str): component.Node =
+    let node = component.newNode(ctx, component.nkRichTextEditor, key)
+    node.focusable = true
+    setNodeLabel(node, content)
+    return node
+
+fn webView(ctx: component.UiContext, key: str, titleOrUrl: str): component.Node =
+    let node = component.newNode(ctx, component.nkWebView, key)
+    node.focusable = true
+    setNodeLabel(node, titleOrUrl)
+    return node
+
+fn pdfView(ctx: component.UiContext, key: str, title: str): component.Node =
+    let node = component.newNode(ctx, component.nkPdfView, key)
+    node.focusable = true
+    setNodeLabel(node, title)
+    return node
+
+fn audioPlayer(ctx: component.UiContext, key: str, title: str, playing: bool): component.Node =
+    let node = component.newNode(ctx, component.nkAudioPlayer, key)
+    node.focusable = true
+    let state = if playing: "playing " else: "paused "
+    setNodeLabel(node, state + title)
+    return node
+
+fn videoPlayer(ctx: component.UiContext, key: str, title: str, playing: bool): component.Node =
+    let node = component.newNode(ctx, component.nkVideoPlayer, key)
+    node.focusable = true
+    let state = if playing: "playing " else: "paused "
+    setNodeLabel(node, state + title)
+    return node

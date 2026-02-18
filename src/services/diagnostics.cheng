@@ -1,0 +1,210 @@
+# Minimal diagnostics scan for GUI IDE.
+
+type
+    GuiDiagSeverity = enum
+        gdsNone
+        gdsInfo
+        gdsWarning
+        gdsError
+
+type
+    GuiDiagnostic =
+        severity: GuiDiagSeverity
+        line: int32
+        col: int32
+        message: str
+
+type
+    GuiDiagStackEntry =
+        ch: char
+        line: int32
+        col: int32
+
+type
+    seq_GuiDiagnostic =
+        len: int32
+        cap: int32
+        buffer: void*
+
+type
+    seq_GuiDiagStackEntry =
+        len: int32
+        cap: int32
+        buffer: void*
+
+fn guiDiagSeqLenString(seqInst: str[]): int32 =
+    let p: int32* = int32*(&seqInst)
+    return *p
+
+fn guiDiagSeqGetString(seqInst: str[], idx: int32): str =
+    return get_string(seqInst, idx)
+
+fn guiDiagNewSeq_GuiDiagnostic(len: int32, cap: int32): seq_GuiDiagnostic =
+    var seqInstance: seq_GuiDiagnostic
+    seqInstance.len = 0
+    seqInstance.cap = cap
+    if cap > 0:
+        var size64: int64 = int64(cap) * sizeof(GuiDiagnostic)
+        var size32: int32 = int32(size64)
+        seqInstance.buffer = alloc(size32)
+    else:
+        seqInstance.buffer = nil
+    return seqInstance
+
+fn guiDiagGet_GuiDiagnostic(seqInst: seq_GuiDiagnostic, i: int32): GuiDiagnostic =
+    var idx64: int64 = int64(i)
+    var offset64: int64 = idx64 * sizeof(GuiDiagnostic)
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst.buffer, offset32)
+    var pt: GuiDiagnostic* = GuiDiagnostic*(p)
+    return *pt
+
+fn guiDiagAddPtr_GuiDiagnostic(seqInst: seq_GuiDiagnostic*, val: GuiDiagnostic) =
+    if seqInst->len >= seqInst->cap:
+        var newCap: int32 = 4
+        if seqInst->cap != 0:
+            newCap = seqInst->cap * 2
+        seqInst->cap = newCap
+        var cap64: int64 = int64(newCap)
+        var size64: int64 = int64(cap64 * sizeof(GuiDiagnostic))
+        var size32: int32 = int32(size64)
+        seqInst->buffer = realloc(seqInst->buffer, size32)
+    var idx64: int64 = int64(seqInst->len)
+    var offset64: int64 = int64(idx64 * sizeof(GuiDiagnostic))
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst->buffer, offset32)
+    var pt: GuiDiagnostic* = GuiDiagnostic*(p)
+    *pt = val
+    seqInst->len = seqInst->len + 1
+
+fn guiDiagNewSeq_GuiDiagStackEntry(len: int32, cap: int32): seq_GuiDiagStackEntry =
+    var seqInstance: seq_GuiDiagStackEntry
+    seqInstance.len = 0
+    seqInstance.cap = cap
+    if cap > 0:
+        var size64: int64 = int64(cap) * sizeof(GuiDiagStackEntry)
+        var size32: int32 = int32(size64)
+        seqInstance.buffer = alloc(size32)
+    else:
+        seqInstance.buffer = nil
+    return seqInstance
+
+fn guiDiagGet_GuiDiagStackEntry(seqInst: seq_GuiDiagStackEntry, i: int32): GuiDiagStackEntry =
+    var idx64: int64 = int64(i)
+    var offset64: int64 = idx64 * sizeof(GuiDiagStackEntry)
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst.buffer, offset32)
+    var pt: GuiDiagStackEntry* = GuiDiagStackEntry*(p)
+    return *pt
+
+fn guiDiagAddPtr_GuiDiagStackEntry(seqInst: seq_GuiDiagStackEntry*, val: GuiDiagStackEntry) =
+    if seqInst->len >= seqInst->cap:
+        var newCap: int32 = 4
+        if seqInst->cap != 0:
+            newCap = seqInst->cap * 2
+        seqInst->cap = newCap
+        var cap64: int64 = int64(newCap)
+        var size64: int64 = int64(cap64 * sizeof(GuiDiagStackEntry))
+        var size32: int32 = int32(size64)
+        seqInst->buffer = realloc(seqInst->buffer, size32)
+    var idx64: int64 = int64(seqInst->len)
+    var offset64: int64 = int64(idx64 * sizeof(GuiDiagStackEntry))
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst->buffer, offset32)
+    var pt: GuiDiagStackEntry* = GuiDiagStackEntry*(p)
+    *pt = val
+    seqInst->len = seqInst->len + 1
+
+fn guiDiagMake(sev: GuiDiagSeverity, line, col: int32, message: str): GuiDiagnostic =
+    var diag: GuiDiagnostic
+    diag.severity = sev
+    diag.line = line
+    diag.col = col
+    diag.message = message
+    return diag
+
+fn guiDiagAdd(outVal: seq_GuiDiagnostic*, sev: GuiDiagSeverity, line, col: int32, message: str) =
+    guiDiagAddPtr_GuiDiagnostic(outVal, guiDiagMake(sev, line, col, message))
+
+fn guiDiagClosingFor(openCh: char): char =
+    if openCh == '(':
+        return ')'
+    if openCh == '[':
+        return ']'
+    if openCh == '{':
+        return '}'
+    return '?'
+
+fn guiDiagIsOpenBrace(ch: char): bool =
+    return ch == '(' || ch == '[' || ch == '{'
+
+fn guiDiagIsCloseBrace(ch: char): bool =
+    return ch == ')' || ch == ']' || ch == '}'
+
+fn guiDiagBraceMatches(openCh: char, closeCh: char): bool =
+    return (openCh == '(' && closeCh == ')') || (openCh == '[' && closeCh == ']') || (openCh == '{' && closeCh == '}')
+
+fn guiDiagScanLines(lines: str[]): seq_GuiDiagnostic =
+    var diags: seq_GuiDiagnostic = guiDiagNewSeq_GuiDiagnostic(0, 0)
+    var stack: seq_GuiDiagStackEntry = guiDiagNewSeq_GuiDiagStackEntry(0, 0)
+    for lineIdx in 0..<guiDiagSeqLenString(lines):
+        let lineText = guiDiagSeqGetString(lines, lineIdx)
+        var i: int32 = 0
+        let total: int32 = len(lineText)
+        while i < total:
+            let ch: char = lineText[i]
+            if ch == '#':
+                break
+            if ch == '"' || ch == '\'':
+                let quote: char = ch
+                let start: int32 = i
+                i = i + 1
+                var closed = false
+                while i < total:
+                    let c: char = lineText[i]
+                    if c == '\\':
+                        if i + 1 < total:
+                            i = i + 2
+                        else:
+                            i = i + 1
+                    elif c == quote:
+                        i = i + 1
+                        closed = true
+                        break
+                    else:
+                        i = i + 1
+                if ! closed:
+                    let msg = if quote == '"': "unterminated str literal" else: "unterminated char literal"
+                    guiDiagAdd(&diags, gdsError, lineIdx, start, msg)
+                continue
+            if guiDiagIsOpenBrace(ch):
+                var entry: GuiDiagStackEntry
+                entry.ch = ch
+                entry.line = lineIdx
+                entry.col = i
+                guiDiagAddPtr_GuiDiagStackEntry(&stack, entry)
+                i = i + 1
+                continue
+            if guiDiagIsCloseBrace(ch):
+                if stack.len <= 0:
+                    guiDiagAdd(&diags, gdsError, lineIdx, i, "unmatched '" + charToStr(ch) + "'")
+                    i = i + 1
+                    continue
+                let top: GuiDiagStackEntry = guiDiagGet_GuiDiagStackEntry(stack, stack.len - 1)
+                if guiDiagBraceMatches(top.ch, ch):
+                    stack.len = stack.len - 1
+                else:
+                    let expected: char = guiDiagClosingFor(top.ch)
+                    guiDiagAdd(&diags, gdsError, lineIdx, i, "mismatched '" + charToStr(ch) + "', expected '" + charToStr(expected) + "'")
+                    stack.len = stack.len - 1
+                i = i + 1
+                continue
+            i = i + 1
+    let sIdxBase = stack.len - 1
+    if sIdxBase >= 0:
+        for sIdxRev in 0..sIdxBase:
+            let sIdx = sIdxBase - sIdxRev
+            let entry: GuiDiagStackEntry = guiDiagGet_GuiDiagStackEntry(stack, sIdx)
+            let expected: char = guiDiagClosingFor(entry.ch)
+            guiDiagAdd(&diags, gdsError, entry.line, entry.col, "missing '" + charToStr(expected) + "'")
+    return diags

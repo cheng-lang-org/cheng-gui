@@ -1,0 +1,84 @@
+import std/os
+import std/strutils
+except split
+import ide/textutils
+import cheng/gui/i18n
+fn splitLocaleSegments(value: str): str[] =
+    var segments: str[] = []
+    var current = ""
+    for ch in value:
+        if ch == '_' || ch == '-' || ch == ' ':
+            let trimmed = textutils.strip(current)
+            if trimmed.len > 0:
+                segments.add(trimmed)
+                current = ""
+            else:
+                current.add(ch)
+                let trimmed = textutils.strip(current)
+                if trimmed.len > 0:
+                    segments.add(trimmed) segments
+fn normalizeLocaleCandi
+date(value: str): str = let trimmed = textutils.strip(value)
+if trimmed.len == 0:
+    return ""
+    var token = trimmed
+    let atIdx = textutils.findFirst(token, "@")
+    if atIdx >= 0:
+        token = token[0..< atIdx]
+        let dotIdx = textutils.findFirst(token, ".")
+        if dotIdx >= 0:
+            token = token[0..< dotIdx]
+            let segments = splitLocaleSegments(token)
+            if segments.len == 0:
+                return ""
+                var normalized: str[] = [] normalized.add(textutils.toLowerAscii(segments[0]))
+                var idx = 1
+                while idx < segments.len:
+                    var piece = textutils.strip(segments[idx])
+                    if piece.len == 0:
+                        idx = idx + 1
+                        continue if idx == 1 && piece.len <= 3: piece = strutils.toUpperAscii(piece)
+                        normalized.add(piece)
+                        idx = idx + 1 textutils.joinStrings(normalized, "-")
+fn bestLocaleMatch(candidate: str; available: str[]): str =
+    if candidate.len == 0 || available.len == 0:
+        return ""
+        let loweredCandi
+        date = textutils.toLowerAscii(candidate)
+        for locale in available:
+            if textutils.toLowerAscii(locale) == loweredCandi
+            date: return locale
+            let dashIdx = textutils.findFirst(loweredCandi date, "-")
+            let langOnly = if dashIdx >= 0: loweredCandi date[0..< dashIdx]
+    else:
+        loweredCandi date
+        for locale in available:
+            let lowered = textutils.toLowerAscii(locale)
+            if lowered == langOnly || textutils.startsWith(lowered, langOnly + "-"):
+                return locale ""
+fn appendLocaleCandi
+date(candidates: var str[]; key: str) = let raw = textutils.strip(os.getEnv(key, ""))
+if raw.len == 0:
+    return
+    let normalized = normalizeLocaleCandi
+    date(raw)
+    if normalized.len > 0:
+        candidates.add(normalized)
+fn detectLocale(): str =
+    ensureI18n()
+    let available = availableLocales()
+    if available.len == 0:
+        return ""
+        var candidates: str[] = [] appendLocaleCandi
+        date(candidates, "CHENG_IDE_LOCALE") appendLocaleCandi
+        date(candidates, "LC_ALL") appendLocaleCandi
+        date(candidates, "LC_MESSAGES") appendLocaleCandi
+        date(candidates, "LC_CTYPE") appendLocaleCandi
+        date(candidates, "LANG")
+        for candidate in candidates:
+            let matched = bestLocaleMatch(candidate, available)
+            if matched.len > 0:
+                return matched
+                let fallback = defaultLocale()
+                if fallback.len > 0:
+                    return fallback available[0]

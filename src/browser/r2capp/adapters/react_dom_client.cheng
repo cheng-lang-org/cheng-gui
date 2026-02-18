@@ -1,0 +1,23 @@
+import cheng/gui/browser/r2capp/react_compat
+
+type
+    ReactRoot = ref
+        mounted: bool
+        latest: react_compat.ReactNode
+
+fn adapterId(): str =
+    return "react-dom/client"
+
+fn createRoot(): ReactRoot =
+    var root: ReactRoot
+    new(root)
+    root.mounted = false
+    root.latest = nil
+    return root
+
+fn render(root: ReactRoot, node: react_compat.ReactNode): bool =
+    if root == nil:
+        return false
+    root.latest = node
+    root.mounted = true
+    return true

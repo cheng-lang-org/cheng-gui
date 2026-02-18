@@ -1,0 +1,8 @@
+.cheng-cache
+.chengcache
+.github
+.DS_Store
+build/
+*.log
+__pycache__
+*.o

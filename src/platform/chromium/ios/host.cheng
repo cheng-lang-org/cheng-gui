@@ -1,0 +1,14 @@
+import cheng/gui/browser/types
+
+type
+    IosHostInfo =
+        platformName: str
+        supportsGpu: bool
+        supportsSandbox: bool
+
+fn iosHostInfo(profile: types.SandboxProfile): IosHostInfo =
+    var info: IosHostInfo
+    info.platformName = "ios"
+    info.supportsGpu = true
+    info.supportsSandbox = profile == types.spStrict || profile == types.spBalanced
+    return info

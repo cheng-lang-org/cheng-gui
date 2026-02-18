@@ -1,0 +1,210 @@
+import cheng/gui/core/component
+import cheng/gui/runtime/scheduler
+import cheng/gui/runtime/loop as runtimeLoop
+import cheng/gui/layout/layout_tree
+import cheng/gui/render/drawlist_ir
+import cheng/gui/render/backend_compat
+import cheng/gui/a11y/semantic
+import cheng/gui/platform/native_sys_impl as nativePlat
+import cheng/gui/platform/types_v1
+
+type
+    UiContext = component.UiContext
+    Node = component.Node
+    ThemeSpec = component.ThemeSpec
+
+    AppConfig =
+        appId: str
+        title: str
+        root: fn (ctx: UiContext): Node
+        theme: ThemeSpec
+        enableA11y: bool
+
+    GuiApp = ref
+        config: AppConfig
+        ctx: UiContext
+        scheduler: scheduler.UiScheduler
+        layout: layout_tree.LayoutTree
+        drawList: drawlist_ir.DrawList
+        a11yTree: semantic.SemanticTree
+        rootNode: Node
+        window: WindowHandle
+        surface: SurfaceHandle
+        running: bool
+        frameLimit: int
+
+const
+    DefaultWindowWidth = 960.0
+    DefaultWindowHeight = 540.0
+    DefaultFrameLimit = 0
+    SafetyFrameLimit = 3600
+
+fn defaultRoot(ctx: UiContext): Node =
+    let root = component.newNode(ctx, component.nkView, "root")
+    let title = component.newNode(ctx, component.nkText, "title")
+    title.text = "Cheng GUI App"
+    title.name = "title"
+    title.focusable = false
+    component.appendChild(root, title)
+    return root
+
+fn defaultAppConfig(): AppConfig =
+    var config: AppConfig
+    config.appId = "cheng.gui.app"
+    config.title = "Cheng GUI"
+    config.root = defaultRoot
+    config.theme = component.defaultThemeSpec()
+    config.enableA11y = true
+    return config
+
+fn normalizeConfig(input: AppConfig): AppConfig =
+    var config = input
+    if len(config.appId) == 0:
+        config.appId = "cheng.gui.app"
+    if len(config.title) == 0:
+        config.title = "Cheng GUI"
+    if config.root == nil:
+        config.root = defaultRoot
+    if len(config.theme.name) == 0:
+        config.theme = component.defaultThemeSpec()
+    return config
+
+fn createApp(config: AppConfig): GuiApp =
+    let normalized = normalizeConfig(config)
+    var app: GuiApp
+    new(app)
+    app.config = normalized
+    var ctx = component.newUiContext(normalized.appId, normalized.title)
+    ctx.theme = normalized.theme
+    app.ctx = ctx
+    app.scheduler = scheduler.newScheduler()
+    app.layout = nil
+    app.drawList = drawlist_ir.newDrawList()
+    app.a11yTree = nil
+    app.rootNode = nil
+    app.window = nil
+    app.surface = nil
+    app.running = false
+    app.frameLimit = DefaultFrameLimit
+    return app
+
+fn buildWindowConfig(app: GuiApp): GuiWindowConfig =
+    var config: GuiWindowConfig
+    let appConfig = app.config
+    config.title = appConfig.title
+    config.initialRect = makeRect(0.0, 0.0, DefaultWindowWidth, DefaultWindowHeight)
+    config.resizable = true
+    config.highDpi = true
+    return config
+
+fn rebuildRoot(app: GuiApp): Node =
+    if app == nil:
+        return nil
+    let appConfig = app.config
+    if appConfig.root == nil:
+        return nil
+    let ctx = app.ctx
+    return appConfig.root(ctx)
+
+fn hasCloseEvent(events: GuiEvent[]): bool =
+    for idx in 0..<len(events):
+        let event = events[idx]
+        if event.kind == geClose:
+            return true
+    return false
+
+fn resolveViewport(info: SurfaceFrameInfo): GuiRect =
+    var width = info.logicalSize.width
+    var height = info.logicalSize.height
+    if width <= 0.0:
+        width = DefaultWindowWidth
+    if height <= 0.0:
+        height = DefaultWindowHeight
+    return makeRect(0.0, 0.0, width, height)
+
+fn runFrame(app: GuiApp, info: SurfaceFrameInfo) =
+    if app == nil:
+        return
+    let ctx = app.ctx
+    let appConfig = app.config
+    if ctx == nil:
+        return
+    scheduler.setStage(app.scheduler, scheduler.fsUpdate)
+    let root = rebuildRoot(app)
+    if root == nil:
+        return
+    app.rootNode = root
+
+    scheduler.setStage(app.scheduler, scheduler.fsLayout)
+    app.layout = layout_tree.newLayoutTree(root)
+    layout_tree.applyLayout(app.layout, resolveViewport(info))
+
+    scheduler.setStage(app.scheduler, scheduler.fsDiff)
+    scheduler.drain(app.scheduler, ctx)
+
+    scheduler.setStage(app.scheduler, scheduler.fsRender)
+    drawlist_ir.buildFromTree(app.drawList, root, ctx.theme)
+    backend_compat.renderDrawList(app.surface, info, app.drawList)
+
+    if appConfig.enableA11y:
+        app.a11yTree = semantic.buildSemanticTree(root)
+
+    scheduler.setStage(app.scheduler, scheduler.fsPresent)
+
+fn runApp(app: GuiApp) =
+    if app == nil:
+        return
+    nativePlat.initializePlat()
+    let windowConfig = buildWindowConfig(app)
+    app.window = nativePlat.createWindow(windowConfig)
+    if app.window == nil:
+        app.running = false
+        return
+    app.surface = nativePlat.createRenderSurface(app.window)
+    if app.surface == nil:
+        nativePlat.destroyWindow(app.window)
+        app.window = nil
+        app.running = false
+        return
+
+    app.running = true
+    let ctx = app.ctx
+    var frames = 0
+    while app.running:
+        scheduler.setStage(app.scheduler, scheduler.fsInput)
+        let events = nativePlat.pumpEvents(0)
+        let stats = runtimeLoop.collectInputStats(events, ctx.frameIndex)
+        if runtimeLoop.shouldStop(stats) || hasCloseEvent(events):
+            app.running = false
+            break
+
+        let info = nativePlat.beginFrame(app.surface)
+        runtimeLoop.applyFrameTiming(ctx, info)
+        runFrame(app, info)
+        nativePlat.endFrame(app.surface)
+        runtimeLoop.endRuntimeFrame(ctx)
+        scheduler.completeFrame(app.scheduler)
+
+        frames = frames + 1
+        if app.frameLimit > 0 && frames >= app.frameLimit:
+            app.running = false
+            break
+        if app.frameLimit <= 0 && frames >= SafetyFrameLimit:
+            app.running = false
+            break
+
+fn shutdownApp(app: GuiApp) =
+    if app == nil:
+        return
+    app.running = false
+
+    if app.surface != nil:
+        nativePlat.destroyRenderSurface(app.surface)
+        app.surface = nil
+    if app.window != nil:
+        nativePlat.destroyWindow(app.window)
+        app.window = nil
+
+    backend_compat.shutdownCompatBridge()
+    component.shutdownContext(app.ctx)
+    nativePlat.shutdownPlat()

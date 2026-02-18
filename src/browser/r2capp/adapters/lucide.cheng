@@ -1,0 +1,7 @@
+import cheng/gui/browser/r2capp/react_compat
+
+fn adapterId(): str =
+    return "lucide-react"
+
+fn icon(name: str): react_compat.ReactNode =
+    return react_compat.createElement("i", "{\"data-lucide\":\"" + name + "\"}", [])

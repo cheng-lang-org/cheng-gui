@@ -1,0 +1,361 @@
+import cheng/gui/platform/types_v1
+import cheng/gui/render/drawlist_ir as drawir
+import cheng/gui/browser/engine/css/cascade as cssCascade
+
+type
+    Canvas2DState =
+        fillColor: uint32
+        strokeColor: uint32
+        fontSize: float
+        lineWidth: float
+        lineDashOn: float
+        lineDashOff: float
+        textAlign: str
+        scaleX: float
+        scaleY: float
+        translateX: float
+        translateY: float
+
+    Canvas2DContext = ref
+        list: drawir.DrawList
+        fillColor: uint32
+        strokeColor: uint32
+        fontSize: float
+        lineWidth: float
+        lineDashOn: float
+        lineDashOff: float
+        textAlign: str
+        scaleX: float
+        scaleY: float
+        translateX: float
+        translateY: float
+        path: GuiPosition[]
+        stack: Canvas2DState[]
+
+fn newCanvas2DContext(list: drawir.DrawList): Canvas2DContext =
+    var ctx: Canvas2DContext
+    new(ctx)
+    ctx.list = list
+    ctx.fillColor = uint32(0xFFFFFFFF)
+    ctx.strokeColor = uint32(0xFF000000)
+    ctx.fontSize = 10.0
+    ctx.lineWidth = 1.0
+    ctx.lineDashOn = 0.0
+    ctx.lineDashOff = 0.0
+    ctx.textAlign = "left"
+    ctx.scaleX = 1.0
+    ctx.scaleY = 1.0
+    ctx.translateX = 0.0
+    ctx.translateY = 0.0
+    setLen[GuiPosition](&ctx.path, 0)
+    setLen[Canvas2DState](&ctx.stack, 0)
+    return ctx
+
+fn setFillStyle(ctx: Canvas2DContext, colorText: str) =
+    if ctx == nil:
+        return
+    let color = cssCascade.cssParseColor(colorText)
+    if color != 0:
+        ctx.fillColor = color
+
+fn setStrokeStyle(ctx: Canvas2DContext, colorText: str) =
+    if ctx == nil:
+        return
+    let color = cssCascade.cssParseColor(colorText)
+    if color != 0:
+        ctx.strokeColor = color
+
+fn setLineWidth(ctx: Canvas2DContext, width: float) =
+    if ctx == nil:
+        return
+    if width <= 0.0:
+        ctx.lineWidth = 1.0
+    else:
+        ctx.lineWidth = width
+
+fn setFontPx(ctx: Canvas2DContext, sizePx: float) =
+    if ctx == nil:
+        return
+    if sizePx <= 0.0:
+        ctx.fontSize = 10.0
+    else:
+        ctx.fontSize = sizePx
+
+fn setFont(ctx: Canvas2DContext, fontText: str) =
+    if ctx == nil:
+        return
+    var idx = 0
+    while idx < len(fontText):
+        let ch = fontText[idx]
+        if int32(ch) >= int32('0') && int32(ch) <= int32('9'):
+            break
+        idx = idx + 1
+    if idx >= len(fontText):
+        return
+    var value: int32 = int32(0)
+    while idx < len(fontText):
+        let ch = fontText[idx]
+        if int32(ch) >= int32('0') && int32(ch) <= int32('9'):
+            value = value * int32(10) + int32(int32(ch) - int32('0'))
+            idx = idx + 1
+        else:
+            break
+    if value > int32(0):
+        setFontPx(ctx, float(value))
+
+fn setTextAlign(ctx: Canvas2DContext, align: str) =
+    if ctx == nil:
+        return
+    if align == "left" || align == "center" || align == "right":
+        ctx.textAlign = align
+
+fn setLineDash(ctx: Canvas2DContext, on, off: float) =
+    if ctx == nil:
+        return
+    if on <= 0.0 || off <= 0.0:
+        ctx.lineDashOn = 0.0
+        ctx.lineDashOff = 0.0
+        return
+    ctx.lineDashOn = on
+    ctx.lineDashOff = off
+
+fn scale(ctx: Canvas2DContext, sx, sy: float) =
+    if ctx == nil:
+        return
+    if sx == 0.0 || sy == 0.0:
+        return
+    ctx.scaleX = ctx.scaleX * sx
+    ctx.scaleY = ctx.scaleY * sy
+
+fn translate(ctx: Canvas2DContext, tx, ty: float) =
+    if ctx == nil:
+        return
+    ctx.translateX = ctx.translateX + tx
+    ctx.translateY = ctx.translateY + ty
+
+fn save(ctx: Canvas2DContext) =
+    if ctx == nil:
+        return
+    let idx = len(ctx.stack)
+    setLen[Canvas2DState](&ctx.stack, idx + 1)
+    ctx.stack[idx] = Canvas2DState(
+        fillColor: ctx.fillColor,
+        strokeColor: ctx.strokeColor,
+        fontSize: ctx.fontSize,
+        lineWidth: ctx.lineWidth,
+        lineDashOn: ctx.lineDashOn,
+        lineDashOff: ctx.lineDashOff,
+        textAlign: ctx.textAlign,
+        scaleX: ctx.scaleX,
+        scaleY: ctx.scaleY,
+        translateX: ctx.translateX,
+        translateY: ctx.translateY
+    )
+
+fn restore(ctx: Canvas2DContext) =
+    if ctx == nil || len(ctx.stack) == 0:
+        return
+    let idx = len(ctx.stack) - 1
+    let st = ctx.stack[idx]
+    setLen[Canvas2DState](&ctx.stack, idx)
+    ctx.fillColor = st.fillColor
+    ctx.strokeColor = st.strokeColor
+    ctx.fontSize = st.fontSize
+    ctx.lineWidth = st.lineWidth
+    ctx.lineDashOn = st.lineDashOn
+    ctx.lineDashOff = st.lineDashOff
+    ctx.textAlign = st.textAlign
+    ctx.scaleX = st.scaleX
+    ctx.scaleY = st.scaleY
+    ctx.translateX = st.translateX
+    ctx.translateY = st.translateY
+
+fn fillRect(ctx: Canvas2DContext, x, y, w, h: float) =
+    if ctx == nil || ctx.list == nil:
+        return
+    let rx = (x + ctx.translateX) * ctx.scaleX
+    let ry = (y + ctx.translateY) * ctx.scaleY
+    let rw = w * ctx.scaleX
+    let rh = h * ctx.scaleY
+    drawir.pushRect(ctx.list, makeRect(rx, ry, rw, rh), ctx.fillColor)
+
+fn clearRect(ctx: Canvas2DContext, x, y, w, h: float) =
+    if ctx == nil || ctx.list == nil:
+        return
+    let rx = (x + ctx.translateX) * ctx.scaleX
+    let ry = (y + ctx.translateY) * ctx.scaleY
+    let rw = w * ctx.scaleX
+    let rh = h * ctx.scaleY
+    # Retained drawlist: model clearRect as an explicit transparent rect.
+    drawir.pushRectOpacity(ctx.list, makeRect(rx, ry, rw, rh), uint32(0x00000000), 0.0)
+
+fn strokeRect(ctx: Canvas2DContext, x, y, w, h: float) =
+    if ctx == nil || ctx.list == nil:
+        return
+    let rx0 = (x + ctx.translateX) * ctx.scaleX
+    let ry0 = (y + ctx.translateY) * ctx.scaleY
+    let rx1 = (x + w + ctx.translateX) * ctx.scaleX
+    let ry1 = (y + h + ctx.translateY) * ctx.scaleY
+    drawir.pushLine(ctx.list, rx0, ry0, rx1, ry0, ctx.strokeColor, ctx.lineWidth)
+    drawir.pushLine(ctx.list, rx1, ry0, rx1, ry1, ctx.strokeColor, ctx.lineWidth)
+    drawir.pushLine(ctx.list, rx1, ry1, rx0, ry1, ctx.strokeColor, ctx.lineWidth)
+    drawir.pushLine(ctx.list, rx0, ry1, rx0, ry0, ctx.strokeColor, ctx.lineWidth)
+
+fn beginPath(ctx: Canvas2DContext) =
+    if ctx == nil:
+        return
+    setLen[GuiPosition](&ctx.path, 0)
+
+fn moveTo(ctx: Canvas2DContext, x, y: float) =
+    if ctx == nil:
+        return
+    setLen[GuiPosition](&ctx.path, 0)
+    let idx = len(ctx.path)
+    setLen[GuiPosition](&ctx.path, idx + 1)
+    var p: GuiPosition
+    p.x = (x + ctx.translateX) * ctx.scaleX
+    p.y = (y + ctx.translateY) * ctx.scaleY
+    ctx.path[idx] = p
+
+fn lineTo(ctx: Canvas2DContext, x, y: float) =
+    if ctx == nil:
+        return
+    let idx = len(ctx.path)
+    setLen[GuiPosition](&ctx.path, idx + 1)
+    var p: GuiPosition
+    p.x = (x + ctx.translateX) * ctx.scaleX
+    p.y = (y + ctx.translateY) * ctx.scaleY
+    ctx.path[idx] = p
+
+fn closePath(ctx: Canvas2DContext) =
+    if ctx == nil:
+        return
+    if len(ctx.path) < 2:
+        return
+    let first = ctx.path[0]
+    let last = ctx.path[len(ctx.path) - 1]
+    if first.x == last.x && first.y == last.y:
+        return
+    let idx = len(ctx.path)
+    setLen[GuiPosition](&ctx.path, idx + 1)
+    ctx.path[idx] = first
+
+fn rect(ctx: Canvas2DContext, x, y, w, h: float) =
+    if ctx == nil:
+        return
+    if w <= 0.0 || h <= 0.0:
+        return
+    if len(ctx.path) == 0:
+        moveTo(ctx, x, y)
+    else:
+        lineTo(ctx, x, y)
+    lineTo(ctx, x + w, y)
+    lineTo(ctx, x + w, y + h)
+    lineTo(ctx, x, y + h)
+    closePath(ctx)
+
+fn stroke(ctx: Canvas2DContext) =
+    if ctx == nil || ctx.list == nil:
+        return
+    if len(ctx.path) < 2:
+        return
+    for idx in 1..<len(ctx.path):
+        let a = ctx.path[idx - 1]
+        let b = ctx.path[idx]
+        drawir.pushLine(ctx.list, a.x, a.y, b.x, b.y, ctx.strokeColor, ctx.lineWidth)
+
+fn measureText(ctx: Canvas2DContext, text: str): float =
+    if ctx == nil:
+        return 0.0
+    if len(text) == 0:
+        return 0.0
+    return float(len(text)) * ctx.fontSize * 0.6
+
+fn fillText(ctx: Canvas2DContext, text: str, x, y: float) =
+    if ctx == nil || ctx.list == nil || len(text) == 0:
+        return
+    var fx = (x + ctx.translateX) * ctx.scaleX
+    let fy = (y + ctx.translateY) * ctx.scaleY
+    let w = measureText(ctx, text)
+    let h = ctx.fontSize * 1.2
+    if ctx.textAlign == "center":
+        fx = fx - w / 2.0
+    elif ctx.textAlign == "right":
+        fx = fx - w
+    drawir.pushText(ctx.list, makeRect(fx, fy - ctx.fontSize, w, h), text, ctx.fillColor, ctx.fontSize)
+
+fn strokeText(ctx: Canvas2DContext, text: str, x, y: float) =
+    if ctx == nil || ctx.list == nil || len(text) == 0:
+        return
+    var fx = (x + ctx.translateX) * ctx.scaleX
+    let fy = (y + ctx.translateY) * ctx.scaleY
+    let w = measureText(ctx, text)
+    let h = ctx.fontSize * 1.2
+    if ctx.textAlign == "center":
+        fx = fx - w / 2.0
+    elif ctx.textAlign == "right":
+        fx = fx - w
+    drawir.pushText(ctx.list, makeRect(fx, fy - ctx.fontSize, w, h), text, ctx.strokeColor, ctx.fontSize)
+
+fn drawCrosshair(list: drawir.DrawList, rect: GuiRect, x, y: float) =
+    if list == nil:
+        return
+    if rect.size.width <= 1.0 || rect.size.height <= 1.0:
+        return
+    let color = cssCascade.cssParseColor("#fbbf24")
+    let stroke = 2.0
+    var xx = rect.origin.x + x
+    var yy = rect.origin.y + y
+    if xx < rect.origin.x:
+        xx = rect.origin.x
+    if xx > rect.origin.x + rect.size.width:
+        xx = rect.origin.x + rect.size.width
+    if yy < rect.origin.y:
+        yy = rect.origin.y
+    if yy > rect.origin.y + rect.size.height:
+        yy = rect.origin.y + rect.size.height
+    drawir.pushLine(list, xx, rect.origin.y, xx, rect.origin.y + rect.size.height, color, stroke)
+    drawir.pushLine(list, rect.origin.x, yy, rect.origin.x + rect.size.width, yy, color, stroke)
+
+# A deterministic, dependency-free demo renderer used by r2c AOT gates.
+fn drawTradingDemo(list: drawir.DrawList, rect: GuiRect) =
+    if list == nil:
+        return
+    if rect.size.width <= 1.0 || rect.size.height <= 1.0:
+        return
+
+    let ctx = newCanvas2DContext(list)
+    setFillStyle(ctx, "#0d1117")
+    fillRect(ctx, rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
+
+    setStrokeStyle(ctx, "#1e2937")
+    setLineWidth(ctx, 1.0)
+
+    # Grid
+    for i in 0..4:
+        let y = rect.origin.y + (rect.size.height / 4.0) * float(i)
+        beginPath(ctx)
+        moveTo(ctx, rect.origin.x, y)
+        lineTo(ctx, rect.origin.x + rect.size.width, y)
+        stroke(ctx)
+
+    # Sparkline
+    setStrokeStyle(ctx, "#00c853")
+    setLineWidth(ctx, 1.0)
+    beginPath(ctx)
+    let steps = 48
+    for s in 0..<steps:
+        let t = float(s) / float(steps - 1)
+        let x = rect.origin.x + t * rect.size.width
+        let y = rect.origin.y + rect.size.height * (0.5 + 0.35 * float((s * 37) % 17) / 16.0)
+        if s == 0:
+            moveTo(ctx, x, y)
+        else:
+            lineTo(ctx, x, y)
+    stroke(ctx)
+
+    # Labels
+    setFillStyle(ctx, "#9ca3af")
+    setFontPx(ctx, 10.0)
+    fillText(ctx, "KLINE", rect.origin.x + 6.0, rect.origin.y + 14.0)
+    fillText(ctx, "MA7", rect.origin.x + 6.0, rect.origin.y + 28.0)

@@ -1,0 +1,1329 @@
+import std/strutils
+import std/times
+import std/streams
+import std/tables
+import std/os
+import std/json as stdjson
+except JsonNode, JNull, JBool, JInt, JFloat, JString, JArray, JObject, newJArray, newJObject, newJNull, newJString, newJInt, newJFloat, newJBool
+import cheng/runtime/json_compat
+import cheng/runtime/json_runtime as runtimeJson
+import ide/textutils
+import cheng/gui/widgets/codeview
+import cheng/gui/widgets/logpanel
+import cheng/gui/widgets/visualization
+import cheng/gui/widgets/terminal
+import cheng/gui/widgets/debugger
+import cheng/gui/widgets/perf_panel
+import cheng/gui/widgets/task_monitor
+import cheng/gui/widgets/annotate_dialog
+import cheng/gui/widgets/language_panel
+import cheng/gui/widgets/document_tabs
+import cheng/gui/ownership/auto_annotate
+import ide/ui
+import cheng/gui/editor/buffer
+import cheng/gui/services/lsp_adapter
+const
+    MaxAnalysisNodes = 24
+    MaxTimelineNodes = 16
+    MaxLanguageDiagnostics = 12
+    MaxOutlineEntries = 64
+    MaxBorrowSummaryItems = 16
+type
+    GuiSessionData =
+        title: str
+        codeModel: CodeViewModel
+        editorWorkspace: EditorWorkspace
+        documents: EditorDocumentSummary[]
+        docTabsModel: DocumentTabsModel
+        logModel: LogPanelModel
+        vizModel: Visual
+        izationModel
+        languageModel: LanguagePanelModel
+        terminalModel: TerminalModel
+        debugModel: DebuggerModel
+        perfModel: PerfPanelModeltaskModel: TaskMonitorModel
+        autoModel: AutoAnnotateDialogModel
+        selectedFile: str
+        note: str
+        repoRoot: str
+    FileReadResult =
+        content: str
+        note: str
+    AccessDetail =
+        symbol: str
+        scope: str
+        kinds: str[]
+        OwnershipJson
+    Result =
+        summary: JsonNode
+        details: JsonNode
+    WorkspaceBuildResult =
+        workspace: EditorWorkspace
+        note: str
+        content: str
+        selected: str
+    BridgeReportResult =
+        report: UiBridgeReport
+        error: str
+fn defaultGuiSessionData(): GuiSessionData =
+    var data: GuiSessionData
+    data.title = "Cheng IDE GUI Demo"
+    data.codeModel = nil
+    data.editorWorkspace = nil
+    data.documents = default[EditorDocumentSummary[]]
+    data.docTabsModel = nil
+    data.logModel = nil
+    data.vizModel = nil
+    data.languageModel = nil
+    data.terminalModel = nil
+    data.debugModel = nil
+    data.perfModel = nil
+    data.taskModel = nil
+    data.autoModel = nil
+    data.selectedFile = ""
+    data.note = ""
+    data.repoRoot = "" data
+fn normalizeRepoRoot(root: str): str =
+    if len(root) == 0:
+        ""
+    elif os.isAbsolute(root):
+        os.absolutePath(root)
+    else:
+        os.absolutePath(os.joinPath(os.getCurrentDir(), root))
+fn safeReadFile(repoRoot, path: str): FileReadResult =
+    var result: FileReadResult
+    if len(path) == 0:
+        result.content = ""
+        result.note = "selected-file-empty"
+        return result
+        var resolved = path
+        if os.isAbsolute(resolved) == false:
+            if len(repoRoot) > 0:
+                resolved = os.joinPath(repoRoot, resolved)
+                try:
+                    resolved = os.absolutePath(resolved)
+                except CatchableError as
+                e: result.content = ""
+                result.note = "resolve-error:" + e.msg
+                return result
+                if len(repoRoot) > 0:
+                    let normalizedRoot = normalizeRepoRoot(repoRoot)
+                    try:
+                        let rel = os.relativePath(resolved, normalizedRoot)
+                        if len(rel) == 0 || textutils.containsParentTraversal(rel) || textutils.startsWith(rel, ".."):
+                            result.content = ""
+                            result.note = "selected-file-outside-root"
+                            return result
+                    except CatchableError:
+                        result.content = ""
+                        result.note = "selected-file-relative-error"
+                        return result
+                        if ! os.fileExists(resolved):
+                            result.content = ""
+                            result.note = "selected-file-missing"
+                            return result
+                            try:
+                                var stream = newFileStream(resolved, fmRead)
+                                if stream == nil:
+                                    result.content = ""
+                                    result.note = "read-error:open-failed"
+                                    return result defer: stream.close()
+                                    result.content = stream.readAll()
+                                    result.note = "" result
+                            except CatchableError as
+                            e: result.content = ""
+                            result.note = "read-error:" + e.msg result
+fn suffixAfter(note, prefix: str): str =
+    if len(note) <= len(prefix):
+        ""
+    else:
+        let startIdx: int32 = len(prefix)
+        let endIdx: int32 = len(note) - 1
+        textutils.strip(note[startIdx..endIdx])
+fn describeFileNote(note: str, report: UiBridgeReport): str =
+    if len(note) == 0:
+        return ""
+        case note
+        of "selected-file-empty":
+            "No selected file provided"
+        of "selected-file-missing":
+            "Selected file not found: " + report.selectedFile
+        of "selected-file-outside-root":
+            var extra = ""
+            if len(report.repoRoot) > 0:
+                extra = "(repo root: " + report.repoRoot + ")" "Selected file is outside repo root: " + report.selectedFile + extra
+        of "selected-file-relative-error":
+            "Unable to resolve selected file relative path"
+        else:
+            if textutils.startsWith(note, "resolve-error:"):
+                let detail = suffixAfter(note, "resolve-error:")
+                if len(detail) > 0:
+                    "Failed to resolve file path: " + detail
+                else:
+                    "Failed to resolve file path"
+                elif textutils.startsWith(note, "read-error:"):
+                    let detail = suffixAfter(note, "read-error:")
+                    if len(detail) > 0:
+                        "Failed to read selected file: " + detail
+                    else:
+                        "Failed to read selected file"
+                    else:
+                        note
+fn severityToLevel(severity: str): LogLevel =
+    let lowered = textutils.toLowerAscii(severity)
+    if lowered == "error":
+        llError
+    elif lowered == "warn" || lowered == "warning":
+        llWarn
+    elif lowered == "debug":
+        llDebug
+    else:
+        llInfo
+fn buildLogModel(report: UiBridgeReport): LogPanelModel =
+    let model = newLogPanelModel()
+    var ts = int64(epochTime() * 1000.0)
+    for event in report.languageEvents:
+        var category = event.source
+        if len(category) == 0:
+            category = "language"
+            var message = event.location
+            if len(event.message) > 0:
+                if len(message) > 0:
+                    message = message + " " + event.message
+                else:
+                    message = event.message
+                    var entry: LogEntryentry.timestamp = ts
+                    entry.level = severityToLevel(event.severity)
+                    entry.category = category
+                    entry.message = message
+                    model.addEntry(entry)
+                    ts = ts + 1
+                    for snapshot in report.timeline:
+                        var statusLabel = snapshot.status
+                        if len(statusLabel) == 0:
+                            statusLabel = "ok"
+                            var text = "command=" + snapshot.command + " status=" + statusLabel
+                            if len(snapshot.messages) > 0:
+                                text = text + " msg=" + snapshot.messages.join("|")
+                                var entry: LogEntryentry.timestamp = ts
+                                entry.level = llInfo
+                                entry.category = "timeline"
+                                entry.message = text
+                                model.addEntry(entry)
+                                ts = ts + 1
+                                if len(report.messages) > 0:
+                                    for msg in report.messages:
+                                        var entry: LogEntryentry.timestamp = ts
+                                        entry.level = llInfo
+                                        entry.category = "ui"
+                                        entry.message = msg
+                                        model.addEntry(entry)
+                                        ts = ts + 1 model
+fn buildTerminalModel(report: UiBridgeReport): TerminalModel =
+    if len(report.terminalEntries) == 0:
+        return nil
+        let model = newTerminalModel()
+        var maxTs = 0
+        for entry in report.terminalEntries:
+            let kind = textutils.toLowerAscii(entry.kind)
+            if kind == "input":
+                model.appendInput(entry.text)
+            elif kind == "error":
+                model.appendError(entry.text)
+            elif kind == "status":
+                model.appendStatus(entry.text)
+            else:
+                model.appendOutput(entry.text)
+                if entry.timestampMs > maxTs:
+                    maxTs = entry.timestampMs
+                    if maxTs > 0:
+                        model.metrics.lastActivity = maxTs model
+fn parseDebuggerStatus(label: str): DebuggerStatus =
+    let normalized = textutils.toLowerAscii(textutils.strip(label))
+    case normalized
+    of "running":
+        dsRunning
+    of "paused":
+        dsPaused
+    of "completed", "done":
+        dsCompleted
+    of "faulted", "error", "failed":
+        dsFaulted
+    else:
+        dsIn active
+fn parseVariableKind(label: str): DebuggerVariable
+Kind = let normalized = textutils.toLowerAscii(textutils.strip(label))
+case normalized
+of "global":
+    dvkGlobal
+of "watch":
+    dvkWatch
+else:
+    dvkLocal
+fn buildDebuggerModel(report: UiBridgeReport): DebuggerModel =
+    if len(report.debugger.status) == 0 && len(report.debugger.break points) == 0 && len(report.debugger.var iables) == 0:
+        return nil
+        let model = newDebuggerModel() model.setStatus(parseDebuggerStatus(report.debugger.status), report.debugger.reason)
+        var break points = default[DebuggerBreak point[]]
+        for bp in report.debugger.break points:
+            var entry: DebuggerBreak
+            point
+            entry.file = bp.file
+            entry.line = bp.line
+            entry.enabled = bp.enabled
+            entry.hitCount = bp.hitCount
+            break points.add(entry) model.setBreak
+            points(break points)
+            var frames = default[DebuggerFrame[]]
+            for frame in report.debugger.frames:
+                var entry: DebuggerFrame
+                entry.functionName = frame.functionName
+                entry.location = frame.location
+                entry.isCurrent = frame.isCurrent frames.add(entry) model.setFrames(frames)
+                var var iables = default[DebuggerVariable[]]
+                for variable in report.debugger.var iables:
+                    var entry: DebuggerVariable
+                    entry.name = variable.name
+                    entry.value = variable.value
+                    entry.kind = parseVariableKind(variable.kind)
+                    entry.changed = variable.changed
+                    var iables.add(entry) model.setVar
+                    iables(var iables) model
+fn buildPerfModel(report: UiBridgeReport): PerfPanelModel =
+    if len(report.perfSamples) == 0:
+        return nil
+        let model = newPerfPanelModel(16.0)
+        var samples = default[PerfSample[]]
+        for sample in report.perfSamples:
+            var entry: PerfSample
+            entry.label = sample.label
+            entry.timestampMs = sample.timestampMs
+            entry.cpuMs = sample.cpuMs
+            entry.gpuMs = sample.gpuMs
+            entry.totalMs = sample.totalMs samples.add(entry) model.setSamples(samples) model
+fn parseTaskStatus(label: str): TaskStatus =
+    let normalized = textutils.toLowerAscii(textutils.strip(label))
+    case normalized
+    of "running":
+        tsRunning
+    of "succeeded", "success":
+        tsSucceeded
+    of "failed", "error":
+        tsFailed
+    of "cancelled", "canceled":
+        tsCancelled
+    of "pending":
+        tsPending
+    else:
+        tsPending
+fn buildTaskMonitorModel(report: UiBridgeReport): TaskMonitorModel =
+    if len(report.tasks) == 0:
+        return nil
+        let model = newTaskMonitorModel()
+        var tasks = default[TaskInfo[]]
+        for task in report.tasks:
+            var info: TaskInfo
+            info.id = if len(task.id) > 0: task.id
+    else:
+        task.label
+        info.label = task.label
+        info.status = parseTaskStatus(task.status)
+        info.progress = clamp(task.progress, 0.0, 1.0)
+        info.startedAtMs = task.startedMs
+        info.durationMs = task.durationMs
+        info.detail = task.detail tasks.add(info) model.setTasks(tasks) model
+fn buildAutoAnnotateModel(report: UiBridgeReport): AutoAnnotateDialogModel =
+    let model = newAutoAnnotateDialogModel()
+    var snapshot = report.autoAnnotate
+    if len(snapshot.repoRoot) == 0:
+        snapshot.repoRoot = report.repoRoot
+        if len(snapshot.path) == 0:
+            snapshot.path = report.selectedFile model.applySnapshot(snapshot) model
+fn splitLimited(text: str, limit: int): str[] =
+    if len(text) == 0 || limit <= 0:
+        return default[str[]]
+        var lines = default[str[]]
+        for line in textutils.splitLines(text):
+            let trimmed = textutils.strip(line)
+            if len(trimmed) == 0:
+                continue lines.add(trimmed)
+                if len(lines) >= limit:
+                    break lines
+fn extractSection(summary: str, label: str): str =
+    if len(summary) == 0:
+        return ""
+        let tag = "[" + label + "]"
+        let idx = summary.find(tag)
+        if idx < 0:
+            return ""
+            var endIdx = summary.find("\n[", idx + len(tag))
+            if endIdx < 0:
+                endIdx = len(summary) summary[idx..< endIdx]
+fn sectionLines(summary: str, label: str): str[] =
+    sectionLines(summary, label, MaxOutlineEntries)
+fn sectionLines(summary: str, label: str, limit: int): str[] =
+    let section = extractSection(summary, label)
+    if len(section) == 0:
+        return default[str[]]
+        var lines = default[str[]]
+        for line in textutils.splitLines(section):
+            let trimmed = textutils.strip(line)
+            if len(trimmed) == 0:
+                continue if textutils.startsWith(trimmed, "["): continue lines.add(trimmed)
+                if len(lines) >= limit:
+                    break lines
+fn outlineJson(lines: str[]): JsonNode =
+    if len(lines) == 0:
+        return json_compat.newJNull()
+        var children = newJArray()
+        for idx, line in lines:
+            children.add
+            jsonObjectLit(jsonField("id", "outline#" + $ idx), jsonField("label", line), jsonField("value", ""))
+            jsonObjectLit(jsonField("id", "outline"), jsonField("label", "Outline"), jsonField("value", "items=" + $ len(lines)), jsonField("children", children))
+fn diagnosticsJson(diagLines: str[], events: UiLanguageEvent[]): JsonNode =
+    var children = newJArray()
+    var warnings = 0
+    var errors = 0
+    var diagTexts = newJArray()
+    if len(events) > 0:
+        for idx, ev in events:
+            var label = ev.location
+            if len(label) == 0:
+                label = ev.source
+                if len(label) == 0:
+                    label = "event#" + $ idx
+                    var value = ev.message
+                    if len(value) == 0:
+                        value = ev.severity children.add
+                        jsonObjectLit(jsonField("id", "lang#" + $ idx), jsonField("label", label), jsonField("value", ev.severity &(if len(value) > 0: ": " + value else: ""))) diagTexts.add(json_compat.`%`(ev.message))
+                        let lowered = textutils.toLowerAscii(ev.severity)
+                        if lowered == "error":
+                            errors = errors + 1
+                        elif lowered == "warn" || lowered == "warning":
+                            warnings = warnings + 1
+                        else:
+                            for idx, line in diagLines:
+                                children.add
+                                jsonObjectLit(jsonField("id", "diag#" + $ idx), jsonField("label", "diagnostic#" + $ idx), jsonField("value", line)) diagTexts.add(json_compat.`%`(line))
+                                let lowered = textutils.toLowerAscii(line)
+                                if lowered.find("error") >= 0:
+                                    errors = errors + 1
+                                elif lowered.find("warn") >= 0:
+                                    warnings = warnings + 1
+                                    if len(diagTexts) == 0:
+                                        diagTexts.add(json_compat.`%`("No diagnostics recorded"))
+                                        jsonObjectLit(jsonField("id", "diagnostics"), jsonField("label", "Diagnostics"), jsonField("value", "warnings=" + $ warnings + ", errors=" + $ errors), jsonField("children", children), jsonField("metrics", jsonObjectLit(jsonField("warnings", warnings), jsonField("errors", errors), jsonField("diagnostics", diagTexts))))
+fn parseBorrowSummary(lines: str[], metricsLines: str[]): JsonNode =
+    var children = newJArray()
+    var metrics = newJObject()
+    var totalEvents = 0
+    for idx, line in lines:
+        let trimmed = textutils.strip(line)
+        if len(trimmed) == 0 || textutils.startsWith(trimmed, "("):
+            continue
+            let eq = trimmed.findChar('=')
+            if eq < 0 || eq >= len(trimmed) - 1:
+                continue
+                let key = textutils.strip(trimmed[0..< eq])
+                let endIdx: int32 = len(trimmed) - 1
+                let valueText = textutils.strip(trimmed[eq + 1..endIdx])
+                var valueNode: JsonNode
+                try:
+                    let parsed = parseInt(valueText)
+                    valueNode = json_compat.`%`(parsed)
+                    totalEvents = totalEvents + parsed
+                except CatchableError:
+                    valueNode = json_compat.`%`(valueText)
+                    children.add
+                    jsonObjectLit(jsonField("id", "borrow-summary#" + $ idx), jsonField("label", key), jsonField("value", valueText))
+                    metrics[key] = valueNode
+                    if len(children) == 0:
+                        children.add
+                        jsonObjectLit(jsonField("id", "borrow-summary#empty"), jsonField("label", "No borrow summary"), jsonField("value", ""))
+                        if totalEvents > 0:
+                            metrics["total_events"] = json_compat.`%`(totalEvents)
+                            if len(metricsLines) > 0:
+                                let metricsText = textutils.strip(metricsLines[0])
+                                if len(metricsText) > 0:
+                                    try:
+                                        let parsed = runtimeJson.parseJson(metricsText)
+                                        metrics["summary"] = parsed
+                                    except CatchableError:
+                                        metrics["summary_error"] = json_compat.`%`(metricsText)
+                                        jsonObjectLit(jsonField("id", "borrow-summary"), jsonField("label", "Borrow Summary"), jsonField("value", "items=" + $ len(children)), jsonField("children", children), jsonField("metrics", metrics))
+fn parseBorrowEvents(lines: str[], limit: int): JsonNode =
+    var children = newJArray()
+    var collected = 0
+    var truncated = 0
+    for idx, line in lines:
+        let trimmed = textutils.strip(line)
+        if len(trimmed) == 0:
+            continue if textutils.startsWith(trimmed, "("): if collected < limit: children.add
+            jsonObjectLit(jsonField("id", "borrow-events#" + $ idx), jsonField("label", "event#" + $ idx), jsonField("value", trimmed))
+            collected = collected + 1
+        elif textutils.startsWith(trimmed, "[truncated"):
+            try:
+                let parts = trimmed.split(' ')
+                if len(parts) >= 2:
+                    truncated = parseInt(parts[1])
+            except CatchableError:
+                truncated = 0
+        else:
+            if collected < limit:
+                children.add
+                jsonObjectLit(jsonField("id", "borrow-events#" + $ idx), jsonField("label", "event#" + $ idx), jsonField("value", trimmed))
+                collected = collected + 1
+                if truncated > 0:
+                    children.add
+                    jsonObjectLit(jsonField("id", "borrow-events#truncated"), jsonField("label", "More events"), jsonField("value", "truncated=" + $ truncated))
+                    if len(children) == 0:
+                        children.add
+                        jsonObjectLit(jsonField("id", "borrow-events#empty"), jsonField("label", "No borrow events"), jsonField("value", ""))
+                        jsonObjectLit(jsonField("id", "borrow-events"), jsonField("label", "Borrow Events"), jsonField("value", "items=" + $ len(children)), jsonField("children", children))
+fn summarizeLines(lines: str[]): str =
+    summarizeLines(lines, 3)
+fn summarizeLines(lines: str[], limit: int): str =
+    if len(lines) == 0:
+        return ""
+        var parts = default[str[]]
+        let count = min(limit, len(lines))
+        for idx in 0..< count:
+            parts.add(lines[idx])
+            var joined = parts.join(", ")
+            if len(lines) > limit:
+                joined.add(" …") joined
+fn parseArcNodes(summaryLines: str[], nodeLines: str[], metricsNode: JsonNode): JsonNode =
+    var children = newJArray()
+    if len(nodeLines) == 0:
+        children.add
+        jsonObjectLit(jsonField("id", "arc-nodes#empty"), jsonField("label", "No ARC nodes"), jsonField("value", ""))
+    else:
+        for idx, raw in nodeLines:
+            let trimmed = textutils.strip(raw)
+            if len(trimmed) == 0:
+                continue if textutils.startsWith(trimmed, "("): children.add
+                jsonObjectLit(jsonField("id", "arc-nodes#note" + $ idx), jsonField("label", trimmed), jsonField("value", ""))
+                continue try: let parsed = runtimeJson.parseJson(trimmed)
+                if parsed.kind != JObject:
+                    raise newException(ValueError, "arc-node-not-object")
+                    var label = if parsed.hasKey("name") && parsed["name"].kind == JString: parsed["name"].getStr()
+                else:
+                    "node#" + $ idx
+                    var nodeId = if parsed.hasKey("id") && parsed["id"].kind in {json_compat.JInt, json_compat.JFloat}: "arc-node#" + $ parsed["id"].getInt()
+                else:
+                    "arc-node#" + $ idx
+                    var valueParts = default[str[]]
+                    if parsed.hasKey("kind") && parsed["kind"].kind == JString:
+                        valueParts.add("kind=" + parsed["kind"].getStr())
+                        if parsed.hasKey("thread") && parsed["thread"].kind == JString:
+                            let threadVal = textutils.strip(parsed["thread"].getStr())
+                            if len(threadVal) > 0:
+                                valueParts.add("thread=" + threadVal)
+                                if parsed.hasKey("traits") && parsed["traits"].kind == JArray:
+                                    var traits = default[str[]]
+                                    for trait in parsed["traits"].items:
+                                        if trait.kind == JString:
+                                            traits.add(trait.getStr())
+                                            if len(traits) > 0:
+                                                valueParts.add("traits=" + traits.join("+"))
+                                                if parsed.hasKey("location") && parsed["location"].kind == JObject:
+                                                    let loc = parsed["location"]
+                                                    if loc.hasKey("file"):
+                                                        var location = loc["file"].getStr()
+                                                        if loc.hasKey("line"):
+                                                            location.add(":" + $ loc["line"].getInt())
+                                                            if loc.hasKey("column"):
+                                                                location.add(":" + $ loc["column"].getInt()) valueParts.add(location) children.add
+                                                                jsonObjectLit(jsonField("id", nodeId), jsonField("label", label), jsonField("value", valueParts.join(" ")))
+                                                                except CatchableError:
+                                                                    children.add
+                                                                    jsonObjectLit(jsonField("id", "arc-node#raw" + $ idx), jsonField("label", "node#" + $ idx), jsonField("value", trimmed))
+                                                                    var summaryValue = summarizeLines(summaryLines)
+                                                                    if len(summaryValue) == 0:
+                                                                        if ! metricsNode.isNil() && metricsNode.kind == JObjectand
+                                                                        metricsNode.hasKey("nodes"): summaryValue = "nodes=" + $ metricsNode["nodes"].getInt()
+                                                                    else:
+                                                                        summaryValue = "nodes=" + $ len(children)
+                                                                        jsonObjectLit(jsonField("id", "arc-nodes"), jsonField("label", "ARC nodes"), jsonField("value", summaryValue), jsonField("children", children))
+fn addMetricChildren(rootId, label: str, node: JsonNode, outChildren: var JsonNode) =
+    if node.isNil() || node.kind != JObject:
+        return
+        var group = newJArray()
+        for idx in 0..<len(node.okeys):
+            let key = node.okeys[idx]
+            let value = node.ovalues[idx]
+            if value.kind in {json_compat.JInt, json_compat.JFloat}:
+                group.add
+                jsonObjectLit(jsonField("id", rootId + "#" + key), jsonField("label", key), jsonField("value", $ value.getInt()))
+                if len(group) > 0:
+                    outChildren.add
+                    jsonObjectLit(jsonField("id", rootId), jsonField("label", label), jsonField("value", ""), jsonField("children", group))
+fn parseArcEvents(eventLines: str[], metricsNode: JsonNode, limit: int): JsonNode =
+    var children = newJArray()
+    if ! metricsNode.isNil() && metricsNode.kind == JObject:
+        var summaryChildren = newJArray()
+        if metricsNode.hasKey("nodes"):
+            summaryChildren.add
+            jsonObjectLit(jsonField("id", "arc-summary#nodes"), jsonField("label", "nodes"), jsonField("value", $ metricsNode["nodes"].getInt()))
+            if metricsNode.hasKey("events"):
+                summaryChildren.add
+                jsonObjectLit(jsonField("id", "arc-summary#events"), jsonField("label", "events"), jsonField("value", $ metricsNode["events"].getInt()))
+                if metricsNode.hasKey("event_counts"):
+                    addMetricChildren("arc-summary#event", "Event type", metricsNode["event_counts"], summaryChildren)
+                    if metricsNode.hasKey("borrow_kinds"):
+                        addMetricChildren("arc-summary#borrow", "Borrow type", metricsNode["borrow_kinds"], summaryChildren)
+                        if metricsNode.hasKey("threads"):
+                            addMetricChildren("arc-summary#thread", "Event thread", metricsNode["threads"], summaryChildren)
+                            if metricsNode.hasKey("shared_access"):
+                                addMetricChildren("arc-summary#shared", "Share mode", metricsNode["shared_access"], summaryChildren)
+                                if metricsNode.hasKey("confirmations"):
+                                    addMetricChildren("arc-summary#confirm", "Confirmation policy", metricsNode["confirmations"], summaryChildren)
+                                    if len(summaryChildren) > 0:
+                                        children.add
+                                        jsonObjectLit(jsonField("id", "arc-events#summary"), jsonField("label", "Summary"), jsonField("value", ""), jsonField("children", summaryChildren))
+                                        var processed = 0
+                                        for idx, raw in eventLines:
+                                            if processed >= limit:
+                                                break
+                                                let trimmed = textutils.strip(raw)
+                                                if len(trimmed) == 0:
+                                                    continue if textutils.startsWith(trimmed, "("): children.add
+                                                    jsonObjectLit(jsonField("id", "arc-events#note" + $ idx), jsonField("label", trimmed), jsonField("value", ""))
+                                                    processed = processed + 1
+                                                    continue try: let parsed = runtimeJson.parseJson(trimmed)
+                                                    if parsed.kind != JObject:
+                                                        raise newException(ValueError, "arc-event-not-object")
+                                                        let baseEvent = if parsed.hasKey("event") && parsed["event"].kind == JString: parsed["event"].getStr()
+                                                    else:
+                                                        "event#" + $ idx
+                                                        let ownerLabel = if parsed.hasKey("ownerName") && parsed["ownerName"].kind == JString: parsed["ownerName"].getStr()
+                                                    elif parsed.hasKey("owner") && parsed["owner"].kind in {JInt, JFloat}:
+                                                        "owner#" + $ parsed["owner"].getInt()
+                                                    else:
+                                                        ""
+                                                        let borrowerLabel = if parsed.hasKey("borrowerName") && parsed["borrowerName"].kind == JString: parsed["borrowerName"].getStr()
+                                                    elif parsed.hasKey("borrower") && parsed["borrower"].kind in {JInt, JFloat}:
+                                                        "borrower#" + $ parsed["borrower"].getInt()
+                                                    else:
+                                                        ""
+                                                        var label = baseEvent
+                                                        if len(ownerLabel) > 0:
+                                                            label.add(" " + ownerLabel)
+                                                            if len(borrowerLabel) > 0:
+                                                                if len(ownerLabel) > 0:
+                                                                    label.add(" → " + borrowerLabel)
+                                                                else:
+                                                                    label.add(" → " + borrowerLabel)
+                                                                    let eventId = if parsed.hasKey("index") && parsed["index"].kind in {JInt, JFloat}: "arc-event#" + $ parsed["index"].getInt()
+                                                                else:
+                                                                    "arc-event#" + $ idx
+                                                                    var valueParts = default[str[]]
+                                                                    if parsed.hasKey("file") && parsed["file"].kind == JString:
+                                                                        var loc = parsed["file"].getStr()
+                                                                        if parsed.hasKey("line") && parsed["line"].kind in {JInt, JFloat}:
+                                                                            loc.add(":" + $ parsed["line"].getInt())
+                                                                            if parsed.hasKey("column") && parsed["column"].kind in {JInt, JFloat}:
+                                                                                loc.add(":" + $ parsed["column"].getInt()) valueParts.add(loc)
+                                                                                if parsed.hasKey("scope") && parsed["scope"].kind == JString:
+                                                                                    valueParts.add("scope=" + parsed["scope"].getStr())
+                                                                                    if parsed.hasKey("thread") && parsed["thread"].kind == JString:
+                                                                                        let threadVal = textutils.strip(parsed["thread"].getStr())
+                                                                                        if len(threadVal) > 0:
+                                                                                            valueParts.add("thread=" + threadVal)
+                                                                                            if parsed.hasKey("borrowKind") && parsed["borrowKind"].kind == JString:
+                                                                                                valueParts.add("kind=" + parsed["borrowKind"].getStr())
+                                                                                                if parsed.hasKey("inferenceKind") && parsed["inferenceKind"].kind == JString:
+                                                                                                    valueParts.add("inference=" + parsed["inferenceKind"].getStr())
+                                                                                                    if parsed.hasKey("inferenceSource") && parsed["inferenceSource"].kind == JString:
+                                                                                                        valueParts.add("source=" + parsed["inferenceSource"].getStr())
+                                                                                                        if parsed.hasKey("sharedAccess") && parsed["sharedAccess"].kind in {JBool, JInt, JFloat}:
+                                                                                                            let sharedFlag = parsed["sharedAccess"].getBool() valueParts.add(if sharedFlag: "shared" else: "exclusive")
+                                                                                                            if parsed.hasKey("requiresConfirmation") && parsed["requiresConfirmation"].kind in {JBool, JInt, JFloat}:
+                                                                                                                let confirmFlag = parsed["requiresConfirmation"].getBool() valueParts.add(if confirmFlag: "confirm" else: "auto")
+                                                                                                                if parsed.hasKey("threadAffinity") && parsed["threadAffinity"].kind == JArray:
+                                                                                                                    var affinities = default[str[]]
+                                                                                                                    for item in parsed["threadAffinity"].items:
+                                                                                                                        if item.kind == JString:
+                                                                                                                            affinities.add(item.getStr())
+                                                                                                                            if len(affinities) > 0:
+                                                                                                                                valueParts.add("affinity=" + affinities.join("+")) children.add
+                                                                                                                                jsonObjectLit(jsonField("id", eventId), jsonField("label", label), jsonField("value", valueParts.join(" ")))
+                                                                                                                                except CatchableError:
+                                                                                                                                    children.add
+                                                                                                                                    jsonObjectLit(jsonField("id", "arc-event#raw" + $ idx), jsonField("label", "event#" + $ idx), jsonField("value", trimmed))
+                                                                                                                                    processed = processed + 1
+                                                                                                                                    if len(children) == 0:
+                                                                                                                                        children.add
+                                                                                                                                        jsonObjectLit(jsonField("id", "arc-events#empty"), jsonField("label", "No ARC events"), jsonField("value", ""))
+                                                                                                                                        var rootValue = ""
+                                                                                                                                        if ! metricsNode.isNil() && metricsNode.kind == JObjectand
+                                                                                                                                        metricsNode.hasKey("events"): rootValue = "events=" + $ metricsNode["events"].getInt()
+                                                                                                                                    else:
+                                                                                                                                        rootValue = "events=" + $ len(children)
+                                                                                                                                        var root = jsonObjectLit(jsonField("id", "arc-events"), jsonField("label", "ARC events"), jsonField("value", rootValue), jsonField("children", children))
+                                                                                                                                        if ! metricsNode.isNil() && metricsNode.kind == JObject:
+                                                                                                                                            root["metrics"] = metricsNode root
+fn ownershipJson(analysis: str): OwnershipJson =
+    var result: OwnershipJson
+    result.summary = json_compat.newJNull()
+    result.details = json_compat.newJNull()
+    result
+fn analysisJson(report: UiBridgeReport): JsonNode =
+    let lines = splitLimited(report.analysis, MaxAnalysisNodes)
+    var children = newJArray()
+    for idx, line in lines:
+        children.add
+        jsonObjectLit(jsonField("id", "analysis#" + $ idx), jsonField("label", line), jsonField("value", ""))
+        if len(children) == 0:
+            children.add
+            jsonObjectLit(jsonField("id", "analysis#empty"), jsonField("label", "No analysis summary"), jsonField("value", report.viewKind))
+            jsonObjectLit(jsonField("id", "analysis"), jsonField("label", "Analysis " &(if len(report.viewKind) > 0: report.viewKind else: "summary")), jsonField("value", report.selectedFile), jsonField("children", children))
+fn timelineJson(report: UiBridgeReport): JsonNode =
+    var children = newJArray()
+    let limit = min(MaxTimelineNodes, len(report.timeline))
+    for idx in 0..< limit:
+        let entry = report.timeline[idx]
+        var label = entry.command
+        if len(label) == 0:
+            label = "step#" + $ idx
+            let value = "status=" + entry.status + " duration=" + $ entry.durationMs + "ms" children.add
+            jsonObjectLit(jsonField("id", "timeline#" + $ idx), jsonField("label", label), jsonField("value", value))
+            if len(children) == 0:
+                children.add
+                jsonObjectLit(jsonField("id", "timeline#empty"), jsonField("label", "No command timeline"), jsonField("value", ""))
+                var diagnostics = newJArray()
+                let diagLimit = min(MaxLanguageDiagnostics, len(report.languageEvents))
+                for idx in 0..< diagLimit:
+                    let evt = report.languageEvents[idx] diagnostics.add(json_compat.`%`(if len(evt.message) > 0: evt.message else: evt.location))
+                    jsonObjectLit(jsonField("id", "timeline"), jsonField("label", "Timeline"), jsonField("value", "commands=" + $ len(report.timeline)), jsonField("children", children), jsonField("metrics", jsonObjectLit(jsonField("diagnostics", diagnostics))))
+fn buildVisualizationModel(report: UiBridgeReport): Visual
+izationModel = var pass1: JsonNode
+var pass2: JsonNode
+var vizMode = vmSemantics
+if report.viewKind == "summary":
+    let outlineLines = sectionLines(report.analysis, "outline")
+    if len(outlineLines) > 0:
+        pass1 = outlineJson(outlineLines)
+    else:
+        pass1 = analysisJson(report)
+        let diagLines = sectionLines(report.analysis, "diagnostics", MaxLanguageDiagnostics)
+        pass2 = diagnosticsJson(diagLines, report.languageEvents)
+    elif report.viewKind == "sem":
+        pass1 = semanticsJson(report.analysis)
+        pass2 = timelineJson(report)
+    elif report.viewKind == "diagnostics":
+        let diagLines = sectionLines(report.analysis, "diagnostics", MaxLanguageDiagnostics)
+        pass1 = diagnosticsJson(diagLines, report.languageEvents)
+        pass2 = timelineJson(report)
+    elif report.viewKind == "borrow":
+        vizMode = vmBorrow
+        let summaryLines = sectionLines(report.analysis, "borrow", MaxBorrowSummaryItems)
+        let metricsLines = sectionLines(report.analysis, "borrow-metrics", 1)
+        pass1 = parseBorrowSummary(summaryLines, metricsLines)
+        let eventLines = sectionLines(report.analysis, "borrow-events", MaxAnalysisNodes)
+        pass2 = parseBorrowEvents(eventLines, MaxAnalysisNodes)
+    elif report.viewKind == "arc":
+        vizMode = vmArc
+        let summaryLines = sectionLines(report.analysis, "arc", MaxBorrowSummaryItems)
+        let metricsLines = sectionLines(report.analysis, "arc-metrics", 1)
+        var metricsNode: JsonNode
+        if len(metricsLines) > 0:
+            let metricsText = textutils.strip(metricsLines[0])
+            if len(metricsText) > 0:
+                try:
+                    metricsNode = runtimeJson.parseJson(metricsText)
+                except CatchableError:
+                    metricsNode = jsonObjectLit(jsonField("error", metricsText))
+                    let nodeLines = sectionLines(report.analysis, "arc-nodes", MaxOutlineEntries)
+                    pass1 = parseArcNodes(summaryLines, nodeLines, metricsNode)
+                    let eventLines = sectionLines(report.analysis, "arc-events", MaxAnalysisNodes)
+                    pass2 = parseArcEvents(eventLines, metricsNode, MaxAnalysisNodes)
+            elif report.viewKind == "ownership":
+                vizMode = vmOwnership
+                let ownership = ownershipJson(report.analysis)
+                if ownership.summary == nil || ownership.summary.kind == JNull:
+                    pass1 = analysisJson(report)
+                else:
+                    pass1 = ownership.summary
+                    if ownership.details == nil || ownership.details.kind == JNull:
+                        pass2 = timelineJson(report)
+                    else:
+                        pass2 = ownership.details
+                    else:
+                        pass1 = analysisJson(report)
+                        pass2 = timelineJson(report)
+                        if pass1 == nil || pass1.kind == JNull:
+                            pass1 = analysisJson(report)
+                            if pass2 == nil || pass2.kind == JNull:
+                                pass2 = timelineJson(report)
+                                let pass1Node = stdjson.parseJson(json_compat.toPretty(pass1))
+                                let pass2Node = stdjson.parseJson(json_compat.toPretty(pass2))
+                                let model = newVisualizationModel(vizMode) model.setSnapshotsFromJson(pass1Node, pass2Node) model
+fn displayRelPath(repoRoot, path: str): str =
+    let trimmed = textutils.strip(path)
+    if len(trimmed) == 0:
+        return ""
+        if len(repoRoot) > 0:
+            try:
+                let rootAbs = os.absolutePath(repoRoot)
+                let candidate = if os.isAbsolute(trimmed): os.absolutePath(trimmed)
+        else:
+            os.absolutePath(os.joinPath(rootAbs, trimmed))
+            let rel = os.relativePath(candidate, rootAbs)
+            if len(rel) > 0 && ! textutils.startsWith(rel, ".."):
+                return textutils.toForwardSlashes(rel)
+                except CatchableError:
+                    0
+                    let parts = os.splitFile(trimmed)
+                    let base = parts.name + parts.ext
+                    if len(base) > 0:
+                        return base textutils.toForwardSlashes(trimmed)
+fn toLanguageSeverity(label: str): LanguageSeverity =
+    let lowered = textutils.toLowerAscii(textutils.strip(label))
+    if lowered == "error":
+        lsError
+    elif lowered == "warning" || lowered == "warn":
+        lsWarning
+    else:
+        lsInfo
+fn diagnosticsToEntries(diags: LspDiagnostic[], repoRoot: str): LanguageDiagnosticEntry[] =
+    var entries = default[LanguageDiagnosticEntry[]]
+    for diag in diags:
+        var location = displayRelPath(repoRoot, diag.path)
+        let startLine = max(0, diag.range.start.line) + 1
+        let startCol = max(0, diag.range.start.character) + 1
+        if startLine > 0:
+            if len(location) > 0:
+                location = location + ":"
+                location = location + $ startLine
+                if startCol > 0:
+                    location = location + ":" + $ startCol
+                    var entry: LanguageDiagnosticEntryentry.severity = toLanguageSeverity(diag.severity)
+                    entry.location = location
+                    entry.message = textutils.strip(diag.message) entries.add(entry) entries
+fn outlineToEntries(outline: OutlineEntry[], repoRoot: str): LanguageOutlineEntry[] =
+    var entries = default[LanguageOutlineEntry[]]
+    for item in outline:
+        var label = item.kind
+        if len(item.name) > 0:
+            label = label + " " + item.name
+            var flags = default[str[]]
+            if item.exported:
+                flags.add("pub")
+                if item.mutable:
+                    flags.add("mut")
+                    if len(flags) > 0:
+                        label = label + " [" + flags.join(",") + "]"
+                        var detailParts = default[str[]]
+                        if len(item.scopePath) > 0:
+                            detailParts.add(item.scopePath)
+                            if len(item.typeName) > 0:
+                                detailParts.add(item.typeName)
+                                var position = "L" + $ max(1, item.line)
+                                if item.column > 0:
+                                    position = position + ":C" + $ max(1, item.column) detailParts.add(position)
+                                    var entry: LanguageOutlineEntry
+                                    entry.label = label
+                                    entry.detail = detailParts.join(" · ")
+                                    entry.depth = max(0, item.depth) entries.add(entry) entries
+fn navigationEn
+tries(files: str[], selectedFile, repoRoot: str): LanguageFileEntry[] = var entries = default[LanguageFileEntry[]]
+let selectedNorm = textutils.toForwardSlashes(textutils.strip(selectedFile))
+var hasSelected = false
+for file in files:
+    let normalized = textutils.toForwardSlashes(textutils.strip(file))
+    let isSelected = normalized == selectedNorm
+    if isSelected:
+        hasSelected = true
+        var label = displayRelPath(repoRoot, file)
+        if len(label) == 0:
+            label = normalized
+            var entry: LanguageFileEntryentry.path = normalized
+            entry.label = label
+            entry.selected = isSelected entries.add(entry)
+            if ! hasSelected && len(selectedNorm) > 0:
+                var label = displayRelPath(repoRoot, selectedFile)
+                if len(label) == 0:
+                    label = selectedNorm
+                    var entry: LanguageFileEntryentry.path = selectedNorm
+                    entry.label = label
+                    entry.selected = true entries.add(entry) entries
+fn buildLanguagePanel(report: UiBridgeReport, content, note: str): LanguagePanelModel =
+    let model = newLanguagePanelModel() model.setNavigation(navigationEn tries(report.files, report.selectedFile, report.repoRoot))
+    if len(report.selectedFile) == 0:
+        return model
+        if len(content) == 0 && len(note) > 0:
+            return model
+            var adapter = newLspAdapter("session-lsp")
+            let diagResult = diagnostics(adapter, report.selectedFile, content) model.setDiagnostics(diagnosticsToEntries(diagResult.diagnostics, report.repoRoot)) model.setOut
+            line(outlineToEntries(diagResult.outline, report.repoRoot)) model
+fn buildEditorWork
+space(report: UiBridgeReport, fallbackFile: str): WorkspaceBuildResult = let repoRoot = report.repoRoot
+var targetFile = report.selectedFile
+if len(targetFile) == 0 && len(fallbackFile) > 0:
+    targetFile = fallbackFile
+    let readResult = safeReadFile(repoRoot, targetFile)
+    let content = readResult.content
+    let note = readResult.note
+    var result: WorkspaceBuildResult
+    if len(targetFile) == 0:
+        result.workspace = nil
+        result.note = note
+        result.content = content
+        result.selected = ""
+        return result
+        if len(note) > 0 && len(content) == 0:
+            result.workspace = nil
+            result.note = note
+            result.content = content
+            result.selected = targetFile
+            return result
+            let workspace = newEditorWork
+            space()
+            let doc = workspace.openDocument(targetFile, content)
+            if doc == nil:
+                result.workspace = nil
+                result.note = if len(note) > 0: note
+            else:
+                "open-document-failed"
+                result.content = content
+                result.selected = targetFile
+                return result
+                if len(report.analysis) > 0 && doc.codeModel != nil:
+                    let lines = textutils.splitLines(report.analysis)
+                    var focusLine = 0
+                    for line in lines:
+                        let idx = line.find("line")
+                        if idx > 0:
+                            var digits = ""
+                            for chinline:
+                                if textutils.isDigit(ch):
+                                    digits = digits + $ ch
+                                    if len(digits) > 0:
+                                        try:
+                                            focusLine = max(focusLine, parseInt(digits) - 1)
+                                        except CatchableError:
+                                            if focusLine > 0: doc.codeModel.setView
+                                            port(max(0, focusLine - 6), 18)
+                                            result.workspace = workspace
+                                            result.note = note
+                                            result.content = content
+                                            result.selected = targetFile result
+fn buildGuiSessionFromRe
+port(report: UiBridgeReport): GuiSessionData = var session = defaultGuiSessionData()
+session.selectedFile = report.selectedFile
+session.repoRoot = normalizeRepoRoot(report.repoRoot)
+if len(report.selectedFile) > 0:
+    session.title = "Cheng IDE - " + report.selectedFile
+elif len(report.repoRoot) > 0:
+    session.title = "Cheng IDE - " + report.repoRoot
+    let workspaceResult = buildEditorWork
+    space(report, session.selectedFile)
+    if len(workspaceResult.selected) > 0:
+        session.selectedFile = workspaceResult.selected
+        if workspaceResult.workspace != nil:
+            session.editorWorkspace = workspaceResult.workspace
+            let activeDoc = workspaceResult.workspace.activeDocument()
+            if activeDoc != nil:
+                session.codeModel = activeDoc.codeModel
+            else:
+                session.codeModel = nil
+                session.documents = workspaceResult.workspace.documentSummaries()
+                if len(workspaceResult.note) > 0:
+                    session.note = describeFileNote(workspaceResult.note, report)
+                    if session.docTabsModel == nil:
+                        session.docTabsModel = newDocumentTabsModel() session.docTabsModel.setTabs(session.documents, workspaceResult.workspace.pendingAutoSaveCount())
+                    else:
+                        session.editorWorkspace = nil
+                        session.codeModel = nil
+                        session.documents = default[EditorDocumentSummary[]]
+                        if session.docTabsModel == nil:
+                            session.docTabsModel = newDocumentTabsModel() session.docTabsModel.setTabs(default[EditorDocumentSummary[]], 0)
+                            if len(workspaceResult.note) > 0:
+                                session.note = describeFileNote(workspaceResult.note, report)
+                                session.languageModel = buildLanguagePanel(report, workspaceResult.content, workspaceResult.note)
+                                let logModel = buildLogModel(report)
+                                if logModel != nil && len(logModel.entries) > 0:
+                                    session.logModel = logModel
+                                else:
+                                    session.logModel = nil
+                                    let vizModel = buildVisualizationModel(report)
+                                    session.vizModel = vizModel
+                                    session.terminalModel = buildTerminalModel(report)
+                                    session.debugModel = buildDebuggerModel(report)
+                                    session.perfModel = buildPerfModel(report)
+                                    session.taskModel = buildTaskMonitorModel(report)
+                                    session.autoModel = buildAutoAnnotateModel(report) session
+fn readStringArray(node: JsonNode): str[] =
+    if node == nil || node.kind != JArray:
+        return default[str[]]
+        var items = default[str[]]
+        for child in node:
+            if child.kind in {JString, JInt, JFloat, JBool}:
+                items.add(child.getStr()) items
+fn parseTime
+line(node: JsonNode): UiCommandSnapshot[] = if node == nil || node.kind != JArray: return default[UiCommandSnapshot[]]
+var entries = default[UiCommandSnapshot[]]
+for child in node:
+    if child.kind != JObject:
+        continue
+        var snapshot: UiCommandSnapshotsnapshot.command = if child.hasKey("command"): child["command"].getStr()
+    else:
+        ""
+        snapshot.status = if child.hasKey("status"): child["status"].getStr()
+    else:
+        "ok"
+        snapshot.durationMs = if child.hasKey("duration_ms"): child["duration_ms"].getInt()
+    else:
+        0
+        snapshot.messages = if child.hasKey("messages"): readStringArray(child["messages"])
+    else:
+        default[str[]] entries.add(snapshot) entries
+fn parseLanguageEvents(node: JsonNode): UiLanguageEvent[] =
+    if node == nil:
+        return default[UiLanguageEvent[]]
+        if node.kind == JArray:
+            var events = default[UiLanguageEvent[]]
+            for child in node:
+                if child.kind == JObject:
+                    var evt: UiLanguageEventevt.severity = if child.hasKey("severity"): child["severity"].getStr()
+                else:
+                    "info"
+                    evt.source = if child.hasKey("source"): child["source"].getStr()
+                else:
+                    ""
+                    evt.location = if child.hasKey("location"): child["location"].getStr()
+                else:
+                    ""
+                    evt.message = if child.hasKey("message"): child["message"].getStr()
+                else:
+                    "" events.add(evt)
+                elif child.kind == JString:
+                    let text = child.getStr()
+                    var evt: UiLanguageEventevt.severity = "info"
+                    evt.source = "report"
+                    evt.location = ""
+                    evt.message = text events.add(evt) events
+                else:
+                    default[UiLanguageEvent[]]
+fn parseTerminalEntries(node: JsonNode): UiTerminalEntry[] =
+    if node == nil || node.kind != JArray:
+        return default[UiTerminalEntry[]]
+        var entries = default[UiTerminalEntry[]]
+        for child in node:
+            if child.kind != JObject:
+                continue
+                var entry: UiTerminalEntryentry.kind = if child.hasKey("kind"): child["kind"].getStr()
+            else:
+                "output"
+                entry.channel = if child.hasKey("channel"): child["channel"].getStr()
+            else:
+                "bridge"
+                entry.text = if child.hasKey("text"): child["text"].getStr()
+            else:
+                ""
+                entry.timestampMs = if child.hasKey("timestamp_ms"): child["timestamp_ms"].getInt()
+            else:
+                0
+                entries.add(entry) entries
+fn parseDebuggerState(node: JsonNode): UiDebuggerState =
+    if node == nil || node.kind != JObject:
+        var empty: UiDebuggerState empty.break points = default[UiDebuggerBreakpoint[]]
+        empty.frames = default[UiDebuggerFrame[]] empty.var iables = default[UiDebuggerVariable[]]
+        return empty
+        var state: UiDebuggerState
+        state.status = if node.hasKey("status"): node["status"].getStr()
+    else:
+        ""
+        state.reason = if node.hasKey("reason"): node["reason"].getStr()
+    else:
+        "" state.break points = default[UiDebuggerBreakpoint[]]
+        state.frames = default[UiDebuggerFrame[]] state.var iables = default[UiDebuggerVariable[]]
+        if node.hasKey("breakpoints") && node["breakpoints"].kind == JArray:
+            for bp in node["breakpoints"]:
+                if bp.kind != JObject:
+                    continue
+                    var entry: UiDebuggerBreakpoint
+                    entry.file = if bp.hasKey("file"): bp["file"].getStr()
+                else:
+                    ""
+                    entry.line = if bp.hasKey("line"): bp["line"].getInt()
+                else:
+                    0
+                    entry.enabled = if bp.hasKey("enabled"): bp["enabled"].getBool()
+                else:
+                    true
+                    entry.hitCount = if bp.hasKey("hit_count"): bp["hit_count"].getInt()
+                else:
+                    0
+                    state.break points.add(entry)
+                    if node.hasKey("frames") && node["frames"].kind == JArray:
+                        for frame in node["frames"]:
+                            if frame.kind != JObject:
+                                continue
+                                var entry: UiDebuggerFrame
+                                entry.functionName = if frame.hasKey("function"): frame["function"].getStr()
+                            else:
+                                ""
+                                entry.location = if frame.hasKey("location"): frame["location"].getStr()
+                            else:
+                                ""
+                                entry.isCurrent = if frame.hasKey("current"): frame["current"].getBool()
+                            else:
+                                false state.frames.add(entry)
+                                if node.hasKey("variables") && node["variables"].kind == JArray:
+                                    for variable in node["variables"]:
+                                        if variable.kind != JObject:
+                                            continue
+                                            var entry: UiDebuggerVariable
+                                            entry.name = if variable.hasKey("name"): variable["name"].getStr()
+                                        else:
+                                            ""
+                                            entry.value = if variable.hasKey("value"): variable["value"].getStr()
+                                        else:
+                                            ""
+                                            entry.kind = if variable.hasKey("kind"): variable["kind"].getStr()
+                                        else:
+                                            "local"
+                                            entry.changed = if variable.hasKey("changed"): variable["changed"].getBool()
+                                        else:
+                                            false state.var iables.add(entry) state
+fn parsePerfSamples(node: JsonNode): UiPerfSample[] =
+    if node == nil || node.kind != JArray:
+        return default[UiPerfSample[]]
+        var samples = default[UiPerfSample[]]
+        for child in node:
+            if child.kind != JObject:
+                continue
+                var sample: UiPerfSamplesample.label = if child.hasKey("label"): child["label"].getStr()
+            else:
+                ""
+                sample.timestampMs = if child.hasKey("timestamp_ms"): child["timestamp_ms"].getInt()
+            else:
+                0
+                sample.cpuMs = if child.hasKey("cpu_ms"): child["cpu_ms"].getFloat()
+            else:
+                0.0
+                sample.gpuMs = if child.hasKey("gpu_ms"): child["gpu_ms"].getFloat()
+            else:
+                0.0
+                sample.totalMs = if child.hasKey("total_ms"): child["total_ms"].getFloat()
+            else:
+                0.0 samples.add(sample) samples
+fn parseTasks(node: JsonNode): UiTaskInfo[] =
+    if node == nil || node.kind != JArray:
+        return default[UiTaskInfo[]]
+        var tasks = default[UiTaskInfo[]]
+        for child in node:
+            if child.kind != JObject:
+                continue
+                var info: UiTaskInfo
+                info.id = if child.hasKey("id"): child["id"].getStr()
+            else:
+                ""
+                info.label = if child.hasKey("label"): child["label"].getStr()
+            else:
+                ""
+                info.status = if child.hasKey("status"): child["status"].getStr()
+            else:
+                ""
+                info.progress = if child.hasKey("progress"): child["progress"].getFloat()
+            else:
+                0.0
+                info.startedMs = if child.hasKey("started_ms"): child["started_ms"].getInt()
+            else:
+                0
+                info.durationMs = if child.hasKey("duration_ms"): child["duration_ms"].getInt()
+            else:
+                0
+                info.detail = if child.hasKey("detail"): child["detail"].getStr()
+            else:
+                "" tasks.add(info) tasks
+fn parseAutoAnnotateAction(label: str): AutoAnnotateAction =
+    let lowered = textutils.toLowerAscii(textutils.strip(label))
+    case lowered
+    of "preview":
+        aaaPreview
+    of "applied":
+        aaaApplied
+    of "undo":
+        aaaUndo
+    of "error":
+        aaaError
+    else:
+        aaaIdle
+fn parseAutoAnnotateEntries(node: JsonNode): AutoAnnotateEntry[] =
+    if node == nil || node.kind != JArray:
+        return default[AutoAnnotateEntry[]]
+        var entries = default[AutoAnnotateEntry[]]
+        for child in node:
+            if child.kind != JObject:
+                continue
+                var annotations = default[str[]]
+                if child.hasKey("annotations") && child["annotations"].kind == JArray:
+                    for ann in child["annotations"]:
+                        if ann.kind in {JString, JInt, JFloat, JBool}:
+                            annotations.add(ann.getStr())
+                            var entry: AutoAnnotateEntry
+                            entry.scopePath = if child.hasKey("scope"): child["scope"].getStr()
+                        else:
+                            ""
+                            entry.annotations = annotations
+                            entry.line = if child.hasKey("line"): child["line"].getInt()
+                        else:
+                            0
+                            entry.column = if child.hasKey("column"): child["column"].getInt()
+                        else:
+                            0
+                            entries.add(entry) entries
+fn parseAutoAnnotateHistory(node: JsonNode): AutoAnnotateHistoryEntry[] =
+    if node == nil || node.kind != JArray:
+        return default[AutoAnnotateHistoryEntry[]]
+        var items = default[AutoAnnotateHistoryEntry[]]
+        for child in node:
+            if child.kind != JObject:
+                continue
+                var entry: AutoAnnotateHistoryEntryentry.timestampMs = if child.hasKey("timestamp_ms"): child["timestamp_ms"].getInt()
+            else:
+                0
+                entry.action = if child.hasKey("action"): parseAutoAnnotateAction(child["action"].getStr())
+            else:
+                aaaIdle
+                entry.message = if child.hasKey("message"): child["message"].getStr()
+            else:
+                "" items.add(entry) items
+fn parseAutoAnnotateSnapshot(node: JsonNode, repoRoot: str, selectedFile: str): AutoAnnotateSnapshot =
+    if node == nil || node.kind != JObject:
+        return emptyAutoAnnotateSnapshot(repoRoot, "")
+        var snapshot = emptyAutoAnnotateSnapshot(repoRoot, "")
+        if node.hasKey("path") && node["path"].kind == JString:
+            snapshot.path = node["path"].getStr()
+        elif len(selectedFile) > 0:
+            snapshot.path = selectedFile
+            if node.hasKey("status") && node["status"].kind == JString:
+                snapshot.status = parseAutoAnnotateAction(node["status"].getStr())
+                if node.hasKey("message") && node["message"].kind == JString:
+                    snapshot.message = node["message"].getStr()
+                    if node.hasKey("pending") && node["pending"].kind in {JInt, JFloat}:
+                        snapshot.pendingAnnotations = node["pending"].getInt()
+                        if node.hasKey("total") && node["total"].kind in {JInt, JFloat}:
+                            snapshot.totalAnnotations = node["total"].getInt()
+                            if node.hasKey("diff") && node["diff"].kind == JString:
+                                snapshot.diffText = node["diff"].getStr()
+                                if node.hasKey("entries"):
+                                    snapshot.entries = parseAutoAnnotateEntries(node["entries"])
+                                    if node.hasKey("generated_at_ms") && node["generated_at_ms"].kind in {JInt, JFloat}:
+                                        snapshot.generatedAtMs = node["generated_at_ms"].getInt()
+                                        if node.hasKey("undo_available") && node["undo_available"].kind == JBool:
+                                            snapshot.undoAvailable = node["undo_available"].getBool()
+                                            if node.hasKey("last_inserted") && node["last_inserted"].kind in {JInt, JFloat}:
+                                                snapshot.lastInserted = node["last_inserted"].getInt()
+                                                if node.hasKey("last_undone") && node["last_undone"].kind in {JInt, JFloat}:
+                                                    snapshot.lastUndone = node["last_undone"].getInt()
+                                                    if node.hasKey("history"):
+                                                        snapshot.history = parseAutoAnnotateHistory(node["history"])
+                                                        if node.hasKey("batch_mode") && node["batch_mode"].kind == JBool:
+                                                            snapshot.batchMode = node["batch_mode"].getBool()
+                                                            if node.hasKey("from_cache") && node["from_cache"].kind == JBool:
+                                                                snapshot.fromCache = node["from_cache"].getBool()
+                                                                if node.hasKey("analysis_checksum") && node["analysis_checksum"].kind == JString:
+                                                                    snapshot.analysisChecksum = node["analysis_checksum"].getStr() snapshot
+fn emptyBridgeReport(): UiBridgeReport =
+    var report: UiBridgeReport
+    report.repoRoot = ""
+    report.selectedFile = ""
+    report.viewKind = ""
+    report.analysis = ""
+    report.workspaceSummary = ""
+    report.history = default[str[]]
+    report.historyBase = 0
+    report.files = default[str[]]
+    report.messages = default[str[]]
+    report.timeline = default[UiCommandSnapshot[]]
+    report.languageEvents = default[UiLanguageEvent[]]
+    report.terminalEntries = default[UiTerminalEntry[]]
+    var dbg: UiDebuggerState
+    dbg.status = ""
+    dbg.reason = "" dbg.break points = default[UiDebuggerBreakpoint[]]
+    dbg.frames = default[UiDebuggerFrame[]] dbg.var iables = default[UiDebuggerVariable[]]
+    report.debugger = dbg
+    report.perfSamples = default[UiPerfSample[]]
+    report.tasks = default[UiTaskInfo[]]
+    report.autoAnnotate = emptyAutoAnnotateSnapshot("", "") report
+fn loadBrid
+geRe
+port(path: str): BridgeReportResult = var result: BridgeReportResult
+if len(path) == 0:
+    result.report = emptyBridgeReport()
+    result.error = "bridge-report-empty"
+    return result
+    if ! os.fileExists(path):
+        result.report = emptyBridgeReport()
+        result.error = "bridge-report-missing: " + path
+        return result
+        try:
+            var stream = newFileStream(path, fmRead)
+            if stream == nil:
+                result.report = emptyBridgeReport()
+                result.error = "bridge-report-open-failed"
+                return result defer: stream.close()
+                let node = runtimeJson.parseJson(stream.readAll())
+                let repoRootVal = if node.hasKey("repo_root"): node["repo_root"].getStr()
+            else:
+                ""
+                let selectedFileVal = if node.hasKey("selected_file"): node["selected_file"].getStr()
+            else:
+                ""
+                var report: UiBridgeReport
+                report.repoRoot = repoRootVal
+                report.selectedFile = selectedFileVal
+                report.viewKind = if node.hasKey("view_kind"): node["view_kind"].getStr()
+            else:
+                "summary"
+                report.analysis = if node.hasKey("analysis"): node["analysis"].getStr()
+            else:
+                ""
+                report.workspaceSummary = if node.hasKey("workspace_summary"): node["workspace_summary"].getStr()
+            else:
+                ""
+                report.history = if node.hasKey("history"): readStringArray(node["history"])
+            else:
+                default[str[]]
+                report.historyBase = if node.hasKey("history_base"): node["history_base"].getInt()
+            else:
+                0
+                report.files = if node.hasKey("files"): readStringArray(node["files"])
+            else:
+                default[str[]]
+                report.messages = if node.hasKey("messages"): readStringArray(node["messages"])
+            else:
+                default[str[]]
+                report.timeline = if node.hasKey("timeline"): parseTime
+                line(node["timeline"])
+            else:
+                default[UiCommandSnapshot[]]
+                report.languageEvents = if node.hasKey("language_events"): parseLanguageEvents(node["language_events"])
+            else:
+                default[UiLanguageEvent[]]
+                report.terminalEntries = if node.hasKey("terminal_entries"): parseTerminalEntries(node["terminal_entries"])
+            else:
+                default[UiTerminalEntry[]]
+                report.debugger = if node.hasKey("debugger"): parseDebuggerState(node["debugger"])
+            else:
+                emptyBridgeReport().debugger
+                report.perfSamples = if node.hasKey("perf_samples"): parsePerfSamples(node["perf_samples"])
+            else:
+                default[UiPerfSample[]]
+                report.tasks = if node.hasKey("tasks"): parseTasks(node["tasks"])
+            else:
+                default[UiTaskInfo[]]
+                report.autoAnnotate = emptyAutoAnnotateSnapshot(repoRootVal, "")
+                if node.hasKey("auto_annotate"):
+                    report.autoAnnotate = parseAutoAnnotateSnapshot(node["auto_annotate"], repoRootVal, selectedFileVal)
+                else:
+                    report.autoAnnotate = emptyAutoAnnotateSnapshot(repoRootVal, "")
+                    result.report = report
+                    result.error = "" result
+        except CatchableError as
+        e: result.report = emptyBridgeReport()
+        result.error = e.msg result

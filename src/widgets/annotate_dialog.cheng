@@ -1,0 +1,213 @@
+import std/strformat
+import std/strutils
+import std/times
+import ide/textutils
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+import cheng/gui/ownership/auto_annotate
+type
+    AutoAnnotateDialogTheme =
+        background: uint32
+        title: uint32
+        textPri
+        mary: uint32
+        textSecondary: uint32
+        accent: uint32
+        warn: uint32
+        error: uint32
+    AutoAnnotateDialogModel = ref
+        of WidgetPayload
+        snapshot: AutoAnnotateSnapshottheme: AutoAnnotateDialogThememaxDiffLines: int
+        maxEntryLines: int
+        maxHistory: int
+        const
+            TitleFont = 15.0
+            BodyFont = 13.0
+            Section
+            Gap = 8.0
+            LineSpacing = 18.0
+fn defaultAutoAnnotateDialogTheme(): AutoAnnotateDialogTheme =
+    var theme: AutoAnnotateDialogThemetheme.background = uint32(0xFF1F2329)
+    theme.title = uint32(0xFF9CDCFE)
+    theme.textPri
+    mary = uint32(0xFFD4D4D4)
+    theme.textSecondary = uint32(0xFF888888)
+    theme.accent = uint32(0xFF4EC9B0)
+    theme.warn = uint32(0xFFE5C07B)
+    theme.error = uint32(0xFFF44747) theme
+fn newAutoAnnotateDialogModel(): AutoAnnotateDialogModel =
+    var model: AutoAnnotateDialogModel
+    new(model)
+    model.snapshot = emptyAutoAnnotateSnapshot("", "")
+    model.theme = defaultAutoAnnotateDialogTheme()
+    model.maxDiffLines = 7
+    model.maxEntryLines = 3
+    model.maxHistory = 4 model
+fn applySnapshot(model: AutoAnnotateDialogModel, snapshot: AutoAnnotateSnapshot) =
+    if model == nil:
+        return model.snapshot = snapshot
+fn statusColor(theme: AutoAnnotateDialogTheme, status: AutoAnnotateAction): uint32 =
+    case status
+    of aaaPreview:
+        theme.accent
+    of aaaApplied:
+        theme.accent
+    of aaaUndo:
+        theme.warn
+    of aaaError:
+        theme.error
+    else:
+        theme.textSecondary
+fn renderDiff(ctx: RenderContext, model: AutoAnnotateDialogModel, left, width, startY: float): float =
+    if len(model.snapshot.diffText) == 0:
+        return startY
+        var lines = textutils.splitLines(model.snapshot.diffText)
+        if len(lines) == 0:
+            return startY
+            var y = startY
+            let theme: AutoAnnotateDialogTheme = model.theme
+            let limit = min(len(lines), model.maxDiffLines)
+            for idx in 0..< limit:
+                let line = lines[idx]
+                var color = theme.textPri mary
+                if len(line) > 0:
+                    if line[0] == '+':
+                        color = theme.accent
+                    elif line[0] == '-':
+                        color = theme.error
+                    elif line[0] == '@':
+                        color = theme.warn
+                        ctx.drawText(makeRect(left, y, width, LineSpacing), line, color, BodyFont)
+                        y = y + LineSpacing
+                        if len(lines) > model.maxDiffLines:
+                            ctx.drawText(makeRect(left, y, width, LineSpacing), "... (+" + intToStr(int32(len(lines) - model.maxDiffLines)) + " lines)", theme.textSecondary, BodyFont)
+                            y = y + LineSpacing y
+fn renderEn
+tries(ctx: RenderContext, model: AutoAnnotateDialogModel, left, width, startY: float): float = if len(model.snapshot.entries) == 0: return startY
+var y = startY
+let theme: AutoAnnotateDialogTheme = model.theme
+let limit = min(len(model.snapshot.entries), model.maxEntryLines)
+for idx in 0..< limit:
+    let entry = model.snapshot.entries[idx]
+    let header = makeRect(left, y, width, LineSpacing)
+    let annotations = if len(entry.annotations) > 0: entry.annotations.join(", ")
+    else:
+        "(no annotations)"
+        let textLine = "line " + intToStr(int32(entry.line)) + " col " + intToStr(int32(entry.column)) + " -> " + annotations
+        ctx.drawText(header, textLine, theme.textPri mary, BodyFont)
+        y = y + LineSpacing
+        if len(entry.scopePath) > 0:
+            let scopeRect = makeRect(left + 12.0, y, width - 12.0, LineSpacing)
+            ctx.drawText(scopeRect, "scope: " + entry.scopePath, theme.textSecondary, BodyFont)
+            y = y + LineSpacing
+            if len(model.snapshot.entries) > limit:
+                ctx.drawText(makeRect(left, y, width, LineSpacing), "... (+" + intToStr(int32(len(model.snapshot.entries) - limit)) + " items)", theme.textSecondary, BodyFont)
+                y = y + LineSpacing y
+fn renderHistory(ctx: RenderContext, model: AutoAnnotateDialogModel, left, width, startY: float): float =
+    if len(model.snapshot.history) == 0:
+        return startY
+        var y = startY
+        let theme: AutoAnnotateDialogTheme = model.theme
+        var slice: AutoAnnotateHistoryEntry[]
+        if len(model.snapshot.history) <= model.maxHistory:
+            slice = model.snapshot.history
+        else:
+            let start = len(model.snapshot.history) - model.maxHistory
+            let endIdx: int32 = len(model.snapshot.history) - 1
+            slice = model.snapshot.history[start..endIdx]
+            for entry in slice:
+                let rect = makeRect(left, y, width, LineSpacing)
+                let label = "[" + actionLabel(entry.action) + "] " + entry.message
+                ctx.drawText(rect, label, theme.textSecondary, BodyFont)
+                y = y + LineSpacing y
+fn renderAutoAnnotateDialog(model: AutoAnnotateDialogModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return if rect.size.width <= 0.0 || rect.size.height <= 0.0: return ctx.drawRect(rect, model.theme.background)
+        let contentLeft = rect.origin.x + 12.0
+        let contentWidth = max(0.0, rect.size.width - 24.0)
+        var y = rect.origin.y + 10.0
+        let titleRect = makeRect(contentLeft, y, contentWidth, LineSpacing)
+        ctx.drawText(titleRect, "Auto annotate", model.theme.title, TitleFont)
+        y = y + LineSpacing + 2.0
+        let status: AutoAnnotateAction = model.snapshot.status
+        let statusRect = makeRect(contentLeft, y, contentWidth, LineSpacing)
+        ctx.drawText(statusRect, "Status: " + actionLabel(status), statusColor(model.theme, status), BodyFont)
+        y = y + LineSpacing
+        if len(model.snapshot.message) > 0:
+            let msgRect = makeRect(contentLeft, y, contentWidth, LineSpacing)
+            ctx.drawText(msgRect, model.snapshot.message, model.theme.textPri mary, BodyFont)
+            y = y + LineSpacing
+            let pendingRect = makeRect(contentLeft, y, contentWidth, LineSpacing)
+            let undoLabel = if model.snapshot.undoAvailable: "yes"
+        else:
+            "no"
+            let modeLabel = if model.snapshot.batchMode: "batch"
+        else:
+            "single"
+            var total = model.snapshot.pendingAnnotations
+            if model.snapshot.totalAnnotations > 0:
+                total = model.snapshot.totalAnnotations
+                let cacheLabel = if model.snapshot.fromCache: "yes"
+            else:
+                "no"
+                let summaryText = "Pending annotations: " + intToStr(int32(model.snapshot.pendingAnnotations)) + "/" + intToStr(int32(total)) + "| Mode: " + modeLabel + "  | Last insert: " + intToStr(int32(model.snapshot.lastInserted)) + "  | Undo restore: " + intToStr(int32(model.snapshot.lastUndone)) + "  | Undoable: " + undoLabel + "  | Cache: " + cacheLabel
+                ctx.drawText(pendingRect, summaryText, model.theme.textSecondary, BodyFont)
+                y = y + LineSpacing + SectionGapiflen(model.snapshot.diffText) > 0: let diffTitle = makeRect(contentLeft, y, contentWidth, LineSpacing)
+                ctx.drawText(diffTitle, "Patch preview", model.theme.textPri mary, BodyFont)
+                y = y + LineSpacing
+                y = renderDiff(ctx, model, contentLeft + 4.0, contentWidth - 4.0, y)
+                y = y + SectionGapiflen(model.snapshot.entries) > 0: let entryTitle = makeRect(contentLeft, y, contentWidth, LineSpacing)
+                ctx.drawText(entryTitle, "Annotation summary", model.theme.textPri mary, BodyFont)
+                y = y + LineSpacing
+                y = renderEn
+                tries(ctx, model, contentLeft + 4.0, contentWidth - 4.0, y)
+                y = y + SectionGapiflen(model.snapshot.history) > 0: let historyTitle = makeRect(contentLeft, y, contentWidth, LineSpacing)
+                ctx.drawText(historyTitle, "Action history", model.theme.textPri mary, BodyFont)
+                y = y + LineSpacing
+                renderHistory(ctx, model, contentLeft + 4.0, contentWidth - 4.0, y)
+fn sampleAutoAnnotateModel(): AutoAnnotateDialogModel =
+    let model = newAutoAnnotateDialogModel()
+    var snapshot: AutoAnnotateSnapshotsnapshot.path = "src/demo.cheng"
+    snapshot.repoRoot = ""
+    snapshot.status = aaaPreview
+    snapshot.message = "Detected 2 annotations; confirm to auto-apply"
+    snapshot.pendingAnnotations = 2
+    snapshot.totalAnnotations = 2
+    snapshot.diffText = "@@ -12,1 +12,3 @@\n-fn runAsync()\n+@share\n+@borrow(move)\n+fn runAsync()"
+    snapshot.entries = default[AutoAnnotateEntry[]]
+    var entry: AutoAnnotateEntry
+    entry.scopePath = "main::async"
+    entry.annotations = default[str[]]
+    entry.annotations.add("@share")
+    entry.line = 12
+    entry.column = 3 snapshot.entries.add(entry)
+    var entry2: AutoAnnotateEntry
+    entry2.scopePath = "main::async"
+    entry2.annotations = default[str[]]
+    entry2.annotations.add("@borrow(move)")
+    entry2.line = 18
+    entry2.column = 3 snapshot.entries.add(entry2)
+    let nowMs = int64(epochTime() * 1000.0)
+    snapshot.generatedAtMs = nowMs
+    snapshot.undoAvailable = true
+    snapshot.lastInserted = 2
+    snapshot.lastUndone = 0
+    snapshot.history = default[AutoAnnotateHistoryEntry[]]
+    var history: AutoAnnotateHistoryEntryhistory.timestampMs = nowMs - 820
+    history.action = aaaPreview
+    history.message = "Detected 2 annotations" snapshot.history.add(history)
+    var history2: AutoAnnotateHistoryEntryhistory2.timestampMs = nowMs - 420
+    history2.action = aaaApplied
+    history2.message = "Inserted 2 annotations" snapshot.history.add(history2)
+    var history3: AutoAnnotateHistoryEntryhistory3.timestampMs = nowMs - 220
+    history3.action = aaaUndo
+    history3.message = "Auto-annotations reverted; restored 2 annotations" snapshot.history.add(history3)
+    var history4: AutoAnnotateHistoryEntryhistory4.timestampMs = nowMs - 40
+    history4.action = aaaPreview
+    history4.message = "Detected 2 annotations"
+    snapshot.history.add(history4)
+    snapshot.batchMode = true
+    snapshot.fromCache = false
+    snapshot.analysisChecksum = "demo-checksum"
+    model.snapshot = snapshot model

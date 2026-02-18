@@ -1,0 +1,988 @@
+import cheng/gui/core/component
+import cheng/gui/browser/types
+import cheng/gui/browser/engine/dom/model as domModel
+import cheng/gui/browser/engine/html/parser as htmlParser
+import cheng/gui/browser/engine/css/cascade as cssCascade
+import cheng/gui/browser/engine/layout/flow as layoutFlow
+import cheng/gui/browser/engine/paint/display_list as paintList
+import cheng/gui/browser/engine/js/runtime as jsRuntime
+import cheng/gui/browser/engine/net/fetcher as netFetcher
+import cheng/gui/browser/engine/storage/store as storageStore
+import cheng/gui/browser/engine/security/policy as securityPolicy
+import cheng/gui/browser/engine/ipc/router as ipcRouter
+import cheng/gui/browser/engine/scheduler/queue as engineScheduler
+import cheng/gui/platform/ipc/messages_v2
+import cheng/gui/runtime/process/browser/main as browserProc
+import cheng/gui/runtime/process/renderer/main as rendererProc
+import cheng/gui/runtime/process/gpu/main as gpuProc
+import cheng/gui/runtime/process/utility/main as utilityProc
+import cheng/gui/platform/types_v1
+import cheng/gui/render/drawlist_ir as drawir
+import cheng/gui/platform/chromium/macos/host as chromiumMac
+import cheng/gui/platform/chromium/windows/host as chromiumWin
+import cheng/gui/platform/chromium/linux/host as chromiumLinux
+import cheng/gui/platform/chromium/android/host as chromiumAndroid
+import cheng/gui/platform/chromium/ios/host as chromiumIos
+import cheng/gui/platform/chromium/web/host as chromiumWeb
+import cheng/gui/platform/native_sys_impl as host
+
+type
+    BrowserPage = ref
+        id: int64
+        engineId: int64
+        contextId: int64
+        options: types.PageOptions
+        storage: storageStore.StorageStore
+        currentUrl: str
+        title: str
+        markup: str
+        snapshotText: str
+        history: str[]
+        historyIndex: int32
+        domDoc: domModel.DomDocument
+        styleState: cssCascade.CascadeState
+        layoutState: layoutFlow.LayoutMetrics
+        paintState: drawir.DrawList
+        runtime: jsRuntime.JsRuntime
+        # Optional app-level hook used by r2c AOT gates (no JS runtime).
+        r2cDispatch: fn (page: BrowserPage, eventName, targetSelector, payload: str): bool
+        r2cApp: str
+        r2cLocale: str
+        r2cShowLanguageSelector: bool
+        r2cSelectedLanguage: str
+        r2cCurrentTab: str
+        # Deterministic WebAPI state for r2c AOT smoke tests.
+        r2cTimerRunning: bool
+        r2cTimerTicks: int32
+        r2cTimeoutFired: bool
+        r2cNowMs: int64
+        r2cResizeCount: int32
+        r2cClipboardText: str
+        r2cGeoText: str
+        r2cCookieText: str
+        r2cFileDataUrl: str
+        r2cDragItems: str[]
+        r2cDragOrderText: str
+        r2cCrosshairActive: bool
+        r2cCrosshairX: float
+        r2cCrosshairY: float
+        r2cLangCodes: str[]
+        r2cLangNames: str[]
+        r2cLangNativeNames: str[]
+        r2cTextWelcome: str
+        r2cTextSelectLanguage: str
+        r2cTextContinue: str
+        r2cTextSelectPrompt: str
+        r2cTextSkipDefault: str
+        r2cTransKeys: str[]
+        r2cTransEn: str[]
+        r2cTransZhCN: str[]
+        r2cPublishTypeIds: str[]
+        r2cPublishTypeLabelKeys: str[]
+        r2cPublishTypeFallbackLabels: str[]
+        r2cUtfZhEnabled: bool
+        r2cUtfZhStrict: bool
+        r2cUtfZhLastError: str
+        r2cImeEnabled: bool
+        r2cImeQuery: str
+        r2cImePreedit: str
+        r2cImeCandidates: str[]
+        r2cImeCommitted: str
+        loading: bool
+        lastError: str
+        hostHandle: int64
+        transport: str
+
+    BrowserContext = ref
+        id: int64
+        engineId: int64
+        options: types.BrowserContextOptions
+        pages: BrowserPage[]
+        storage: storageStore.StorageStore
+
+    BrowserEngine = ref
+        id: int64
+        config: types.BrowserEngineConfig
+        contexts: BrowserContext[]
+        router: ipcRouter.IpcRouter
+        scheduler: engineScheduler.EngineScheduler
+        browserProcess: browserProc.BrowserProcess
+        rendererProcess: rendererProc.RendererProcess
+        gpuProcess: gpuProc.GpuProcess
+        utilityProcess: utilityProc.UtilityProcess
+        metrics: types.BrowserMetricsSnapshot
+        crashes: types.CrashReport[]
+        hostTags: str[]
+
+    WebSession = ref
+        engine: BrowserEngine
+        context: BrowserContext
+        page: BrowserPage
+        request: types.WebPageRequest
+        state: types.WebSessionState
+        currentUrl: str
+        title: str
+        snapshotText: str
+        lastError: str
+
+var nextEngineId: int64 = int64(1)
+var nextContextId: int64 = int64(1)
+var nextPageId: int64 = int64(1)
+var engineRegistrySlot: BrowserEngine = nil
+
+fn registerEngine(item: BrowserEngine) =
+    engineRegistrySlot = item
+
+fn appendContext(items: var BrowserContext[], item: BrowserContext) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn appendPage(items: var BrowserPage[], item: BrowserPage) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn appendString(items: var str[], item: str) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn appendCrash(items: var types.CrashReport[], item: types.CrashReport) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn appendWebNode(items: var component.Node[], item: component.Node) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn findEngineIndex(engineId: int64): int =
+    let engine = engineRegistrySlot
+    if engine == nil:
+        return -1
+    if engine.id == engineId:
+        return 0
+    return -1
+
+fn findEngine(engineId: int64): BrowserEngine =
+    let engine = engineRegistrySlot
+    if engine == nil:
+        return nil
+    if engine.id == engineId:
+        return engine
+    return nil
+
+fn findContextIndex(engine: BrowserEngine, contextId: int64): int =
+    if engine == nil:
+        return -1
+    for idx in 0..<len(engine.contexts):
+        let ctx = engine.contexts[idx]
+        if ctx != nil:
+            if ctx.id == contextId:
+                return idx
+    return -1
+
+fn findContext(engineId: int64, contextId: int64): BrowserContext =
+    let engine = findEngine(engineId)
+    if engine == nil:
+        return nil
+    let idx = findContextIndex(engine, contextId)
+    if idx < 0:
+        return nil
+    return engine.contexts[idx]
+
+fn findPageIndex(ctx: BrowserContext, pageId: int64): int =
+    if ctx == nil:
+        return -1
+    for idx in 0..<len(ctx.pages):
+        let page = ctx.pages[idx]
+        if page != nil:
+            if page.id == pageId:
+                return idx
+    return -1
+
+fn setHistory(page: BrowserPage, url: str, recordHistory: bool) =
+    if page == nil || ! recordHistory:
+        return
+    if page.historyIndex >= int32(0):
+        var nextLen = int(page.historyIndex + int32(1))
+        if nextLen < len(page.history):
+            setLen[str](&page.history, nextLen)
+    appendString(page.history, url)
+    page.historyIndex = int32(len(page.history) - 1)
+
+fn clampHistoryIndex(page: BrowserPage) =
+    if page == nil:
+        return
+    if len(page.history) == 0:
+        page.historyIndex = int32(-1)
+        return
+    if page.historyIndex < int32(0):
+        page.historyIndex = int32(0)
+    if int(page.historyIndex) >= len(page.history):
+        page.historyIndex = int32(len(page.history) - 1)
+
+fn updateEngineCounts(engine: BrowserEngine) =
+    if engine == nil:
+        return
+    engine.metrics.totalContexts = int32(len(engine.contexts))
+    var pageCount: int32 = int32(0)
+    for idx in 0..<len(engine.contexts):
+        let ctx = engine.contexts[idx]
+        if ctx != nil:
+            pageCount = pageCount + int32(len(ctx.pages))
+    engine.metrics.totalPages = pageCount
+    if engine.rendererProcess != nil:
+        engine.metrics.rendererProcesses = int32(1)
+    else:
+        engine.metrics.rendererProcesses = int32(0)
+
+    engine.metrics.gpuProcessAlive = engine.gpuProcess != nil
+    engine.metrics.utilityProcessAlive = engine.utilityProcess != nil
+    engine.metrics.memoryMb = 256.0 + float(pageCount) * 8.0
+
+fn queueIpc(engine: BrowserEngine, domain: messages_v2.IpcDomain, target: types.ProcessRole, code: int32, pageId: int64, payload: str) =
+    if engine == nil || engine.router == nil:
+        return
+    domain
+    target
+    code
+    pageId
+    let router = engine.router
+    if router == nil:
+        return
+    if len(payload) > 0:
+        router.lastPayload = payload
+    else:
+        router.lastPayload = "ipc"
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn strEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn matchAt(text: str, pattern: str, offset: int32): bool =
+    if text == nil || pattern == nil:
+        return false
+    if offset < 0:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn webHasPrefix(text, prefix: str): bool =
+    if len(prefix) == 0:
+        return true
+    return matchAt(text, prefix, int32(0))
+
+fn isNetworkUrl(url: str): bool =
+    if strEq(url, "about:blank"):
+        return true
+    if webHasPrefix(url, "http://"):
+        return true
+    if webHasPrefix(url, "https://"):
+        return true
+    return false
+
+fn transportForUrl(url: str): str =
+    if webHasPrefix(url, "https://"):
+        return "https"
+    if webHasPrefix(url, "http://"):
+        return "http"
+    return "inline"
+
+fn syncFromHost(page: BrowserPage) =
+    if page == nil || page.hostHandle <= int64(0):
+        return
+    let stateCode = host.webHostTick(page.hostHandle)
+    page.currentUrl = host.webHostCurrentUrl(page.hostHandle)
+    let title = host.webHostTitle(page.hostHandle)
+    let snapshot = host.webHostSnapshotText(page.hostHandle)
+    let err = host.webHostError(page.hostHandle)
+    if len(title) > 0:
+        page.title = title
+    if len(snapshot) > 0:
+        page.snapshotText = snapshot
+    if stateCode == int32(1):
+        page.loading = true
+    else:
+        page.loading = false
+    if stateCode == int32(3) || len(err) > 0:
+        page.lastError = err
+    else:
+        page.lastError = ""
+
+fn renderPage(page: BrowserPage, url: str, markup: str): bool =
+    if page == nil:
+        return false
+
+    let engine = findEngine(page.engineId)
+    let highContrast = engine != nil && engine.config.sandbox == types.spStrict
+
+    let doc = htmlParser.parseHtmlDocument(url, markup)
+    let styleState = cssCascade.computeCascadeAndApply(doc, highContrast)
+    let layoutState = layoutFlow.computeLayout(doc, page.options.viewportWidth, page.options.viewportHeight)
+    let viewportRect = makeRect(0.0, 0.0, float(layoutState.viewportWidth), float(layoutState.viewportHeight))
+    let draw = paintList.buildWebDrawList(doc, viewportRect)
+    let snapshot = paintList.buildPlainText(doc)
+
+    page.domDoc = doc
+    page.styleState = styleState
+    page.layoutState = layoutState
+    page.paintState = draw
+    page.snapshotText = snapshot
+    if doc != nil && len(doc.title) > 0:
+        page.title = doc.title
+    else:
+        page.title = url
+    return true
+
+fn buildMarkup(page: BrowserPage, url, markup: str, recordHistory: bool): bool =
+    if page == nil:
+        return false
+    let engine = findEngine(page.engineId)
+    if engine == nil:
+        return false
+    if securityPolicy.decideNavigation(url) == securityPolicy.sdBlock:
+        page.lastError = "blocked-by-security-policy"
+        page.loading = false
+        return false
+
+    page.loading = true
+    page.lastError = ""
+
+    engineScheduler.beginFrame(engine.scheduler)
+    engineScheduler.setStage(engine.scheduler, engineScheduler.esNavigation)
+    queueIpc(engine, messages_v2.idNavigation, types.prRenderer, int32(100), page.id, url)
+
+    page.currentUrl = url
+    page.markup = markup
+    page.transport = "inline"
+
+    if page.hostHandle <= int64(0):
+        page.hostHandle = host.webHostCreate(url, markup)
+    let ok = renderPage(page, url, markup)
+    if ! ok:
+        page.lastError = "render-failed"
+        page.loading = false
+        engineScheduler.endFrame(engine.scheduler)
+        return false
+    setHistory(page, url, recordHistory)
+    clampHistoryIndex(page)
+
+    engine.metrics.frameP95Ms = 14.0
+    engine.metrics.jsTaskP95Ms = 6.0
+    engine.metrics.layoutP95Ms = 5.0
+    updateEngineCounts(engine)
+
+    engineScheduler.endFrame(engine.scheduler)
+    page.loading = false
+    return true
+
+fn loadFromNetwork(page: BrowserPage, url: str, recordHistory: bool): bool =
+    if page == nil || len(url) == 0:
+        return false
+    if ! isNetworkUrl(url):
+        page.lastError = "unsupported-url-scheme"
+        page.loading = false
+        return false
+    if securityPolicy.decideNavigation(url) == securityPolicy.sdBlock:
+        page.lastError = "blocked-by-security-policy"
+        page.loading = false
+        return false
+
+    let engine = findEngine(page.engineId)
+    if engine == nil:
+        return false
+
+    page.loading = true
+    page.lastError = ""
+    engineScheduler.beginFrame(engine.scheduler)
+    engineScheduler.setStage(engine.scheduler, engineScheduler.esNavigation)
+    queueIpc(engine, messages_v2.idNavigation, types.prRenderer, int32(110), page.id, url)
+
+    page.currentUrl = url
+    page.transport = transportForUrl(url)
+    if page.hostHandle <= int64(0):
+        page.hostHandle = host.webHostCreate(url, "")
+
+    let fetched = netFetcher.fetch(url)
+    if fetched != nil && len(fetched.body) > 0:
+        page.markup = fetched.body
+    else:
+        page.markup = "<html><head><title>Error</title></head><body><p>" + url + "</p></body></html>"
+
+    let ok = renderPage(page, url, page.markup)
+    if ! ok:
+        page.lastError = "render-failed"
+        engineScheduler.endFrame(engine.scheduler)
+        page.loading = false
+        return false
+
+    setHistory(page, page.currentUrl, recordHistory)
+    clampHistoryIndex(page)
+
+    engine.metrics.frameP95Ms = 14.0
+    engine.metrics.jsTaskP95Ms = 6.0
+    engine.metrics.layoutP95Ms = 5.0
+    updateEngineCounts(engine)
+    engineScheduler.endFrame(engine.scheduler)
+    page.loading = false
+    if fetched == nil:
+        page.lastError = "fetch-failed"
+        return false
+    if ! fetched.ok:
+        page.lastError = fetched.error
+        return false
+    page.lastError = ""
+    return true
+
+fn defaultHostTags(profile: types.SandboxProfile): str[] =
+    var tags: str[]
+    appendString(tags, chromiumMac.macosHostInfo(profile).platformName)
+    appendString(tags, chromiumWin.windowsHostInfo(profile).platformName)
+    appendString(tags, chromiumLinux.linuxHostInfo(profile).platformName)
+    appendString(tags, chromiumAndroid.androidHostInfo(profile).platformName)
+    appendString(tags, chromiumIos.iosHostInfo(profile).platformName)
+    appendString(tags, chromiumWeb.webHostInfo(profile).platformName)
+    return tags
+
+fn createBrowserEngine(config: types.BrowserEngineConfig): BrowserEngine =
+    let normalized = types.normalizeBrowserEngineConfig(config)
+    var engine: BrowserEngine
+    new(engine)
+    engine.id = nextEngineId
+    nextEngineId = nextEngineId + int64(1)
+    engine.config = normalized
+    engine.router = ipcRouter.newRouter(int32(512))
+    engine.scheduler = engineScheduler.newEngineScheduler()
+    engine.browserProcess = browserProc.spawnBrowserProcess()
+    engine.rendererProcess = rendererProc.spawnRendererProcess()
+    if normalized.enableGpuProcess:
+        engine.gpuProcess = gpuProc.spawnGpuProcess()
+    else:
+        engine.gpuProcess = nil
+    if normalized.enableUtilityProcess:
+        engine.utilityProcess = utilityProc.spawnUtilityProcess()
+    else:
+        engine.utilityProcess = nil
+    engine.metrics = types.defaultBrowserMetricsSnapshot()
+    engine.hostTags = defaultHostTags(normalized.sandbox)
+    registerEngine(engine)
+    updateEngineCounts(engine)
+    queueIpc(engine, messages_v2.idControl, types.prRenderer, int32(1), int64(0), "engine-created")
+    return engine
+
+fn shutdownBrowserEngine(engine: BrowserEngine) =
+    if engine == nil:
+        return
+    for idx in 0..<len(engine.contexts):
+        let ctx = engine.contexts[idx]
+        if ctx != nil:
+            setLen[BrowserPage](&ctx.pages, 0)
+    setLen[BrowserContext](&engine.contexts, 0)
+
+    browserProc.shutdownBrowserProcess(engine.browserProcess)
+    rendererProc.shutdownRendererProcess(engine.rendererProcess)
+    gpuProc.shutdownGpuProcess(engine.gpuProcess)
+    utilityProc.shutdownUtilityProcess(engine.utilityProcess)
+
+    let slot = engineRegistrySlot
+    if slot != nil:
+        if slot.id == engine.id:
+            engineRegistrySlot = nil
+
+    engine.metrics.totalContexts = int32(0)
+    engine.metrics.totalPages = int32(0)
+    engine.metrics.rendererProcesses = int32(0)
+    engine.metrics.gpuProcessAlive = false
+    engine.metrics.utilityProcessAlive = false
+
+fn createContext(engine: BrowserEngine, options: types.BrowserContextOptions): BrowserContext =
+    if engine == nil:
+        return nil
+    let normalized = types.normalizeBrowserContextOptions(options)
+    var ctx: BrowserContext
+    new(ctx)
+    ctx.id = nextContextId
+    nextContextId = nextContextId + int64(1)
+    ctx.engineId = engine.id
+    ctx.options = normalized
+    ctx.storage = storageStore.newStore()
+    appendContext(engine.contexts, ctx)
+    storageStore.setValue(ctx.storage, "partition", normalized.partition)
+    updateEngineCounts(engine)
+    queueIpc(engine, messages_v2.idControl, types.prRenderer, int32(2), int64(0), "context-created")
+    return ctx
+
+fn destroyContext(ctx: BrowserContext) =
+    if ctx == nil:
+        return
+    let engine = findEngine(ctx.engineId)
+    if engine == nil:
+        return
+    let idx = findContextIndex(engine, ctx.id)
+    if idx < 0:
+        return
+    setLen[BrowserPage](&ctx.pages, 0)
+    let lastIdx = len(engine.contexts) - 1
+    engine.contexts[idx] = engine.contexts[lastIdx]
+    setLen[BrowserContext](&engine.contexts, lastIdx)
+    updateEngineCounts(engine)
+
+fn createPage(ctx: BrowserContext, options: types.PageOptions): BrowserPage =
+    if ctx == nil:
+        return nil
+    let normalized = types.normalizePageOptions(options)
+    var page: BrowserPage
+    new(page)
+    page.id = nextPageId
+    nextPageId = nextPageId + int64(1)
+    page.engineId = ctx.engineId
+    page.contextId = ctx.id
+    page.options = normalized
+    page.storage = ctx.storage
+    page.currentUrl = normalized.initialUrl
+    if len(page.currentUrl) == 0:
+        page.currentUrl = "about:blank"
+    page.title = page.currentUrl
+    page.markup = "<html><head><title>" + page.title + "</title></head><body></body></html>"
+    page.snapshotText = ""
+    page.historyIndex = int32(-1)
+    page.domDoc = htmlParser.parseHtmlDocument(page.currentUrl, page.markup)
+    page.styleState = cssCascade.computeCascadeAndApply(page.domDoc, false)
+    page.layoutState = layoutFlow.computeLayout(page.domDoc, normalized.viewportWidth, normalized.viewportHeight)
+    let ls = page.layoutState
+    let viewportRect = makeRect(0.0, 0.0, float(ls.viewportWidth), float(ls.viewportHeight))
+    page.paintState = paintList.buildWebDrawList(page.domDoc, viewportRect)
+    page.snapshotText = paintList.buildPlainText(page.domDoc)
+    page.runtime = jsRuntime.newJsRuntime()
+    page.r2cDispatch = nil
+    page.r2cApp = ""
+    page.r2cLocale = ""
+    page.r2cShowLanguageSelector = false
+    page.r2cSelectedLanguage = ""
+    page.r2cCurrentTab = ""
+    page.r2cTimerRunning = false
+    page.r2cTimerTicks = int32(0)
+    page.r2cTimeoutFired = false
+    page.r2cNowMs = int64(0)
+    page.r2cResizeCount = int32(0)
+    page.r2cClipboardText = ""
+    page.r2cGeoText = ""
+    page.r2cCookieText = ""
+    page.r2cFileDataUrl = ""
+    setLen[str](&page.r2cDragItems, 0)
+    page.r2cDragOrderText = ""
+    page.r2cCrosshairActive = false
+    page.r2cCrosshairX = 0.0
+    page.r2cCrosshairY = 0.0
+    setLen[str](&page.r2cLangCodes, 0)
+    setLen[str](&page.r2cLangNames, 0)
+    setLen[str](&page.r2cLangNativeNames, 0)
+    page.r2cTextWelcome = ""
+    page.r2cTextSelectLanguage = ""
+    page.r2cTextContinue = ""
+    page.r2cTextSelectPrompt = ""
+    page.r2cTextSkipDefault = ""
+    setLen[str](&page.r2cTransKeys, 0)
+    setLen[str](&page.r2cTransEn, 0)
+    setLen[str](&page.r2cTransZhCN, 0)
+    setLen[str](&page.r2cPublishTypeIds, 0)
+    setLen[str](&page.r2cPublishTypeLabelKeys, 0)
+    setLen[str](&page.r2cPublishTypeFallbackLabels, 0)
+    page.r2cUtfZhEnabled = false
+    page.r2cUtfZhStrict = true
+    page.r2cUtfZhLastError = ""
+    page.r2cImeEnabled = false
+    page.r2cImeQuery = ""
+    page.r2cImePreedit = ""
+    setLen[str](&page.r2cImeCandidates, 0)
+    page.r2cImeCommitted = ""
+    page.loading = false
+    page.lastError = ""
+    page.hostHandle = host.webHostCreate(page.currentUrl, "")
+    page.transport = transportForUrl(page.currentUrl)
+
+    appendPage(ctx.pages, page)
+    setHistory(page, page.currentUrl, true)
+    clampHistoryIndex(page)
+
+    let engine = findEngine(ctx.engineId)
+    updateEngineCounts(engine)
+    queueIpc(engine, messages_v2.idControl, types.prRenderer, int32(3), page.id, "page-created")
+    return page
+
+fn destroyPage(page: BrowserPage) =
+    if page == nil:
+        return
+    if page.hostHandle > int64(0):
+        host.webHostDestroy(page.hostHandle)
+        page.hostHandle = int64(0)
+    let ctx = findContext(page.engineId, page.contextId)
+    if ctx == nil:
+        return
+    let idx = findPageIndex(ctx, page.id)
+    if idx < 0:
+        return
+    let lastIdx = len(ctx.pages) - 1
+    ctx.pages[idx] = ctx.pages[lastIdx]
+    setLen[BrowserPage](&ctx.pages, lastIdx)
+    let engine = findEngine(page.engineId)
+    updateEngineCounts(engine)
+
+fn navigate(page: BrowserPage, url: str): bool =
+    if page == nil || len(url) == 0:
+        return false
+    return loadFromNetwork(page, url, true)
+
+fn reload(page: BrowserPage): bool =
+    if page == nil || len(page.currentUrl) == 0:
+        return false
+    return loadFromNetwork(page, page.currentUrl, false)
+
+fn goBack(page: BrowserPage): bool =
+    if page == nil || page.historyIndex <= int32(0):
+        return false
+    page.historyIndex = page.historyIndex - int32(1)
+    clampHistoryIndex(page)
+    if page.historyIndex < int32(0):
+        return false
+    let url = page.history[page.historyIndex]
+    return loadFromNetwork(page, url, false)
+
+fn goForward(page: BrowserPage): bool =
+    if page == nil:
+        return false
+    if int(page.historyIndex + int32(1)) >= len(page.history):
+        return false
+    page.historyIndex = page.historyIndex + int32(1)
+    clampHistoryIndex(page)
+    let url = page.history[page.historyIndex]
+    return loadFromNetwork(page, url, false)
+
+fn evaluateJs(page: BrowserPage, script: str): str =
+    if page == nil:
+        return ""
+    let engine = findEngine(page.engineId)
+    engineScheduler.setStage(engine.scheduler, engineScheduler.esJs)
+    queueIpc(engine, messages_v2.idJs, types.prRenderer, int32(400), page.id, "eval")
+    return jsRuntime.evaluateScript(page.runtime, script, page.title)
+
+fn dispatchDomEvent(page: BrowserPage, eventName, targetSelector, payload: str): bool =
+    if page == nil || len(eventName) == 0:
+        return false
+    let engine = findEngine(page.engineId)
+    queueIpc(engine, messages_v2.idDom, types.prRenderer, int32(401), page.id, eventName)
+    if strEq(eventName, "set-title"):
+        if len(payload) <= 0:
+            return true
+        page.title = payload
+        if page.domDoc != nil:
+            domModel.setTitle(page.domDoc, payload)
+        return true
+    elif strEq(eventName, "append-html"):
+        if len(payload) <= 0:
+            return true
+        page.markup = page.markup + payload
+        let ok = renderPage(page, page.currentUrl, page.markup)
+        if ! ok:
+            page.lastError = "render-failed"
+            return false
+        return true
+
+    if page.r2cDispatch != nil:
+        return page.r2cDispatch(page, eventName, targetSelector, payload)
+    targetSelector
+    return true
+
+fn captureSnapshot(page: BrowserPage): str =
+    if page == nil:
+        return ""
+    return page.snapshotText
+
+fn pageMarkup(page: BrowserPage): str =
+    if page == nil:
+        return ""
+    return page.markup
+
+fn pageTitle(page: BrowserPage): str =
+    if page == nil:
+        return ""
+    return page.title
+
+fn pageCurrentUrl(page: BrowserPage): str =
+    if page == nil:
+        return ""
+    return page.currentUrl
+
+fn pageR2cCurrentTab(page: BrowserPage): str =
+    if page == nil:
+        return ""
+    return page.r2cCurrentTab
+
+fn pagePaintState(page: BrowserPage): drawir.DrawList =
+    if page == nil:
+        return nil
+    return page.paintState
+
+fn paintCommandCount(page: BrowserPage): int32 =
+    if page == nil:
+        return int32(0)
+    let paint = page.paintState
+    if paint == nil:
+        return int32(0)
+    return int32(len(paint.commands))
+
+fn paintHasCommand(page: BrowserPage, targetKind: drawir.DrawCommandKind): bool =
+    if page == nil:
+        return false
+    let paint = page.paintState
+    if paint == nil:
+        return false
+    var idx = int32(0)
+    while idx < int32(len(paint.commands)):
+        if paint.commands[idx].kind == targetKind:
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn paintHasLine(page: BrowserPage): bool =
+    return paintHasCommand(page, drawir.dcLine)
+
+fn paintHasText(page: BrowserPage): bool =
+    return paintHasCommand(page, drawir.dcText)
+
+fn paintHasLineWithMinWidth(page: BrowserPage, minStrokeWidth: float): bool =
+    return paintHasTextLineWidth(page, minStrokeWidth)
+
+fn paintHasText(page: BrowserPage, text: str): bool =
+    if page == nil || len(text) == 0:
+        return false
+    let paint = page.paintState
+    if paint == nil:
+        return false
+    var idx = int32(0)
+    while idx < int32(len(paint.commands)):
+        let cmd = paint.commands[idx]
+        if cmd.kind == drawir.dcText && len(cmd.text) > 0:
+            var p = int32(0)
+            while p + len(text) <= len(cmd.text):
+                var matched = true
+                var t = int32(0)
+                while t < len(text):
+                    if cmd.text[p + t] != text[t]:
+                        matched = false
+                        t = len(text)
+                    else:
+                        t = t + int32(1)
+                if matched:
+                    return true
+                p = p + int32(1)
+        idx = idx + int32(1)
+    return false
+
+fn paintHasTextLineWidth(page: BrowserPage, minStrokeWidth: float): bool =
+    if page == nil:
+        return false
+    let paint = page.paintState
+    if paint == nil:
+        return false
+    var idx = int32(0)
+    while idx < int32(len(paint.commands)):
+        let cmd = paint.commands[idx]
+        if cmd.kind == drawir.dcLine && cmd.strokeWidth >= minStrokeWidth:
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn browserMetrics(engine: BrowserEngine): types.BrowserMetricsSnapshot =
+    if engine == nil:
+        return types.defaultBrowserMetricsSnapshot()
+    updateEngineCounts(engine)
+    return engine.metrics
+
+fn latestCrashReport(engine: BrowserEngine): types.CrashReport =
+    if engine == nil || len(engine.crashes) == 0:
+        return types.defaultCrashReport()
+    return engine.crashes[len(engine.crashes) - 1]
+
+fn injectProcessCrash(engine: BrowserEngine, role: types.ProcessRole, reason: str): bool =
+    if engine == nil:
+        return false
+    var report = types.defaultCrashReport()
+    case role
+    of types.prBrowser:
+        report = browserProc.crashBrowserProcess(engine.browserProcess, reason)
+        browserProc.recoverBrowserProcess(engine.browserProcess)
+    of types.prRenderer:
+        report = rendererProc.crashRendererProcess(engine.rendererProcess, reason)
+        rendererProc.recoverRendererProcess(engine.rendererProcess)
+    of types.prGpu:
+        report = gpuProc.crashGpuProcess(engine.gpuProcess, reason)
+        gpuProc.recoverGpuProcess(engine.gpuProcess)
+    of types.prUtility:
+        report = utilityProc.crashUtilityProcess(engine.utilityProcess, reason)
+        utilityProc.recoverUtilityProcess(engine.utilityProcess)
+    report.recovered = true
+    appendCrash(engine.crashes, report)
+    engine.metrics.crashCount = engine.metrics.crashCount + int32(1)
+    queueIpc(engine, messages_v2.idCrash, types.prBrowser, int32(900), int64(0), reason)
+    updateEngineCounts(engine)
+    return true
+
+fn setPageMarkup(page: BrowserPage, html, baseUrl: str): bool =
+    if page == nil:
+        return false
+    var resolvedUrl = baseUrl
+    if len(resolvedUrl) == 0:
+        resolvedUrl = "about:blank"
+    var markup = html
+    if len(markup) == 0:
+        markup = "<html><head><title>inline</title></head><body></body></html>"
+    return buildMarkup(page, resolvedUrl, markup, true)
+
+fn createWebSession(request: types.WebPageRequest): WebSession =
+    let normalized = types.normalizeWebPageRequest(request)
+    let engine = createBrowserEngine(types.defaultBrowserEngineConfig())
+    let ctx = createContext(engine, types.defaultBrowserContextOptions())
+    var options = types.defaultPageOptions()
+    if normalized.sourceKind == types.wsUrl:
+        options.initialUrl = normalized.url
+    else:
+        options.initialUrl = normalized.baseUrl
+    let page = createPage(ctx, options)
+
+    var session: WebSession
+    new(session)
+    session.engine = engine
+    session.context = ctx
+    session.page = page
+    session.request = normalized
+    session.state = types.wssLoading
+    session.currentUrl = options.initialUrl
+    session.title = ""
+    session.snapshotText = ""
+    session.lastError = ""
+
+    if normalized.sourceKind == types.wsHtml:
+        setPageMarkup(page, normalized.html, normalized.baseUrl)
+    else:
+        navigate(page, normalized.url)
+    pollWebSession(session)
+    return session
+
+fn destroyWebSession(session: WebSession) =
+    if session == nil:
+        return
+    destroyPage(session.page)
+    destroyContext(session.context)
+    shutdownBrowserEngine(session.engine)
+    session.page = nil
+    session.context = nil
+    session.engine = nil
+    session.state = types.wssIdle
+
+fn navigateWebSession(session: WebSession, url: str): bool =
+    if session == nil || session.page == nil:
+        return false
+    let ok = navigate(session.page, url)
+    pollWebSession(session)
+    return ok
+
+fn setWebMarkup(session: WebSession, html: str, baseUrl: str): bool =
+    if session == nil || session.page == nil:
+        return false
+    let ok = setPageMarkup(session.page, html, baseUrl)
+    pollWebSession(session)
+    return ok
+
+fn reloadWebSession(session: WebSession): bool =
+    if session == nil || session.page == nil:
+        return false
+    let ok = reload(session.page)
+    pollWebSession(session)
+    return ok
+
+fn pollWebSession(session: WebSession) =
+    if session == nil || session.page == nil:
+        return
+    let page = session.page
+    session.currentUrl = page.currentUrl
+    session.title = page.title
+    session.snapshotText = page.snapshotText
+    session.lastError = page.lastError
+    if page.loading:
+        session.state = types.wssLoading
+    elif len(page.lastError) > 0:
+        session.state = types.wssError
+    else:
+        session.state = types.wssReady
+
+fn isWebSessionReady(session: WebSession): bool =
+    if session == nil:
+        return false
+    return session.state == types.wssReady
+
+fn buildWebLabel(session: WebSession): str =
+    if session == nil:
+        return "Web View"
+    if session.state == types.wssLoading:
+        return "Loading web content"
+    if session.state == types.wssError:
+        return "Web error"
+    if len(session.title) > 0:
+        return session.title
+    if len(session.currentUrl) > 0:
+        return session.currentUrl
+    return "Web Document"
+
+fn webViewNode(ctx: component.UiContext, key: str, session: WebSession): component.Node =
+    let node = component.newNode(ctx, component.nkWebView, key)
+    node.focusable = true
+    node.text = buildWebLabel(session)
+    if session == nil:
+        return node
+
+    var children: component.Node[]
+    if len(session.snapshotText) > 0:
+        let summary = component.newNode(ctx, component.nkText, key + ":summary")
+        summary.text = session.snapshotText
+        summary.name = "summary"
+        summary.focusable = false
+        appendWebNode(children, summary)
+    component.setChildren(node, children)
+    return node

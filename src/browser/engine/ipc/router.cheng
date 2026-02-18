@@ -1,0 +1,47 @@
+import cheng/gui/platform/ipc/messages_v2
+import cheng/gui/platform/ipc/shared_ring
+import cheng/gui/platform/ipc/serializer
+
+type
+    IpcRouter = ref
+        ring: shared_ring.SharedRing
+        delivered: int32
+        dropped: int32
+        lastPayload: str
+
+fn newRouter(capacity: int32): IpcRouter =
+    var router: IpcRouter
+    new(router)
+    router.ring = shared_ring.newSharedRing(capacity)
+    router.delivered = int32(0)
+    router.dropped = int32(0)
+    router.lastPayload = ""
+    return router
+
+fn send(router: IpcRouter, msg: messages_v2.IpcMessage): bool =
+    if router == nil || router.ring == nil:
+        return false
+    let encoded = serializer.encodeMessage(msg)
+    router.lastPayload = encoded
+    if ! shared_ring.enqueue(router.ring, msg):
+        router.dropped = router.dropped + int32(1)
+        return false
+    return true
+
+fn pump(router: IpcRouter): int32 =
+    if router == nil || router.ring == nil:
+        return int32(0)
+    var consumed: int32 = int32(0)
+    while shared_ring.pending(router.ring) > int32(0):
+        let entry = shared_ring.dequeue(router.ring)
+        if ! entry.ok:
+            break
+        consumed = consumed + int32(1)
+        router.delivered = router.delivered + int32(1)
+        router.lastPayload = serializer.encodeMessage(entry.message)
+    return consumed
+
+fn pending(router: IpcRouter): int32 =
+    if router == nil || router.ring == nil:
+        return int32(0)
+    return shared_ring.pending(router.ring)

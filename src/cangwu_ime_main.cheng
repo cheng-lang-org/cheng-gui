@@ -1,0 +1,7 @@
+import cheng/gui/ime/panel_runtime
+
+fn main(): int32 =
+    let rc = cwRunPanel("src/ime/data", 0)
+    return rc
+
+main()

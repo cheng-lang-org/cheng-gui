@@ -1,0 +1,868 @@
+import cheng/gui/browser/web
+import cheng/gui/browser/engine/storage/store as storageStore
+import cheng/gui/browser/r2capp/ime_bridge
+import cheng/gui/browser/r2capp/utfzh_bridge
+import cheng/gui/render/drawlist_ir as drawir
+
+type
+    SemanticNode = ref
+        nodeId: str
+        sourceModule: str
+        jsxPath: str
+        role: str
+        text: str
+        propId: str
+        className: str
+        styleText: str
+        testId: str
+        eventBinding: str
+        hookSlot: str
+        routeHint: str
+        runtimeIndex: int32
+        renderBucket: str
+        hitTestId: str
+
+var mountedPage: web.BrowserPage = nil
+var semanticNodes: SemanticNode[]
+
+fn appendSemanticNodeRef(items: var SemanticNode[], item: SemanticNode) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn semanticNodeAt(items: var SemanticNode[], idx: int32): SemanticNode =
+    if idx < int32(0):
+        return nil
+    if idx >= len(items):
+        return nil
+    return items[idx]
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn strEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn hasPrefix(text: str, prefix: str): bool =
+    let tLen = safeLen(text)
+    let pLen = safeLen(prefix)
+    if tLen < pLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx < pLen:
+        if cNe(text[idx], prefix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn lowerAsciiChar(ch: char): char =
+    if cGe(ch, 'A') && cLe(ch, 'Z'):
+        return char(int32(ch) + int32(32))
+    return ch
+
+fn lowerAscii(text: str): str =
+    if safeLen(text) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        out = out + charToStr(lowerAsciiChar(text[idx]))
+        idx = idx + int32(1)
+    return out
+
+fn containsText(text: str, needle: str): bool =
+    let tLen = safeLen(text)
+    let nLen = safeLen(needle)
+    if nLen <= int32(0):
+        return true
+    if tLen < nLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx + nLen <= tLen:
+        var matched = true
+        var j: int32 = int32(0)
+        while j < nLen:
+            if cNe(text[idx + j], needle[j]):
+                matched = false
+                break
+            j = j + int32(1)
+        if matched:
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn stripHash(selector: str): str =
+    if safeLen(selector) > int32(0) && cEq(selector[0], '#'):
+        return selector[1..<len(selector)]
+    return selector
+
+fn dashToUnderscore(text: str): str =
+    if safeLen(text) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cEq(ch, '-'):
+            out = out + "_"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn intToStr(value: int32): str =
+    if value == int32(0):
+        return "0"
+    var neg = false
+    var n = value
+    if n < int32(0):
+        neg = true
+        n = -n
+    var outText: str = ""
+    while n > int32(0):
+        let d = n % int32(10)
+        outText = charToStr(char(int32('0') + d)) + outText
+        n = n / int32(10)
+    if neg:
+        outText = "-" + outText
+    return outText
+
+fn boolToStr(value: bool): str =
+    if value:
+        return "true"
+    return "false"
+
+fn parsePayloadInt(payload: str, key: str, fallback: int32): int32 =
+    if safeLen(payload) == int32(0) || safeLen(key) == int32(0):
+        return fallback
+    let pattern = key + "="
+    let pLen = safeLen(pattern)
+    var idx: int32 = int32(0)
+    while idx + pLen <= safeLen(payload):
+        var ok = true
+        var j: int32 = int32(0)
+        while j < pLen:
+            if cNe(payload[idx + j], pattern[j]):
+                ok = false
+                break
+            j = j + int32(1)
+        if ok:
+            var pos = idx + pLen
+            var sign: int32 = int32(1)
+            if pos < safeLen(payload) && cEq(payload[pos], '-'):
+                sign = int32(-1)
+                pos = pos + int32(1)
+            var value: int32 = int32(0)
+            var saw = false
+            while pos < safeLen(payload):
+                let ch = payload[pos]
+                if cGe(ch, '0') && cLe(ch, '9'):
+                    saw = true
+                    value = value * int32(10) + int32(int32(ch) - int32('0'))
+                    pos = pos + int32(1)
+                else:
+                    break
+            if saw:
+                return value * sign
+            return fallback
+        idx = idx + int32(1)
+    return fallback
+
+fn reorderDrag(page: web.BrowserPage, fromIdx: int32, toIdx: int32) =
+    if page == nil:
+        return
+    let order = page.r2cDragOrderText
+    var a = 'A'
+    var b = 'B'
+    var c = 'C'
+    if safeLen(order) >= int32(5):
+        a = order[0]
+        b = order[2]
+        c = order[4]
+    var na = a
+    var nb = b
+    var nc = c
+    if (fromIdx == int32(0) && toIdx == int32(1)) || (fromIdx == int32(1) && toIdx == int32(0)):
+        na = b
+        nb = a
+    elif fromIdx == int32(0) && toIdx == int32(2):
+        na = b
+        nb = c
+        nc = a
+    elif (fromIdx == int32(1) && toIdx == int32(2)) || (fromIdx == int32(2) && toIdx == int32(1)):
+        na = a
+        nb = c
+        nc = b
+    elif fromIdx == int32(2) && toIdx == int32(0):
+        na = c
+        nb = a
+        nc = b
+    page.r2cDragOrderText = charToStr(na) + "," + charToStr(nb) + "," + charToStr(nc)
+
+fn appendSemanticNode(
+    nodeId, sourceModule, jsxPath, role, text, propId, className, styleText, testId, eventBinding, hookSlot, routeHint: str,
+    runtimeIndex: int32, renderBucket, hitTestId: str
+) =
+    var node: SemanticNode
+    new(node)
+    node.nodeId = nodeId
+    node.sourceModule = sourceModule
+    node.jsxPath = jsxPath
+    node.role = role
+    node.text = text
+    node.propId = propId
+    node.className = className
+    node.styleText = styleText
+    node.testId = testId
+    node.eventBinding = eventBinding
+    node.hookSlot = hookSlot
+    node.routeHint = routeHint
+    node.runtimeIndex = runtimeIndex
+    node.renderBucket = renderBucket
+    node.hitTestId = hitTestId
+    appendSemanticNodeRef(semanticNodes, node)
+
+fn ensureSemanticNodes() =
+    if len(semanticNodes) > int32(0):
+        return
+__R2C_SEMANTIC_NODE_APPENDS__
+    if len(semanticNodes) == int32(0):
+        appendSemanticNode(
+            "fallback-root",
+            "/runtime_generated.cheng",
+            "/root",
+            "element",
+            "__R2C_PROJECT_NAME__",
+            "root",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "__R2C_DEFAULT_ROUTE__",
+            int32(0),
+            "root",
+            "root"
+        )
+
+fn ensureDefaults(page: web.BrowserPage) =
+    if page == nil:
+        return
+    if len(page.r2cApp) == 0:
+        page.r2cApp = "__R2C_PROJECT_NAME__"
+    if len(page.r2cTextWelcome) == 0:
+        page.r2cTextWelcome = "__R2C_TEXT_WELCOME__"
+    if len(page.r2cTextSelectLanguage) == 0:
+        page.r2cTextSelectLanguage = "__R2C_TEXT_SELECT_LANGUAGE__"
+    if len(page.r2cTextContinue) == 0:
+        page.r2cTextContinue = "__R2C_TEXT_CONTINUE__"
+    if len(page.r2cTextSelectPrompt) == 0:
+        page.r2cTextSelectPrompt = "__R2C_TEXT_SELECT_PROMPT__"
+    if len(page.r2cTextSkipDefault) == 0:
+        page.r2cTextSkipDefault = "__R2C_TEXT_SKIP__"
+    if len(page.r2cDragOrderText) == 0:
+        page.r2cDragOrderText = "A,B,C"
+    if len(page.r2cCurrentTab) == 0:
+        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
+    if len(page.r2cLocale) == 0:
+        page.r2cLocale = storageStore.getValue(page.storage, "app_locale")
+        if len(page.r2cLocale) == 0:
+            page.r2cLocale = "zh-CN"
+    if len(page.r2cCookieText) == 0:
+        page.r2cCookieText = storageStore.getValue(page.storage, "cookie")
+    if page.options.viewportWidth <= int32(0):
+        page.options.viewportWidth = int32(1280)
+    elif page.options.viewportWidth > int32(4096):
+        page.options.viewportWidth = int32(1280)
+    if page.options.viewportHeight <= int32(0):
+        page.options.viewportHeight = int32(720)
+    elif page.options.viewportHeight > int32(4096):
+        page.options.viewportHeight = int32(720)
+    page.r2cUtfZhStrict = true
+    if page.r2cUtfZhEnabled == false:
+        page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
+
+fn routeToTab(route: str): str =
+    if hasPrefix(route, "home_"):
+        return "home"
+    if hasPrefix(route, "tab_messages"):
+        return "messages"
+    if hasPrefix(route, "tab_nodes"):
+        return "nodes"
+    if hasPrefix(route, "tab_profile"):
+        return "profile"
+    if hasPrefix(route, "publish_"):
+        return route
+    if hasPrefix(route, "trading_"):
+        return "trading"
+    if hasPrefix(route, "ecom_"):
+        return route
+    if hasPrefix(route, "marketplace_"):
+        return route
+    if hasPrefix(route, "update_center_"):
+        return route
+    if len(route) > 0:
+        return route
+    return "__R2C_DEFAULT_ROUTE__"
+
+fn isTradingRoute(route: str): bool =
+    return hasPrefix(route, "trading_")
+
+fn isPublishRoute(route: str): bool =
+    return hasPrefix(route, "publish_")
+
+fn routeTitle(route: str): str =
+__R2C_ROUTE_TITLE_CASES__
+    if len(route) > 0:
+        return route
+    return "__R2C_PROJECT_NAME__"
+
+fn isKnownRoute(route: str): bool =
+__R2C_KNOWN_ROUTE_CASES__
+    return false
+
+fn routeFromSelectorId(id: str): str =
+    if len(id) == 0:
+        return ""
+__R2C_SELECTOR_ROUTE_CASES__
+    let normalized = dashToUnderscore(id)
+    if isKnownRoute(normalized):
+        return normalized
+    return ""
+
+fn inferRouteHint(node: SemanticNode): str =
+    if node == nil:
+        return ""
+    let source = lowerAscii(node.sourceModule + "|" + node.jsxPath + "|" + node.renderBucket + "|" + node.propId + "|" + node.testId)
+    if containsText(source, "language"):
+        return "lang_select"
+    if containsText(source, "publish"):
+        if containsText(source, "crowdfunding"):
+            return "publish_crowdfunding"
+        if containsText(source, "secondhand"):
+            return "publish_secondhand"
+        if containsText(source, "product"):
+            return "publish_product"
+        if containsText(source, "content"):
+            return "publish_content"
+        if containsText(source, "food"):
+            return "publish_food"
+        if containsText(source, "ride"):
+            return "publish_ride"
+        if containsText(source, "rent"):
+            return "publish_rent"
+        if containsText(source, "sell"):
+            return "publish_sell"
+        if containsText(source, "hire"):
+            return "publish_hire"
+        if containsText(source, "job"):
+            return "publish_job"
+        if containsText(source, "live"):
+            return "publish_live"
+        if containsText(source, "app"):
+            return "publish_app"
+        return "publish_selector"
+    if containsText(source, "trading") || containsText(source, "kline") || containsText(source, "chart"):
+        return "trading_main"
+    if containsText(source, "marketplace"):
+        return "marketplace_main"
+    if containsText(source, "update_center") || containsText(source, "updatecenter"):
+        return "update_center_main"
+    if containsText(source, "ecom"):
+        return "ecom_main"
+    if containsText(source, "message") || containsText(source, "chat"):
+        return "tab_messages"
+    if containsText(source, "node"):
+        return "tab_nodes"
+    if containsText(source, "profile") || containsText(source, "wallet"):
+        return "tab_profile"
+    if containsText(source, "home"):
+        return "home_default"
+    return ""
+
+fn effectiveRouteHint(node: SemanticNode): str =
+    if node == nil:
+        return ""
+    if len(node.routeHint) > 0:
+        return node.routeHint
+    return inferRouteHint(node)
+
+fn nodeVisibleForRoute(node: SemanticNode, route: str): bool =
+    if node == nil:
+        return false
+    let hint = effectiveRouteHint(node)
+    if len(hint) == 0:
+        if len(node.text) > 0:
+            return true
+        if len(node.propId) > 0 || len(node.testId) > 0:
+            return true
+        return false
+    if strEq(hint, route):
+        return true
+    if hasPrefix(route, hint + "_"):
+        return true
+    if strEq(hint, "home") && hasPrefix(route, "home_"):
+        return true
+    if strEq(hint, "home_default") && hasPrefix(route, "home_"):
+        return true
+    if strEq(hint, "publish") && hasPrefix(route, "publish_"):
+        return true
+    if strEq(hint, "publish_selector") && hasPrefix(route, "publish_"):
+        return true
+    if strEq(hint, "trading") && hasPrefix(route, "trading_"):
+        return true
+    if strEq(hint, "trading_main") && hasPrefix(route, "trading_"):
+        return true
+    return false
+
+fn nodeRenderable(node: SemanticNode): bool =
+    if node == nil:
+        return false
+    if len(node.text) > 0:
+        return true
+    if len(node.propId) > 0:
+        return true
+    if len(node.testId) > 0:
+        return true
+    return false
+
+fn nodeLabel(node: SemanticNode): str =
+    if node == nil:
+        return ""
+    if len(node.text) > 0:
+        return node.text
+    if len(node.propId) > 0:
+        return "#" + node.propId
+    if len(node.testId) > 0:
+        return "[" + node.testId + "]"
+    return ""
+
+fn nodeIndentLevel(node: SemanticNode): int32 =
+    if node == nil || len(node.jsxPath) == 0:
+        return int32(0)
+    var level: int32 = int32(0)
+    var idx: int32 = int32(0)
+    while idx < len(node.jsxPath):
+        if cEq(node.jsxPath[idx], '['):
+            level = level + int32(1)
+        idx = idx + int32(1)
+    if level > int32(4):
+        level = int32(4)
+    return level
+
+fn nodeBlockColor(node: SemanticNode): uint32 =
+    if node == nil:
+        return uint32(0)
+    let classes = lowerAscii(node.className)
+    if containsText(classes, "bg-") || len(node.styleText) > 0:
+        return uint32(0xFFF8FAFC)
+    if len(node.propId) > 0 || len(node.testId) > 0:
+        return uint32(0xFFF1F5F9)
+    return uint32(0)
+
+fn nodeSelector(node: SemanticNode): str =
+    if node == nil:
+        return ""
+    if len(node.propId) > 0:
+        return "#" + node.propId
+    if len(node.hitTestId) > 0:
+        return "#" + node.hitTestId
+    if len(node.testId) > 0:
+        return "#" + node.testId
+    return ""
+
+fn roleColor(role: str): uint32 =
+    if strEq(role, "text"):
+        return uint32(0xFF0F172A)
+    if strEq(role, "component"):
+        return uint32(0xFF334155)
+    if strEq(role, "element"):
+        return uint32(0xFF1E293B)
+    return uint32(0xFF475569)
+
+fn activeRoute(page: web.BrowserPage): str =
+    if page == nil:
+        return "__R2C_DEFAULT_ROUTE__"
+    if page.r2cShowLanguageSelector:
+        return "lang_select"
+    if len(page.r2cCurrentTab) > 0:
+        return page.r2cCurrentTab
+    return "__R2C_DEFAULT_ROUTE__"
+
+fn buildSemanticSnapshot(page: web.BrowserPage, visibleText: str): str =
+    if page == nil:
+        return ""
+    let route = activeRoute(page)
+    let tab = routeToTab(route)
+    var outText = page.r2cTextWelcome + "\n"
+    if page.r2cShowLanguageSelector:
+        outText = outText + "ROUTE:lang_select\n"
+        outText = outText + page.r2cTextSelectLanguage + "\n"
+        outText = outText + "SELECTED_LANG:" + page.r2cSelectedLanguage + "\n"
+        if len(visibleText) > 0:
+            outText = outText + visibleText
+        return outText
+    outText = outText + "ROUTE:" + route + "\n"
+    outText = outText + "LOCALE:" + page.r2cLocale + "\n"
+    outText = outText + "TAB:" + tab + "\n"
+    outText = outText + "TIMER_TICKS:" + intToStr(page.r2cTimerTicks) + "\n"
+    outText = outText + "TIMEOUT_FIRED:" + boolToStr(page.r2cTimeoutFired) + "\n"
+    outText = outText + "VIEWPORT:" + intToStr(page.options.viewportWidth) + "x" + intToStr(page.options.viewportHeight) + "\n"
+    if page.options.viewportWidth >= int32(1000):
+        outText = outText + "MQL_MIN_1000:true\n"
+    else:
+        outText = outText + "MQL_MIN_1000:false\n"
+    outText = outText + "RESIZE_COUNT:" + intToStr(page.r2cResizeCount) + "\n"
+    outText = outText + "DRAG_ORDER:" + page.r2cDragOrderText + "\n"
+    outText = outText + "UTFZH_ENABLED:" + boolToStr(page.r2cUtfZhEnabled) + "\n"
+    outText = outText + "UTFZH_STRICT:" + boolToStr(page.r2cUtfZhStrict) + "\n"
+    if len(page.r2cUtfZhLastError) > 0:
+        outText = outText + "UTFZH_ERROR:" + page.r2cUtfZhLastError + "\n"
+    if page.r2cImeEnabled:
+        outText = outText + "IME_QUERY:" + page.r2cImeQuery + "\n"
+        outText = outText + "IME_PREEDIT:" + page.r2cImePreedit + "\n"
+        outText = outText + "IME_CANDIDATE_COUNT:" + intToStr(len(page.r2cImeCandidates)) + "\n"
+        if len(page.r2cImeCommitted) > 0:
+            outText = outText + "IME_COMMIT:" + page.r2cImeCommitted + "\n"
+    if len(page.r2cClipboardText) > 0:
+        outText = outText + "CLIPBOARD:" + page.r2cClipboardText + "\n"
+    if len(page.r2cGeoText) > 0:
+        outText = outText + "GEO:" + page.r2cGeoText + "\n"
+    if len(page.r2cCookieText) > 0:
+        outText = outText + "COOKIE:" + page.r2cCookieText + "\n"
+    if len(page.r2cFileDataUrl) > 0:
+        outText = outText + "FILE_PREVIEW_OK\n"
+        outText = outText + "DATA_URL:" + page.r2cFileDataUrl + "\n"
+    if isTradingRoute(route):
+        outText = outText + "CANVAS_OK:true\n"
+        outText = outText + "TRADING_CANVAS:true\n"
+        if page.r2cCrosshairActive:
+            outText = outText + "CROSSHAIR:" + intToStr(int32(page.r2cCrosshairX)) + "," + intToStr(int32(page.r2cCrosshairY)) + "\n"
+        else:
+            outText = outText + "CROSSHAIR:0,0\n"
+    if len(visibleText) > 0:
+        outText = outText + "VISIBLE_NODES:\n" + visibleText
+    return outText
+
+fn rerender(page: web.BrowserPage) =
+    if page == nil:
+        return
+    ensureDefaults(page)
+    ensureSemanticNodes()
+    if page.paintState == nil:
+        page.paintState = drawir.newDrawList()
+    let list = page.paintState
+    drawir.clear(list)
+    var vw = page.options.viewportWidth
+    var vh = page.options.viewportHeight
+    if vw <= int32(0):
+        vw = int32(1280)
+    if vh <= int32(0):
+        vh = int32(720)
+    let route = activeRoute(page)
+    drawir.pushRectInt(list, int32(0), int32(0), vw, vh, uint32(0xFFFFFFFF))
+    drawir.pushTextInt(list, int32(20), int32(14), vw - int32(40), int32(24), page.r2cTextWelcome, uint32(0xFF0F172A), 16.0)
+    drawir.pushTextInt(list, int32(20), int32(40), vw - int32(40), int32(18), routeTitle(route), uint32(0xFF475569), 12.0)
+    drawir.pushLineInt(list, int32(16), int32(64), vw - int32(16), int32(64), uint32(0xFFE2E8F0), 1.0)
+    if len(page.r2cImeCommitted) > 0:
+        drawir.pushTextInt(list, int32(20), int32(66), vw - int32(40), int32(18), "IME:" + page.r2cImeCommitted, uint32(0xFF0F766E), 12.0)
+
+    var y = int32(84)
+    var idx: int32 = int32(0)
+    var visibleText: str = ""
+    while idx < len(semanticNodes):
+        let node = semanticNodeAt(semanticNodes, idx)
+        if node != nil && nodeVisibleForRoute(node, route) && nodeRenderable(node):
+            let label = nodeLabel(node)
+            if len(label) <= 0:
+                idx = idx + int32(1)
+                continue
+            let indent = nodeIndentLevel(node)
+            let x = int32(24) + indent * int32(10)
+            var rowW = vw - x - int32(24)
+            if rowW < int32(60):
+                rowW = int32(60)
+            var rowH = int32(18)
+            if strEq(node.role, "text"):
+                rowH = int32(16)
+            if y + rowH + int32(8) > vh - int32(72):
+                break
+            let blockColor = nodeBlockColor(node)
+            if blockColor != uint32(0):
+                drawir.pushRectInt(list, x - int32(4), y - int32(2), rowW + int32(8), rowH + int32(4), blockColor)
+            drawir.pushTextInt(list, x, y, rowW, rowH, label, roleColor(node.role), 12.0)
+            visibleText = visibleText + label + "\n"
+            y = y + rowH + int32(6)
+        idx = idx + int32(1)
+
+    if isTradingRoute(route):
+        var chartTop = y + int32(8)
+        if chartTop < int32(112):
+            chartTop = int32(112)
+        var chartBottom = vh - int32(36)
+        if chartBottom < chartTop + int32(24):
+            chartBottom = chartTop + int32(24)
+        let chartLeft = int32(40)
+        let chartRight = vw - int32(40)
+        drawir.pushLineInt(list, chartLeft, chartBottom - int32(80), chartRight, chartBottom - int32(120), uint32(0xFF3C8DFF), 1.0)
+        drawir.pushLineInt(list, chartLeft, chartBottom - int32(140), chartRight, chartBottom - int32(60), uint32(0xFF3C8DFF), 1.0)
+        drawir.pushTextInt(list, chartLeft, chartTop, int32(180), int32(18), "CANVAS_OK", uint32(0xFF111111), 12.0)
+        if page.r2cCrosshairActive:
+            var cx = int32(page.r2cCrosshairX)
+            var cy = int32(page.r2cCrosshairY)
+            if cx < int32(16):
+                cx = int32(16)
+            elif cx > vw - int32(16):
+                cx = vw - int32(16)
+            if cy < chartTop:
+                cy = chartTop
+            elif cy > chartBottom:
+                cy = chartBottom
+            drawir.pushLineInt(list, cx, chartTop, cx, chartBottom, uint32(0xFFEA580C), 2.0)
+            drawir.pushLineInt(list, int32(16), cy, vw - int32(16), cy, uint32(0xFFEA580C), 2.0)
+    if page.r2cShowLanguageSelector:
+        drawir.pushRectInt(list, int32(20), vh - int32(96), vw - int32(40), int32(36), uint32(0xFFDBEAFE))
+        drawir.pushTextInt(list, int32(28), vh - int32(88), vw - int32(56), int32(18), page.r2cTextSelectLanguage, uint32(0xFF1E3A8A), 12.0)
+        drawir.pushRectInt(list, int32(20), vh - int32(52), int32(120), int32(28), uint32(0xFFE2E8F0))
+        drawir.pushTextInt(list, int32(28), vh - int32(46), int32(104), int32(16), page.r2cTextSkipDefault, uint32(0xFF111827), 11.0)
+        drawir.pushRectInt(list, vw - int32(156), vh - int32(52), int32(136), int32(28), uint32(0xFFBFDBFE))
+        drawir.pushTextInt(list, vw - int32(148), vh - int32(46), int32(120), int32(16), page.r2cTextContinue, uint32(0xFF1E3A8A), 11.0)
+    if len(page.r2cFileDataUrl) > 0:
+        drawir.pushTextInt(list, int32(24), vh - int32(44), vw - int32(48), int32(20), "FILE_PREVIEW_OK", uint32(0xFF065F46), 12.0)
+
+    page.snapshotText = buildSemanticSnapshot(page, visibleText)
+    page.title = "R2C:" + routeTitle(route)
+
+fn profileId(): str =
+    return "__R2C_PROJECT_NAME__"
+
+fn handleClick(page: web.BrowserPage, targetSelector: str): bool =
+    let id = stripHash(targetSelector)
+    if strEq(id, "skip"):
+        page.r2cLocale = "zh-CN"
+        storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
+        storageStore.setValue(page.storage, "app_language_set", "true")
+        page.r2cShowLanguageSelector = false
+        page.r2cSelectedLanguage = ""
+        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
+        return true
+    if strEq(id, "confirm"):
+        if len(page.r2cSelectedLanguage) == 0:
+            return true
+        page.r2cLocale = page.r2cSelectedLanguage
+        storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
+        storageStore.setValue(page.storage, "app_language_set", "true")
+        page.r2cShowLanguageSelector = false
+        page.r2cSelectedLanguage = ""
+        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
+        return true
+    if strEq(id, "timer-start"):
+        page.r2cTimerRunning = true
+        page.r2cTimerTicks = int32(0)
+        page.r2cNowMs = int64(0)
+        page.r2cTimeoutFired = false
+        return true
+    if strEq(id, "clipboard-copy"):
+        page.r2cClipboardText = "CLIPBOARD_OK"
+        return true
+    if strEq(id, "geo-request"):
+        page.r2cGeoText = "37.7749,-122.4194"
+        return true
+    if strEq(id, "cookie-set"):
+        page.r2cCookieText = "a=1"
+        storageStore.setValue(page.storage, "cookie", page.r2cCookieText)
+        return true
+    if strEq(id, "file-select"):
+        page.r2cFileDataUrl = "data:text/plain;base64,SEVMTE8="
+        return true
+    if hasPrefix(id, "lang-"):
+        page.r2cSelectedLanguage = id[5..<len(id)]
+        return true
+    let route = routeFromSelectorId(id)
+    if len(route) > 0 && isKnownRoute(route):
+        page.r2cCurrentTab = route
+        return true
+    return true
+
+fn dispatchOnPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+    if page == nil:
+        return false
+    ensureDefaults(page)
+    if strEq(eventName, "click"):
+        handleClick(page, targetSelector)
+    elif strEq(eventName, "tick"):
+        if page.r2cTimerRunning:
+            let ms = parsePayloadInt(payload, "ms", int32(500))
+            page.r2cNowMs = page.r2cNowMs + int64(ms)
+            page.r2cTimerTicks = page.r2cTimerTicks + int32(1)
+            if page.r2cNowMs >= int64(1000):
+                page.r2cTimeoutFired = true
+    elif strEq(eventName, "resize"):
+        let w = parsePayloadInt(payload, "w", page.options.viewportWidth)
+        let h = parsePayloadInt(payload, "h", page.options.viewportHeight)
+        if w > int32(0):
+            page.options.viewportWidth = w
+        if h > int32(0):
+            page.options.viewportHeight = h
+        page.r2cResizeCount = page.r2cResizeCount + int32(1)
+    elif strEq(eventName, "pointer-move"):
+        let x = parsePayloadInt(payload, "x", int32(page.r2cCrosshairX))
+        let y = parsePayloadInt(payload, "y", int32(page.r2cCrosshairY))
+        if isTradingRoute(page.r2cCurrentTab):
+            page.r2cCrosshairActive = true
+            page.r2cCrosshairX = float(x)
+            page.r2cCrosshairY = float(y)
+    elif strEq(eventName, "drag-end"):
+        let fromIdx = parsePayloadInt(payload, "from", int32(0))
+        let toIdx = parsePayloadInt(payload, "to", int32(0))
+        reorderDrag(page, fromIdx, toIdx)
+    elif strEq(eventName, "text-input") || strEq(eventName, "ime-start") || strEq(eventName, "ime-update") || strEq(eventName, "ime-end"):
+        if ! ime_bridge.handleImeEvent(page, eventName, payload):
+            if len(page.r2cUtfZhLastError) <= int32(0):
+                page.r2cUtfZhLastError = "ime-handle-failed"
+    rerender(page)
+    return true
+
+fn dispatch(eventName, targetSelector, payload: str): bool =
+    let page = mountedPage
+    if page == nil:
+        return false
+    return dispatchOnPage(page, eventName, targetSelector, payload)
+
+fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+    if page == nil:
+        return false
+    mountedPage = page
+    return dispatchOnPage(page, eventName, targetSelector, payload)
+
+fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =
+    if page == nil:
+        return ""
+    ensureSemanticNodes()
+    let w = float(page.options.viewportWidth)
+    let h = float(page.options.viewportHeight)
+    if page.r2cShowLanguageSelector:
+        if y >= h - 88.0 && y <= h - 44.0:
+            return "#confirm"
+        if y >= h - 44.0:
+            return "#skip"
+        if y >= 88.0 && y <= h - 108.0:
+            let segment = w / 8.0
+            if x < segment:
+                return "#lang-en"
+            if x < segment * 2.0:
+                return "#lang-ja"
+            if x < segment * 3.0:
+                return "#lang-ko"
+            if x < segment * 4.0:
+                return "#lang-fr"
+            if x < segment * 5.0:
+                return "#lang-de"
+            if x < segment * 6.0:
+                return "#lang-ar"
+            if x < segment * 7.0:
+                return "#lang-zh-CN"
+            return "#lang-zh-TW"
+    let route = activeRoute(page)
+    var rowY = 76.0
+    var idx: int32 = int32(0)
+    while idx < len(semanticNodes):
+        let node = semanticNodeAt(semanticNodes, idx)
+        if node != nil && nodeVisibleForRoute(node, route) && nodeRenderable(node):
+            var rowH = 18.0
+            if strEq(node.role, "text"):
+                rowH = 16.0
+            let indent = float(nodeIndentLevel(node)) * 10.0
+            let rowLeft = 24.0 + indent
+            if y >= rowY - 2.0 && y <= rowY + rowH + 2.0 && x >= rowLeft - 4.0 && x <= w - 16.0:
+                let selector = nodeSelector(node)
+                if len(selector) > 0:
+                    return selector
+            rowY = rowY + rowH + 6.0
+            if rowY > h - 88.0:
+                break
+        idx = idx + int32(1)
+    if isTradingRoute(route):
+        if x >= 16.0 && x <= w - 16.0 && y >= 112.0 && y <= h - 32.0:
+            return "#chart"
+    if isPublishRoute(route):
+        if x >= 16.0 && x <= w - 16.0 && y >= 112.0 && y <= h - 32.0:
+            return "#file-select"
+    return ""
+
+fn drainEffects(limit: int32): int32 =
+    let page = mountedPage
+    if page == nil:
+        return int32(0)
+    if limit < int32(0):
+        return int32(0)
+    rerender(page)
+    return int32(0)
+
+fn mountGenerated(page: web.BrowserPage): bool =
+    if page == nil:
+        return false
+    mountedPage = page
+    page.r2cDispatch = dispatchFromPage
+    page.r2cApp = "__R2C_PROJECT_NAME__"
+    page.r2cLocale = storageStore.getValue(page.storage, "app_locale")
+    if len(page.r2cLocale) == 0:
+        page.r2cLocale = "zh-CN"
+    let languageSet = storageStore.getValue(page.storage, "app_language_set")
+    page.r2cShowLanguageSelector = len(languageSet) == 0
+    page.r2cSelectedLanguage = ""
+    page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
+    page.r2cTimerRunning = false
+    page.r2cTimerTicks = int32(0)
+    page.r2cNowMs = int64(0)
+    page.r2cTimeoutFired = false
+    page.r2cResizeCount = int32(0)
+    page.r2cClipboardText = ""
+    page.r2cGeoText = ""
+    page.r2cCookieText = storageStore.getValue(page.storage, "cookie")
+    page.r2cFileDataUrl = ""
+    page.r2cCrosshairActive = false
+    page.r2cCrosshairX = 0.0
+    page.r2cCrosshairY = 0.0
+    page.r2cDragOrderText = "A,B,C"
+    setLen(page.r2cDragItems, 0)
+    page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
+    page.r2cUtfZhStrict = true
+    page.r2cUtfZhLastError = ""
+    page.r2cImeEnabled = true
+    page.r2cImeQuery = ""
+    page.r2cImePreedit = ""
+    setLen[str](&page.r2cImeCandidates, 0)
+    page.r2cImeCommitted = ""
+    ensureDefaults(page)
+    rerender(page)
+    page.r2cDispatch = dispatchFromPage
+    return true

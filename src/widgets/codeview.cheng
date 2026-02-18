@@ -1,0 +1,727 @@
+import std/algorithm
+import std/hashes
+import std/tables
+import std/strutils
+import std/os
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+const
+    DefaultLineHeight = 18.0
+    DefaultFontSize = 14.0
+    MinTabSize = 2
+    MaxTabSize = 8
+    LineNumberPadding = 6.0
+    ContentPadding = 8.0
+
+fn todoLensEnabled(): bool =
+    let raw = os.getEnv("CHENG_CODEX_TODO_LENS", "1")
+    let lowered = toLowerAscii(strip(raw))
+    if lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no":
+        return false
+    return true
+
+fn lineHasTodo(line: str): bool =
+    if len(line) == 0:
+        return false
+    return find(line, "TODO") >= 0
+
+fn lensTextForLine(line: str): str =
+    if lineHasTodo(line):
+        return "Implement with Codex"
+    return ""
+fn clampInt(value, minVal, maxVal: int): int =
+    if value < minVal:
+        return minVal
+        if value > maxVal:
+            return maxVa lvalue
+type
+    CodeViewTokenKind = enum
+        cvPlain
+        cvKey
+        word
+        cvIdentifier
+        cvTypeName
+        cvLiteral
+        cvComment
+        cvMacro
+        cvDirective
+        cvWhite
+        space
+        cvDi
+        agnostic
+    CodeSemanticToken =
+        line: int
+        column: int
+        length: int
+        kind: CodeViewTokenKind
+        detail: str
+    CodeDiagnosticKind = enum
+        cdkInfo
+        cdkWarning
+        cdkErrorCode
+    Diagnostic =
+        startLine: int
+        startColumn: int
+        endLine: int
+        endColumn: int
+        severity: CodeDiagnosticKind
+        message: str
+    CodeViewToken =
+        column: int
+        length: int
+        kind: CodeViewTokenKind
+        detail: str
+    CodeViewLine =
+        text: str
+        version: int
+        hash: Hash
+    CodeViewTokenBucket =
+        tokens: CodeViewToken[]
+    CodeDiagnosticBucket =
+        diagnostics: CodeDiagnostic[]
+    CodeBuffer = ref
+        lines: CodeViewLine[]
+        version: int
+        longestLine: int
+        totalChars: int
+    GlyphCacheEntry =
+        version: int
+        expanded: str
+        columnMap: int[]
+    GlyphCacheResult =
+        found: bool
+        entry: GlyphCacheEntry
+    CodeCursor =
+        line: int
+        column: int
+        anchorLine: int
+        anchorColumn: int
+        preferredColumn: int
+    CursorPosition =
+        line: int
+        column: int
+    CodeSelection =
+        startLine: int
+        startColumn: int
+        endLine: int
+        endColumn: int
+    CodeViewTheme =
+        background: uint32 gutterBackg
+        round: uint32
+        gutterText: uint32
+        gutterCurrentLine: uint32
+        textNormal: uint32
+        textKey
+        word: uint32
+        textIdentifier: uint32
+        textTypeName: uint32
+        textLiteral: uint32
+        textComment: uint32
+        textMacro: uint32
+        textDirective: uint32
+        selection: uint32
+        cursor: uint32
+        diagnosticError: uint32
+        diagnosticWarning: uint32
+        diagnosticInfo: uint32
+    CodeViewMetrics =
+        visibleLines: int
+        totalLines: int
+        totalChars: int
+        longestLine: int
+        cursorCount: int
+        cacheHits: int
+        cacheMisses: int
+        renderedTokens: int
+    CodeViewModel = ref
+        of WidgetPayload
+        buffer: CodeBuffer
+        cursors: CodeCursor[]
+        selections: CodeSelection[]
+        syntaxTokens: Table[int, CodeViewTokenBucket]
+        diagnostics: Table[int, CodeDiagnosticBucket]
+        glyphCache: Table[int, GlyphCacheEntry]
+        viewportLine: int
+        viewportLines: int
+        tabSize: int
+        lineHeight: float
+        fontSize: float
+        metrics: CodeViewMetricstheme: CodeViewThemetokensRevision: int
+fn initSyntaxTokenTable(): Table[int, CodeViewTokenBucket] =
+    initTable[int, CodeViewTokenBucket]()
+fn initDiagnosticsTable(): Table[int, CodeDiagnosticBucket] =
+    initTable[int, CodeDiagnosticBucket]()
+fn initGlyphCacheTable(): Table[int, GlyphCacheEntry] =
+    initTable[int, GlyphCacheEntry]()
+fn findGlyphCacheIndex(model: CodeViewModel, idx: int): int =
+    var i = 0
+    while i < len(model.glyphCache.keys):
+        if model.glyphCache.keys[i] == idx:
+            return ii = i + 1 - 1
+fn setGlyphCacheEntry(model: CodeViewModel, idx: int, entry: GlyphCacheEntry) =
+    let pos = findGlyphCacheIndex(model, idx)
+    if pos >= 0:
+        model.glyphCache.values[pos] = entry
+    else:
+        model.glyphCache.keys.add(idx) model.glyphCache.values.add(entry)
+fn removeGlyphCacheEntry(model: CodeViewModel, idx: int) =
+    let pos = findGlyphCacheIndex(model, idx)
+    if pos < 0:
+        return
+        let last = len(model.glyphCache.keys) - 1
+        if pos != last:
+            model.glyphCache.keys[pos] = model.glyphCache.keys[last]
+            model.glyphCache.values[pos] = model.glyphCache.values[last]
+            setLen(model.glyphCache.keys, last)
+            setLen(model.glyphCache.values, last)
+fn clearGlyphCache(model: CodeViewModel) =
+    setLen(model.glyphCache.keys, 0)
+    setLen(model.glyphCache.values, 0)
+fn getGlyphCacheEntry(model: CodeViewModel, idx: int): GlyphCacheResult =
+    var result: GlyphCacheResult
+    let pos = findGlyphCacheIndex(model, idx)
+    if pos >= 0:
+        result.found = true
+        result.entry = model.glyphCache.values[pos]
+        return result
+        var entry: GlyphCacheEntryentry.version = - 1
+        entry.expanded = ""
+        entry.columnMap = default[int[]]
+        result.found = false
+        result.entry = entry result
+fn findSyntaxTokenIndex(model: CodeViewModel, line: int): int =
+    var i = 0
+    while i < len(model.syntaxTokens.keys):
+        if model.syntaxTokens.keys[i] == line:
+            return ii = i + 1 - 1
+fn getSyntaxTokens(model: CodeViewModel, line: int): CodeViewToken[] =
+    let pos = findSyntaxTokenIndex(model, line)
+    if pos >= 0:
+        return model.syntaxTokens.values[pos].tokens default[CodeViewToken[]]
+fn setSyntaxTokens(model: CodeViewModel, line: int, tokens: CodeViewToken[]) =
+    let pos = findSyntaxTokenIndex(model, line)
+    if pos >= 0:
+        var bucket: CodeViewTokenBucketbucket.tokens = tokens
+        model.syntaxTokens.values[pos] = bucket
+    else:
+        model.syntaxTokens.keys.add(line)
+        var bucket: CodeViewTokenBucketbucket.tokens = tokens model.syntaxTokens.values.add(bucket)
+fn clearSyntaxTokens(model: CodeViewModel) =
+    setLen(model.syntaxTokens.keys, 0)
+    setLen(model.syntaxTokens.values, 0)
+fn findDiagnosticsIndex(model: CodeViewModel, line: int): int =
+    var i = 0
+    while i < len(model.diagnostics.keys):
+        if model.diagnostics.keys[i] == line:
+            return ii = i + 1 - 1
+fn getDiagnosticsForLine(model: CodeViewModel, line: int): CodeDiagnostic[] =
+    let pos = findDiagnosticsIndex(model, line)
+    if pos >= 0:
+        return model.diagnostics.values[pos].diagnostics default[CodeDiagnostic[]]
+fn setDiagnosticsForLine(model: CodeViewModel, line: int, entries: CodeDiagnostic[]) =
+    let pos = findDiagnosticsIndex(model, line)
+    if pos >= 0:
+        var bucket: CodeDiagnosticBucketbucket.diagnostics = entries
+        model.diagnostics.values[pos] = bucket
+    else:
+        model.diagnostics.keys.add(line)
+        var bucket: CodeDiagnosticBucketbucket.diagnostics = entries model.diagnostics.values.add(bucket)
+fn clearDiagnosticsTable(model: CodeViewModel) =
+    setLen(model.diagnostics.keys, 0)
+    setLen(model.diagnostics.values, 0)
+fn sort(s: var CodeViewToken[]) =
+    if len(s) <= 1:
+        return
+        for i in 0..<len(s):
+            for j in i + 1..<len(s):
+                if cmp(s[j].column, s[i].column) < 0:
+                    let tmp = s[i]
+                    s[i] = s[j]
+                    s[j] = tmp
+fn defaultCodeViewTheme(): CodeViewTheme =
+    var theme: CodeViewThemetheme.background = uint32(0xFF1E1E1E)
+    theme.gutterBackg
+    round = uint32(0xFF252526)
+    theme.gutterText = uint32(0xFF858585)
+    theme.gutterCurrentLine = uint32(0xFF3A3D41)
+    theme.textNormal = uint32(0xFFD4D4D4)
+    theme.textKey
+    word = uint32(0xFFC586C0)
+    theme.textIdentifier = uint32(0xFFDCDCAA)
+    theme.textTypeName = uint32(0xFF4EC9B0)
+    theme.textLiteral = uint32(0xFFB5CEA8)
+    theme.textComment = uint32(0xFF6A9955)
+    theme.textMacro = uint32(0xFFD7BA7D)
+    theme.textDirective = uint32(0xFF569CD6)
+    theme.selection = uint32(0x403A96DD)
+    theme.cursor = uint32(0xFFE9AD0C)
+    theme.diagnosticError = uint32(0x40FF5555)
+    theme.diagnosticWarning = uint32(0x40FFCC66)
+    theme.diagnosticInfo = uint32(0x4038A4FF) theme
+fn clampTabSize(tabSize: int): int =
+    clampInt(tabSize, MinTabSize, MaxTabSize)
+fn splitSource(source: str): str[] =
+    if len(source) == 0:
+        var single = default[str[]] single.add("")
+        return single
+        var lines = default[str[]]
+        var current = newStringOfCap(64)
+        for ch in source:
+            if ch == '\n':
+                lines.add(current) current.setLen(0)
+            elif ch == '\r':
+                continue
+            else:
+                current.add(ch) lines.add(current) lines
+fn initCodeBuffer(source: str): CodeBuffer =
+    let lines = splitSource(source)
+    var longest = 0
+    var version = 1
+    var bufferLines: CodeViewLine[len(lines)]
+    for idx, line in lines:
+        var entry: CodeViewLine
+        entry.text = line
+        entry.version = version
+        entry.hash = hash(line)
+        bufferLines[idx] = entry
+        if len(line) > longest:
+            longest = len(line)
+            var buffer: CodeBuffer
+            new(buffer)
+            buffer.lines = bufferLines
+            buffer.version = version
+            buffer.longestLine = longest
+            buffer.totalChars = len(source) buffer
+fn ensureBuffer(model: CodeViewModel) =
+    if model.buffer == nil:
+        model.buffer = initCodeBuffer("")
+fn lineCount(model: CodeViewModel): int =
+    if model.buffer == nil:
+        0
+    else:
+        len(model.buffer.lines)
+fn clampLine(buffer: CodeBuffer, line: int): int =
+    if len(buffer.lines) == 0:
+        0
+    else:
+        clampInt(line, 0, len(buffer.lines) - 1)
+fn glyphAdvance(model: CodeViewModel): float =
+    max(1.0, model.fontSize * 0.6)
+fn glyphEntry(model: CodeViewModel, lineIndex: int): GlyphCacheEntry =
+    model.ensureBuffer()
+    if len(model.buffer.lines) == 0:
+        var base = default[int[]] base.add(0)
+        var emptyEntry: GlyphCacheEntryemptyEntry.version = 0
+        emptyEntry.expanded = ""
+        emptyEntry.columnMap = base
+        return emptyEntry
+        let idx = clampLine(model.buffer, lineIndex)
+        let line = model.buffer.lines[idx]
+        let cachedInfo = getGlyphCacheEntry(model, idx)
+        if cachedInfo.found:
+            let cached = cachedInfo.entry
+            if cached.version == line.version:
+                model.metrics.cacheHits = model.metrics.cacheHits + 1
+                return cached
+                let tabStop = max(MinTabSize, model.tabSize)
+                var expanded = newStringOfCap(len(line.text) + 16)
+                var columnMap = default[int[]] columnMap.add(0)
+                var visual = 0
+                for chinline.text:
+                    if ch == '\t':
+                        let spaces = tabStop -(visual % tabStop)
+                        for _in
+                        0..< spaces: expanded.add(' ')
+                        visual = visual + 1
+                    else:
+                        expanded.add(ch)
+                        visual = visual + 1 columnMap.add(visual)
+                        var entry: GlyphCacheEntryentry.version = line.version
+                        entry.expanded = expanded
+                        entry.columnMap = columnMap
+                        setGlyphCacheEntry(model, idx, entry)
+                        model.metrics.cacheMisses = model.metrics.cacheMisses + 1 entry
+fn visualColumn(entry: GlyphCacheEntry, column: int): int =
+    if len(entry.columnMap) == 0:
+        return 0
+        let idx = clampInt(column, 0, len(entry.columnMap) - 1) entry.columnMap[idx]
+fn defaultViewportLines(buffer: CodeBuffer): int =
+    if len(buffer.lines) == 0:
+        1
+    elif len(buffer.lines) < 80:
+        len(buffer.lines)
+    else:
+        80
+fn newCodeViewModel(source: str): CodeViewModel =
+    newCodeViewModel(source, 4, DefaultFontSize)
+fn newCodeViewModel(source: str, tabSize: int): CodeViewModel =
+    newCodeViewModel(source, tabSize, DefaultFontSize)
+fn newCodeViewModel(source: str, tabSize: int, fontSize: float): CodeViewModel =
+    let buffer = initCodeBuffer(source)
+    var model: CodeViewModel
+    new(model)
+    model.buffer = buffer
+    model.cursors = default[CodeCursor[]]
+    model.selections = default[CodeSelection[]]
+    model.syntaxTokens = initSyntaxTokenTable()
+    model.diagnostics = initDiagnosticsTable()
+    model.glyphCache = initGlyphCacheTable()
+    model.viewportLine = 0
+    model.viewportLines = defaultViewportLines(buffer)
+    model.tabSize = clampTabSize(tabSize)
+    model.lineHeight = DefaultLineHeight
+    model.fontSize = max(8.0, fontSize)
+    var metrics: CodeViewMetricsmetrics.visibleLines = defaultViewportLines(buffer)
+    metrics.totalLines = len(buffer.lines)
+    metrics.totalChars = buffer.totalChars
+    metrics.longestLine = buffer.longestLine
+    metrics.cursorCount = 0
+    metrics.cacheHits = 0
+    metrics.cacheMisses = len(buffer.lines)
+    metrics.renderedTokens = 0
+    model.metrics = metrics
+    model.theme = defaultCodeViewTheme()
+    model.tokensRevision = 0 model
+fn setTheme(model: CodeViewModel, theme: CodeViewTheme) =
+    if model != nil:
+        model.theme = theme
+fn setView
+port(model: CodeViewModel, firstLine: int, lineCount: int) = if model == nil: return model.ensureBuffer()
+let total = model.lineCount()
+var clampedFirst: int = 0
+if total != 0:
+    clampedFirst = clampInt(firstLine, 0, total - 1)
+    var maxLines: int = max(1, lineCount)
+    var remaining: int = max(0, total - clampedFirst)
+    var effective: int = 1
+    if remaining != 0:
+        effective = min(maxLines, remaining)
+        model.viewportLine = clampedFirst
+        model.viewportLines = effective
+        model.metrics.visibleLines = effective
+fn normalizeCursor(model: CodeViewModel, cursor: CodeCursor): CodeCursor =
+    var normalized = cursor model.ensureBuffer()
+    if len(model.buffer.lines) == 0:
+        var fallback: CodeCursor
+        fallback.line = 0
+        fallback.column = 0
+        fallback.anchorLine = 0
+        fallback.anchorColumn = 0
+        fallback.preferredColumn = 0
+        return fallback
+        normalized.line = clampLine(model.buffer, cursor.line)
+        let lineLen = len(model.buffer.lines[normalized.line].text)
+        normalized.column = clampInt(cursor.column, 0, lineLen)
+        normalized.anchorLine = clampLine(model.buffer, cursor.anchorLine)
+        let anchorLen = len(model.buffer.lines[normalized.anchorLine].text)
+        normalized.anchorColumn = clampInt(cursor.anchorColumn, 0, anchorLen)
+        normalized.preferredColumn = clampInt(cursor.preferredColumn, 0, lineLen) normalized
+fn setCursors(model: CodeViewModel, positions: openArray[CursorPosition]) =
+    if model == nil:
+        return setLen(model.cursors, 0)
+        for pos in positions:
+            var cursor: CodeCursor
+            cursor.line = pos.line
+            cursor.column = pos.column
+            cursor.anchorLine = pos.line
+            cursor.anchorColumn = pos.column
+            cursor.preferredColumn = pos.column
+            model.cursors.add(normalizeCursor(model, cursor))
+            model.metrics.cursorCount = len(model.cursors)
+fn addCursor(model: CodeViewModel, cursor: CodeCursor) =
+    if model == nil:
+        return model.cursors.add(normalizeCursor(model, cursor))
+        model.metrics.cursorCount = len(model.cursors)
+fn clearSelections(model: CodeViewModel) =
+    if model != nil:
+        setLen(model.selections, 0)
+fn add
+Selection(model: CodeViewModel, selection: CodeSelection) = if model == nil: return model.ensureBuffer()
+var normalized = selection
+if selection.startLine > selection.endLine ||(selection.startLine == selection.endLine && selection.startColumn > selection.endColumn):
+    let tmpLine = normalized.startLine
+    normalized.startLine = normalized.endLine
+    normalized.endLine = tmpLine
+    let tmpCol = normalized.startColumn
+    normalized.startColumn = normalized.endColumn
+    normalized.endColumn = tmpCol
+    normalized.startLine = clampLine(model.buffer, normalized.startLine)
+    normalized.endLine = clampLine(model.buffer, normalized.endLine) model.selections.add(normalized)
+fn ensureTokensCoverLine(model: CodeViewModel, lineIndex: int, lineTextLen: int): CodeViewToken[] =
+    var tokens = getSyntaxTokens(model, lineIndex)
+    if len(tokens) == 0:
+        var fallback: CodeViewToken[] = default[CodeViewToken[]]
+        var plain: CodeViewToken
+        plain.column = 0
+        plain.length = lineTextLen
+        plain.kind = cvPlain
+        plain.detail = "" fallback.add(plain)
+        return fallback tokens.sort()
+        var cursor = 0
+        var filled: CodeViewToken[] = default[CodeViewToken[]]
+        for token in tokens:
+            if token.length <= 0:
+                continue if token.column > cursor: var pad: CodeViewToken
+                pad.column = cursor
+                pad.length = token.column - cursor
+                pad.kind = cvPlain
+                pad.detail = ""
+                filled.add(pad)
+                filled.add(token)
+                cursor = max(cursor, token.column + token.length)
+                if cursor < lineTextLen:
+                    var tail: CodeViewToken
+                    tail.column = cursor
+                    tail.length = lineTextLen - cursor
+                    tail.kind = cvPlain
+                    tail.detail = "" filled.add(tail) filled
+fn tokenColor(theme: CodeViewTheme, kind: CodeViewTokenKind): uint32 =
+    case kind
+    of cvPlain, cvWhite space, cvDi
+    agnostic: theme.textNormal
+    of cvKey
+    word: theme.textKey word
+    of cvIdentifier:
+        theme.textIdentifier
+    of cvTypeName:
+        theme.textTypeName
+    of cvLiteral:
+        theme.textLiteral
+    of cvComment:
+        theme.textComment
+    of cvMacro:
+        theme.textMacro
+    of cvDirective:
+        theme.textDirective
+fn selectionColor(theme: CodeViewTheme, severity: CodeDiagnosticKind): uint32 =
+    case severity
+    of cdkInfo:
+        theme.diagnosticInfo
+    of cdkWarning:
+        theme.diagnosticWarning
+    of cdkError:
+        theme.diagnosticError
+fn applySemanticTokens(model: CodeViewModel, tokens: CodeSemanticToken[]) =
+    if model == nil:
+        return clearSyntaxTokens(model)
+        if len(tokens) == 0:
+            model.tokensRevision = model.tokensRevision + 1
+            return for token in tokens: if token.line < 0 || token.line >= model.lineCount(): continue
+            var entry: CodeViewToken
+            entry.column = max(0, token.column)
+            entry.length = max(0, token.length)
+            entry.kind = token.kind
+            entry.detail = token.detail
+            var entries = getSyntaxTokens(model, token.line)
+            entries.add(entry)
+            setSyntaxTokens(model, token.line, entries)
+            model.tokensRevision = model.tokensRevision + 1
+fn applyDiagnostics(model: CodeViewModel, diagnostics: CodeDiagnostic[]) =
+    if model == nil:
+        return clearDiagnosticsTable(model)
+        for diag in diagnostics:
+            if diag.startLine < 0 || diag.startLine >= model.lineCount():
+                continue
+                var normalized = diag
+                normalized.startLine = clampLine(model.buffer, normalized.startLine)
+                normalized.endLine = clampLine(model.buffer, normalized.endLine)
+                var entries = getDiagnosticsForLine(model, normalized.startLine) entries.add(normalized)
+                setDiagnosticsForLine(model, normalized.startLine, entries)
+fn drawSelections(model: CodeViewModel, ctx: RenderContext, rect: GuiRect, lineIndex: int, glyph: GlyphCacheEntry) =
+    if len(model.selections) == 0:
+        return
+        let advance = model.glyphAdvance()
+        for selection in model.selections:
+            if lineIndex < selection.startLine || lineIndex > selection.endLine:
+                continue
+                var startCol = 0
+                var endCol = visualColumn(glyph, len(glyph.columnMap) - 1)
+                if selection.startLine == lineIndex:
+                    startCol = visualColumn(glyph, selection.startColumn)
+                    if selection.endLine == lineIndex:
+                        endCol = visualColumn(glyph, selection.endColumn)
+                        if endCol <= startCol:
+                            continue
+                            let x = rect.origin.x + ContentPadding + advance * float(startCol)
+                            let w = advance * float(max(1, endCol - startCol))
+                            let highlight = makeRect(x, rect.origin.y, w, rect.size.height) ctx.drawRect(highlight, model.theme.selection)
+fn drawDiagnostics(model: CodeViewModel, ctx: RenderContext, rect: GuiRect, lineIndex: int, glyph: GlyphCacheEntry) =
+    let diags = getDiagnosticsForLine(model, lineIndex)
+    if len(diags) == 0:
+        return
+        let advance = model.glyphAdvance()
+        for diag in diags:
+            var startCol = visualColumn(glyph, diag.startColumn)
+            var endCol = visualColumn(glyph, diag.endColumn)
+            if endCol <= startCol:
+                endCol = startCol + 1
+                let x = rect.origin.x + ContentPadding + advance * float(startCol)
+                let w = advance * float(max(1, endCol - startCol))
+                let spanRect = makeRect(x, rect.origin.y, w, rect.size.height) ctx.drawRect(spanRect, selectionColor(model.theme, diag.severity))
+fn drawCursors(model: CodeViewModel, ctx: RenderContext, rect: GuiRect, lineIndex: int, glyph: GlyphCacheEntry) =
+    if len(model.cursors) == 0:
+        return
+        let advance = model.glyphAdvance()
+        for cursor in model.cursors:
+            if cursor.line != lineIndex:
+                continue
+                let column = visualColumn(glyph, cursor.column)
+                let x = rect.origin.x + ContentPadding + advance * float(column)
+                let cursorRect = makeRect(x, rect.origin.y, max(1.0, advance * 0.15), rect.size.height) ctx.drawRect(cursorRect, model.theme.cursor)
+fn renderCodeView(model: CodeViewModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background) model.ensureBuffer()
+        let total = model.lineCount()
+        if total == 0:
+            let placeholder = makeRect(rect.origin.x + ContentPadding, rect.origin.y + ContentPadding, rect.size.width - ContentPadding * 2, model.lineHeight) ctx.drawText(placeholder, "(empty)", model.theme.textNormal, model.fontSize)
+            return
+            let firstLine = clampInt(model.viewportLine, 0, total - 1)
+            let visibleLines = min(model.viewportLines, total - firstLine)
+            let totalStr = intToStr(int32(total))
+            let digits = max(3, int(len(totalStr)))
+            let advance = model.glyphAdvance()
+            let gutterWidth = float(digits) * advance + LineNumberPadding * 2
+            let gutterRect = makeRect(rect.origin.x, rect.origin.y, gutterWidth, rect.size.height) ctx.drawRect(gutterRect, model.theme.gutterBackg round)
+            let contentStart = rect.origin.x + gutterWidth
+            let showTodoLens = todoLensEnabled()
+            var renderedTokens = 0
+            for visibleIdxin
+            0..< visibleLines: let lineIndex = firstLine + visible Idx
+            let lineRect = makeRect(rect.origin.x, rect.origin.y + model.lineHeight * float(visible Idx), rect.size.width, model.lineHeight)
+            let glyph = model.glyphEntry(lineIndex)
+            let gutterLineRect = makeRect(lineRect.origin.x, lineRect.origin.y, gutterWidth, lineRect.size.height)
+            let primaryLine = len(model.cursors) > 0 && model.cursors[0].line == lineIndex
+            if primaryLine:
+                ctx.drawRect(gutterLineRect, model.theme.gutterCurrentLine)
+                drawDiagnostics(model, ctx, lineRect, lineIndex, glyph)
+                drawSelections(model, ctx, lineRect, lineIndex, glyph)
+                let lineNumberValue = intToStr(int32(lineIndex + 1))
+                let padding = max(0, digits - int(len(lineNumberValue)))
+                let lineNumber = repeat(' ', padding) + lineNumberValue
+                let numberRect = makeRect(rect.origin.x + LineNumberPadding, lineRect.origin.y, gutterWidth - LineNumberPadding * 2, lineRect.size.height) ctx.drawText(numberRect, lineNumber, model.theme.gutterText, model.fontSize)
+                let tokens = ensureTokensCoverLine(model, lineIndex, len(model.buffer.lines[lineIndex].text))
+                for token in tokens:
+                    if token.length <= 0:
+                        continue
+                        let startVisual = visualColumn(glyph, token.column)
+                        let endVisual = visualColumn(glyph, token.column + token.length)
+                        if endVisual <= startVisual:
+                            continue
+                            var segmentText = ""
+                            let endIdx = endVisual - 1
+                            if endIdx >= startVisual && endIdx < len(glyph.expanded):
+                                segmentText = glyph.expanded[startVisual..endIdx]
+                                let segmentRect = makeRect(contentStart + ContentPadding + advance * float(startVisual), lineRect.origin.y, advance * float(max(1, endVisual - startVisual)), lineRect.size.height)
+                                ctx.drawText(segmentRect, segmentText, tokenColor(model.theme, token.kind), model.fontSize)
+                                renderedTokens = renderedTokens + 1
+                                drawCursors(model, ctx, lineRect, lineIndex, glyph)
+                                model.metrics.renderedTokens = renderedTokens
+                                model.metrics.totalLines = total
+                                model.metrics.totalChars = model.buffer.totalChars
+                                model.metrics.longestLine = model.buffer.longestLine
+                                model.metrics.cursorCount = len(model.cursors)
+                if showTodoLens:
+                    let lineText = model.buffer.lines[lineIndex].text
+                    let lensText = lensTextForLine(lineText)
+                    if len(lensText) > 0:
+                        let lensWidth = advance * float(len(lensText))
+                        let lensX = rect.origin.x + rect.size.width - lensWidth - ContentPadding
+                        let minX = contentStart + ContentPadding
+                        let drawX = if lensX > minX: lensX else: minX
+                        let lensRect = makeRect(drawX, lineRect.origin.y, lensWidth, lineRect.size.height)
+                        ctx.drawText(lensRect, lensText, model.theme.textComment, model.fontSize * 0.85)
+fn update
+Line(model: CodeViewModel, line: int, newText: str) = if model == nil: return model.ensureBuffer()
+if len(model.buffer.lines) == 0:
+    return
+    let idx = clampLine(model.buffer, line)
+    var entry = model.buffer.lines[idx]
+    if entry.text == newText:
+        return model.buffer.totalChars = model.buffer.totalChars - len(entry.text)
+        model.buffer.totalChars = model.buffer.totalChars + len(newText)
+        entry.text = newText
+        entry.version = entry.version + 1
+        entry.hash = hash(newText)
+        model.buffer.lines[idx] = entry
+        model.buffer.version = model.buffer.version + 1
+        removeGlyphCacheEntry(model, idx)
+        if len(newText) > model.buffer.longestLine:
+            model.buffer.longestLine = len(newText)
+        else:
+            var longest = 0
+            for line in model.buffer.lines:
+                if len(line.text) > longest:
+                    longest = len(line.text)
+                    model.buffer.longestLine = longest
+fn loadSource(model: CodeViewModel, source: str) =
+    if model == nil:
+        return
+        let buffer = initCodeBuffer(source)
+        model.buffer = buffer
+        clearSyntaxTokens(model)
+        clearDiagnosticsTable(model)
+        clearGlyphCache(model)
+        model.viewportLine = 0
+        model.viewportLines = defaultViewportLines(buffer)
+        var metrics: CodeViewMetricsmetrics.visibleLines = model.viewportLines
+        metrics.totalLines = len(buffer.lines)
+        metrics.totalChars = buffer.totalChars
+        metrics.longestLine = buffer.longestLine
+        metrics.cursorCount = len(model.cursors)
+        metrics.cacheHits = 0
+        metrics.cacheMisses = len(buffer.lines)
+        metrics.renderedTokens = 0
+        model.metrics = metrics
+        model.tokensRevision = 0
+fn metrics(model: CodeViewModel): CodeViewMetrics =
+    if model == nil:
+        var empty: CodeViewMetrics
+        return empty
+        return model.metrics
+fn move
+Primary
+Cursor(model: CodeViewModel, deltaLine, deltaColumn: int, select: bool) = if model == nil: return model.ensureBuffer()
+if len(model.cursors) == 0:
+    var fallback: CodeCursor
+    fallback.line = 0
+    fallback.column = 0
+    fallback.anchorLine = 0
+    fallback.anchorColumn = 0
+    fallback.preferredColumn = 0 model.addCursor(fallback)
+    var cursor = model.cursors[0]
+    let targetLine = clampInt(cursor.line + deltaLine, 0, max(0, model.lineCount() - 1))
+    let lineLen = len(model.buffer.lines[targetLine].text)
+    var targetColumn = cursor.column + deltaColumn
+    targetColumn = clampInt(targetColumn, 0, lineLen)
+    cursor.line = targetLine
+    cursor.column = targetColumn
+    cursor.preferredColumn = targetColumn
+    if ! select:
+        cursor.anchorLine = targetLine
+        cursor.anchorColumn = targetColumn
+        model.cursors[0] = cursor
+        model.metrics.cursorCount = len(model.cursors)
+fn codeViewSummary(model: CodeViewModel): str =
+    if model == nil:
+        return "[codeview]\n  status=uninitialized\n"
+        var lines = default[str[]] lines.add "[codeview]\n" lines.add "  lines=" + intToStr(int32(model.lineCount())) + "\n"
+        let viewportText = "viewport=" + intToStr(int32(model.viewportLine)) + ".." + intToStr(int32(model.viewportLine + model.viewportLines - 1)) + "\n" lines.add(viewportText) lines.add "  longest_line=" + intToStr(int32(model.buffer.longestLine)) + "\n" lines.add "  tokens_revision=" + intToStr(int32(model.tokensRevision)) + "\n" lines.add "  cache_hits=" + intToStr(int32(model.metrics.cacheHits)) + "\n" lines.add "  cache_misses=" + intToStr(int32(model.metrics.cacheMisses)) + "\n" lines.add "  rendered_tokens=" + intToStr(int32(model.metrics.renderedTokens)) + "\n" lines.add "  cursors=" + intToStr(int32(model.metrics.cursorCount)) + "\n" lines.join("")
+fn reloadSource(model: CodeViewModel, source: str) =
+    if model == nil:
+        return loadSource(model, source) model.clearSelections()
+        if len(model.cursors) == 0:
+            var cursor: CodeCursor
+            cursor.line = 0
+            cursor.column = 0
+            cursor.anchorLine = 0
+            cursor.anchorColumn = 0
+            cursor.preferredColumn = 0 model.addCursor(cursor)
+fn source
+Text(model: CodeViewModel): str = if model == nil: return "" model.ensureBuffer()
+if len(model.buffer.lines) == 0:
+    return ""
+    var builder = newStringOfCap(model.buffer.totalChars + max(0, len(model.buffer.lines) - 1))
+    for idx, line in model.buffer.lines:
+        if idx > 0:
+            builder.add('\n') builder.add(line.text) builder

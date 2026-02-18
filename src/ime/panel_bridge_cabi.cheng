@@ -1,0 +1,2 @@
+fn cwPanelBridgeRenderSnapshot(snapshot: str): int32 @ importc("cangwu_panel_bridge_render_snapshot")
+fn cwPanelBridgeNoop(): int32 @ importc("cangwu_panel_bridge_noop")

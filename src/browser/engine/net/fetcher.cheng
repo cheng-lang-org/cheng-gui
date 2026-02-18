@@ -1,0 +1,250 @@
+import std/os
+
+type
+    FetchResult = ref
+        ok: bool
+        statusCode: int32
+        finalUrl: str
+        body: str
+        error: str
+
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return !cGt(a, b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return !cLt(a, b)
+
+fn fetcherStrEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn fetcherHasPrefix(text, prefix: str): bool =
+    let pLen = safeLen(prefix)
+    if pLen == int32(0):
+        return true
+    let tLen = safeLen(text)
+    if tLen < pLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx < pLen:
+        if cNe(text[idx], prefix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn fetcherMatchAt(text: str, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if text == nil || pattern == nil:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn fetcherFindFrom(text, pattern: str, start: int): int =
+    if len(pattern) == 0:
+        return start
+    var idx = start
+    if idx < 0:
+        idx = 0
+    while idx + len(pattern) <= len(text):
+        if fetcherMatchAt(text, pattern, idx):
+            return idx
+        idx = idx + 1
+    return -1
+
+fn fetcherFindLast(text, pattern: str): int =
+    if len(pattern) == 0:
+        return len(text)
+    if len(text) < len(pattern):
+        return -1
+    let idxBase = len(text) - len(pattern)
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            if fetcherMatchAt(text, pattern, idx):
+                return idx
+    return -1
+
+fn fetcherTrimRightNewlines(text: str): str =
+    if len(text) == 0:
+        return ""
+    var end = len(text)
+    while end > 0:
+        let ch = text[end - 1]
+        if cEq(ch, '\n') || cEq(ch, '\r'):
+            end = end - 1
+        else:
+            break
+    if end <= 0:
+        return ""
+    if end >= len(text):
+        return text
+    return text[0..<end]
+
+fn fetcherParseInt32(text: str): int32 =
+    if len(text) == 0:
+        return int32(0)
+    var value: int32 = int32(0)
+    for idx in 0..<len(text):
+        let ch = text[idx]
+        if cLt(ch, '0') || cGt(ch, '9'):
+            break
+        value = value * int32(10) + int32(int32(ch) - int32('0'))
+    return value
+
+fn fetcherShellQuote(value: str): str =
+    if len(value) == 0:
+        return "''"
+    var out = "'"
+    for idx in 0..<len(value):
+        if cEq(value[idx], '\''):
+            out = out + "'\"'\"'"
+        else:
+            out = out + charToStr(value[idx])
+    out = out + "'"
+    return out
+
+fn isLocalHttps(url: str): bool =
+    if fetcherHasPrefix(url, "https://127.0.0.1"):
+        return true
+    if fetcherHasPrefix(url, "https://localhost"):
+        return true
+    return false
+
+fn fetcherEnv(name: str): str =
+    return os.getEnv(name)
+
+fn fetch(url: str): FetchResult =
+    var result: FetchResult
+    new(result)
+    result.ok = false
+    result.statusCode = int32(0)
+    result.finalUrl = url
+    result.body = ""
+    result.error = ""
+
+    if len(url) == 0:
+        result.error = "empty-url"
+        return result
+    if fetcherHasPrefix(url, "javascript:") || fetcherHasPrefix(url, "data:"):
+        result.error = "blocked-scheme"
+        result.statusCode = int32(403)
+        return result
+
+    if fetcherStrEq(url, "about:blank"):
+        result.ok = true
+        result.statusCode = int32(200)
+        result.body = "<html><head><title>about:blank</title></head><body></body></html>"
+        return result
+
+    if ! fetcherHasPrefix(url, "http://") && ! fetcherHasPrefix(url, "https://"):
+        result.ok = false
+        result.statusCode = int32(400)
+        result.error = "unsupported-scheme"
+        return result
+
+    # Real network fetch via curl (pure Cheng through std/os.execCmdEx).
+    # CI/runtime gates use a local fixture server; external sites are best-effort.
+    var insecureFlag = ""
+    let allowInsecure = fetcherStrEq(fetcherEnv("CHENG_GUI_TEST_INSECURE_TLS"), "1")
+    if allowInsecure && isLocalHttps(url):
+        insecureFlag = " -k"
+
+    let quotedUrl = fetcherShellQuote(url)
+    let writeTail = " -w '\\nCHENG_STATUS:%{http_code}\\nCHENG_EFFECTIVE_URL:%{url_effective}\\n'"
+    let cmd = "curl -sS -L --compressed --max-time 8 -A 'ChengGUI/1.0'" + insecureFlag + " " + quotedUrl + writeTail
+    let options = os.processOptionMask(os.poStdErrToStdOut)
+    let execRes = os.execCmdEx(cmd, options, "")
+    if execRes.exitCode != 0:
+        result.error = "curl-exit:" + $ execRes.exitCode
+        if execRes.output != nil:
+            result.body = execRes.output
+        return result
+
+    # Keep explicit `str` locals to avoid backend bugs that can truncate pointers
+    # when inferring the type/width of `var` string temporaries.
+    var output: str = execRes.output
+    if output == nil:
+        output = ""
+
+    let marker = "\nCHENG_STATUS:"
+    let idxStatus = fetcherFindLast(output, marker)
+    if idxStatus < 0:
+        result.body = output
+        result.error = "missing-curl-status"
+        return result
+
+    result.body = output[0..<idxStatus]
+    var rest: str = output[idxStatus + len(marker)..<len(output)]
+    let idxNl = fetcherFindFrom(rest, "\n", 0)
+    if idxNl >= 0:
+        # Keep the slice expression inline so it is type-checked as `str`.
+        result.statusCode = fetcherParseInt32(rest[0..<idxNl])
+        rest = rest[idxNl + 1..<len(rest)]
+    else:
+        result.statusCode = fetcherParseInt32(rest)
+        rest = ""
+
+    let urlMarker = "CHENG_EFFECTIVE_URL:"
+    if fetcherHasPrefix(rest, urlMarker):
+        var urlLine: str = rest[len(urlMarker)..<len(rest)]
+        let idxEnd = fetcherFindFrom(urlLine, "\n", 0)
+        if idxEnd >= 0:
+            urlLine = urlLine[0..<idxEnd]
+        urlLine = fetcherTrimRightNewlines(urlLine)
+        if len(urlLine) > 0:
+            result.finalUrl = urlLine
+
+    if result.statusCode >= int32(200) && result.statusCode < int32(300):
+        result.ok = true
+        result.error = ""
+    else:
+        result.ok = false
+        if result.statusCode > 0:
+            result.error = "http-status:" + $ result.statusCode
+        else:
+            result.error = "http-status:0"
+    return result

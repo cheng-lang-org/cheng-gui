@@ -1,0 +1,178 @@
+import std/os
+import cheng/gui/ime/cangwu_assets_loader
+import cheng/gui/ime/cangwu_engine
+import cheng/gui/ime/cangwu_rules
+import cheng/gui/ime/panel_state
+import cheng/gui/ime/panel_render
+import cheng/gui/ime/panel_bridge_cabi
+import cheng/gui/ime/legacy_types
+
+fn cwParseIntEnv(text: str, fallback: int32): int32 =
+    if len(text) == 0:
+        return fallback
+    var idx: int32 = 0
+    var sign: int32 = 1
+    if text[0] == '-':
+        sign = -1
+        idx = 1
+    var value: int32 = 0
+    var saw = false
+    while idx < len(text):
+        let ch = text[idx]
+        if ch >= '0' && ch <= '9':
+            value = value * 10 + int32(ch) - int32('0')
+            saw = true
+            idx = idx + 1
+        else:
+            break
+    if ! saw:
+        return fallback
+    return value * sign
+
+fn cwTrimLine(line: str): str =
+    if len(line) == 0:
+        return ""
+    var start: int32 = 0
+    var stop: int32 = len(line) - 1
+    while start <= stop && (line[start] == ' ' || line[start] == '\t' || line[start] == '\r' || line[start] == '\n'):
+        start = start + 1
+    while stop >= start && (line[stop] == ' ' || line[stop] == '\t' || line[stop] == '\r' || line[stop] == '\n'):
+        stop = stop - 1
+    if stop < start:
+        return ""
+    return cwSliceRange(line, start, stop + 1)
+
+fn cwLineValue(line: str): tuple[key: str, value: str] =
+    var idx: int32 = 0
+    while idx < len(line):
+        if line[idx] == ':':
+            return (key: cwTrimLine(cwSliceRange(line, 0, idx)), value: cwTrimLine(cwSliceRange(line, idx + 1, len(line))))
+        idx = idx + 1
+    return (key: cwTrimLine(line), value: "")
+
+fn cwHandleTextInput(state: var CwPanelState, text: str) =
+    for idx in 0..<len(text):
+        let ch = text[idx]
+        if ch == ' ':
+            cwPanelCommitCandidate(state, 0)
+            continue
+        if ch == ';':
+            cwPanelSetFilter(state, cfUD)
+            continue
+        if ch == '\'':
+            cwPanelSetFilter(state, cfENC)
+            continue
+        if ch == '/':
+            cwPanelSetFilter(state, cfMIX)
+            continue
+        if ch >= '1' && ch <= '9':
+            let pick = int32(ch) - int32('1')
+            cwPanelCommitCandidate(state, pick)
+            continue
+        if int32(ch) <= 0x20:
+            continue
+        cwPanelAppendQuery(state, charToStr(ch))
+
+fn cwHandleKey(state: var CwPanelState, keyText: str) =
+    let key = legacyNormalizeText(keyText)
+    if key == "backspace":
+        cwPanelBackspace(state)
+        return
+    if key == "esc" || key == "escape":
+        cwPanelClearInput(state)
+        return
+    if key == "pageup" || key == "pgup":
+        cwPanelPageUp(state)
+        return
+    if key == "pagedown" || key == "pgdn":
+        cwPanelPageDown(state)
+        return
+    if key == "space":
+        cwPanelCommitCandidate(state, 0)
+        return
+    if key == "ctrls":
+        if cwPanelSaveUtf8(state, ""):
+            state.status = "saved utf-8"
+        else:
+            state.status = "save utf-8 failed"
+        return
+    if key == "ctrlshifts":
+        if cwPanelSaveUtfZh(state, ""):
+            state.status = "saved utf-zh"
+        else:
+            state.status = "save utf-zh failed"
+        return
+    if key == "ctrlo":
+        let path = getEnv("CHENG_CW_IME_IMPORT_PATH")
+        if ! cwPanelImportLegacyFile(state, path, leAuto):
+            state.status = "import failed"
+        return
+    if key == "ctrlshifto":
+        let path = getEnv("CHENG_CW_IME_IMPORT_PATH")
+        let fromText = getEnv("CHENG_CW_IME_IMPORT_ENCODING")
+        let source = legacyEncodingFromText(fromText, leUtf8)
+        if ! cwPanelImportLegacyFile(state, path, source):
+            state.status = "import failed"
+        return
+
+fn cwApplyScriptLine(state: var CwPanelState, line: str) =
+    let clean = cwTrimLine(line)
+    if len(clean) == 0 || clean[0] == '#':
+        return
+    let kv = cwLineValue(clean)
+    if kv.key == "text":
+        cwHandleTextInput(state, kv.value)
+        return
+    if kv.key == "key":
+        cwHandleKey(state, kv.value)
+        return
+    if kv.key == "import":
+        let source = legacyEncodingFromText(getEnv("CHENG_CW_IME_IMPORT_ENCODING"), leAuto)
+        if ! cwPanelImportLegacyFile(state, kv.value, source):
+            state.status = "import failed"
+        return
+    if kv.key == "query":
+        cwPanelClearInput(state)
+        cwPanelAppendQuery(state, kv.value)
+
+fn cwRunEventScript(state: var CwPanelState, scriptPath: str) =
+    if len(scriptPath) == 0 || ! fileExists(scriptPath):
+        return
+    let script = readFile(scriptPath)
+    var lineStart: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(script):
+        if idx == len(script) || script[idx] == '\n':
+            cwApplyScriptLine(state, cwSliceRange(script, lineStart, idx))
+            lineStart = idx + 1
+        idx = idx + 1
+
+fn cwRunPanel(dataRoot: str, frameLimit: int32): int32 =
+    let assets = cwLoadAssets(dataRoot)
+    var engine = cwCreateEngine(assets)
+    if ! engine.ready || len(engine.assets.dict.codepoints) != 9698:
+        return 21
+
+    var state = cwPanelDefault(engine)
+    cwPanelRefresh(state)
+
+    if getEnv("CHENG_CW_IME_IMPORT_ON_START") == "1":
+        let importPath = getEnv("CHENG_CW_IME_IMPORT_PATH")
+        if len(importPath) > 0:
+            let source = legacyEncodingFromText(getEnv("CHENG_CW_IME_IMPORT_ENCODING"), leAuto)
+            let _ = cwPanelImportLegacyFile(state, importPath, source)
+
+    cwRunEventScript(state, getEnv("CHENG_CW_IME_EVENT_SCRIPT"))
+
+    let maxFrames = cwParseIntEnv(getEnv("CHENG_CW_IME_FRAMES"), frameLimit)
+    var frames = int32(0)
+    while maxFrames > 0 && frames < maxFrames:
+        let snapshot = cwRenderSnapshot(1280, 760, state)
+        let _ = cwPanelBridgeRenderSnapshot(snapshot)
+        frames = frames + 1
+
+    let snapshotOut = getEnv("CHENG_CW_IME_SNAPSHOT_OUT")
+    if len(snapshotOut) > 0:
+        writeFile(snapshotOut, cwRenderSnapshot(1280, 760, state))
+
+    return 0

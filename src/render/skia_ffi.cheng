@@ -1,0 +1,115 @@
+import std/hashes
+import std/math
+import std/times
+import cheng/gui/platform/types
+type
+    SkiaRenderHandle = void*
+    SkiaFrameStats =
+        gpuTimeMs: float
+        commandCount: int
+        rectCount: int
+        textCount: int
+fn skiaHandleIsNil(handle: SkiaRenderHandle): bool =
+    void*(handle) == nil
+fn hash(handle: SkiaRenderHandle): Hash =
+    hash(void*(handle))
+fn `==`(a, b: SkiaRenderHandle): bool =
+    void*(a) == void*(b)
+type
+    SkiaStub = ref
+        surface: SurfaceHandle
+        pixelWidth: int
+        pixelHeight: int
+        dpiScale: float
+        colorSpace: str
+        frameSerial: int
+        commandCount: int
+        rectCount: int
+        textCount: int
+        frameStartMs: int64
+fn toMs(time: DateTime): int64 =
+    time.toUnix() * int64(1000) + int64(time.nanosecond / 1000000)
+fn clampDimension(value: float): int =
+    if value <= 0.0:
+        1
+    else:
+        max(1, int(round(value)))
+fn makeHandle(stub: SkiaStub): SkiaRenderHandle =
+    SkiaRenderHandle(void*(stub))
+fn lookup(handle: SkiaRenderHandle): SkiaStub =
+    if handle.skiaHandleIsNil():
+        return nil SkiaStub(void*(handle))
+fn skiaCreate(surface: SurfaceHandle, pixelSize: GuiSize, dpiScale: float, colorSpace: str): SkiaRenderHandle =
+    var stub: SkiaStubnew(stub)
+    stub.surface = surface
+    stub.pixelWidth = clampDimension(pixelSize.width)
+    stub.pixelHeight = clampDimension(pixelSize.height)
+    stub.dpiScale =(if dpiScale <= 0.0: 1.0 else: dpiScale)
+    if len(colorSpace) == 0:
+        stub.colorSpace = "sRGB"
+    else:
+        stub.colorSpace = colorSpace
+        stub.frameSerial = 0
+        stub.commandCount = 0
+        stub.rectCount = 0
+        stub.textCount = 0
+        stub.frameStartMs = 0
+        makeHandle(stub)
+fn skiaDestroy(handle: SkiaRenderHandle) =
+    if handle.skiaHandleIsNil():
+        return
+        let stub = lookup(handle)
+        if stub != nil:
+            stub.surface = nil
+fn skiaRe
+size(handle: SkiaRenderHandle, pixelSize: GuiSize) = let stub = lookup(handle)
+if stub == nil:
+    return stub.pixelWidth = clampDimension(pixelSize.width)
+    stub.pixelHeight = clampDimension(pixelSize.height)
+fn skiaBeginFrame(handle: SkiaRenderHandle, logicalSize: GuiSize, pixelSize: GuiSize, dpiScale: float, colorSpace: str) =
+    let stub = lookup(handle)
+    if stub == nil:
+        return stub.pixelWidth = clampDimension(pixelSize.width)
+        stub.pixelHeight = clampDimension(pixelSize.height)
+        stub.dpiScale =(if dpiScale <= 0.0: 1.0 else: dpiScale)
+        if len(colorSpace) > 0:
+            stub.colorSpace = colorSpace
+            stub.commandCount = 0
+            stub.rectCount = 0
+            stub.textCount = 0
+            stub.frameStartMs = toMs(getTime())
+            logicalSize
+fn skiaDrawRect(handle: SkiaRenderHandle, rect: GuiRect, color: uint32, opacity: float) =
+    let stub = lookup(handle)
+    if stub == nil:
+        rect
+        color
+        opacity
+        return
+    stub.commandCount = stub.commandCount + 1
+    stub.rectCount = stub.rectCount + 1
+fn skiaDrawText(handle: SkiaRenderHandle, rect: GuiRect, text: str, color: uint32, fontSize: float, opacity: float) =
+    let stub = lookup(handle)
+    if stub == nil:
+        rect
+        text
+        color
+        fontSize
+        opacity
+        return
+    stub.commandCount = stub.commandCount + 1
+    stub.textCount = stub.textCount + 1
+fn skiaEndFrame(handle: SkiaRenderHandle): SkiaFrameStats =
+    let stub = lookup(handle)
+    if stub == nil:
+        var stats: SkiaFrameStats
+        return stats
+        let nowMs = toMs(getTime())
+        var elapsed = nowMs - stub.frameStartMs
+        if stub.frameStartMs == 0 || elapsed < 0:
+            elapsed = 0
+            stub.frameSerial = stub.frameSerial + 1
+            var stats: SkiaFrameStatsstats.gpuTimeMs = float(elapsed)
+            stats.commandCount = stub.commandCount
+            stats.rectCount = stub.rectCount
+            stats.textCount = stub.textCount stats

@@ -1,0 +1,239 @@
+import std/times
+const
+    AutoAnnotateActionLabelIdle = "idle"
+    AutoAnnotateActionLabelPreview = "preview"
+    AutoAnnotateActionLabelApplied = "applied"
+    AutoAnnotateActionLabelUndo = "undo"
+    AutoAnnotateActionLabelError = "error"
+type
+    AutoAnnotateAction = enum
+        aaaIdle
+        aaaPreview
+        aaaApplied
+        aaaUndo
+        aaaError
+type
+    AutoAnnotateEntry =
+        line: int
+        column: int
+        scopePath: str
+        annotations: str[]
+        reason: str
+type
+    AutoAnnotateHistoryEntry =
+        action: AutoAnnotateAction
+        message: str
+        timestampMs: int64
+type
+    seq_AutoAnnotateEntry =
+        len: int32
+        cap: int32
+        buffer: void*
+fn newSeq_AutoAnnotateEntry(len: int32, cap: int32): seq_AutoAnnotateEntry =
+    var seqInstance: seq_AutoAnnotateEntry
+    seqInstance.len = 0
+    seqInstance.cap = cap
+    if cap > 0:
+        var size64: int64 = int64(cap) * sizeof(AutoAnnotateEntry)
+        var size32: int32 = int32(size64)
+        seqInstance.buffer = alloc(size32)
+    else:
+        seqInstance.buffer = nil
+        return seqInstance
+fn get_AutoAnnotateEntry(seqInst: seq_AutoAnnotateEntry, i: int32): AutoAnnotateEntry =
+    var idx64: int64 = int64(i)
+    var offset64: int64 = idx64 * sizeof(AutoAnnotateEntry)
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst.buffer, offset32)
+    var pt: AutoAnnotateEntry* = AutoAnnotateEntry*(p)
+    return *pt
+fn addPtr_AutoAnnotateEntry(seqInst: seq_AutoAnnotateEntry*, val: AutoAnnotateEntry) =
+    if seqInst->len >= seqInst->cap:
+        var newCap: int32 = 4
+        if seqInst->cap != 0:
+            newCap = seqInst->cap * 2
+            seqInst->cap = newCap
+            var cap64: int64 = int64(newCap)
+            var size64: int64 = int64(cap64 * sizeof(AutoAnnotateEntry))
+            var size32: int32 = int32(size64)
+            seqInst->buffer = realloc(seqInst->buffer, size32)
+            var idx64: int64 = int64(seqInst->len)
+            var offset64: int64 = int64(idx64 * sizeof(AutoAnnotateEntry))
+            var offset32: int32 = int32(offset64)
+            var p: void* = ptr_add(seqInst->buffer, offset32)
+            var pt: AutoAnnotateEntry* = AutoAnnotateEntry*(p)
+            *pt = val
+            seqInst->len = seqInst->len + 1
+type
+    seq_AutoAnnotateHistoryEntry =
+        len: int32
+        cap: int32
+        buffer: void*
+fn newSeq_AutoAnnotateHistoryEntry(len: int32, cap: int32): seq_AutoAnnotateHistoryEntry =
+    var seqInstance: seq_AutoAnnotateHistoryEntry
+    seqInstance.len = 0
+    seqInstance.cap = cap
+    if cap > 0:
+        var size64: int64 = int64(cap) * sizeof(AutoAnnotateHistoryEntry)
+        var size32: int32 = int32(size64)
+        seqInstance.buffer = alloc(size32)
+    else:
+        seqInstance.buffer = nil
+        return seqInstance
+fn get_AutoAnnotateHistoryEntry(seqInst: seq_AutoAnnotateHistoryEntry, i: int32): AutoAnnotateHistoryEntry =
+    var idx64: int64 = int64(i)
+    var offset64: int64 = idx64 * sizeof(AutoAnnotateHistoryEntry)
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst.buffer, offset32)
+    var pt: AutoAnnotateHistoryEntry* = AutoAnnotateHistoryEntry*(p)
+    return *pt
+fn addPtr_AutoAnnotateHistoryEntry(seqInst: seq_AutoAnnotateHistoryEntry*, val: AutoAnnotateHistoryEntry) =
+    if seqInst->len >= seqInst->cap:
+        var newCap: int32 = 4
+        if seqInst->cap != 0:
+            newCap = seqInst->cap * 2
+            seqInst->cap = newCap
+            var cap64: int64 = int64(newCap)
+            var size64: int64 = int64(cap64 * sizeof(AutoAnnotateHistoryEntry))
+            var size32: int32 = int32(size64)
+            seqInst->buffer = realloc(seqInst->buffer, size32)
+            var idx64: int64 = int64(seqInst->len)
+            var offset64: int64 = int64(idx64 * sizeof(AutoAnnotateHistoryEntry))
+            var offset32: int32 = int32(offset64)
+            var p: void* = ptr_add(seqInst->buffer, offset32)
+            var pt: AutoAnnotateHistoryEntry* = AutoAnnotateHistoryEntry*(p)
+            *pt = val
+            seqInst->len = seqInst->len + 1
+type
+    AutoAnnotateSnapshot =
+        repoRoot: str
+        path: str
+        status: AutoAnnotateAction
+        message: str
+        pendingAnnotations: int
+        totalAnnotations: int
+        lastInserted: int
+        lastUndone: int
+        undoAvailable: bool
+        batchMode: bool
+        fromCache: bool
+        entries: seq_AutoAnnotateEntry
+        history: seq_AutoAnnotateHistoryEntry
+        diffText: str
+        generatedAtMs: int64
+        analysisChecksum: str
+type
+    AutoAnnotateSessionObj =
+        path: str
+        repoRoot: str
+        status: AutoAnnotateAction
+        message: str
+        pendingAnnotations: int
+        totalAnnotations: int
+        lastInserted: int
+        lastUndone: int
+        undoAvailable: bool
+        batchMode: bool
+        fromCache: bool
+        entries: seq_AutoAnnotateEntry
+        history: seq_AutoAnnotateHistoryEntry
+        diffText: str
+        generatedAtMs: int64
+        analysisChecksum: str
+type
+    AutoAnnotateSession = AutoAnnotateSessionObj*
+fn actionLabel(action: AutoAnnotateAction): str =
+    case action
+    of aaaPreview:
+        AutoAnnotateActionLabelPreview
+    of aaaApplied:
+        AutoAnnotateActionLabelApplied
+    of aaaUndo:
+        AutoAnnotateActionLabelUndo
+    of aaaError:
+        AutoAnnotateActionLabelError
+    else:
+        AutoAnnotateActionLabelIdle
+fn emptyAutoAnnotateSnapshot(repoRoot: str, path: str): AutoAnnotateSnapshot =
+    var snapshot: AutoAnnotateSnapshotsnapshot.repoRoot = repoRoot
+    snapshot.path = path
+    snapshot.status = aaaIdle
+    snapshot.message = ""
+    snapshot.pendingAnnotations = 0
+    snapshot.totalAnnotations = 0
+    snapshot.lastInserted = 0
+    snapshot.lastUndone = 0
+    snapshot.undoAvailable = false
+    snapshot.batchMode = false
+    snapshot.fromCache = false
+    snapshot.entries = newSeq_AutoAnnotateEntry(0, 0)
+    snapshot.history = newSeq_AutoAnnotateHistoryEntry(0, 0)
+    snapshot.diffText = ""
+    snapshot.generatedAtMs = int64(epochTime() * 1000.0)
+    snapshot.analysisChecksum = "" snapshot
+fn makeSnapshot(session: AutoAnnotateSession): AutoAnnotateSnapshot =
+    if session == nil:
+        return emptyAutoAnnotateSnapshot("", "")
+        var snapshot: AutoAnnotateSnapshotsnapshot.repoRoot = session->repoRoot
+        snapshot.path = session->path
+        snapshot.status = session->status
+        snapshot.message = session->message
+        snapshot.pendingAnnotations = session->pendingAnnotations
+        snapshot.totalAnnotations = session->totalAnnotations
+        snapshot.lastInserted = session->lastInserted
+        snapshot.lastUndone = session->lastUndone
+        snapshot.undoAvailable = session->undoAvailable
+        snapshot.batchMode = session->batchMode
+        snapshot.fromCache = session->fromCache
+        snapshot.entries = session->entries
+        snapshot.history = session->history
+        snapshot.diffText = session->diffText
+        snapshot.generatedAtMs = session->generatedAtMs
+        snapshot.analysisChecksum = session->analysisChecksum snapshot
+fn newAutoAnnotateSession(path: str, repoRoot: str): AutoAnnotateSession =
+    var session: AutoAnnotateSession = AutoAnnotateSession(alloc(sizeof(AutoAnnotateSessionObj)))
+    if session == nil:
+        return nil
+        session->path = path
+        session->repoRoot = repoRoot
+        session->status = aaaIdle
+        session->message = ""
+        session->pendingAnnotations = 0
+        session->totalAnnotations = 0
+        session->lastInserted = 0
+        session->lastUndone = 0
+        session->undoAvailable = false
+        session->batchMode = false
+        session->fromCache = false
+        session->entries = newSeq_AutoAnnotateEntry(0, 0)
+        session->history = newSeq_AutoAnnotateHistoryEntry(0, 0)
+        session->diffText = ""
+        session->generatedAtMs = int64(epochTime() * 1000.0)
+        session->analysisChecksum = "" session
+fn snapshotAutoAnnotate(session: AutoAnnotateSession): AutoAnnotateSnapshot =
+    makeSnapshot(session)
+fn refreshAutoAnnotate(session: AutoAnnotateSession): AutoAnnotateSnapshot =
+    if session == nil:
+        return emptyAutoAnnotateSnapshot("", "")
+        if session->status == aaaIdle:
+            session->status = aaaPreview
+            makeSnapshot(session)
+fn setAutoAnnotateBatchMode(session: AutoAnnotateSession, enabled: bool): AutoAnnotateSnapshot =
+    if session == nil:
+        return emptyAutoAnnotateSnapshot("", "")
+        session->batchMode = enabled
+        makeSnapshot(session)
+fn applyAutoAnnotate(session: AutoAnnotateSession, autoSave: bool): AutoAnnotateSnapshot =
+    autoSave
+    if session == nil:
+        return emptyAutoAnnotateSnapshot("", "")
+        session->status = aaaApplied
+        session->undoAvailable = true
+        makeSnapshot(session)
+fn undoAutoAnnotate(session: AutoAnnotateSession): AutoAnnotateSnapshot =
+    if session == nil:
+        return emptyAutoAnnotateSnapshot("", "")
+        session->status = aaaUndo
+        session->undoAvailable = false
+        session->lastUndone = session->lastInserted
+        makeSnapshot(session)

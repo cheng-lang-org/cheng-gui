@@ -1,0 +1,51 @@
+import std/os
+
+fn appendString(items: var str[], item: str) =
+    let idx = len(items)
+    setLen[str](&items, idx + 1)
+    items[idx] = item
+
+fn hasSuffix(text, suffix: str): bool =
+    if len(suffix) == 0:
+        return true
+    if len(text) < len(suffix):
+        return false
+    return text[len(text) - len(suffix)..<len(text)] == suffix
+
+fn ensureDir(path: str): bool =
+    if len(path) == 0:
+        return false
+    if os.dirExists(path):
+        return true
+    os.createDir(path)
+    return os.dirExists(path)
+
+fn writeText(path, content: str): bool =
+    if len(path) == 0:
+        return false
+    os.writeFile(path, content)
+    return os.fileExists(path)
+
+fn readText(path: str): tuple[text: str, err: str] =
+    if len(path) == 0:
+        return (text: "", err: "empty-path")
+    if ! os.fileExists(path):
+        return (text: "", err: "missing-file")
+    var text = os.readFile(path)
+    if text == nil:
+        text = ""
+    return (text: text, err: "")
+
+fn listProjectSources(root: str): str[] =
+    var out: str[]
+    setLen[str](&out, 0)
+    if len(root) == 0 || ! os.dirExists(root):
+        return out
+    let paths = walkDirRec(root)
+    var idx: int32 = int32(0)
+    while idx < len(paths):
+        let path = paths[idx]
+        if hasSuffix(path, ".ts") || hasSuffix(path, ".tsx") || hasSuffix(path, ".js") || hasSuffix(path, ".jsx"):
+            appendString(out, path)
+        idx = idx + int32(1)
+    return out

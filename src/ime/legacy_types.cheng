@@ -1,0 +1,47 @@
+import cheng/gui/ime/cangwu_types
+
+fn legacyToLowerChar(ch: char): char =
+    let code = int32(ch)
+    if code >= int32('A') && code <= int32('Z'):
+        return char(code - int32('A') + int32('a'))
+    return ch
+
+fn legacyNormalizeText(text: str): str =
+    var out = ""
+    for idx in 0..<len(text):
+        let ch = legacyToLowerChar(text[idx])
+        if ch == '-' || ch == '_' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r':
+            continue
+        out = out + charToStr(ch)
+    return out
+
+fn legacyEncodingLabel(enc: LegacyEncoding): str =
+    if enc == leUtf8:
+        return "utf8"
+    if enc == leUtf16Le:
+        return "utf16le"
+    if enc == leUtf16Be:
+        return "utf16be"
+    if enc == leGbk:
+        return "gbk"
+    if enc == leGb2312:
+        return "gb2312"
+    return "auto"
+
+fn legacyEncodingFromText(text: str, fallback: LegacyEncoding): LegacyEncoding =
+    let norm = legacyNormalizeText(text)
+    if len(norm) == 0:
+        return fallback
+    if norm == "auto":
+        return leAuto
+    if norm == "utf8" || norm == "utf":
+        return leUtf8
+    if norm == "utf16" || norm == "utf16le":
+        return leUtf16Le
+    if norm == "utf16be":
+        return leUtf16Be
+    if norm == "gbk" || norm == "cp936":
+        return leGbk
+    if norm == "gb2312":
+        return leGb2312
+    return fallback

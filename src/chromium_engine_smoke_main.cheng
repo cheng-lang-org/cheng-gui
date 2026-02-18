@@ -1,0 +1,34 @@
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+
+fn main(): int32 =
+    var config = types.defaultBrowserEngineConfig()
+    config.appId = "cheng.gui.chromium.smoke"
+    config.siteIsolation = true
+
+    let engine = web.createBrowserEngine(config)
+    if engine == nil:
+        return int32(10)
+
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        return int32(11)
+
+    var pageOptions = types.defaultPageOptions()
+    pageOptions.initialUrl = "https://example.com"
+    let page = web.createPage(ctx, pageOptions)
+    if page == nil:
+        return int32(12)
+
+    web.dispatchDomEvent(page, "set-title", "title", "Cheng Chromium")
+
+    let metrics = web.browserMetrics(engine)
+    if metrics.totalPages < int32(1):
+        return int32(14)
+
+    web.destroyPage(page)
+    web.destroyContext(ctx)
+    web.shutdownBrowserEngine(engine)
+    return int32(0)
+
+main()

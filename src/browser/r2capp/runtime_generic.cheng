@@ -1,0 +1,85 @@
+import cheng/gui/browser/web
+import std/os
+import cheng/r2capp/runtime_generated as generated
+
+fn i32Text(value: int32): str =
+    if value == int32(0):
+        return "0"
+    var out: str = ""
+    var n = value
+    var neg = false
+    if n < int32(0):
+        neg = true
+        n = -n
+    while n > int32(0):
+        let d = n % int32(10)
+        out = charToStr(char(int32('0') + d)) + out
+        n = n / int32(10)
+    if neg:
+        out = "-" + out
+    return out
+
+fn tracePhase(phase: str) =
+    let traceFile = os.getEnv("CHENG_R2C_TRACE_FILE")
+    if len(traceFile) <= int32(0):
+        return
+    os.writeFile(traceFile, phase + "\n")
+
+fn isImeEvent(eventName: str): bool =
+    if eventName == "text-input":
+        return true
+    if eventName == "ime-start":
+        return true
+    if eventName == "ime-update":
+        return true
+    if eventName == "ime-end":
+        return true
+    return false
+
+fn dispatchCompiledEvent(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+    if page == nil:
+        return false
+    if len(page.r2cApp) == 0:
+        page.r2cApp = generated.profileId()
+    return generated.dispatchFromPage(page, eventName, targetSelector, payload)
+
+fn hitTestTarget(page: web.BrowserPage, x, y: float): str =
+    if page == nil:
+        return ""
+    return generated.resolveTargetAt(page, x, y)
+
+fn notifyViewport(page: web.BrowserPage, width, height: int32): bool =
+    if page == nil:
+        return false
+    if width > int32(0):
+        page.options.viewportWidth = width
+    if height > int32(0):
+        page.options.viewportHeight = height
+    let ok = dispatchCompiledEvent(page, "resize", "", "w=" + i32Text(page.options.viewportWidth) + ";h=" + i32Text(page.options.viewportHeight))
+    if ok:
+        return true
+    return web.setPageMarkup(page, page.markup, page.currentUrl)
+
+fn mountCompiledApp(page: web.BrowserPage, manifestPath: str): bool =
+    tracePhase("runtime-mount-enter")
+    manifestPath
+    if page == nil:
+        tracePhase("runtime-mount-nil-page")
+        return false
+    page.r2cUtfZhEnabled = false
+    page.r2cUtfZhStrict = true
+    page.r2cUtfZhLastError = ""
+    page.r2cImeEnabled = false
+    page.r2cImeQuery = ""
+    page.r2cImePreedit = ""
+    setLen[str](&page.r2cImeCandidates, 0)
+    page.r2cImeCommitted = ""
+    tracePhase("runtime-mount-call-generated")
+    let ok = generated.mountGenerated(page)
+    tracePhase("runtime-mount-after-generated")
+    if ! ok:
+        tracePhase("runtime-mount-fail-generated")
+        return false
+    page.r2cDispatch = dispatchCompiledEvent
+    tracePhase("runtime-mount-ok")
+    return true

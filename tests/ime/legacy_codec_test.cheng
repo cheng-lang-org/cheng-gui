@@ -1,0 +1,77 @@
+import cheng/gui/ime/legacy_codec
+import cheng/gui/ime/legacy_types
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/utfzh_codec
+
+fn bytesFromInts(values: int32[]): str =
+    var out = ""
+    for idx in 0..<len(values):
+        out = out + charToStr(char(values[idx]))
+    return out
+
+fn miniLegacyAssets(): LegacyAssets =
+    var assets: LegacyAssets
+    assets.gbkToUnicode = []
+    assets.gb2312ToUnicode = []
+
+    var g1: CwIntMapEntry
+    g1.key = "D6D0"
+    g1.value = 0x4E2D
+    add(assets.gbkToUnicode, g1)
+    add(assets.gb2312ToUnicode, g1)
+
+    var g2: CwIntMapEntry
+    g2.key = "CEC4"
+    g2.value = 0x6587
+    add(assets.gbkToUnicode, g2)
+    add(assets.gb2312ToUnicode, g2)
+
+    return assets
+
+fn testDecodeGbk(): int32 =
+    let legacy = miniLegacyAssets()
+    let rawBytes: int32[] = [0xD6, 0xD0, 0xCE, 0xC4]
+    let raw = bytesFromInts(rawBytes)
+    let dec = legacyDecodeStrict(raw, leGbk, legacy)
+    if ! dec.ok:
+        return 101
+    if dec.textUtf8 != utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991):
+        return 102
+    return 0
+
+fn testDecodeUtf16(): int32 =
+    let legacy = miniLegacyAssets()
+    let rawBytes: int32[] = [0xFF, 0xFE, 0x2D, 0x4E, 0x87, 0x65]
+    let raw = bytesFromInts(rawBytes)
+    let dec = legacyDecodeStrict(raw, leUtf16Le, legacy)
+    if ! dec.ok:
+        return 201
+    if dec.textUtf8 != utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991):
+        return 202
+    let auto = legacyDecodeStrict(raw, leAuto, legacy)
+    if auto.detected != leUtf16Le:
+        return 203
+    return 0
+
+fn testDecodeError(): int32 =
+    let legacy = miniLegacyAssets()
+    let rawBytes: int32[] = [0x81, 0x30]
+    let raw = bytesFromInts(rawBytes)
+    let dec = legacyDecodeStrict(raw, leGbk, legacy)
+    if dec.errorCount <= 0:
+        return 301
+    return 0
+
+fn main(): int32 =
+    var rc = testDecodeGbk()
+    if rc != 0:
+        return rc
+    rc = testDecodeUtf16()
+    if rc != 0:
+        return rc
+    rc = testDecodeError()
+    if rc != 0:
+        return rc
+    return 0
+
+main()

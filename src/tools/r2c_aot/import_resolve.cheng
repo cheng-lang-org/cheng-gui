@@ -1,0 +1,373 @@
+import std/os
+
+import cheng/gui/tools/r2c_aot/types
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn hasPrefix(text, prefix: str): bool =
+    let n = safeLen(prefix)
+    if n <= int32(0):
+        return true
+    if safeLen(text) < n:
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[idx], prefix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn hasSuffix(text, suffix: str): bool =
+    let n = safeLen(suffix)
+    if n <= int32(0):
+        return true
+    let t = safeLen(text)
+    if t < n:
+        return false
+    let start = t - n
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[start + idx], suffix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn isPathSep(ch: char): bool =
+    return cEq(ch, '/') || cEq(ch, '\\')
+
+fn normalizeSlashes(path: str): str =
+    if safeLen(path) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(path):
+        let ch = path[idx]
+        if cEq(ch, '\\'):
+            out = out + "/"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn stripQuery(spec: str): str =
+    if safeLen(spec) <= int32(0):
+        return ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(spec):
+        if cEq(spec[idx], '?') || cEq(spec[idx], '#'):
+            return spec[0..<idx]
+        idx = idx + int32(1)
+    return spec
+
+fn isBareImport(spec: str): bool =
+    if safeLen(spec) <= int32(0):
+        return false
+    if hasPrefix(spec, "./") || hasPrefix(spec, "../") || hasPrefix(spec, "/"):
+        return false
+    return true
+
+fn isCodeSourcePath(path: str): bool =
+    return hasSuffix(path, ".ts") || hasSuffix(path, ".tsx") || hasSuffix(path, ".js") || hasSuffix(path, ".jsx")
+
+fn dirname(path: str): str =
+    let norm = normalizeSlashes(path)
+    if safeLen(norm) <= int32(0):
+        return ""
+    let idxBase = len(norm) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            if cEq(norm[idx], '/'):
+                if idx <= 0:
+                    return "/"
+                return norm[0..<idx]
+    return ""
+
+fn joinPath(a, b: str): str =
+    if safeLen(a) <= int32(0):
+        return normalizeSlashes(b)
+    if safeLen(b) <= int32(0):
+        return normalizeSlashes(a)
+    let aa = normalizeSlashes(a)
+    let bb = normalizeSlashes(b)
+    if hasPrefix(bb, "/"):
+        return bb
+    if hasSuffix(aa, "/"):
+        return aa + bb
+    return aa + "/" + bb
+
+fn appendPart(parts: var str[], part: str) =
+    let idx = len(parts)
+    setLen[str](&parts, idx + 1)
+    parts[idx] = part
+
+fn splitPath(path: str): str[] =
+    var out: str[]
+    setLen[str](&out, 0)
+    let norm = normalizeSlashes(path)
+    if safeLen(norm) <= int32(0):
+        return out
+    var token: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(norm):
+        if cEq(norm[idx], '/'):
+            appendPart(out, token)
+            token = ""
+        else:
+            token = token + charToStr(norm[idx])
+        idx = idx + int32(1)
+    appendPart(out, token)
+    return out
+
+fn normalizeDotSegments(path: str): str =
+    let absMode = hasPrefix(path, "/")
+    let parts = splitPath(path)
+    var stack: str[]
+    setLen[str](&stack, 0)
+    for idx in 0..<len(parts):
+        let part = parts[idx]
+        if len(part) == 0 || part == ".":
+            continue
+        if part == "..":
+            if len(stack) > 0:
+                setLen[str](&stack, len(stack) - 1)
+            continue
+        appendPart(stack, part)
+    var out: str = ""
+    if absMode:
+        out = "/"
+    for idx in 0..<len(stack):
+        if idx > 0:
+            out = out + "/"
+        out = out + stack[idx]
+    if len(out) == 0 && absMode:
+        return "/"
+    return out
+
+fn normalizeEntry(inRoot, entry: str): str =
+    let root = normalizeSlashes(inRoot)
+    let ent = normalizeSlashes(entry)
+    if hasPrefix(ent, "/"):
+        return normalizeDotSegments(joinPath(root, ent[1..<len(ent)]))
+    return normalizeDotSegments(joinPath(root, ent))
+
+fn moduleIdFromSource(inRoot, sourcePath: str): str =
+    let root = normalizeSlashes(inRoot)
+    let src = normalizeSlashes(sourcePath)
+    if hasPrefix(src, root):
+        var rel = src[len(root)..<len(src)]
+        if len(rel) == 0:
+            return "/"
+        if ! hasPrefix(rel, "/"):
+            rel = "/" + rel
+        return rel
+    return src
+
+fn resolveRelativeSource(inRoot, currentSource, spec: str): str =
+    let raw = stripQuery(spec)
+    if safeLen(raw) <= int32(0):
+        return ""
+    let baseDir = dirname(currentSource)
+    let seed = normalizeDotSegments(joinPath(baseDir, raw))
+    if os.fileExists(seed) && ! os.dirExists(seed):
+        return seed
+    if os.fileExists(seed + ".ts"):
+        return seed + ".ts"
+    if os.fileExists(seed + ".tsx"):
+        return seed + ".tsx"
+    if os.fileExists(seed + ".js"):
+        return seed + ".js"
+    if os.fileExists(seed + ".jsx"):
+        return seed + ".jsx"
+    if os.fileExists(joinPath(seed, "index.ts")):
+        return joinPath(seed, "index.ts")
+    if os.fileExists(joinPath(seed, "index.tsx")):
+        return joinPath(seed, "index.tsx")
+    if os.fileExists(joinPath(seed, "index.js")):
+        return joinPath(seed, "index.js")
+    if os.fileExists(joinPath(seed, "index.jsx")):
+        return joinPath(seed, "index.jsx")
+    # Asset fallback: keep resolved raw path if present.
+    if os.fileExists(seed) && ! os.dirExists(seed):
+        return seed
+    # If raw uses absolute-from-root style (e.g. /app/main.tsx).
+    if hasPrefix(raw, "/"):
+        let absSeed = normalizeDotSegments(joinPath(inRoot, raw[1..<len(raw)]))
+        if os.fileExists(absSeed) && ! os.dirExists(absSeed):
+            return absSeed
+        if os.fileExists(absSeed + ".ts"):
+            return absSeed + ".ts"
+        if os.fileExists(absSeed + ".tsx"):
+            return absSeed + ".tsx"
+    return ""
+
+fn adapterForBareSpec(spec: str): types.R2cAdapterResolve =
+    var out: types.R2cAdapterResolve
+    new(out)
+    out.spec = spec
+    out.adapterModule = ""
+    out.supported = false
+    out.reason = "unsupported-bare-import"
+    if spec == "react":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react"
+        out.reason = ""
+        return out
+    if spec == "react-dom/client":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_dom_client"
+        out.reason = ""
+        return out
+    if spec == "lucide-react":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/lucide"
+        out.reason = ""
+        return out
+    if spec == "react-responsive-masonry":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/responsive_masonry"
+        out.reason = ""
+        return out
+    if spec == "@capacitor/core":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_core"
+        out.reason = ""
+        return out
+    if spec == "@capacitor/geolocation":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_geo"
+        out.reason = ""
+        return out
+    if spec == "ethers":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ethers_lite"
+        out.reason = ""
+        return out
+    if spec == "@solana/web3.js":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/solana_web3_lite"
+        out.reason = ""
+        return out
+    if spec == "bip39":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bip39_lite"
+        out.reason = ""
+        return out
+    if spec == "bitcoinjs-lib":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bitcoinjs_lite"
+        out.reason = ""
+        return out
+    if spec == "tiny-secp256k1":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/tiny_secp256k1_lite"
+        out.reason = ""
+        return out
+    if spec == "ecpair":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ecpair_lite"
+        out.reason = ""
+        return out
+    if spec == "lunar-javascript":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "virtual:pwa-register":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "jspdf":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "crypto" || spec == "node:crypto":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
+        out.reason = ""
+        return out
+    if spec == "three":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "zustand":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@react-three/fiber":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@react-three/drei":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@react-three/cannon":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if hasPrefix(spec, "@radix-ui/"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if hasPrefix(spec, "@vitejs/"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@capacitor/cli" ||
+            spec == "class-variance-authority" ||
+            spec == "clsx" ||
+            spec == "cmdk" ||
+            spec == "input-otp" ||
+            spec == "next-themes" ||
+            spec == "react-day-picker" ||
+            spec == "react-resizable-panels" ||
+            spec == "recharts" ||
+            spec == "sonner" ||
+            spec == "tailwind-merge" ||
+            spec == "tailwindcss" ||
+            spec == "vaul" ||
+            spec == "vite" ||
+            spec == "vite-plugin-pwa" ||
+            spec == "vite-plugin-top-level-await" ||
+            spec == "vite-plugin-wasm" ||
+            spec == "vitest":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if hasPrefix(spec, "@noble/hashes/"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if hasPrefix(spec, "node:"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    return out

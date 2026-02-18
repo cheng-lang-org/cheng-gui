@@ -1,0 +1,29 @@
+type
+    CryptoDigest = ref
+        algo: str
+        valueHex: str
+
+fn adapterId(): str =
+    return "crypto"
+
+fn randomBytesHex(size: int32): str =
+    if size <= int32(0):
+        return ""
+    # Deterministic placeholder for zero-JS-runtime AOT paths.
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < size:
+        out = out + "00"
+        idx = idx + int32(1)
+    return out
+
+fn createHash(algo, text: str): CryptoDigest =
+    var out: CryptoDigest
+    new(out)
+    out.algo = algo
+    # Deterministic placeholder hash; callers should tolerate unavailable crypto strength.
+    out.valueHex = "unavailable_" + text
+    return out
+
+fn digestHex(algo, text: str): str =
+    return createHash(algo, text).valueHex

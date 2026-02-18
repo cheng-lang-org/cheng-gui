@@ -1,0 +1,114 @@
+type
+    R2cFeatureGate = ref
+        key: str
+        required: bool
+        enabled: bool
+        reason: str
+
+    R2cCoverageStat = ref
+        key: str
+        covered: int32
+        total: int32
+        ratio: float
+
+    R2cGeneratedRuntimeArtifact = ref
+        key: str
+        role: str
+        path: str
+        symbol: str
+        generated: bool
+        notes: str
+
+    R2cProjectProfile = ref
+        projectName: str
+        entry: str
+        targetMatrix: str[]
+        strictNoJsRuntime: bool
+        wptProfile: str
+        equivalenceMode: str
+        featureGates: R2cFeatureGate[]
+
+    R2cUnsupportedItem = ref
+        kind: str
+        moduleId: str
+        symbol: str
+        reason: str
+
+    R2cModuleRecord = ref
+        moduleId: str
+        sourcePath: str
+        kind: str
+        reachable: bool
+        adapter: str
+        loweredPath: str
+        supported: bool
+        notes: str
+
+    R2cAdapterResolve = ref
+        spec: str
+        adapterModule: str
+        supported: bool
+        reason: str
+
+    R2cCompileOptions = ref
+        inRoot: str
+        outRoot: str
+        entry: str
+        strict: bool
+        profile: str
+        projectName: str
+        targetMatrix: str[]
+        strictNoJsRuntime: bool
+        wptProfile: str
+        equivalenceMode: str
+
+    R2cCompileReport = ref
+        ok: bool
+        packageId: str
+        inRoot: str
+        outRoot: str
+        entry: str
+        profile: str
+        projectProfile: R2cProjectProfile
+        manifestPath: str
+        reportPath: str
+        entryPath: str
+        generatedEntryPath: str
+        generatedRuntimePath: str
+        wptReportPath: str
+        generatedUiMode: str
+        routeDiscoveryMode: str
+        routeGraphPath: str
+        routeEventMatrixPath: str
+        routeCoveragePath: str
+        visualStates: str[]
+        visualGoldenManifestPath: str
+        textProfilePath: str
+        frameHashesExpectedPath: str
+        fullRouteStatesPath: str
+        fullRouteEventMatrixPath: str
+        fullRouteCoverageReportPath: str
+        fullRouteStateCount: int32
+        semanticMappingMode: str
+        semanticNodeMapPath: str
+        semanticRuntimeMapPath: str
+        semanticNodeCount: int32
+        pixelGoldenDir: str
+        pixelTolerance: int32
+        replayProfile: str
+        utfzhMode: str
+        imeMode: str
+        cjkRenderBackend: str
+        cjkRenderGate: str
+        strictNoFallback: bool
+        compilerRc: int32
+        usedFallback: bool
+        fallbackReason: str
+        modules: R2cModuleRecord[]
+        adapterCoverage: R2cCoverageStat[]
+        tokenCoverage: R2cCoverageStat[]
+        platformArtifacts: R2cGeneratedRuntimeArtifact[]
+        unsupportedSyntax: R2cUnsupportedItem[]
+        unsupportedImports: R2cUnsupportedItem[]
+        degradedFeatures: R2cUnsupportedItem[]
+        notes: str[]

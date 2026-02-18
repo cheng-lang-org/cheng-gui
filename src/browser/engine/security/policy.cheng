@@ -1,0 +1,49 @@
+import cheng/gui/browser/types
+
+type
+    SecurityDecision = enum
+        sdAllow
+        sdBlock
+
+fn cLt(a: char, b: char): bool =
+    return a < b
+
+fn cGt(a: char, b: char): bool =
+    return a > b
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn safeLen(s: str): int32 =
+    let n = len(s)
+    if n < 0:
+        return 0
+    return n
+
+fn securityHasPrefix(text, prefix: str): bool =
+    let plen = safeLen(prefix)
+    if plen == 0:
+        return true
+    let tlen = safeLen(text)
+    if tlen < plen:
+        return false
+    for i in 0..<plen:
+        if cNe(text[i], prefix[i]):
+            return false
+    return true
+
+fn decideNavigation(url: str): SecurityDecision =
+    if len(url) == 0:
+        return sdBlock
+    if securityHasPrefix(url, "javascript:"):
+        return sdBlock
+    if securityHasPrefix(url, "data:"):
+        return sdBlock
+    return sdAllow
+
+fn allowsSandbox(profile: types.SandboxProfile, needsPopup: bool): bool =
+    if profile == types.spStrict:
+        return ! needsPopup
+    if profile == types.spBalanced:
+        return true
+    return true

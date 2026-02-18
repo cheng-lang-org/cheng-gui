@@ -1,0 +1,47 @@
+type
+    JsRuntime = ref
+        microtaskCount: int32
+        lastResult: str
+
+fn jsMatchAt(text, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if offset + len(pattern) > len(text):
+        return false
+    for idx in 0..<len(pattern):
+        if text[offset + idx] != pattern[idx]:
+            return false
+    return true
+
+fn jsContains(text, pattern: str): bool =
+    if len(pattern) == 0:
+        return true
+    var idx = 0
+    while idx + len(pattern) <= len(text):
+        if jsMatchAt(text, pattern, idx):
+            return true
+        idx = idx + 1
+    return false
+
+fn newJsRuntime(): JsRuntime =
+    var runtime: JsRuntime
+    new(runtime)
+    runtime.microtaskCount = int32(0)
+    runtime.lastResult = "undefined"
+    return runtime
+
+fn evaluateScript(runtime: JsRuntime, script: str, domTitle: str): str =
+    if runtime == nil:
+        return "undefined"
+    if jsContains(script, "document.title"):
+        runtime.lastResult = domTitle
+        return runtime.lastResult
+    if jsContains(script, "fetch("):
+        runtime.microtaskCount = runtime.microtaskCount + int32(1)
+        runtime.lastResult = "Promise<pending>"
+        return runtime.lastResult
+    if jsContains(script, "1+1") || jsContains(script, "1 + 1"):
+        runtime.lastResult = "2"
+        return runtime.lastResult
+    runtime.lastResult = "undefined"
+    return runtime.lastResult

@@ -1,0 +1,116 @@
+import std/seqs
+import cheng/gui/examples_games/common/string_utils as sutil
+import std/os
+
+const
+    SessionStoreDir = "build/examples_games/session_store"
+
+fn joinPath(a: str, b: str): str =
+    if len(a) == 0:
+        return b
+    if len(b) == 0:
+        return a
+    if a[len(a) - 1] == '/':
+        return a + b
+    return a + "/" + b
+
+fn storeFileExists(path: str): bool =
+    return os.fileExists(path)
+
+fn storeDirExists(path: str): bool =
+    return storeFileExists(path)
+
+fn storeCreateDir(path: str) =
+    os.createDir(path)
+
+fn storeWriteFile(path: str, text: str) =
+    os.writeFile(path, text)
+
+fn storeReadFile(path: str): str =
+    return os.readFile(path)
+
+fn sanitizeKey(raw: str): str =
+    var outVal = ""
+    for idx in 0..<len(raw):
+        let ch: char = raw[idx]
+        if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-':
+            outVal = outVal + charToStr(ch)
+        else:
+            outVal = outVal + "_"
+    if len(outVal) == 0:
+        return "default"
+    return outVal
+
+fn ensureStoreDir() =
+    if ! storeDirExists("build"):
+        storeCreateDir("build")
+    if ! storeDirExists("build/examples_games"):
+        storeCreateDir("build/examples_games")
+    if ! storeDirExists(SessionStoreDir):
+        storeCreateDir(SessionStoreDir)
+
+fn tokenPath(game: str): str =
+    return joinPath(SessionStoreDir, sanitizeKey(game) + "_tokens.txt")
+
+fn endpointPath(game: str): str =
+    return joinPath(SessionStoreDir, sanitizeKey(game) + "_endpoint.txt")
+
+fn loadLines(path: str): str[] =
+    var outVal: str[] = default[str[]]
+    if ! storeFileExists(path):
+        return outVal
+    let text: str = storeReadFile(path)
+    return sutil.splitLines(text)
+
+fn saveLines(path: str, lines: str[]) =
+    storeWriteFile(path, sutil.joinWith(lines, "\n") + "\n")
+
+fn savePlayerToken(game: str, playerName: str, token: str) =
+    if len(game) == 0 || len(playerName) == 0 || len(token) == 0:
+        return
+    ensureStoreDir()
+    let path: str = tokenPath(game)
+    let key: str = sanitizeKey(sutil.toLowerAscii(sutil.strip(playerName)))
+    var lines: str[] = loadLines(path)
+    var replaced = false
+    for idx in 0..<len(lines):
+        let line: str = sutil.strip(lines[idx])
+        if sutil.startsWithPrefix(line, key + "="):
+            lines[idx] = key + "=" + sutil.escapeField(token)
+            replaced = true
+            break
+    if ! replaced:
+        add(lines, key + "=" + sutil.escapeField(token))
+    saveLines(path, lines)
+
+fn loadPlayerToken(game: str, playerName: str): str =
+    if len(game) == 0 || len(playerName) == 0:
+        return ""
+    let path: str = tokenPath(game)
+    let key: str = sanitizeKey(sutil.toLowerAscii(sutil.strip(playerName)))
+    let lines: str[] = loadLines(path)
+    for idx in 0..<len(lines):
+        let line: str = sutil.strip(lines[idx])
+        if sutil.startsWithPrefix(line, key + "="):
+            if len(line) > len(key) + 1:
+                return sutil.unescapeField(sutil.sliceRange(line, len(key) + 1, len(line) - 1))
+            return ""
+    return ""
+
+fn saveLastEndpoint(game: str, endpoint: str) =
+    if len(game) == 0:
+        return
+    ensureStoreDir()
+    storeWriteFile(endpointPath(game), endpoint + "\n")
+
+fn loadLastEndpoint(game: str): str =
+    if len(game) == 0:
+        return ""
+    let path: str = endpointPath(game)
+    if ! storeFileExists(path):
+        return ""
+    let text: str = storeReadFile(path)
+    let lines: str[] = sutil.splitLines(text)
+    if len(lines) <= 0:
+        return ""
+    return sutil.strip(lines[0])

@@ -1,0 +1,150 @@
+import std/strutils
+import std/times
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+const
+    DefaultTerminalMaxLines = 4000
+    DefaultTerminalFontSize = 13.0
+    DefaultTerminalLineHeight = 18.0
+type
+    TerminalLineKind = enum
+        tlInput
+        tlOutput
+        tlStatus
+    tlErrorTerminalLine =
+        timestamp: int64
+        text: str
+        channel: str
+        kind: TerminalLineKind
+    TerminalTheme =
+        background: uint32
+        gridLine: uint32
+        textNormal: uint32
+        textDim: uint32
+        textAccent: uint32
+        textError: uint32
+        prompt: uint32
+        border: uint32
+    TerminalMetrics =
+        totalLines: int
+        inputLines: int
+        errorLines: int
+        statusLines: int
+        lastActivity: int64
+    TerminalModel = ref
+        of WidgetPayload
+        lines: TerminalLine[]
+        maxLines: int
+        scrollOffset: int
+        fontSize: float
+        lineHeight: float
+        theme: TerminalThemeprompt: str
+        metrics: TerminalMetrics
+fn defaultTerminalTheme(): TerminalTheme =
+    var theme: TerminalTheme
+    theme.background = uint32(0xFF1E1E1E)
+    theme.gridLine = uint32(0xFF2D2D2D)
+    theme.textNormal = uint32(0xFFD4D4D4)
+    theme.textDim = uint32(0xFF808080)
+    theme.textAccent = uint32(0xFF9CDCFE)
+    theme.textError = uint32(0xFFF14C4C)
+    theme.prompt = uint32(0xFF9CDCFE)
+    theme.border = uint32(0xFF303031)
+    theme
+fn newTerminalModel(): TerminalModel =
+    newTerminalModel(DefaultTerminalMaxLines, DefaultTerminalFontSize)
+fn newTerminalModel(maxLines: int): TerminalModel =
+    newTerminalModel(maxLines, DefaultTerminalFontSize)
+fn newTerminalModel(maxLines: int, fontSize: float): TerminalModel =
+    var model: TerminalModel
+    new(model)
+    model.lines = default[TerminalLine[]]
+    model.maxLines = max(200, maxLines)
+    model.scrollOffset = 0
+    model.fontSize = max(10.0, fontSize)
+    model.lineHeight = DefaultTerminalLineHeight
+    model.theme = defaultTerminalTheme()
+    model.prompt = "cheng> "
+    var metrics: TerminalMetricsmetrics.totalLines = 0
+    metrics.inputLines = 0
+    metrics.errorLines = 0
+    metrics.statusLines = 0
+    metrics.lastActivity = 0
+    model.metrics = metrics model
+fn metrics(model: TerminalModel): TerminalMetrics =
+    if model == nil:
+        var empty: TerminalMetrics
+        return empty
+        return model.metrics
+fn trimHead(model: TerminalModel) =
+    if len(model.lines) <= model.maxLines:
+        return
+        let excess = len(model.lines) - model.maxLines
+        let lastIdx: int32 = len(model.lines) - 1
+        model.lines = model.lines[excess..lastIdx]
+        model.metrics.totalLines = len(model.lines)
+fn recordLine(model: TerminalModel, line: TerminalLine) =
+    if model == nil:
+        return model.lines.add(line)
+        model.metrics.totalLines = model.metrics.totalLines + 1
+        case line.kind
+        of tlInput:
+            model.metrics.inputLines = model.metrics.inputLines + 1
+        of tlError:
+            model.metrics.errorLines = model.metrics.errorLines + 1
+        of tlStatus:
+            model.metrics.statusLines = model.metrics.statusLines + 1
+        else:
+            model.metrics.lastActivity = max(model.metrics.lastActivity, line.timestamp) model.trimHead()
+fn makeTerminalLine(kind: TerminalLineKind, text: str, channel: str): TerminalLine =
+    var line: TerminalLine
+    line.timestamp = int64(epochTime() * 1000.0)
+    line.text = text
+    line.channel = channel
+    line.kind = kind line
+fn appendInput(model: TerminalModel, text: str) =
+    model.recordLine(makeTerminalLine(tlInput, text, "stdin"))
+fn appendOutput(model: TerminalModel, text: str) =
+    appendOutput(model, text, "stdout")
+fn appendOutput(model: TerminalModel, text: str, channel: str) =
+    for line in text.splitLines():
+        model.recordLine(makeTerminalLine(tlOutput, line, channel))
+fn appendStatus(model: TerminalModel, text: str) =
+    model.recordLine(makeTerminalLine(tlStatus, text, "status"))
+fn appendError(model: TerminalModel, text: str) =
+    model.recordLine(makeTerminalLine(tlError, text, "stderr"))
+fn lineColor(model: TerminalModel, line: TerminalLine): uint32 =
+    case line.kind
+    of tlInput:
+        model.theme.textAccent
+    of tlStatus:
+        model.theme.textDim
+    of tlError:
+        model.theme.textError
+    else:
+        model.theme.textNormal
+fn renderTerminal(model: TerminalModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background)
+        let borderRect = makeRect(rect.origin.x, rect.origin.y, rect.size.width, 1.0) ctx.drawRect(borderRect, model.theme.border)
+        if len(model.lines) == 0:
+            let placeholder = makeRect(rect.origin.x + 8.0, rect.origin.y + 8.0, rect.size.width - 16.0, model.lineHeight) ctx.drawText(placeholder, "(terminal idle)", model.theme.textDim, model.fontSize)
+            return
+            let available = max(1, int(rect.size.height / model.lineHeight))
+            let startIndex = max(0, len(model.lines) - available - model.scrollOffset)
+            let endIndex = min(len(model.lines), startIndex + available)
+            var lineY = rect.origin.y + 4
+            for idx in startIndex..< endIndex:
+                let line = model.lines[idx]
+                var display = line.text
+                if line.kind == tlInput:
+                    display = model.prompt + display
+                    let lineRect = makeRect(rect.origin.x + 8.0, lineY, rect.size.width - 16.0, model.lineHeight)
+                    ctx.drawText(lineRect, display, model.lineColor(line), model.fontSize)
+                    lineY = lineY + model.lineHeight
+fn terminalSum
+mary(model: TerminalModel): str = if model == nil: return "[terminal]\n  status=uninitialized\n"
+var lines = default[str[]] lines.add "[terminal]\n" lines.add "  lines=" + intToStr(int32(model.metrics.totalLines)) + "\n" lines.add "  inputs=" + intToStr(int32(model.metrics.inputLines)) + "\n" lines.add "  status=" + intToStr(int32(model.metrics.statusLines)) + "\n" lines.add "  errors=" + intToStr(int32(model.metrics.errorLines)) + "\n"
+if model.metrics.lastActivity > 0:
+    lines.add "  last_activity_ms=" + intToStr(int32(model.metrics.lastActivity)) + "\n" lines.join("")

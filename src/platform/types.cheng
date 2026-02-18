@@ -1,0 +1,211 @@
+type
+    GuiResult = enum
+        grOk
+        grNotSupported
+        grInvalidState
+        grIoError
+
+    WindowHandle = void*
+    SurfaceHandle = void*
+
+    GuiSize =
+        width: float
+        height: float
+
+    GuiPosition =
+        x: float
+        y: float
+
+    GuiRect =
+        origin: GuiPosition
+        size: GuiSize
+
+    SurfaceFrameInfo =
+        logicalSize: GuiSize
+        pixelSize: GuiSize
+        dpiScale: float
+        colorSpace: str
+
+    GuiWindowConfig =
+        title: str
+        initialRect: GuiRect
+        resizable: bool
+        highDpi: bool
+
+    GuiEventKind = enum
+        geNone
+        geClose
+        geResized
+        geMoved
+        geKeyDown
+        geKeyUp
+        geTextInput
+        geTextCompositionStart
+        geTextCompositionUpdate
+        geTextCompositionEnd
+        gePointerDown
+        gePointerUp
+        gePointerMove
+        gePointerScroll
+        gePointerLeave
+        geTouchDown
+        geTouchUp
+        geTouchMove
+        geGesturePinch
+        geGestureRotate
+        geGestureSwipe
+        geA11yAction
+
+    GuiKey = enum
+        gkUnknown
+        gkEnter
+        gkEscape
+        gkSpace
+        gkTab
+        gkBackspace
+        gkDelete
+        gkLeft
+        gkRight
+        gkUp
+        gkDown
+        gkHome
+        gkEnd
+        gkPageUp
+        gkPageDown
+        gkF1
+        gkF2
+        gkF3
+        gkF4
+        gkF5
+        gkF6
+        gkF7
+        gkF8
+        gkF9
+        gkF10
+        gkF11
+        gkF12
+
+    GuiModifier = enum
+        gmShift
+        gmCtrl
+        gmAlt
+        gmMeta
+
+    GuiModifiers = int32
+
+    GuiKeyEvent =
+        key: GuiKey
+        modifiers: GuiModifiers
+        repeat: bool
+
+    GuiPointerEvent =
+        position: GuiPosition
+        delta: GuiPosition
+        button: int
+        modifiers: GuiModifiers
+
+    GuiTouchPoint =
+        id: int32
+        position: GuiPosition
+        pressure: float
+
+    GuiTouchEvent =
+        touchCount: int32
+        primary: GuiTouchPoint
+        secondary: GuiTouchPoint
+        modifiers: GuiModifiers
+
+    GuiGestureKind = enum
+        ggPinch
+        ggRotate
+        ggSwipe
+
+    GuiGestureEvent =
+        kind: GuiGestureKind
+        center: GuiPosition
+        delta: float
+        velocity: float
+        modifiers: GuiModifiers
+
+    GuiA11yActionKind = enum
+        gaaActivate
+        gaaIncrement
+        gaaDecrement
+        gaaDismiss
+        gaaFocusNext
+        gaaFocusPrevious
+
+    GuiA11yActionEvent =
+        nodeId: int64
+        action: GuiA11yActionKind
+        modifiers: GuiModifiers
+
+    GuiCompositionEvent =
+        text: str
+
+    GuiEvent =
+        case kind: GuiEventKind
+            of geNone, geClose:
+            of geResized:
+                newSize: GuiSize
+            of geMoved:
+                newPosition: GuiPosition
+            of geKeyDown, geKeyUp:
+                keyEvent: GuiKeyEvent
+            of geTextInput:
+                text: str
+            of geTextCompositionStart, geTextCompositionUpdate, geTextCompositionEnd:
+                compositionEvent: GuiCompositionEvent
+            of gePointerDown, gePointerUp, gePointerMove, gePointerScroll, gePointerLeave:
+                pointerEvent: GuiPointerEvent
+            of geTouchDown, geTouchUp, geTouchMove:
+                touchEvent: GuiTouchEvent
+            of geGesturePinch, geGestureRotate, geGestureSwipe:
+                gestureEvent: GuiGestureEvent
+            of geA11yAction:
+                a11yActionEvent: GuiA11yActionEvent
+
+fn modifierMask(modifier: GuiModifier): GuiModifiers =
+    case modifier
+    of gmShift:
+        int32(1)
+    of gmCtrl:
+        int32(2)
+    of gmAlt:
+        int32(4)
+    of gmMeta:
+        int32(8)
+
+fn hasModifier(mods: GuiModifiers, modifier: GuiModifier): bool =
+    let mask = modifierMask(modifier)
+    if mask == 0:
+        return false
+    return ((mods / mask) % 2) != 0
+
+fn addModifier(mods: var GuiModifiers, modifier: GuiModifier) =
+    let mask = modifierMask(modifier)
+    if mask == 0:
+        return
+    if ((mods / mask) % 2) == 0:
+        mods = mods + mask
+
+fn `==`(a, b: WindowHandle): bool =
+    int(a) == int(b)
+
+fn makeRect(x, y, w, h: float): GuiRect =
+    var rect: GuiRect
+    var origin: GuiPosition
+    origin.x = x
+    origin.y = y
+    rect.origin = origin
+    var size: GuiSize
+    size.width = w
+    size.height = h
+    rect.size = size
+    return rect
+
+fn makeSize(w, h: float): GuiSize =
+    var size: GuiSize
+    size.width = w
+    size.height = h
+    return size

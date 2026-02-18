@@ -1,0 +1,14 @@
+import cheng/gui/browser/types
+
+type
+    WebHostInfo =
+        platformName: str
+        supportsGpu: bool
+        supportsSandbox: bool
+
+fn webHostInfo(profile: types.SandboxProfile): WebHostInfo =
+    var info: WebHostInfo
+    info.platformName = "web"
+    info.supportsGpu = true
+    info.supportsSandbox = profile == types.spStrict || profile == types.spBalanced
+    return info

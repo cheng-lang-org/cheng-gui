@@ -1,0 +1,35 @@
+import cheng/gui/core/component
+import cheng/gui/platform/types_v1
+
+type
+    RuntimeFrameStats =
+        frameIndex: int64
+        inputEvents: int
+        hadCloseEvent: bool
+        hadA11yAction: bool
+
+fn collectInputStats(events: GuiEvent[], frameIndex: int64): RuntimeFrameStats =
+    var stats: RuntimeFrameStats
+    stats.frameIndex = frameIndex
+    stats.inputEvents = len(events)
+    stats.hadCloseEvent = false
+    stats.hadA11yAction = false
+    for idx in 0..<len(events):
+        let event = events[idx]
+        if event.kind == geClose:
+            stats.hadCloseEvent = true
+        if event.kind == geA11yAction:
+            stats.hadA11yAction = true
+    return stats
+
+fn shouldStop(stats: RuntimeFrameStats): bool =
+    return stats.hadCloseEvent
+
+fn applyFrameTiming(ctx: component.UiContext, info: SurfaceFrameInfo) =
+    if ctx == nil:
+        return
+    let dpi = if info.dpiScale > 0.0: info.dpiScale else: 1.0
+    uiBeginFrame(ctx, dpi)
+
+fn endRuntimeFrame(ctx: component.UiContext) =
+    uiEndFrame(ctx)

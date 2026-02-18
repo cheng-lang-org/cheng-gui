@@ -1,0 +1,61 @@
+import cheng/gui/platform/types_v1
+
+type
+    FlexAlignment = enum
+        faStart
+        faCenter
+        faEnd
+        faStretch
+
+    GridSpec =
+        columns: int
+        rows: int
+        gap: float
+
+fn appendRect(items: var GuiRect[], item: GuiRect) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn flexOffset(total, item: float, align: FlexAlignment): float =
+    case align
+    of faCenter:
+        return (total - item) * 0.5
+    of faEnd:
+        return total - item
+    else:
+        return 0.0
+
+fn layoutFlexRow(bounds: GuiRect, itemWidths: float[], align: FlexAlignment): GuiRect[] =
+    var frames = default[GuiRect[]]
+    if len(itemWidths) == 0:
+        return frames
+    var total = 0.0
+    for widthIdx in 0..<len(itemWidths):
+        let width = itemWidths[widthIdx]
+        total = total + width
+    let startX = bounds.origin.x + flexOffset(bounds.size.width, total, align)
+    var cursor = startX
+    for widthIdx in 0..<len(itemWidths):
+        let width = itemWidths[widthIdx]
+        appendRect(frames, makeRect(cursor, bounds.origin.y, width, bounds.size.height))
+        cursor = cursor + width
+    return frames
+
+fn layoutGrid(bounds: GuiRect, spec: GridSpec): GuiRect[] =
+    var frames = default[GuiRect[]]
+    if spec.columns <= 0 || spec.rows <= 0:
+        return frames
+    let colCount = float(spec.columns)
+    let rowCount = float(spec.rows)
+    let totalGapX = float(spec.columns - 1) * spec.gap
+    let totalGapY = float(spec.rows - 1) * spec.gap
+    let cellW = (bounds.size.width - totalGapX) / colCount
+    let cellH = (bounds.size.height - totalGapY) / rowCount
+
+    for row in 0..<spec.rows:
+        for col in 0..<spec.columns:
+            let x = bounds.origin.x + float(col) * (cellW + spec.gap)
+            let y = bounds.origin.y + float(row) * (cellH + spec.gap)
+            appendRect(frames, makeRect(x, y, cellW, cellH))
+    return frames

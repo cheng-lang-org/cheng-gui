@@ -1,0 +1,388 @@
+import std/os
+import std/strutils
+import std/tables
+import std/times
+import cheng/runtime/json_compat
+import cheng/runtime/json_runtime as runtimeJson
+import ide/textutils
+import cheng/tooling/runtime/fs as runtimeFs
+
+template readFile(path: str): str =
+    runtimeFs.readFile(path)
+
+template dirExists(path: str): bool =
+    runtimeFs.dirExists(path)
+
+template createDir(path: str) =
+    runtimeFs.createDir(path)
+
+template writeFile(path: str; content: str) =
+    runtimeFs.writeFile(path, content)
+
+type
+    DeviceProfile =
+        id: str
+        category: str
+        displayName: str
+        transport: str
+        status: str
+        latencyBudgetMs: float
+        throughputMbps: float
+        capabilities: str[]
+        blockers: str[]
+        notes: str[]
+    DeploymentChannel =
+        name: str
+        target: str
+        status: str
+        tasks: str[]
+        deliverables: str[]
+    StreamingInputPlan =
+        channel: str
+        handshake: str[]
+        guardrails: str[]
+        latencyStats: Table[str, float]
+    MultiDeviceSummary =
+        generatedAt: str
+        devices: DeviceProfile[]
+        deployments: DeploymentChannel[]
+        streamingInputs: StreamingInputPlan[]
+        remoteFeatures: str[]
+        bareMetalChecklist: str[]
+        riskNotes: str[]
+
+const
+    DefaultMarketplaceConfig = "config/ide/marketplace.json"
+
+fn utcTimestamp(): str =
+    format(getTime(), "yyyy-MM-dd'T'HH:mm:ss'Z'")
+
+fn defaultDevices(): DeviceProfile[] =
+    @[
+        DeviceProfile(
+            id: "desktop-macos",
+            category: "desktop",
+            displayName: "macOS Studio (Metal/WGPU)",
+            transport: "local-bus",
+            status: "available",
+            latencyBudgetMs: 14.0,
+            throughputMbps: 850.0,
+            capabilities: @["metal", "hid", "high-dpi", "offline-cache"],
+            blockers: [],
+            notes: @["Default Pass1 bootstrap environment", "Supports headless / native dual modes"]
+        ),
+        DeviceProfile(
+            id: "desktop-linux",
+            category: "desktop",
+            displayName: "Linux Workstation (X11/WGPU)",
+            transport: "local-bus",
+            status: "available",
+            latencyBudgetMs: 18.0,
+            throughputMbps: 760.0,
+            capabilities: @["x11", "hid", "remote-stream"],
+            blockers: @["Wayland backend pending"],
+            notes: @["X11 + Skia fallback", "Supports bare-metal deployment scripts"]
+        ),
+        DeviceProfile(
+            id: "remote-ios",
+            category: "mobile",
+            displayName: "iOS Tablet (Remote Render)",
+            transport: "webrtc-srtp",
+            status: "pilot",
+            latencyBudgetMs: 32.0,
+            throughputMbps: 120.0,
+            capabilities: @["metal", "remote-hid", "gesture-stream"],
+            blockers: @["UIKit lifecycle pending real event loop integration"],
+            notes: @["Rendered via remote_stream service", "Gesture data sent as JSON packets"]
+        ),
+        DeviceProfile(
+            id: "remote-android",
+            category: "mobile",
+            displayName: "Android Pad (Remote Render)",
+            transport: "grpc-quic",
+            status: "pilot",
+            latencyBudgetMs: 36.0,
+            throughputMbps: 110.0,
+            capabilities: @["vulkan", "remote-hid", "multi-touch"],
+            blockers: @["ANativeWindow input needs keyboard translation"],
+            notes: @["Cheng mobile runtime event pipeline", "Supports screenshot capture and metrics upload"]
+        ),
+        DeviceProfile(
+            id: "browser-webgpu",
+            category: "web",
+            displayName: "WebAssembly (WGPU / headless)",
+            transport: "websocket-tls",
+            status: "prototype",
+            latencyBudgetMs: 42.0,
+            throughputMbps: 90.0,
+            capabilities: @["webgpu", "secure-channel", "zero-install"],
+            blockers: @["Text input IME needs implementation"],
+            notes: @["Headless frame streaming with delta compression"]
+        )
+    ]
+
+fn defaultDeployments(): DeploymentChannel[] =
+    @[
+        DeploymentChannel(
+            name: "bare-metal-linux",
+            target: "/opt/cheng/ide",
+            status: "ready",
+            tasks: @[
+                "Sync release.Manifest",
+                "Verify stage0 runtime manifest",
+                "Refresh sandbox allowlist"
+            ],
+            deliverables: @["deploy.sh", "sanity_report.txt", "metrics.json"]
+        ),
+        DeploymentChannel(
+            name: "bare-metal-macos",
+            target: "/Applications/ChengIDE.app",
+            status: "ready",
+            tasks: @[
+                "Mount signed image",
+                "Run notarization verification",
+                "Inject plugin allowlist"
+            ],
+            deliverables: @["notarize.log", "codesign_audit.json", "plugin_allowlist.txt"]
+        ),
+        DeploymentChannel(
+            name: "remote-stream-service",
+            target: "svc://cheng/ide/stream",
+            status: "pilot",
+            tasks: @[
+                "Establish WebRTC/QUIC channel",
+                "Register input event proxy",
+                "Sync render metrics to dashboard"
+            ],
+            deliverables: @["channel_manifest.json", "latency_snapshot.json", "stream_metrics.log"]
+        )
+    ]
+
+fn defaultStreamingPlans(): StreamingInputPlan[] =
+    let localLatency = {"mean": 8.4, "p95": 12.6, "max": 18.3}.toTable
+    let remoteLatency = {"mean": 24.0, "p95": 36.0, "max": 52.0}.toTable
+    let browserLatency = {"mean": 32.0, "p95": 44.0, "max": 60.0}.toTable
+    @[
+        StreamingInputPlan(
+            channel: "local-hid",
+            handshake: @["probe-device", "grant-sandbox", "attach-render-loop"],
+            guardrails: @[
+                "Path guard forbids '..'",
+                "Event-driven requires ownership path guard",
+                "Write metrics to metrics.json"
+            ],
+            latencyStats: localLatency
+        ),
+        StreamingInputPlan(
+            channel: "remote-stream",
+            handshake: @["probe-device", "webrtc-offer", "secure-channel"],
+            guardrails: @[
+                "Mutual TLS + SRTP",
+                "Event sequence signing and replay protection",
+                "Replay logs written to commands.log"
+            ],
+            latencyStats: remoteLatency
+        ),
+        StreamingInputPlan(
+            channel: "browser-webgpu",
+            handshake: @["fetch-worker", "wasm-init", "open-channel"],
+            guardrails: @[
+                "Browser sandbox limits resource paths",
+                "Input overload auto-degrades",
+                "Frame stream compression over budget triggers alert"
+            ],
+            latencyStats: browserLatency
+        )
+    ]
+
+fn extractRemoteFeatures(configPath: str): str[] =
+    if configPath.len == 0 || runtimeFs.fileExists(configPath) == false:
+        return []
+    try:
+        let payload = runtimeJson.parseJson(readFile(configPath))
+        if payload.kind != JkObject:
+            return []
+        if payload.hasKey("configurationProfiles") == false:
+            return []
+        let profiles = payload["configurationProfiles"]
+        if profiles.kind != JkArray:
+            return []
+        for profile in profiles:
+            if profile.kind != JkObject:
+                continue
+            if profile.hasKey("id") == false || profile["id"].kind != JkString:
+                continue
+            if textutils.toLowerAscii(profile["id"].getStr()) != "remote-workstation":
+                continue
+            if profile.hasKey("settings") == false:
+                continue
+            let settings = profile["settings"]
+            if settings.kind != JkObject:
+                continue
+            if settings.hasKey("features") == false:
+                continue
+            let features = settings["features"]
+            if features.kind != JkArray:
+                continue
+            for feature in features:
+                if feature.kind == JkString:
+                    result.add(feature.getStr())
+    except CatchableError:
+        result = []
+
+fn buildBareMetalChecklist(): str[] =
+    @[
+        "Ensure deploy.sh / install.pkg have no path traversal",
+        "Verify runtime_manifest.json matches stage0 fingerprint",
+        "Run cheng governance runtime audit --output build/governance/runtime/audit",
+        "Compare release_summary.json vs release_status.json diff < 0.5%",
+        "Record deployment host info to metrics.json"
+    ]
+
+fn buildRiskNotes(): str[] =
+    @[
+        "If mobile latency budget exceeds 40ms, trigger performance fallback script",
+        "browser-webgpu lacks IME, causing degraded text input",
+        "Remote streaming input must rotate certs periodically and audit handshake logs"
+    ]
+
+fn collectMultiDeviceSummary(configPath: str = DefaultMarketplaceConfig): MultiDeviceSummary =
+    let features = extractRemoteFeatures(configPath)
+    MultiDeviceSummary(
+        generatedAt: utcTimestamp(),
+        devices: defaultDevices(),
+        deployments: defaultDeployments(),
+        streamingInputs: defaultStreamingPlans(),
+        remoteFeatures: features,
+        bareMetalChecklist: buildBareMetalChecklist(),
+        riskNotes: buildRiskNotes()
+    )
+
+fn latencyToJson(stats: Table[str, float]): JsonNode =
+    result = newJObject()
+    for key, value in stats:
+        result[key] = % value
+
+fn deviceToJson(device: DeviceProfile): JsonNode =
+    jsonObjectLit(
+        jsonField("id", device.id),
+        jsonField("category", device.category),
+        jsonField("displayName", device.displayName),
+        jsonField("transport", device.transport),
+        jsonField("status", device.status),
+        jsonField("latencyBudgetMs", device.latencyBudgetMs),
+        jsonField("throughputMbps", device.throughputMbps),
+        jsonField("capabilities", device.capabilities),
+        jsonField("blockers", device.blockers),
+        jsonField("notes", device.notes)
+    )
+
+fn deploymentToJson(channel: DeploymentChannel): JsonNode =
+    jsonObjectLit(
+        jsonField("name", channel.name),
+        jsonField("target", channel.target),
+        jsonField("status", channel.status),
+        jsonField("tasks", channel.tasks),
+        jsonField("deliverables", channel.deliverables)
+    )
+
+fn streamingToJson(plan: StreamingInputPlan): JsonNode =
+    jsonObjectLit(
+        jsonField("channel", plan.channel),
+        jsonField("handshake", plan.handshake),
+        jsonField("guardrails", plan.guardrails),
+        jsonField("latency", latencyToJson(plan.latencyStats))
+    )
+
+fn summaryToJson(summary: MultiDeviceSummary): JsonNode =
+    result = newJObject()
+    result["generatedAt"] = % summary.generatedAt
+    result["devices"] = newJArray()
+    for device in summary.devices:
+        result["devices"].add(deviceToJson(device))
+    result["deployments"] = newJArray()
+    for channel in summary.deployments:
+        result["deployments"].add(deploymentToJson(channel))
+    result["streamingInputs"] = newJArray()
+    for plan in summary.streamingInputs:
+        result["streamingInputs"].add(streamingToJson(plan))
+    result["remoteFeatures"] = toJsonValue(summary.remoteFeatures)
+    result["bareMetalChecklist"] = toJsonValue(summary.bareMetalChecklist)
+    result["riskNotes"] = toJsonValue(summary.riskNotes)
+
+fn renderLatencySummary(plan: StreamingInputPlan): str =
+    var metrics: str[] = []
+    for key, value in plan.latencyStats:
+        metrics.add(key + "=" + formatFloat(value, ffDecimal, 2) + "ms")
+    let metricsText = textutils.joinStrings(metrics, ", ")
+    var guardrails = plan.guardrails
+    if guardrails.len > 2:
+        guardrails = guardrails[0..2]
+    let guardText = textutils.joinStrings(guardrails, "; ")
+    plan.channel + ": " + metricsText + " | guardrails: " + guardText
+
+fn formatDevice(device: DeviceProfile): str =
+    var parts: str[] = []
+    parts.add(device.displayName + " [" + device.category + "]")
+    parts.add("status=" + device.status)
+    parts.add("latency=" + formatFloat(device.latencyBudgetMs, ffDecimal, 1) + "ms")
+    parts.add("throughput=" + formatFloat(device.throughputMbps, ffDecimal, 1) + "Mbps")
+    var caps = device.capabilities
+    if caps.len > 3:
+        caps = caps[0..2] + @["..."]
+    parts.add("caps=" + textutils.joinStrings(caps, "/"))
+    if device.blockers.len > 0:
+        parts.add("blockers=" + textutils.joinStrings(device.blockers, ", "))
+    textutils.joinStrings(parts, " | ")
+
+fn summaryToText(summary: MultiDeviceSummary): str =
+    var lines: str[] = []
+    lines.add("[multi-device] updated: " + summary.generatedAt)
+    lines.add("[multi-device] device count: " + $ summary.devices.len)
+    for device in summary.devices:
+        lines.add("  - " + formatDevice(device))
+    lines.add("")
+    lines.add("[deployments]")
+    for channel in summary.deployments:
+        lines.add("  - " + channel.name + " => " + channel.target + " (" + channel.status + ")")
+        lines.add("    Tasks: " + textutils.joinStrings(channel.tasks, ", "))
+        lines.add("    Deliverables: " + textutils.joinStrings(channel.deliverables, ", "))
+    lines.add("")
+    lines.add("[streaming]")
+    for plan in summary.streamingInputs:
+        lines.add("  - " + renderLatencySummary(plan))
+    if summary.remoteFeatures.len > 0:
+        lines.add("")
+        lines.add("[remote-features] " + textutils.joinStrings(summary.remoteFeatures, ", "))
+    if summary.bareMetalChecklist.len > 0:
+        lines.add("")
+        lines.add("[bare-metal-checklist]")
+        for item in summary.bareMetalChecklist:
+            lines.add("  - " + item)
+    if summary.riskNotes.len > 0:
+        lines.add("")
+        lines.add("[risks]")
+        for item in summary.riskNotes:
+            lines.add("  - " + item)
+    textutils.joinStrings(lines, "\n") + "\n"
+
+fn ensureOutputDir(outputDir: str) =
+    if outputDir.len == 0:
+        raise newException(ValueError, "Output directory cannot be empty")
+    if textutils.containsParentTraversal(outputDir):
+        raise newException(ValueError, "Refusing to write to directory containing '..': " + outputDir)
+    if dirExists(outputDir) == false:
+        createDir(outputDir)
+
+fn writeText(path: str; content: str) =
+    writeFile(path, content)
+
+fn writeJson(path: str; node: JsonNode) =
+    writeFile(path, pretty(node, 2))
+
+fn writeMultiDeviceArtifacts(summary: MultiDeviceSummary; outputDir: str) =
+    ensureOutputDir(outputDir)
+    let jsonPath = joinPath(outputDir, "multi_device.json")
+    let textPath = joinPath(outputDir, "multi_device.txt")
+    writeJson(jsonPath, summaryToJson(summary))
+    writeText(textPath, summaryToText(summary))

@@ -1,0 +1,22 @@
+type
+    EcKeyPair = ref
+        privateKeyHex: str
+        publicKeyHex: str
+
+fn adapterId(): str =
+    return "ecpair"
+
+fn makeRandom(): EcKeyPair =
+    var out: EcKeyPair
+    new(out)
+    out.privateKeyHex = ""
+    out.publicKeyHex = ""
+    return out
+
+fn fromPrivateKey(privHex: str): EcKeyPair =
+    var out: EcKeyPair
+    new(out)
+    out.privateKeyHex = privHex
+    out.publicKeyHex = ""
+    return out
+

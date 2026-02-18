@@ -1,0 +1,434 @@
+import cheng/gui/core/component
+import cheng/gui/platform/types_v1
+
+type
+    DrawCommandKind = enum
+        dcRect
+        dcLine
+        dcText
+        dcImage
+        dcWebSurface
+        dcPdfPage
+        dcMediaFrame
+
+    DrawCommand =
+        kind: DrawCommandKind
+        rect: GuiRect
+        rectX: int32
+        rectY: int32
+        rectW: int32
+        rectH: int32
+        p0: GuiPosition
+        p0x: int32
+        p0y: int32
+        p1: GuiPosition
+        p1x: int32
+        p1y: int32
+        strokeWidth: float
+        color: uint32
+        opacity: float
+        text: str
+        fontSize: float
+        imageKey: str
+
+    DrawList = ref
+        commands: DrawCommand[]
+
+fn appendCommand(commands: var DrawCommand[], cmd: DrawCommand) =
+    let idx = len(commands)
+    setLen(commands, idx + 1)
+    commands[idx] = cmd
+
+fn cloneText(value: str): str =
+    if len(value) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(value):
+        out = out + charToStr(value[idx])
+        idx = idx + int32(1)
+    return out
+
+fn newDrawList(): DrawList =
+    var list: DrawList
+    new(list)
+    return list
+
+fn clear(list: DrawList) =
+    if list == nil:
+        return
+    setLen[DrawCommand](&list.commands, 0)
+
+fn floatToInt32(value: float, fallback: int32): int32 =
+    if value >= 0.0:
+        var out: int32 = int32(0)
+        var remain = value
+        while remain >= 1.0 && out < int32(4096):
+            out = out + int32(1)
+            remain = remain - 1.0
+        if out >= int32(4096):
+            return fallback
+        return out
+    var neg: int32 = int32(0)
+    var remain = -value
+    while remain >= 1.0 && neg < int32(4096):
+        neg = neg + int32(1)
+        remain = remain - 1.0
+    if neg >= int32(4096):
+        return fallback
+    return -neg
+
+fn setRectInts(cmd: var DrawCommand, rect: GuiRect) =
+    cmd.rectX = floatToInt32(rect.origin.x, int32(0))
+    cmd.rectY = floatToInt32(rect.origin.y, int32(0))
+    cmd.rectW = floatToInt32(rect.size.width, int32(1280))
+    cmd.rectH = floatToInt32(rect.size.height, int32(720))
+
+fn setLineInts(cmd: var DrawCommand, x0, y0, x1, y1: float) =
+    cmd.p0x = floatToInt32(x0, int32(0))
+    cmd.p0y = floatToInt32(y0, int32(0))
+    cmd.p1x = floatToInt32(x1, int32(1280))
+    cmd.p1y = floatToInt32(y1, int32(720))
+
+fn intToFloat(value: int32, fallback: float): float =
+    if value >= int32(0):
+        var outVal = 0.0
+        var idx: int32 = int32(0)
+        while idx < value && idx < int32(4096):
+            outVal = outVal + 1.0
+            idx = idx + int32(1)
+        if idx >= int32(4096):
+            return fallback
+        return outVal
+    var outVal = 0.0
+    var idx: int32 = int32(0)
+    let limit = -value
+    while idx < limit && idx < int32(4096):
+        outVal = outVal - 1.0
+        idx = idx + int32(1)
+    if idx >= int32(4096):
+        return fallback
+    return outVal
+
+fn pushRect(list: DrawList, rect: GuiRect, color: uint32) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcRect
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = color
+    cmd.opacity = 1.0
+    cmd.text = ""
+    cmd.fontSize = 0.0
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn pushRectOpacity(list: DrawList, rect: GuiRect, color: uint32, opacity: float) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcRect
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = color
+    cmd.opacity = opacity
+    cmd.text = ""
+    cmd.fontSize = 0.0
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn pushText(list: DrawList, rect: GuiRect, text: str, color: uint32, fontSize: float) =
+    if list == nil || len(text) == 0:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcText
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = color
+    cmd.opacity = 1.0
+    cmd.text = cloneText(text)
+    cmd.fontSize = fontSize
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn pushTextOpacity(list: DrawList, rect: GuiRect, text: str, color: uint32, fontSize: float, opacity: float) =
+    if list == nil || len(text) == 0:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcText
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = color
+    cmd.opacity = opacity
+    cmd.text = cloneText(text)
+    cmd.fontSize = fontSize
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn pushImage(list: DrawList, rect: GuiRect, imageKey: str) =
+    if list == nil || len(imageKey) == 0:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcImage
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = uint32(0)
+    cmd.opacity = 1.0
+    cmd.text = ""
+    cmd.fontSize = 0.0
+    cmd.imageKey = imageKey
+    appendCommand(list.commands, cmd)
+
+fn pushWebSurface(list: DrawList, rect: GuiRect, title: str, resourceKey: str) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcWebSurface
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = uint32(0xFF1D2733)
+    cmd.opacity = 1.0
+    cmd.text = cloneText(title)
+    cmd.fontSize = 13.0
+    cmd.imageKey = resourceKey
+    appendCommand(list.commands, cmd)
+
+fn pushPdfPage(list: DrawList, rect: GuiRect, title: str, resourceKey: str) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcPdfPage
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = uint32(0xFF2A2430)
+    cmd.opacity = 1.0
+    cmd.text = cloneText(title)
+    cmd.fontSize = 13.0
+    cmd.imageKey = resourceKey
+    appendCommand(list.commands, cmd)
+
+fn pushMediaFrame(list: DrawList, rect: GuiRect, title: str, resourceKey: str) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcMediaFrame
+    cmd.rect = rect
+    setRectInts(cmd, rect)
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = uint32(0xFF1A2D24)
+    cmd.opacity = 1.0
+    cmd.text = cloneText(title)
+    cmd.fontSize = 13.0
+    cmd.imageKey = resourceKey
+    appendCommand(list.commands, cmd)
+
+fn pushLine(list: DrawList, x0, y0, x1, y1: float, color: uint32, strokeWidth: float) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcLine
+    cmd.rect = makeRect(0.0, 0.0, 0.0, 0.0)
+    cmd.rectX = int32(0)
+    cmd.rectY = int32(0)
+    cmd.rectW = int32(0)
+    cmd.rectH = int32(0)
+    cmd.p0 = GuiPosition(x: x0, y: y0)
+    cmd.p0x = floatToInt32(x0, int32(0))
+    cmd.p0y = floatToInt32(y0, int32(0))
+    cmd.p1 = GuiPosition(x: x1, y: y1)
+    cmd.p1x = floatToInt32(x1, int32(1280))
+    cmd.p1y = floatToInt32(y1, int32(720))
+    cmd.strokeWidth = strokeWidth
+    cmd.color = color
+    cmd.opacity = 1.0
+    cmd.text = ""
+    cmd.fontSize = 0.0
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn pushRectInt(list: DrawList, x, y, w, h: int32, color: uint32) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcRect
+    cmd.rect = makeRect(intToFloat(x, 0.0), intToFloat(y, 0.0), intToFloat(w, 1280.0), intToFloat(h, 720.0))
+    cmd.rectX = x
+    cmd.rectY = y
+    cmd.rectW = w
+    cmd.rectH = h
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = color
+    cmd.opacity = 1.0
+    cmd.text = ""
+    cmd.fontSize = 0.0
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn pushTextInt(list: DrawList, x, y, w, h: int32, text: str, color: uint32, fontSize: float) =
+    if list == nil || len(text) == 0:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcText
+    cmd.rect = makeRect(intToFloat(x, 0.0), intToFloat(y, 0.0), intToFloat(w, 1280.0), intToFloat(h, 24.0))
+    cmd.rectX = x
+    cmd.rectY = y
+    cmd.rectW = w
+    cmd.rectH = h
+    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p0x = int32(0)
+    cmd.p0y = int32(0)
+    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
+    cmd.p1x = int32(0)
+    cmd.p1y = int32(0)
+    cmd.strokeWidth = 0.0
+    cmd.color = color
+    cmd.opacity = 1.0
+    cmd.text = cloneText(text)
+    cmd.fontSize = fontSize
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn pushLineInt(list: DrawList, x0, y0, x1, y1: int32, color: uint32, strokeWidth: float) =
+    if list == nil:
+        return
+    var cmd: DrawCommand
+    cmd.kind = dcLine
+    cmd.rect = makeRect(0.0, 0.0, 0.0, 0.0)
+    cmd.rectX = int32(0)
+    cmd.rectY = int32(0)
+    cmd.rectW = int32(0)
+    cmd.rectH = int32(0)
+    cmd.p0 = GuiPosition(x: intToFloat(x0, 0.0), y: intToFloat(y0, 0.0))
+    cmd.p0x = x0
+    cmd.p0y = y0
+    cmd.p1 = GuiPosition(x: intToFloat(x1, 1280.0), y: intToFloat(y1, 720.0))
+    cmd.p1x = x1
+    cmd.p1y = y1
+    cmd.strokeWidth = strokeWidth
+    cmd.color = color
+    cmd.opacity = 1.0
+    cmd.text = ""
+    cmd.fontSize = 0.0
+    cmd.imageKey = ""
+    appendCommand(list.commands, cmd)
+
+fn rectColorForKind(kind: component.NodeKind, theme: component.ThemeSpec): uint32 =
+    case kind
+    of component.nkButton, component.nkSwitch, component.nkSlider, component.nkSelect:
+        return component.colorOf(theme, component.ttAccent)
+    of component.nkDialog, component.nkPopover, component.nkTooltip:
+        return component.colorOf(theme, component.ttSurface)
+    of component.nkTextField, component.nkDataTable, component.nkRichTextEditor:
+        return component.colorOf(theme, component.ttBorder)
+    of component.nkWebView, component.nkPdfView:
+        return component.colorOf(theme, component.ttSurface)
+    of component.nkAudioPlayer, component.nkVideoPlayer:
+        return component.colorOf(theme, component.ttAccent)
+    else:
+        return component.colorOf(theme, component.ttBackground)
+
+fn textColorForKind(kind: component.NodeKind, theme: component.ThemeSpec): uint32 =
+    kind
+    return component.colorOf(theme, component.ttTextPrimary)
+
+fn emitNode(list: DrawList, node: component.Node, theme: component.ThemeSpec) =
+    if list == nil || node == nil:
+        return
+    case node.kind
+    of component.nkText:
+        if len(node.text) > 0:
+            pushText(list, node.frame, node.text, textColorForKind(node.kind, theme), 14.0)
+        elif len(node.name) > 0:
+            pushText(list, node.frame, node.name, textColorForKind(node.kind, theme), 14.0)
+    of component.nkWebView:
+        var title = node.name
+        if len(node.text) > 0:
+            title = node.text
+        pushWebSurface(list, node.frame, title, node.name)
+    of component.nkPdfView:
+        var title = node.name
+        if len(node.text) > 0:
+            title = node.text
+        pushPdfPage(list, node.frame, title, node.name)
+    of component.nkAudioPlayer, component.nkVideoPlayer:
+        var title = node.name
+        if len(node.text) > 0:
+            title = node.text
+        pushMediaFrame(list, node.frame, title, node.name)
+    of component.nkImage, component.nkIcon:
+        var imageKey = node.name
+        if len(node.text) > 0:
+            imageKey = node.text
+        pushImage(list, node.frame, imageKey)
+    else:
+        pushRectOpacity(list, node.frame, rectColorForKind(node.kind, theme), 1.0)
+        if len(node.text) > 0:
+            pushText(list, node.frame, node.text, textColorForKind(node.kind, theme), 14.0)
+    for idx in 0..<len(node.children):
+        emitNode(list, node.children[idx], theme)
+
+fn buildFromTree(list: DrawList, root: component.Node, theme: component.ThemeSpec) =
+    clear(list)
+    emitNode(list, root, theme)

@@ -1,0 +1,35 @@
+type
+    EngineStage = enum
+        esControl
+        esNavigation
+        esDom
+        esJs
+        esCompositor
+        esPresent
+
+    EngineScheduler = ref
+        frameIndex: int64
+        stage: EngineStage
+
+fn newEngineScheduler(): EngineScheduler =
+    var scheduler: EngineScheduler
+    new(scheduler)
+    scheduler.frameIndex = int64(0)
+    scheduler.stage = esControl
+    return scheduler
+
+fn beginFrame(scheduler: EngineScheduler) =
+    if scheduler == nil:
+        return
+    scheduler.frameIndex = scheduler.frameIndex + int64(1)
+    scheduler.stage = esControl
+
+fn setStage(scheduler: EngineScheduler, stage: EngineStage) =
+    if scheduler == nil:
+        return
+    scheduler.stage = stage
+
+fn endFrame(scheduler: EngineScheduler) =
+    if scheduler == nil:
+        return
+    scheduler.stage = esPresent

@@ -1,0 +1,1129 @@
+import std/seqs
+import cheng/gui/examples_games/common/protocol
+import cheng/gui/examples_games/common/string_utils as sutil
+
+const
+    DdzPlayerCount = 3
+    DdzRankMin = 3
+    DdzRankSeqMax = 14
+    DdzRankMax = 17
+
+
+type
+    DdzPlayer =
+        seat: int32
+        name: str
+        token: str
+        online: bool
+        ready: bool
+        isBot: bool
+        hand: str[]
+
+    DoudizhuState = ref
+        stage: str
+        roomStarted: bool
+        players: DdzPlayer[]
+        baseCards: str[]
+        bids: int32[]
+        landlordSeat: int32
+        turnSeat: int32
+        lastPattern: str
+        lastRank: int32
+        lastCount: int32
+        lastSeat: int32
+        passCount: int32
+        multiplier: int32
+        landlordPlayCount: int32
+        farmerPlayCount: int32
+        winnerSeat: int32
+        seq: int64
+        logs: str[]
+
+fn i32ToStr(value: int32): str =
+    return intToStr(value)
+
+fn splitCsv(text: str): str[] =
+    let tokens: str[] = sutil.splitByChar(text, ',')
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(tokens):
+        let v: str = sutil.strip(tokens[idx])
+        if len(v) > 0:
+            add(outVal, v)
+    return outVal
+
+fn cardRank(card: str): int32 =
+    if card == "BJ":
+        return 16
+    if card == "RJ":
+        return 17
+    if len(card) <= 1:
+        return -1
+    let rankText: str = sutil.sliceRange(card, 1, len(card) - 1)
+    if rankText == "3":
+        return 3
+    if rankText == "4":
+        return 4
+    if rankText == "5":
+        return 5
+    if rankText == "6":
+        return 6
+    if rankText == "7":
+        return 7
+    if rankText == "8":
+        return 8
+    if rankText == "9":
+        return 9
+    if rankText == "10":
+        return 10
+    if rankText == "J":
+        return 11
+    if rankText == "Q":
+        return 12
+    if rankText == "K":
+        return 13
+    if rankText == "A":
+        return 14
+    if rankText == "2":
+        return 15
+    return -1
+
+fn sortCards(cards: str[]): str[] =
+    var outVal: str[] = cards
+    for i in 0..<len(outVal):
+        for j in i + 1..<len(outVal):
+            let ri: int32 = cardRank(outVal[i])
+            let rj: int32 = cardRank(outVal[j])
+            if rj < ri:
+                let tmp: str = outVal[i]
+                outVal[i] = outVal[j]
+                outVal[j] = tmp
+    return outVal
+
+fn findCardIndex(cards: str[], card: str): int32 =
+    for idx in 0..<len(cards):
+        if cards[idx] == card:
+            return idx
+    return -1
+
+fn removeCard(cards: str[], card: str): str[] =
+    let idx: int32 = findCardIndex(cards, card)
+    if idx < 0:
+        return cards
+    var outVal: str[] = default[str[]]
+    for i in 0..<len(cards):
+        if i != idx:
+            add(outVal, cards[i])
+    return outVal
+
+fn makeDeck(): str[] =
+    var deck: str[] = default[str[]]
+    let suits: str[] = ["S", "H", "C", "D"]
+    let ranks: str[] = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2"]
+    for si in 0..<len(suits):
+        for ri in 0..<len(ranks):
+            add(deck, suits[si] + ranks[ri])
+    add(deck, "BJ")
+    add(deck, "RJ")
+    return deck
+
+fn lcgNext(seed: int64): int64 =
+    let mul: int64 = int64(1103515245)
+    let add: int64 = int64(12345)
+    let modv: int64 = int64(2147483647)
+    return (seed * mul + add) % modv
+
+fn shuffleDeck(seedBase: int64): str[] =
+    var deck: str[] = makeDeck()
+    var seed: int64 = seedBase
+    let iBase = len(deck) - 1
+    if iBase > 0:
+        for iRev in 0..<iBase:
+            let i = iBase - iRev
+            seed = lcgNext(seed)
+            let j: int32 = int32(seed % int64(i + 1))
+            let tmp: str = deck[i]
+            deck[i] = deck[j]
+            deck[j] = tmp
+    return deck
+
+fn addLog(state: DoudizhuState, text: str) =
+    if len(text) == 0:
+        return
+    add(state.logs, text)
+    if len(state.logs) > 120:
+        var clipped: str[] = default[str[]]
+        for idx in len(state.logs) - 120..<len(state.logs):
+            add(clipped, state.logs[idx])
+        state.logs = clipped
+
+fn newState(): DoudizhuState =
+    var state: DoudizhuState
+    new(state)
+    state.stage = "lobby"
+    state.roomStarted = false
+    state.landlordSeat = -1
+    state.turnSeat = 0
+    state.lastPattern = ""
+    state.lastRank = -1
+    state.lastCount = 0
+    state.lastSeat = -1
+    state.passCount = 0
+    state.multiplier = 1
+    state.landlordPlayCount = 0
+    state.farmerPlayCount = 0
+    state.winnerSeat = -1
+    state.seq = int64(0)
+    setLen(state.players, DdzPlayerCount)
+    setLen(state.bids, DdzPlayerCount)
+
+    for i in 0..<DdzPlayerCount:
+        var p: DdzPlayer
+        p.seat = i
+        p.name = "Seat" + i32ToStr(i + 1)
+        p.token = ""
+        p.online = false
+        p.ready = false
+        p.isBot = false
+        state.players[i] = p
+        state.bids[i] = -1
+    return state
+
+fn setPlayer(state: DoudizhuState, seat: int32, name: str, token: str, online: bool, isBot: bool) =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return
+    var p: DdzPlayer = state.players[seat]
+    if len(name) > 0:
+        p.name = name
+    if len(token) > 0:
+        p.token = token
+    p.online = online
+    p.isBot = isBot
+    state.players[seat] = p
+
+fn setReady(state: DoudizhuState, seat: int32, ready: bool) =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return
+    var p: DdzPlayer = state.players[seat]
+    p.ready = ready
+    state.players[seat] = p
+
+fn allReady(state: DoudizhuState): bool =
+    if state == nil:
+        return false
+    for i in 0..<DdzPlayerCount:
+        if ! state.players[i].ready:
+            return false
+    return true
+
+fn isValidCardList(cards: str[]): bool =
+    for idx in 0..<len(cards):
+        if cardRank(cards[idx]) < DdzRankMin:
+            return false
+    return true
+
+fn buildRankCounts(cards: str[]): int32[18] =
+    var counts: int32[18]
+    for idx in 0..<len(cards):
+        let rank: int32 = cardRank(cards[idx])
+        if rank >= DdzRankMin && rank <= DdzRankMax:
+            counts[rank] = counts[rank] + 1
+    return counts
+
+fn countDistinctRanks(counts: int32[18]): int32 =
+    var total: int32 = 0
+    for rank in DdzRankMin..DdzRankMax:
+        if counts[rank] > 0:
+            total = total + 1
+    return total
+
+fn collectRanksByCount(counts: int32[18], wantedCount: int32): int32[] =
+    var outVal: int32[] = default[int32[]]
+    for rank in DdzRankMin..DdzRankMax:
+        if counts[rank] == wantedCount:
+            add(outVal, rank)
+    return outVal
+
+fn isSequenceRanks(ranks: int32[]): bool =
+    if len(ranks) <= 0:
+        return false
+    for idx in 0..<len(ranks):
+        let rank: int32 = ranks[idx]
+        if rank < DdzRankMin || rank > DdzRankSeqMax:
+            return false
+        if idx > 0 && rank != ranks[idx - 1] + 1:
+            return false
+    return true
+
+fn classifyPlay(cards: str[]): tuple[ok: bool, pattern: str, rank: int32, count: int32] =
+    if len(cards) <= 0:
+        return (ok: false, pattern: "", rank: -1, count: 0)
+    var sorted: str[] = sortCards(cards)
+    if ! isValidCardList(sorted):
+        return (ok: false, pattern: "", rank: -1, count: 0)
+    let n: int32 = len(sorted)
+    let counts: int32[18] = buildRankCounts(sorted)
+    let distinct: int32 = countDistinctRanks(counts)
+    let singleRanks: int32[] = collectRanksByCount(counts, 1)
+    let pairRanks: int32[] = collectRanksByCount(counts, 2)
+    let tripleRanks: int32[] = collectRanksByCount(counts, 3)
+    let fourRanks: int32[] = collectRanksByCount(counts, 4)
+
+    if n == 1:
+        return (ok: true, pattern: "single", rank: cardRank(sorted[0]), count: 1)
+    if n == 2:
+        if counts[16] == 1 && counts[17] == 1:
+            return (ok: true, pattern: "rocket", rank: 100, count: 2)
+        if len(pairRanks) == 1:
+            return (ok: true, pattern: "pair", rank: pairRanks[0], count: 2)
+        return (ok: false, pattern: "", rank: -1, count: 0)
+    if n == 3 && len(tripleRanks) == 1:
+        return (ok: true, pattern: "triple", rank: tripleRanks[0], count: 3)
+    if n == 4:
+        if len(fourRanks) == 1:
+            return (ok: true, pattern: "bomb", rank: fourRanks[0], count: 4)
+        if len(tripleRanks) == 1 && len(singleRanks) == 1:
+            return (ok: true, pattern: "triple_single", rank: tripleRanks[0], count: 4)
+        return (ok: false, pattern: "", rank: -1, count: 0)
+    if n == 5 && len(tripleRanks) == 1 && len(pairRanks) == 1:
+        return (ok: true, pattern: "triple_pair", rank: tripleRanks[0], count: 5)
+    if n == 6 && len(fourRanks) == 1:
+        return (ok: true, pattern: "four_two_single", rank: fourRanks[0], count: 6)
+    if n == 8 && len(fourRanks) == 1 && len(pairRanks) == 2:
+        return (ok: true, pattern: "four_two_pair", rank: fourRanks[0], count: 8)
+
+    if n >= 5 && len(singleRanks) == n && isSequenceRanks(singleRanks):
+        return (ok: true, pattern: "straight", rank: singleRanks[len(singleRanks) - 1], count: n)
+    if n >= 6 && n % 2 == 0 && len(pairRanks) == n / 2 && len(pairRanks) >= 3 && len(singleRanks) == 0 && len(tripleRanks) == 0 && len(fourRanks) == 0 && isSequenceRanks(pairRanks):
+        return (ok: true, pattern: "pair_straight", rank: pairRanks[len(pairRanks) - 1], count: n)
+    if n >= 6 && n % 3 == 0 && len(tripleRanks) == n / 3 && len(tripleRanks) >= 2 && len(singleRanks) == 0 && len(pairRanks) == 0 && len(fourRanks) == 0 && isSequenceRanks(tripleRanks):
+        return (ok: true, pattern: "plane", rank: tripleRanks[len(tripleRanks) - 1], count: n)
+
+    if n >= 8 && n % 4 == 0:
+        let planeCount: int32 = n / 4
+        if len(tripleRanks) == planeCount && planeCount >= 2 && isSequenceRanks(tripleRanks):
+            var wingCards: int32 = 0
+            var wingOk = true
+            for rank in DdzRankMin..DdzRankMax:
+                let c: int32 = counts[rank]
+                if c > 0 && c != 3:
+                    if c == 1 || c == 2:
+                        wingCards = wingCards + c
+                    else:
+                        wingOk = false
+                        break
+            if wingOk && wingCards == planeCount:
+                return (ok: true, pattern: "plane_single_wing", rank: tripleRanks[len(tripleRanks) - 1], count: n)
+
+    if n >= 10 && n % 5 == 0:
+        let planeCount: int32 = n / 5
+        if len(tripleRanks) == planeCount && planeCount >= 2 && isSequenceRanks(tripleRanks):
+            var pairCount: int32 = 0
+            var wingOk = true
+            for rank in DdzRankMin..DdzRankMax:
+                let c: int32 = counts[rank]
+                if c > 0 && c != 3:
+                    if c == 2:
+                        pairCount = pairCount + 1
+                    else:
+                        wingOk = false
+                        break
+            if wingOk && pairCount == planeCount:
+                return (ok: true, pattern: "plane_pair_wing", rank: tripleRanks[len(tripleRanks) - 1], count: n)
+
+    return (ok: false, pattern: "", rank: -1, count: 0)
+
+fn canBeat(state: DoudizhuState, pattern: str, rank: int32, count: int32): bool =
+    if state.lastSeat < 0 || state.lastPattern == "" || state.passCount >= 2:
+        return true
+    if pattern == "rocket":
+        return true
+    if state.lastPattern == "rocket":
+        return false
+    if pattern == "bomb" && state.lastPattern != "bomb":
+        return true
+    if pattern != state.lastPattern:
+        return false
+    if count != state.lastCount:
+        return false
+    return rank > state.lastRank
+
+fn hasCards(hand: str[], cards: str[]): bool =
+    var temp: str[] = hand
+    for idx in 0..<len(cards):
+        let card: str = cards[idx]
+        let found: int32 = findCardIndex(temp, card)
+        if found < 0:
+            return false
+        temp = removeCard(temp, card)
+    return true
+
+fn removeCards(hand: str[], cards: str[]): str[] =
+    var outVal: str[] = hand
+    for idx in 0..<len(cards):
+        outVal = removeCard(outVal, cards[idx])
+    return outVal
+
+fn nextSeat(seat: int32): int32 =
+    return (seat + 1) % DdzPlayerCount
+
+fn dealRoundIntoBidding(state: DoudizhuState, note: str) =
+    if state == nil:
+        return
+    let deck: str[] = shuffleDeck(state.seq + sutil.nowMillis())
+    for i in 0..<DdzPlayerCount:
+        var p: DdzPlayer = state.players[i]
+        p.hand = default[str[]]
+        p.ready = false
+        state.players[i] = p
+        state.bids[i] = -1
+
+    for i in 0..<51:
+        let seat: int32 = i % DdzPlayerCount
+        var p: DdzPlayer = state.players[seat]
+        add(p.hand, deck[i])
+        state.players[seat] = p
+    state.baseCards = default[str[]]
+    for i in 51..<len(deck):
+        add(state.baseCards, deck[i])
+
+    for i in 0..<DdzPlayerCount:
+        var p: DdzPlayer = state.players[i]
+        p.hand = sortCards(p.hand)
+        state.players[i] = p
+
+    state.roomStarted = true
+    state.stage = "bidding"
+    state.landlordSeat = -1
+    state.turnSeat = 0
+    state.lastPattern = ""
+    state.lastRank = -1
+    state.lastCount = 0
+    state.lastSeat = -1
+    state.passCount = 0
+    state.multiplier = 1
+    state.landlordPlayCount = 0
+    state.farmerPlayCount = 0
+    state.winnerSeat = -1
+    state.seq = state.seq + int64(1)
+    addLog(state, note)
+
+fn startRound(state: DoudizhuState) =
+    dealRoundIntoBidding(state, "发牌完成，进入叫分阶段")
+
+fn setLandlord(state: DoudizhuState, seat: int32, bidScore: int32) =
+    state.landlordSeat = seat
+    var landlord: DdzPlayer = state.players[seat]
+    for idx in 0..<len(state.baseCards):
+        add(landlord.hand, state.baseCards[idx])
+    landlord.hand = sortCards(landlord.hand)
+    state.players[seat] = landlord
+
+    state.stage = "playing"
+    state.turnSeat = seat
+    state.multiplier = sutil.maxInt(1, bidScore)
+    state.seq = state.seq + int64(1)
+    addLog(state, landlord.name + " 成为地主，叫分 " + i32ToStr(state.multiplier))
+
+fn finalizeBidding(state: DoudizhuState) =
+    var bestSeat: int32 = -1
+    var bestScore: int32 = -1
+    for idx in 0..<DdzPlayerCount:
+        if state.bids[idx] > bestScore:
+            bestScore = state.bids[idx]
+            bestSeat = idx
+    if bestScore <= 0:
+        dealRoundIntoBidding(state, "三家都不叫，重新发牌")
+        return
+    setLandlord(state, bestSeat, bestScore)
+
+fn buildPublicSnapshot(state: DoudizhuState): str =
+    var lines: str[] = default[str[]]
+    add(lines, "stage=" + state.stage)
+    add(lines, "seq=" + intToStr(int32(state.seq)))
+    add(lines, "turn=" + i32ToStr(state.turnSeat))
+    add(lines, "landlord=" + i32ToStr(state.landlordSeat))
+    add(lines, "multiplier=" + i32ToStr(state.multiplier))
+    add(lines, "winner=" + i32ToStr(state.winnerSeat))
+    add(lines, "last_pattern=" + state.lastPattern)
+    add(lines, "last_rank=" + i32ToStr(state.lastRank))
+    add(lines, "last_count=" + i32ToStr(state.lastCount))
+    add(lines, "last_seat=" + i32ToStr(state.lastSeat))
+
+    var bidParts: str[] = default[str[]]
+    var handParts: str[] = default[str[]]
+    var seatParts: str[] = default[str[]]
+    for idx in 0..<DdzPlayerCount:
+        add(bidParts, i32ToStr(state.bids[idx]))
+        add(handParts, i32ToStr(len(state.players[idx].hand)))
+        add(seatParts, state.players[idx].name + ":" + (if state.players[idx].online: "online" else: "offline") + ":" + (if state.players[idx].isBot: "bot" else: "human"))
+    add(lines, "bids=" + sutil.joinWith(bidParts, ","))
+    add(lines, "hand_counts=" + sutil.joinWith(handParts, ","))
+    add(lines, "seats=" + sutil.joinWith(seatParts, "|"))
+
+    var tailLogs: str[] = default[str[]]
+    let tailStart: int32 = sutil.maxInt(0, len(state.logs) - 6)
+    for idx in tailStart..<len(state.logs):
+        add(tailLogs, state.logs[idx])
+    add(lines, "logs=" + sutil.joinWith(tailLogs, " | "))
+    return sutil.joinWith(lines, "\n")
+
+fn buildPrivateSnapshot(state: DoudizhuState, seat: int32): str =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return ""
+    var lines: str[] = default[str[]]
+    add(lines, "seat=" + i32ToStr(seat))
+    add(lines, "name=" + state.players[seat].name)
+    add(lines, "token=" + state.players[seat].token)
+    add(lines, "hand=" + sutil.joinWith(sortCards(state.players[seat].hand), ","))
+    if seat == state.landlordSeat || state.winnerSeat >= 0:
+        add(lines, "base_cards=" + sutil.joinWith(state.baseCards, ","))
+    else:
+        add(lines, "base_cards=***")
+    return sutil.joinWith(lines, "\n")
+
+fn recoverPlayerSession(state: DoudizhuState, token: str): int32 =
+    if state == nil || len(token) == 0:
+        return -1
+    for idx in 0..<DdzPlayerCount:
+        if state.players[idx].token == token:
+            return idx
+    return -1
+
+fn findEmptySeat(state: DoudizhuState): int32 =
+    if state == nil:
+        return -1
+    for idx in 0..<DdzPlayerCount:
+        if len(state.players[idx].token) == 0:
+            return idx
+    return -1
+
+fn getSeq(state: DoudizhuState): int64 =
+    if state == nil:
+        return int64(0)
+    return state.seq
+
+fn bumpSeq(state: DoudizhuState): int64 =
+    if state == nil:
+        return int64(0)
+    state.seq = state.seq + int64(1)
+    return state.seq
+
+fn getStage(state: DoudizhuState): str =
+    if state == nil:
+        return ""
+    return state.stage
+
+fn getTurnSeat(state: DoudizhuState): int32 =
+    if state == nil:
+        return -1
+    return state.turnSeat
+
+fn getLandlordSeat(state: DoudizhuState): int32 =
+    if state == nil:
+        return -1
+    return state.landlordSeat
+
+fn getLastPattern(state: DoudizhuState): str =
+    if state == nil:
+        return ""
+    return state.lastPattern
+
+fn getLastRank(state: DoudizhuState): int32 =
+    if state == nil:
+        return -1
+    return state.lastRank
+
+fn getMultiplier(state: DoudizhuState): int32 =
+    if state == nil:
+        return 1
+    return state.multiplier
+
+fn getWinnerSeat(state: DoudizhuState): int32 =
+    if state == nil:
+        return -1
+    return state.winnerSeat
+
+fn getPlayerName(state: DoudizhuState, seat: int32): str =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return ""
+    return state.players[seat].name
+
+fn getPlayerToken(state: DoudizhuState, seat: int32): str =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return ""
+    return state.players[seat].token
+
+fn getPlayerOnline(state: DoudizhuState, seat: int32): bool =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return false
+    return state.players[seat].online
+
+fn getPlayerIsBot(state: DoudizhuState, seat: int32): bool =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return false
+    return state.players[seat].isBot
+
+fn getPlayerHandCount(state: DoudizhuState, seat: int32): int32 =
+    if state == nil || seat < 0 || seat >= DdzPlayerCount:
+        return 0
+    return len(state.players[seat].hand)
+
+fn playAction(state: DoudizhuState, seat: int32, actionArgs: str, applied: var ActionApplied) =
+    if seat != state.turnSeat:
+        applied.note = "未到你出牌"
+        return
+    let cards: str[] = splitCsv(actionArgs)
+    if len(cards) <= 0:
+        applied.note = "出牌不能为空"
+        return
+
+    var player: DdzPlayer = state.players[seat]
+    if ! hasCards(player.hand, cards):
+        applied.note = "手牌不足"
+        return
+
+    let cls = classifyPlay(cards)
+    if ! cls.ok:
+        applied.note = "不支持的牌型"
+        return
+    if ! canBeat(state, cls.pattern, cls.rank, cls.count):
+        applied.note = "牌型无法压过上家"
+        return
+
+    player.hand = removeCards(player.hand, cards)
+    player.hand = sortCards(player.hand)
+    state.players[seat] = player
+
+    state.lastPattern = cls.pattern
+    state.lastRank = cls.rank
+    state.lastCount = cls.count
+    state.lastSeat = seat
+    state.passCount = 0
+
+    if cls.pattern == "bomb" || cls.pattern == "rocket":
+        state.multiplier = state.multiplier * 2
+
+    if seat == state.landlordSeat:
+        state.landlordPlayCount = state.landlordPlayCount + 1
+    else:
+        state.farmerPlayCount = state.farmerPlayCount + 1
+
+    addLog(state, player.name + " 出牌 " + sutil.joinWith(cards, ","))
+
+    if len(player.hand) == 0:
+        state.winnerSeat = seat
+        state.stage = "finished"
+        if seat == state.landlordSeat && state.farmerPlayCount == 0:
+            state.multiplier = state.multiplier * 2
+            addLog(state, "春天触发，倍数翻倍")
+        elif seat != state.landlordSeat && state.landlordPlayCount <= 1:
+            state.multiplier = state.multiplier * 2
+            addLog(state, "反春触发，倍数翻倍")
+        addLog(state, player.name + " 获胜")
+    else:
+        state.turnSeat = nextSeat(seat)
+
+    state.seq = state.seq + int64(1)
+    applied.applied = true
+
+fn passAction(state: DoudizhuState, seat: int32, applied: var ActionApplied) =
+    if seat != state.turnSeat:
+        applied.note = "未到你行动"
+        return
+    if state.lastSeat < 0 || state.lastPattern == "":
+        applied.note = "当前轮不能不出"
+        return
+    if state.lastSeat == seat:
+        applied.note = "你是本轮首出，不能不出"
+        return
+
+    state.passCount = state.passCount + 1
+    addLog(state, state.players[seat].name + " 不出")
+
+    if state.passCount >= 2:
+        let leader: int32 = state.lastSeat
+        state.lastPattern = ""
+        state.lastRank = -1
+        state.lastCount = 0
+        state.lastSeat = -1
+        state.passCount = 0
+        state.turnSeat = leader
+    else:
+        state.turnSeat = nextSeat(seat)
+
+    state.seq = state.seq + int64(1)
+    applied.applied = true
+
+fn normalizeActionKind(raw: str): str =
+    let lower: str = sutil.toLowerAscii(sutil.strip(raw))
+    if lower == "ready" || lower == "准备":
+        return "ready"
+    if lower == "start" || lower == "开始":
+        return "start"
+    if lower == "bid" || lower == "叫分":
+        return "bid"
+    if lower == "play" || lower == "出牌":
+        return "play"
+    if lower == "pass" || lower == "不出" || lower == "过":
+        return "pass"
+    return lower
+
+fn parseBidScore(raw: str): tuple[ok: bool, score: int32] =
+    let text: str = sutil.strip(raw)
+    if text == "0":
+        return (ok: true, score: 0)
+    if text == "1":
+        return (ok: true, score: 1)
+    if text == "2":
+        return (ok: true, score: 2)
+    if text == "3":
+        return (ok: true, score: 3)
+    return (ok: false, score: 0)
+
+fn applyAction(state: DoudizhuState, seat: int32, action: ActionRequest): ActionApplied =
+    var applied: ActionApplied = initActionApplied()
+    applied.actionType = action.actionType
+    applied.actionArgs = action.actionArgs
+    applied.stateSeq = if state == nil: int64(0) else: state.seq
+
+    if state == nil:
+        applied.note = "state nil"
+        return applied
+    if seat < 0 || seat >= DdzPlayerCount:
+        applied.note = "seat 非法"
+        applied.publicSnapshot = buildPublicSnapshot(state)
+        return applied
+    let expectedToken: str = state.players[seat].token
+    if len(expectedToken) > 0 && len(action.playerToken) > 0 && action.playerToken != expectedToken:
+        applied.note = "token 与座位不匹配"
+        applied.publicSnapshot = buildPublicSnapshot(state)
+        return applied
+
+    let kind: str = normalizeActionKind(action.actionType)
+    if kind == "ready":
+        setReady(state, seat, true)
+        addLog(state, state.players[seat].name + " 已准备")
+        state.seq = state.seq + int64(1)
+        applied.applied = true
+    elif kind == "start":
+        if ! allReady(state):
+            applied.note = "仍有玩家未准备"
+        else:
+            startRound(state)
+            applied.applied = true
+    elif kind == "bid":
+        if state.stage != "bidding":
+            applied.note = "当前不是叫分阶段"
+        elif seat != state.turnSeat:
+            applied.note = "未到你叫分"
+        elif state.bids[seat] >= 0:
+            applied.note = "该座位已经叫过分"
+        else:
+            let parsed = parseBidScore(action.actionArgs)
+            if ! parsed.ok:
+                applied.note = "叫分参数非法，仅支持 0/1/2/3"
+            else:
+                state.bids[seat] = parsed.score
+                addLog(state, state.players[seat].name + " 叫分 " + i32ToStr(parsed.score))
+                if parsed.score == 3:
+                    setLandlord(state, seat, 3)
+                else:
+                    state.turnSeat = nextSeat(seat)
+                    var allBid = true
+                    for idx in 0..<DdzPlayerCount:
+                        if state.bids[idx] < 0:
+                            allBid = false
+                            break
+                    if allBid:
+                        finalizeBidding(state)
+                    else:
+                        state.seq = state.seq + int64(1)
+                applied.applied = true
+    elif kind == "play":
+        if state.stage != "playing":
+            applied.note = "当前不是出牌阶段"
+        else:
+            playAction(state, seat, action.actionArgs, applied)
+    elif kind == "pass":
+        if state.stage != "playing":
+            applied.note = "当前不是出牌阶段"
+        else:
+            passAction(state, seat, applied)
+    else:
+        applied.note = "未知动作: " + action.actionType
+
+    applied.stateSeq = state.seq
+    applied.publicSnapshot = buildPublicSnapshot(state)
+    if ! applied.applied && len(applied.note) == 0:
+        applied.note = "动作未生效"
+    return applied
+
+fn makeNeedByRank(rank: int32, count: int32): int32[18] =
+    var need: int32[18]
+    if rank >= DdzRankMin && rank <= DdzRankMax && count > 0:
+        need[rank] = count
+    return need
+
+fn pickCardsByNeed(hand: str[], needSrc: int32[18]): str[] =
+    var sorted: str[] = sortCards(hand)
+    var need: int32[18] = needSrc
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(sorted):
+        let rank: int32 = cardRank(sorted[idx])
+        if rank >= DdzRankMin && rank <= DdzRankMax && need[rank] > 0:
+            add(outVal, sorted[idx])
+            need[rank] = need[rank] - 1
+    for rank in DdzRankMin..DdzRankMax:
+        if need[rank] > 0:
+            return default[str[]]
+    return outVal
+
+fn pickSinglesFromTemp(counts: var int32[18], need: var int32[18], singleNeed: int32): bool =
+    var selected: int32 = 0
+    for rank in DdzRankMin..DdzRankMax:
+        while counts[rank] > 0 && selected < singleNeed:
+            counts[rank] = counts[rank] - 1
+            need[rank] = need[rank] + 1
+            selected = selected + 1
+        if selected >= singleNeed:
+            return true
+    return selected == singleNeed
+
+fn pickPairsFromTempDistinct(counts: var int32[18], need: var int32[18], pairNeed: int32): bool =
+    var selected: int32 = 0
+    for rank in DdzRankMin..DdzRankMax:
+        if counts[rank] >= 2:
+            counts[rank] = counts[rank] - 2
+            need[rank] = need[rank] + 2
+            selected = selected + 1
+            if selected >= pairNeed:
+                return true
+    return selected == pairNeed
+
+fn findSingleGreater(hand: str[], minRank: int32): str[] =
+    let sorted: str[] = sortCards(hand)
+    for idx in 0..<len(sorted):
+        let rank: int32 = cardRank(sorted[idx])
+        if rank > minRank:
+            return [sorted[idx]]
+    return default[str[]]
+
+fn findPairGreater(hand: str[], minRank: int32): str[] =
+    let counts: int32[18] = buildRankCounts(hand)
+    var startRank: int32 = minRank + 1
+    if startRank < DdzRankMin:
+        startRank = DdzRankMin
+    for rank in startRank..DdzRankMax:
+        if counts[rank] >= 2:
+            return pickCardsByNeed(hand, makeNeedByRank(rank, 2))
+    return default[str[]]
+
+fn findTripleGreater(hand: str[], minRank: int32): str[] =
+    let counts: int32[18] = buildRankCounts(hand)
+    var startRank: int32 = minRank + 1
+    if startRank < DdzRankMin:
+        startRank = DdzRankMin
+    for rank in startRank..15:
+        if counts[rank] >= 3:
+            return pickCardsByNeed(hand, makeNeedByRank(rank, 3))
+    return default[str[]]
+
+fn findBombGreater(hand: str[], minRank: int32): str[] =
+    let counts: int32[18] = buildRankCounts(hand)
+    var startRank: int32 = minRank + 1
+    if startRank < DdzRankMin:
+        startRank = DdzRankMin
+    for rank in startRank..15:
+        if counts[rank] >= 4:
+            return pickCardsByNeed(hand, makeNeedByRank(rank, 4))
+    return default[str[]]
+
+fn findRocket(hand: str[]): str[] =
+    let counts: int32[18] = buildRankCounts(hand)
+    if counts[16] >= 1 && counts[17] >= 1:
+        var need: int32[18]
+        need[16] = 1
+        need[17] = 1
+        return pickCardsByNeed(hand, need)
+    return default[str[]]
+
+fn findStraightGreater(hand: str[], totalCards: int32, minHighRank: int32): str[] =
+    if totalCards < 5:
+        return default[str[]]
+    let counts: int32[18] = buildRankCounts(hand)
+    let lastStart: int32 = DdzRankSeqMax - totalCards + 1
+    for start in DdzRankMin..lastStart:
+        let high: int32 = start + totalCards - 1
+        if high > minHighRank:
+            var ok = true
+            for rank in start..high:
+                if counts[rank] < 1:
+                    ok = false
+                    break
+            if ok:
+                var need: int32[18]
+                for rank in start..high:
+                    need[rank] = 1
+                return pickCardsByNeed(hand, need)
+    return default[str[]]
+
+fn findPairStraightGreater(hand: str[], totalCards: int32, minHighRank: int32): str[] =
+    if totalCards < 6 || totalCards % 2 != 0:
+        return default[str[]]
+    let pairCount: int32 = totalCards / 2
+    if pairCount < 3:
+        return default[str[]]
+    let counts: int32[18] = buildRankCounts(hand)
+    let lastStart: int32 = DdzRankSeqMax - pairCount + 1
+    for start in DdzRankMin..lastStart:
+        let high: int32 = start + pairCount - 1
+        if high > minHighRank:
+            var ok = true
+            for rank in start..high:
+                if counts[rank] < 2:
+                    ok = false
+                    break
+            if ok:
+                var need: int32[18]
+                for rank in start..high:
+                    need[rank] = 2
+                return pickCardsByNeed(hand, need)
+    return default[str[]]
+
+fn findPlaneGreater(hand: str[], totalCards: int32, minHighRank: int32): str[] =
+    if totalCards < 6 || totalCards % 3 != 0:
+        return default[str[]]
+    let planeCount: int32 = totalCards / 3
+    if planeCount < 2:
+        return default[str[]]
+    let counts: int32[18] = buildRankCounts(hand)
+    let lastStart: int32 = DdzRankSeqMax - planeCount + 1
+    for start in DdzRankMin..lastStart:
+        let high: int32 = start + planeCount - 1
+        if high > minHighRank:
+            var ok = true
+            for rank in start..high:
+                if counts[rank] < 3:
+                    ok = false
+                    break
+            if ok:
+                var need: int32[18]
+                for rank in start..high:
+                    need[rank] = need[rank] + 3
+                return pickCardsByNeed(hand, need)
+    return default[str[]]
+
+fn findTripleSingleGreater(hand: str[], minRank: int32): str[] =
+    let countsBase: int32[18] = buildRankCounts(hand)
+    var startRank: int32 = minRank + 1
+    if startRank < DdzRankMin:
+        startRank = DdzRankMin
+    for rank in startRank..15:
+        if countsBase[rank] >= 3:
+            var temp: int32[18] = countsBase
+            var need: int32[18]
+            temp[rank] = temp[rank] - 3
+            need[rank] = 3
+            if pickSinglesFromTemp(temp, need, 1):
+                return pickCardsByNeed(hand, need)
+    return default[str[]]
+
+fn findTriplePairGreater(hand: str[], minRank: int32): str[] =
+    let countsBase: int32[18] = buildRankCounts(hand)
+    var startRank: int32 = minRank + 1
+    if startRank < DdzRankMin:
+        startRank = DdzRankMin
+    for rank in startRank..15:
+        if countsBase[rank] >= 3:
+            var temp: int32[18] = countsBase
+            var need: int32[18]
+            temp[rank] = temp[rank] - 3
+            need[rank] = 3
+            if pickPairsFromTempDistinct(temp, need, 1):
+                return pickCardsByNeed(hand, need)
+    return default[str[]]
+
+fn findPlaneSingleWingGreater(hand: str[], totalCards: int32, minHighRank: int32): str[] =
+    if totalCards < 8 || totalCards % 4 != 0:
+        return default[str[]]
+    let planeCount: int32 = totalCards / 4
+    if planeCount < 2:
+        return default[str[]]
+    let countsBase: int32[18] = buildRankCounts(hand)
+    let lastStart: int32 = DdzRankSeqMax - planeCount + 1
+    for start in DdzRankMin..lastStart:
+        let high: int32 = start + planeCount - 1
+        if high > minHighRank:
+            var ok = true
+            for rank in start..high:
+                if countsBase[rank] < 3:
+                    ok = false
+                    break
+            if ok:
+                var temp: int32[18] = countsBase
+                var need: int32[18]
+                for rank in start..high:
+                    temp[rank] = temp[rank] - 3
+                    need[rank] = need[rank] + 3
+                if pickSinglesFromTemp(temp, need, planeCount):
+                    let cards: str[] = pickCardsByNeed(hand, need)
+                    if len(cards) == totalCards:
+                        return cards
+    return default[str[]]
+
+fn findPlanePairWingGreater(hand: str[], totalCards: int32, minHighRank: int32): str[] =
+    if totalCards < 10 || totalCards % 5 != 0:
+        return default[str[]]
+    let planeCount: int32 = totalCards / 5
+    if planeCount < 2:
+        return default[str[]]
+    let countsBase: int32[18] = buildRankCounts(hand)
+    let lastStart: int32 = DdzRankSeqMax - planeCount + 1
+    for start in DdzRankMin..lastStart:
+        let high: int32 = start + planeCount - 1
+        if high > minHighRank:
+            var ok = true
+            for rank in start..high:
+                if countsBase[rank] < 3:
+                    ok = false
+                    break
+            if ok:
+                var temp: int32[18] = countsBase
+                var need: int32[18]
+                for rank in start..high:
+                    temp[rank] = temp[rank] - 3
+                    need[rank] = need[rank] + 3
+                if pickPairsFromTempDistinct(temp, need, planeCount):
+                    let cards: str[] = pickCardsByNeed(hand, need)
+                    if len(cards) == totalCards:
+                        return cards
+    return default[str[]]
+
+fn findFourTwoSingleGreater(hand: str[], minRank: int32): str[] =
+    let countsBase: int32[18] = buildRankCounts(hand)
+    var startRank: int32 = minRank + 1
+    if startRank < DdzRankMin:
+        startRank = DdzRankMin
+    for rank in startRank..15:
+        if countsBase[rank] >= 4:
+            var temp: int32[18] = countsBase
+            var need: int32[18]
+            temp[rank] = temp[rank] - 4
+            need[rank] = 4
+            if pickSinglesFromTemp(temp, need, 2):
+                let cards: str[] = pickCardsByNeed(hand, need)
+                if len(cards) == 6:
+                    return cards
+    return default[str[]]
+
+fn findFourTwoPairGreater(hand: str[], minRank: int32): str[] =
+    let countsBase: int32[18] = buildRankCounts(hand)
+    var startRank: int32 = minRank + 1
+    if startRank < DdzRankMin:
+        startRank = DdzRankMin
+    for rank in startRank..15:
+        if countsBase[rank] >= 4:
+            var temp: int32[18] = countsBase
+            var need: int32[18]
+            temp[rank] = temp[rank] - 4
+            need[rank] = 4
+            if pickPairsFromTempDistinct(temp, need, 2):
+                let cards: str[] = pickCardsByNeed(hand, need)
+                if len(cards) == 8:
+                    return cards
+    return default[str[]]
+
+fn estimateBidScore(hand: str[]): int32 =
+    let counts: int32[18] = buildRankCounts(hand)
+    var score: int32 = 0
+    for rank in DdzRankMin..15:
+        if counts[rank] >= 4:
+            score = 3
+            break
+    if score < 3 && counts[16] >= 1 && counts[17] >= 1:
+        score = 3
+
+    var highCnt: int32 = counts[14] + counts[15] + counts[16] + counts[17]
+    if highCnt >= 4:
+        score = sutil.maxInt(score, 2)
+    elif highCnt >= 2:
+        score = sutil.maxInt(score, 1)
+
+    let triples: int32[] = collectRanksByCount(counts, 3)
+    if len(triples) >= 2:
+        score = sutil.maxInt(score, 2)
+    let pairs: int32[] = collectRanksByCount(counts, 2)
+    if len(pairs) >= 4:
+        score = sutil.maxInt(score, 1)
+    return sutil.clampInt(score, 0, 3)
+
+fn makeBotAction(state: DoudizhuState, seat: int32): ActionRequest =
+    var action: ActionRequest = initActionRequest()
+    action.playerToken = state.players[seat].token
+    action.seat = seat
+    action.clientSeq = state.seq + int64(1)
+
+    if state.stage == "bidding":
+        action.actionType = "bid"
+        action.actionArgs = i32ToStr(estimateBidScore(state.players[seat].hand))
+        return action
+
+    if state.stage != "playing" || seat != state.turnSeat:
+        action.actionType = "pass"
+        action.actionArgs = ""
+        return action
+
+    let hand: str[] = sortCards(state.players[seat].hand)
+    if len(hand) <= 0:
+        action.actionType = "pass"
+        action.actionArgs = ""
+        return action
+
+    var candidate: str[] = default[str[]]
+    if state.lastSeat < 0 || state.passCount >= 2 || state.lastSeat == seat || state.lastPattern == "":
+        candidate = [hand[0]]
+    else:
+        if state.lastPattern == "single":
+            candidate = findSingleGreater(hand, state.lastRank)
+        elif state.lastPattern == "pair":
+            candidate = findPairGreater(hand, state.lastRank)
+        elif state.lastPattern == "triple":
+            candidate = findTripleGreater(hand, state.lastRank)
+        elif state.lastPattern == "triple_single":
+            candidate = findTripleSingleGreater(hand, state.lastRank)
+        elif state.lastPattern == "triple_pair":
+            candidate = findTriplePairGreater(hand, state.lastRank)
+        elif state.lastPattern == "straight":
+            candidate = findStraightGreater(hand, state.lastCount, state.lastRank)
+        elif state.lastPattern == "pair_straight":
+            candidate = findPairStraightGreater(hand, state.lastCount, state.lastRank)
+        elif state.lastPattern == "plane":
+            candidate = findPlaneGreater(hand, state.lastCount, state.lastRank)
+        elif state.lastPattern == "plane_single_wing":
+            candidate = findPlaneSingleWingGreater(hand, state.lastCount, state.lastRank)
+        elif state.lastPattern == "plane_pair_wing":
+            candidate = findPlanePairWingGreater(hand, state.lastCount, state.lastRank)
+        elif state.lastPattern == "four_two_single":
+            candidate = findFourTwoSingleGreater(hand, state.lastRank)
+        elif state.lastPattern == "four_two_pair":
+            candidate = findFourTwoPairGreater(hand, state.lastRank)
+        elif state.lastPattern == "bomb":
+            candidate = findBombGreater(hand, state.lastRank)
+
+        if len(candidate) == 0 && state.lastPattern != "rocket":
+            if state.lastPattern == "bomb":
+                candidate = findBombGreater(hand, state.lastRank)
+            else:
+                candidate = findBombGreater(hand, -1)
+        if len(candidate) == 0 && state.lastPattern != "rocket":
+            candidate = findRocket(hand)
+    if len(candidate) > 0:
+        let cls = classifyPlay(candidate)
+        if cls.ok && canBeat(state, cls.pattern, cls.rank, cls.count):
+            action.actionType = "play"
+            action.actionArgs = sutil.joinWith(candidate, ",")
+            return action
+
+    action.actionType = "pass"
+    action.actionArgs = ""
+    return action

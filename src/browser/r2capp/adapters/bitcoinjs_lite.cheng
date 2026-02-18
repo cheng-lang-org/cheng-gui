@@ -1,0 +1,34 @@
+type
+    BitcoinNetwork = ref
+        name: str
+        bech32: str
+
+    BitcoinPayment = ref
+        address: str
+        outputHex: str
+
+fn adapterId(): str =
+    return "bitcoinjs-lib"
+
+fn networkMainnet(): BitcoinNetwork =
+    var out: BitcoinNetwork
+    new(out)
+    out.name = "bitcoin"
+    out.bech32 = "bc"
+    return out
+
+fn networkTestnet(): BitcoinNetwork =
+    var out: BitcoinNetwork
+    new(out)
+    out.name = "testnet"
+    out.bech32 = "tb"
+    return out
+
+fn p2wpkh(pubkeyHex: str, network: BitcoinNetwork): BitcoinPayment =
+    var out: BitcoinPayment
+    new(out)
+    let prefix = if network != nil && len(network.bech32) > 0: network.bech32 else: "bc"
+    out.address = prefix + "1q" + pubkeyHex
+    out.outputHex = ""
+    return out
+

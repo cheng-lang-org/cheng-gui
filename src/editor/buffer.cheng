@@ -1,0 +1,899 @@
+import std/hashes
+import std/os
+import std/strutils
+import std/tables
+import std/times
+import cheng/runtime/json_ast
+import cheng/runtime/option
+import ide/textutils
+import cheng/gui/widgets/codeview
+import cheng/gui/services/lsp_adapter
+import cheng/gui/language_service
+const
+    DefaultAutosaveDelayMs = int64(2000)
+    MaxUndoDepth = 128
+    DefaultAnalysisDebounceMs = int64(120)
+type
+    EditorDocumentId = str
+    EditorUndoRecord =
+        offset: int
+        removedText: str
+        insertedText: str
+        timestampMs: int64
+    EditorDocument = ref
+        id: EditorDocumentIdpath: str
+        displayName: str
+        content: str lineOff
+        sets: int[]
+        version: int
+        dirty: bool
+        undoStack: EditorUndoRecord[]
+        redoStack: EditorUndoRecord[]
+        lastModifiedAt: int64
+        lastSavedAt: int64
+        codeModel: CodeViewModel
+        tabSize: int
+        autoSaveEligible: bool
+        currentHash: HashsavedHash: Hash
+    EditorFindOptions =
+        query: str
+        caseSensitive: bool
+        wrap: bool
+        startOffset: int
+    EditorFindResult =
+        found: bool
+        startOffset: int
+        endOffset: int
+        startLine: int
+        startColumn: int
+        endLine: int
+        endColumn: int
+        replacementApplied: bool
+    EditorPosition =
+        line: int
+        column: int
+        EditorDead
+    line =
+        pending: bool
+        dueAt: int64
+    EditorFindState =
+        lastQuery: str
+        lastOptions: EditorFindOptions
+        lastResult: EditorFindResult
+    EditorAnalysisSnapshot =
+        checksum: HashupdatedAtMs: int64
+        diagnostics: LspDiagnostic[]
+        outline: OutlineEntry[]
+        events: LanguageServiceEvent[]
+        borrowList: JsonNode
+        borrowSummary: JsonNode
+        borrowCodeLens: JsonNode
+        hasErrors: bool
+    EditorDocumentSummary =
+        id: EditorDocumentIddisplayName: str
+        path: str
+        dirty: bool
+        isActive: bool
+    EditorAutoSaveConfig =
+        enabled: bool
+        delayMs: int64
+    EditorWorkspace = ref
+        documents: Table[EditorDocumentId, EditorDocument]
+        documentOrder: EditorDocumentId[]
+        activeDocument: EditorDocumentIdautoSaveConfig: EditorAutoSaveConfigpendingAuto
+        Save: Table[EditorDocumentId, int64]
+        findState: Table[EditorDocumentId, EditorFindState]
+        analysisDebounceMs: int64
+        pendingAnalysis: Table[EditorDocumentId, int64]
+        analysisState: Table[EditorDocumentId, EditorAnalysisSnapshot]
+fn initDocumentTable(): Table[EditorDocumentId, EditorDocument] =
+    var table: Table[EditorDocumentId, EditorDocument]
+    table.keys = default[EditorDocumentId[]]
+    table.values = default[EditorDocument[]] table
+fn findDocumentIndex(table: Table[EditorDocumentId, EditorDocument], key: EditorDocumentId): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasDocumentKey(table: Table[EditorDocumentId, EditorDocument], key: EditorDocumentId): bool =
+    findDocumentIndex(table, key) >= 0
+fn getDocumentOrDefault(table: Table[EditorDocumentId, EditorDocument], key: EditorDocumentId, defaultValue: EditorDocument): EditorDocument =
+    let idx = findDocumentIndex(table, key)
+    if idx >= 0:
+        table.values[idx]
+    else:
+        defaultValue
+fn setDocument(table: var Table[EditorDocumentId, EditorDocument], key: EditorDocumentId, value: EditorDocument) =
+    let idx = findDocumentIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn removeDocument(table: var Table[EditorDocumentId, EditorDocument], key: EditorDocumentId) =
+    let idx = findDocumentIndex(table, key)
+    if idx >= 0:
+        let last = len(table.keys) - 1
+        if idx != last:
+            table.keys[idx] = table.keys[last]
+            table.values[idx] = table.values[last]
+            setLen(table.keys, last)
+            setLen(table.values, last)
+fn clearDocumentTable(table: var Table[EditorDocumentId, EditorDocument]) =
+    setLen(table.keys, 0)
+    setLen(table.values, 0)
+fn initFindStateTable(): Table[EditorDocumentId, EditorFindState] =
+    var table: Table[EditorDocumentId, EditorFindState]
+    table.keys = default[EditorDocumentId[]]
+    table.values = default[EditorFindState[]] table
+fn findFindStateIndex(table: Table[EditorDocumentId, EditorFindState], key: EditorDocumentId): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasFindStateKey(table: Table[EditorDocumentId, EditorFindState], key: EditorDocumentId): bool =
+    findFindStateIndex(table, key) >= 0
+fn getFindStateOrDefault(table: Table[EditorDocumentId, EditorFindState], key: EditorDocumentId, defaultValue: EditorFindState): EditorFindState =
+    let idx = findFindStateIndex(table, key)
+    if idx >= 0:
+        table.values[idx]
+    else:
+        defaultValue
+fn setFindState(table: var Table[EditorDocumentId, EditorFindState], key: EditorDocumentId, value: EditorFindState) =
+    let idx = findFindStateIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn removeFindState(table: var Table[EditorDocumentId, EditorFindState], key: EditorDocumentId) =
+    let idx = findFindStateIndex(table, key)
+    if idx >= 0:
+        let last = len(table.keys) - 1
+        if idx != last:
+            table.keys[idx] = table.keys[last]
+            table.values[idx] = table.values[last]
+            setLen(table.keys, last)
+            setLen(table.values, last)
+fn clearFindStateTable(table: var Table[EditorDocumentId, EditorFindState]) =
+    setLen(table.keys, 0)
+    setLen(table.values, 0)
+fn initAnalysisStateTable(): Table[EditorDocumentId, EditorAnalysisSnapshot] =
+    var table: Table[EditorDocumentId, EditorAnalysisSnapshot]
+    table.keys = default[EditorDocumentId[]]
+    table.values = default[EditorAnalysisSnapshot[]] table
+fn findAnalysisStateIndex(table: Table[EditorDocumentId, EditorAnalysisSnapshot], key: EditorDocumentId): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasAnalysisStateKey(table: Table[EditorDocumentId, EditorAnalysisSnapshot], key: EditorDocumentId): bool =
+    findAnalysisStateIndex(table, key) >= 0
+fn getAnalysisStateOrDefault(table: Table[EditorDocumentId, EditorAnalysisSnapshot], key: EditorDocumentId, defaultValue: EditorAnalysisSnapshot): EditorAnalysisSnapshot =
+    let idx = findAnalysisStateIndex(table, key)
+    if idx >= 0:
+        table.values[idx]
+    else:
+        defaultValue
+fn setAnalysisState(table: var Table[EditorDocumentId, EditorAnalysisSnapshot], key: EditorDocumentId, value: EditorAnalysisSnapshot) =
+    let idx = findAnalysisStateIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn removeAnalysisState(table: var Table[EditorDocumentId, EditorAnalysisSnapshot], key: EditorDocumentId) =
+    let idx = findAnalysisStateIndex(table, key)
+    if idx >= 0:
+        let last = len(table.keys) - 1
+        if idx != last:
+            table.keys[idx] = table.keys[last]
+            table.values[idx] = table.values[last]
+            setLen(table.keys, last)
+            setLen(table.values, last)
+fn clearAnalysisStateTable(table: var Table[EditorDocumentId, EditorAnalysisSnapshot]) =
+    setLen(table.keys, 0)
+    setLen(table.values, 0)
+fn initIdInt64Table(): Table[EditorDocumentId, int64] =
+    var table: Table[EditorDocumentId, int64]
+    table.keys = default[EditorDocumentId[]]
+    table.values = default[int64[]] table
+fn findIdInt64Index(table: Table[EditorDocumentId, int64], key: EditorDocumentId): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasIdInt64Key(table: Table[EditorDocumentId, int64], key: EditorDocumentId): bool =
+    findIdInt64Index(table, key) >= 0
+fn getIdInt64OrDefault(table: Table[EditorDocumentId, int64], key: EditorDocumentId, defaultValue: int64): int64 =
+    let idx = findIdInt64Index(table, key)
+    if idx >= 0:
+        table.values[idx]
+    else:
+        defaultValue
+fn setIdInt64(table: var Table[EditorDocumentId, int64], key: EditorDocumentId, value: int64) =
+    let idx = findIdInt64Index(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn removeIdInt64(table: var Table[EditorDocumentId, int64], key: EditorDocumentId) =
+    let idx = findIdInt64Index(table, key)
+    if idx >= 0:
+        let last = len(table.keys) - 1
+        if idx != last:
+            table.keys[idx] = table.keys[last]
+            table.values[idx] = table.values[last]
+            setLen(table.keys, last)
+            setLen(table.values, last)
+fn clearIdInt64Table(table: var Table[EditorDocumentId, int64]) =
+    setLen(table.keys, 0)
+    setLen(table.values, 0)
+fn popUndoRecord(stack: var EditorUndoRecord[]): EditorUndoRecord =
+    let last = len(stack) - 1
+    let value = stack[last]
+    setLen(stack, last) value
+    var globalDocumentCounter = 0
+fn nowMillis(): int64 =
+    int64(epochTime() * 1000.0)
+fn clampInt(value, lower, upper: int): int =
+    if value < lower:
+        lower
+    elif value > upper:
+        upper
+    else:
+        value
+fn emptyFindResult(): EditorFindResult =
+    var result: EditorFindResult
+    result.found = false result
+fn emptyFindState(): EditorFindState =
+    var state: EditorFindState
+    state.lastQuery = ""
+    state.lastOptions.query = ""
+    state.lastOptions.caseSensitive = false
+    state.lastOptions.wrap = false
+    state.lastOptions.startOffset = 0
+    state.lastResult = emptyFindResult() state
+fn emptyAnalysisSnapshot(): EditorAnalysisSnapshot =
+    var snapshot: EditorAnalysisSnapshot
+    snapshot.checksum = Hash(0)
+    snapshot.updatedAtMs = 0
+    snapshot.diagnostics = default[LspDiagnostic[]]
+    snapshot.outline = default[OutlineEntry[]]
+    snapshot.events = default[LanguageServiceEvent[]]
+    snapshot.borrowList = newJArray()
+    snapshot.borrowSummary = newJObject()
+    snapshot.borrowCodeLens = newJArray()
+    snapshot.hasErrors = false snapshot
+fn scheduleAnalysis(workspace: EditorWorkspace, doc: EditorDocument, nowMs: int64, immediate: bool)
+fn contentHash(text: str): Hash =
+    hash(text)
+fn normalizeDocumentPath(path: str): str =
+    if len(path) == 0:
+        return ""
+        try:
+            result = os.absolutePath(path)
+        except CatchableError:
+            result = path
+fn computeDisplayName(path: str, fallback: str): str =
+    if len(path) == 0:
+        fallback
+    else:
+        os.extractFilename(path)
+fn nextDocumentId(): EditorDocumentId =
+    globalDocumentCounter = globalDocumentCounter + 1 "doc#" + $ globalDocumentCounter
+fn computeLineOff
+sets(content: str): int[] = var offsets = default[int[]] offsets.add(0)
+var idx = 0
+while idx < len(content):
+    if content[idx] == '\n':
+        offsets.add(idx + 1)
+        idx = idx + 1 offsets.add(len(content)) offsets
+fn lineCount(doc: EditorDocument): int =
+    if doc == nil:
+        return 0
+        if len(doc.lineOff sets) <= 1:
+            return 1
+            len(doc.lineOff sets) - 1
+fn lineLength(doc: EditorDocument, line: int): int =
+    if doc == nil || len(doc.lineOff sets) == 0:
+        return 0
+        if len(doc.lineOff sets) == 1:
+            return len(doc.content)
+            let clamped = clampInt(line, 0, len(doc.lineOff sets) - 2)
+            let start = doc.lineOff sets[clamped]
+            let finish = doc.lineOff sets[clamped + 1]
+            var length = finish - start
+            if finish > start && doc.content[finish - 1] == '\n':
+                length = length - 1
+                max(length, 0)
+fn clampOffset(doc: EditorDocument, offset: int): int =
+    if doc == nil:
+        return 0
+        clampInt(offset, 0, len(doc.content))
+fn lineForOffset(doc: EditorDocument, offset: int): int =
+    if doc == nil || len(doc.lineOff sets) <= 1:
+        return 0
+        let target = clampOffset(doc, offset)
+        var low = 0
+        var high = len(doc.lineOff sets) - 2
+        var lineIdx = 0
+        while low <= high:
+            let mid =(low + high) >> 1
+            let start = doc.lineOff sets[mid]
+            let nextStart = doc.lineOff sets[mid + 1]
+            if target < start:
+                if mid == 0:
+                    lineIdx = 0
+                    break high = mid - 1
+                elif target >= nextStart:
+                    low = mid + 1
+                    lineIdx = min(low, len(doc.lineOff sets) - 2)
+                else:
+                    lineIdx = mid
+                    break lineIdx
+fn offsetToPosition(doc: EditorDocument, offset: int): EditorPosition =
+    var pos: EditorPosition
+    if doc == nil:
+        return pos
+        let lineIdx = lineForOffset(doc, offset)
+        let start = doc.lineOff sets[lineIdx]
+        var column = clampOffset(doc, offset) - start
+        let maxColumn = doc.lineLength(lineIdx)
+        if column > maxColumn:
+            column = maxColumn
+            pos.line = lineIdx
+            pos.column = column pos
+fn position
+To
+Offset(doc: EditorDocument, line, column: int): int = if doc == nil: return 0
+if len(doc.lineOff sets) <= 1:
+    return clampInt(column, 0, len(doc.content))
+    let clampedLine = clampInt(line, 0, len(doc.lineOff sets) - 2)
+    let start = doc.lineOff sets[clampedLine]
+    let length = doc.lineLength(clampedLine)
+    let clampedColumn = clampInt(column, 0, length) start + clampedColumn
+fn activeDocument(workspace: EditorWorkspace): EditorDocument =
+    if workspace == nil || len(workspace.activeDocument) == 0:
+        return nil
+        getDocumentOrDefault(workspace.documents, workspace.activeDocument, nil)
+fn activeDocumentId(workspace: EditorWorkspace): EditorDocumentId =
+    if workspace == nil:
+        ""
+    else:
+        workspace.activeDocument
+fn documentById(workspace: EditorWorkspace, id: EditorDocumentId): EditorDocument =
+    if workspace == nil || len(id) == 0:
+        return nil
+        getDocumentOrDefault(workspace.documents, id, nil)
+fn setActiveDocument(workspace: EditorWorkspace, id: EditorDocumentId): bool =
+    if workspace == nil || len(id) == 0:
+        return false
+        if ! hasDocumentKey(workspace.documents, id):
+            return false
+            workspace.activeDocument = id true
+fn listDocuments(workspace: EditorWorkspace): EditorDocument[] =
+    if workspace == nil:
+        return default[EditorDocument[]]
+        var items = default[EditorDocument[]]
+        for id in workspace.documentOrder:
+            let doc = getDocumentOrDefault(workspace.documents, id, nil)
+            if doc != nil:
+                items.add(doc) items
+fn mutateDocument(doc: EditorDocument, offset: int, deleteCount: int, insertText: str, nowMs: int64, record: var EditorUndoRecord): bool =
+    if doc == nil:
+        return false
+        let clampedOffset = clampOffset(doc, offset)
+        let removeCount = max(0, deleteCount)
+        let removeEnd = min(len(doc.content), clampedOffset + removeCount)
+        let removedText = if removeEnd > clampedOffset: doc.content[clampedOffset..removeEnd - 1]
+    else:
+        ""
+        if len(removedText) == 0 && len(insertText) == 0:
+            return false
+            let prefix = if clampedOffset == 0: ""
+        else:
+            doc.content[0..clampedOffset - 1]
+        let suffix = if removeEnd >= len(doc.content): ""
+        else:
+            let endIdx: int32 = len(doc.content) - 1
+            doc.content[removeEnd..endIdx]
+            doc.content = prefix + insertText + suffix
+            doc.lineOff
+            sets = computeLineOff
+            sets(doc.content)
+            doc.version = doc.version + 1
+            doc.lastModifiedAt = nowMs
+            doc.currentHash = contentHash(doc.content)
+            doc.dirty = doc.currentHash != doc.savedHash
+            if doc.codeModel != nil:
+                doc.codeModel.reloadSource(doc.content)
+                var undoRecord: EditorUndoRecordundoRecord.offset = clampedOffset
+                undoRecord.removedText = removedText
+                undoRecord.insertedText = insertText
+                undoRecord.timestampMs = nowMs
+                record = undoRecord true
+fn updateUndoStacks(doc: EditorDocument, record: EditorUndoRecord) =
+    if doc == nil:
+        return doc.undoStack.add(record)
+        setLen(doc.redoStack, 0)
+        while len(doc.undoStack) > MaxUndoDepth:
+            var idx = 0
+            while idx + 1 < len(doc.undoStack):
+                doc.undoStack[idx] = doc.undoStack[idx + 1]
+                idx = idx + 1
+                setLen(doc.undoStack, len(doc.undoStack) - 1)
+fn dropFindState(workspace: EditorWorkspace, id: EditorDocumentId) =
+    if workspace == nil || len(id) == 0:
+        return if hasFindStateKey(workspace.findState, id): removeFindState(workspace.findState, id)
+fn invalidateFindState(workspace: EditorWorkspace, id: EditorDocumentId, doc: EditorDocument) =
+    if workspace == nil || len(id) == 0:
+        return if ! hasFindStateKey(workspace.findState, id): return
+        var state = getFindStateOrDefault(workspace.findState, id, emptyFindState())
+        if doc != nil:
+            if state.lastOptions.startOffset < 0:
+                state.lastOptions.startOffset = 0
+            elif state.lastOptions.startOffset > len(doc.content):
+                state.lastOptions.startOffset = len(doc.content)
+                state.lastResult = emptyFindResult()
+                setFindState(workspace.findState, id, state)
+fn invalidateFindState(workspace: EditorWorkspace, id: EditorDocumentId) =
+    invalidateFindState(workspace, id, nil)
+fn resetFindState(workspace: EditorWorkspace, id: EditorDocumentId) =
+    workspace.dropFindState(id)
+fn canUndo(doc: EditorDocument): bool =
+    doc != nil && len(doc.undoStack) > 0
+fn canRedo(doc: EditorDocument): bool =
+    doc != nil && len(doc.redoStack) > 0
+fn scheduleAutoSave(workspace: EditorWorkspace, doc: EditorDocument, nowMs: int64) =
+    if workspace == nil || doc == nil:
+        return if ! doc.dirty: if hasIdInt64Key(workspace.pendingAutoSave, doc.id): removeIdInt64(workspace.pendingAutoSave, doc.id)
+        return if ! workspace.autoSaveConfig.enabled || ! doc.autoSaveEligible: return
+        let delay = max(workspace.autoSaveConfig.delayMs, int64(0))
+        setIdInt64(workspace.pendingAutoSave, doc.id, nowMs + delay)
+fn newEditorDocument(path: str, content: str): EditorDocument =
+    newEditorDocument(path, content, 4)
+fn newEditorDocument(path: str, content: str, tabSize: int): EditorDocument =
+    let normalized = normalizeDocumentPath(path)
+    let display = computeDisplayName(normalized, "untitled")
+    let id = nextDocumentId()
+    let model = newCodeViewModel(content, tabSize)
+    let offsets = computeLineOff
+    sets(content)
+    let timestamp = nowMillis()
+    let hashValue = contentHash(content)
+    var doc: EditorDocumentnew(doc)
+    doc.id = id
+    doc.path = normalized
+    doc.displayName = display
+    doc.content = content
+    doc.lineOff
+    sets = offsets
+    doc.version = 1
+    doc.dirty = false
+    doc.undoStack = default[EditorUndoRecord[]]
+    doc.redoStack = default[EditorUndoRecord[]]
+    doc.lastModifiedAt = timestamp
+    doc.lastSavedAt = timestamp
+    doc.codeModel = model
+    doc.tabSize = tabSize
+    doc.autoSaveEligible = len(normalized) > 0
+    doc.currentHash = hashValue
+    doc.savedHash = hashValue doc
+fn newEditorWork
+space(): EditorWorkspace = var config: EditorAutoSaveConfignewEditorWork
+space(config)
+fn newEditorWork
+space(config: EditorAutoSaveConfig): EditorWorkspace = var effective = config
+if effective.delayMs <= 0:
+    effective.delayMs = DefaultAutosaveDelayMs
+    var workspace: EditorWorkspace
+    new(workspace)
+    workspace.documents = initDocumentTable()
+    workspace.documentOrder = default[EditorDocumentId[]]
+    workspace.activeDocument = ""
+    workspace.autoSaveConfig = effective
+    workspace.pendingAutoSave = initIdInt64Table()
+    workspace.findState = initFindStateTable()
+    workspace.analysisDebounceMs = DefaultAnalysisDebounceMs
+    workspace.pendingAnalysis = initIdInt64Table()
+    workspace.analysisState = initAnalysisStateTable() workspace
+fn addDocument(workspace: EditorWorkspace, doc: EditorDocument) =
+    if workspace == nil || doc == nil:
+        return setDocument(workspace.documents, doc.id, doc)
+        workspace.documentOrder.add(doc.id)
+        workspace.activeDocument = doc.id
+fn openDocument(workspace: EditorWorkspace, path: str, content: str): EditorDocument =
+    openDocument(workspace, path, content, 4)
+fn openDocument(workspace: EditorWorkspace, path: str, content: str, tabSize: int): EditorDocument =
+    if workspace == nil:
+        return nil
+        let normalized = normalizeDocumentPath(path)
+        for id in workspace.documentOrder:
+            let existing = getDocumentOrDefault(workspace.documents, id, nil)
+            if existing != nil && existing.path == normalized:
+                workspace.activeDocument = existing.id
+                if len(content) > 0 && existing.content != content:
+                    var record: EditorUndoRecord
+                    let now = nowMillis()
+                    mutateDocument(existing, 0, len(existing.content), content, now, record)
+                    setLen(existing.undoStack, 0)
+                    setLen(existing.redoStack, 0)
+                    existing.dirty = false
+                    existing.savedHash = existing.currentHash
+                    existing.lastSavedAt = now workspace.dropFindState(existing.id)
+                    if hasIdInt64Key(workspace.pendingAutoSave, existing.id):
+                        removeIdInt64(workspace.pendingAutoSave, existing.id)
+                        scheduleAnalysis(workspace, existing, now, true)
+                        return existing
+                        let doc = newEditorDocument(normalized, content, tabSize)
+                        addDocument(workspace, doc)
+                        scheduleAnalysis(workspace, doc, nowMillis(), true) doc
+fn closeDocument(workspace: EditorWorkspace, id: EditorDocumentId): bool =
+    if workspace == nil || len(id) == 0:
+        return false
+        if ! hasDocumentKey(workspace.documents, id):
+            return false
+            removeDocument(workspace.documents, id)
+            if hasIdInt64Key(workspace.pendingAutoSave, id):
+                removeIdInt64(workspace.pendingAutoSave, id)
+                if hasIdInt64Key(workspace.pendingAnalysis, id):
+                    removeIdInt64(workspace.pendingAnalysis, id)
+                    if hasAnalysisStateKey(workspace.analysisState, id):
+                        removeAnalysisState(workspace.analysisState, id) workspace.dropFindState(id)
+                        var idx = 0
+                        while idx < len(workspace.documentOrder):
+                            if workspace.documentOrder[idx] == id:
+                                workspace.documentOrder.delete(idx)
+                                break idx = idx + 1
+                                if workspace.activeDocument == id:
+                                    if len(workspace.documentOrder) > 0:
+                                        let lastIdx: int32 = len(workspace.documentOrder) - 1
+                                        workspace.activeDocument = workspace.documentOrder[lastIdx]
+                                    else:
+                                        workspace.activeDocument = "" true
+fn closeAll(workspace: EditorWorkspace) =
+    if workspace == nil:
+        return clearDocumentTable(workspace.documents)
+        setLen(workspace.documentOrder, 0)
+        clearIdInt64Table(workspace.pendingAutoSave)
+        clearIdInt64Table(workspace.pendingAnalysis)
+        clearAnalysisStateTable(workspace.analysisState)
+        clearFindStateTable(workspace.findState)
+        workspace.activeDocument = ""
+fn document
+Count(workspace: EditorWorkspace): int = if workspace == nil: 0
+else:
+    len(workspace.documentOrder)
+fn documentSummaries(workspace: EditorWorkspace): EditorDocumentSummary[] =
+    if workspace == nil:
+        return default[EditorDocumentSummary[]]
+        var items = default[EditorDocumentSummary[]]
+        for id in workspace.documentOrder:
+            let doc = workspace.documentById(id)
+            if doc == nil:
+                continue
+                var summary: EditorDocumentSummary
+                summary.id = doc.id
+                summary.displayName = doc.displayName
+                summary.path = doc.path
+                summary.dirty = doc.dirty
+                summary.isActive = workspace.activeDocument == doc.id items.add(summary) items
+fn ensureAnalysisConfig(workspace: EditorWorkspace) =
+    if workspace == nil:
+        return if workspace.analysisDebounceMs <= 0: workspace.analysisDebounceMs = DefaultAnalysisDebounceMs
+fn scheduleAnalysis(workspace: EditorWorkspace, doc: EditorDocument, nowMs: int64) =
+    scheduleAnalysis(workspace, doc, nowMs, false)
+fn scheduleAnalysis(workspace: EditorWorkspace, doc: EditorDocument, nowMs: int64, immediate: bool) =
+    if workspace == nil || doc == nil:
+        return workspace.ensureAnalysisConfig()
+        var due = nowMs + workspace.analysisDebounceMs
+        if immediate || due < 0:
+            due = nowMs
+            setIdInt64(workspace.pendingAnalysis, doc.id, due)
+fn markAnalysisDirty(workspace: EditorWorkspace, id: EditorDocumentId) =
+    markAnalysisDirty(workspace, id, nowMillis())
+fn markAnalysisDirty(workspace: EditorWorkspace, id: EditorDocumentId, nowMs: int64) =
+    if workspace == nil || len(id) == 0:
+        return
+        let doc = workspace.documentById(id)
+        if doc == nil:
+            return scheduleAnalysis(workspace, doc, nowMs)
+fn applyEdit(workspace: EditorWorkspace, id: EditorDocumentId, offset: int, deleteCount: int, insertText: str): bool =
+    if workspace == nil:
+        return false
+        let doc = workspace.documentById(id)
+        if doc == nil:
+            return false
+            var record: EditorUndoRecord
+            let now = nowMillis()
+            if ! mutateDocument(doc, offset, deleteCount, insertText, now, record):
+                return false workspace.invalidateFindState(id, doc)
+                updateUndoStacks(doc, record)
+                scheduleAutoSave(workspace, doc, now)
+                scheduleAnalysis(workspace, doc, now) true
+fn undo(workspace: EditorWorkspace, id: EditorDocumentId): bool =
+    if workspace == nil:
+        return false
+        let doc = workspace.documentById(id)
+        if doc == nil || len(doc.undoStack) == 0:
+            return false
+            let record = popUndoRecord(doc.undoStack)
+            var undoRecord: EditorUndoRecord
+            let now = nowMillis()
+            if ! mutateDocument(doc, record.offset, len(record.insertedText), record.removedText, now, undoRecord):
+                doc.undoStack.add(record)
+                return false doc.redoStack.add(record) workspace.invalidateFindState(id, doc)
+                scheduleAutoSave(workspace, doc, now)
+                scheduleAnalysis(workspace, doc, now) true
+fn redo(workspace: EditorWorkspace, id: EditorDocumentId): bool =
+    if workspace == nil:
+        return false
+        let doc = workspace.documentById(id)
+        if doc == nil || len(doc.redoStack) == 0:
+            return false
+            let record = popUndoRecord(doc.redoStack)
+            var redoRecord: EditorUndoRecord
+            let now = nowMillis()
+            if ! mutateDocument(doc, record.offset, len(record.removedText), record.insertedText, now, redoRecord):
+                doc.redoStack.add(record)
+                return false doc.undoStack.add(record) workspace.invalidateFindState(id, doc)
+                scheduleAutoSave(workspace, doc, now)
+                scheduleAnalysis(workspace, doc, now) true
+fn findNext(doc: EditorDocument, options: EditorFindOptions): EditorFindResult =
+    if doc == nil:
+        return emptyFindResult()
+        let query = options.query
+        if len(query) == 0:
+            return emptyFindResult()
+            let startOffset = clampOffset(doc, options.startOffset)
+            let haystack = if options.caseSensitive: doc.content
+        else:
+            textutils.toLowerAscii(doc.content)
+            let needle = if options.caseSensitive: query
+        else:
+            textutils.toLowerAscii(query)
+            if len(needle) == 0:
+                return emptyFindResult()
+                var matchIndex = haystack.find(needle, startOffset)
+                if matchIndex < 0 && options.wrap:
+                    matchIndex = haystack.find(needle, 0)
+                    if matchIndex < 0:
+                        return emptyFindResult()
+                        let endIndex = matchIndex + len(query)
+                        let startPos = doc.offsetToPosition(matchIndex)
+                        let endPos = doc.offsetToPosition(endIndex)
+                        var result: EditorFindResult
+                        result.found = true
+                        result.startOffset = matchIndex
+                        result.endOffset = endIndex
+                        result.startLine = startPos.line
+                        result.startColumn = startPos.column
+                        result.endLine = endPos.line
+                        result.endColumn = endPos.column
+                        result.replacementApplied = false result
+fn findNext(workspace: EditorWorkspace, id: EditorDocumentId, options: EditorFindOptions): EditorFindResult =
+    if workspace == nil:
+        return emptyFindResult()
+        let doc = workspace.documentById(id)
+        if doc == nil:
+            return emptyFindResult()
+            var state = getFindStateOrDefault(workspace.findState, id, emptyFindState())
+            var effective = options
+            if len(effective.query) == 0:
+                effective.query = state.lastQuery
+                if len(effective.query) == 0:
+                    return emptyFindResult()
+                    if effective.startOffset <= 0 && state.lastQuery == effective.query:
+                        if state.lastResult.found:
+                            effective.startOffset = state.lastResult.endOffset
+                        elif state.lastOptions.startOffset > 0:
+                            effective.startOffset = state.lastOptions.startOffset
+                            state.lastQuery = effective.query
+                            state.lastOptions = effective
+                            let matchResult = doc.findNext(effective)
+                            state.lastResult = matchResult
+                            if matchResult.found:
+                                state.lastOptions.startOffset = matchResult.endOffset
+                                setFindState(workspace.findState, id, state) matchResult
+fn replaceNext(workspace: EditorWorkspace, id: EditorDocumentId, options: EditorFindOptions, replacement: str): EditorFindResult =
+    if workspace == nil:
+        return emptyFindResult()
+        let doc = workspace.documentById(id)
+        if doc == nil:
+            return emptyFindResult()
+            var state = getFindStateOrDefault(workspace.findState, id, emptyFindState())
+            var effective = options
+            if len(effective.query) == 0:
+                effective.query = state.lastQuery
+                if len(effective.query) == 0:
+                    return emptyFindResult()
+                    if effective.startOffset <= 0 && state.lastQuery == effective.query:
+                        if state.lastResult.found:
+                            effective.startOffset = state.lastResult.endOffset
+                        elif state.lastOptions.startOffset > 0:
+                            effective.startOffset = state.lastOptions.startOffset
+                            state.lastQuery = effective.query
+                            state.lastOptions = effective
+                            var matchResult = doc.findNext(effective)
+                            if ! matchResult.found:
+                                state.lastResult = matchResult
+                                setFindState(workspace.findState, id, state)
+                                return matchResult
+                                let deleteCount = matchResult.endOffset - matchResult.startOffset
+                                if ! workspace.applyEdit(id, matchResult.startOffset, deleteCount, replacement):
+                                    state.lastResult = matchResult
+                                    setFindState(workspace.findState, id, state)
+                                    return matchResult
+                                    let endOffset = matchResult.startOffset + len(replacement)
+                                    let startPos = doc.offsetToPosition(matchResult.startOffset)
+                                    let endPos = doc.offsetToPosition(endOffset)
+                                    matchResult.endOffset = endOffset
+                                    matchResult.startLine = startPos.line
+                                    matchResult.startColumn = startPos.column
+                                    matchResult.endLine = endPos.line
+                                    matchResult.endColumn = endPos.column
+                                    matchResult.replacementApplied = true
+                                    state.lastResult = matchResult
+                                    state.lastOptions.startOffset = endOffset
+                                    setFindState(workspace.findState, id, state) matchResult
+fn replaceAll(workspace: EditorWorkspace, id: EditorDocumentId, query: str, replacement: str): int =
+    replaceAll(workspace, id, query, replacement, true)
+fn replaceAll(workspace: EditorWorkspace, id: EditorDocumentId, query: str, replacement: str, caseSensitive: bool): int =
+    if len(query) == 0:
+        return 0
+        if workspace == nil:
+            return 0
+            var options: EditorFindOptions
+            options.query = query
+            options.caseSensitive = caseSensitive
+            options.wrap = false
+            options.startOffset = 0 workspace.resetFindState(id)
+            var count = 0
+            while true:
+                let matchResult = workspace.replaceNext(id, options, replacement)
+                if ! matchResult.replacementApplied:
+                    break count = count + 1
+                    options.startOffset = matchResult.endOffset count
+fn cancelPendingAutoSave(workspace: EditorWorkspace, id: EditorDocumentId) =
+    if hasIdInt64Key(workspace.pendingAutoSave, id):
+        removeIdInt64(workspace.pendingAutoSave, id)
+fn pendingAutoSaveCount(workspace: EditorWorkspace): int =
+    if workspace == nil:
+        0
+    else:
+        len(workspace.pendingAutoSave.keys)
+fn autoSaveDead
+line(workspace: EditorWorkspace, id: EditorDocumentId): EditorDead
+line = var result: EditorDead line
+if workspace == nil || len(id) == 0:
+    return result
+    if ! hasIdInt64Key(workspace.pendingAutoSave, id):
+        return result
+        result.pending = true
+        result.dueAt = getIdInt64OrDefault(workspace.pendingAutoSave, id, int64(0)) result
+fn analysis
+Deadline(workspace: EditorWorkspace, id: EditorDocumentId): EditorDead
+line = var result: EditorDead line
+if workspace == nil || len(id) == 0:
+    return result
+    if ! hasIdInt64Key(workspace.pendingAnalysis, id):
+        return result
+        result.pending = true
+        result.dueAt = getIdInt64OrDefault(workspace.pendingAnalysis, id, int64(0)) result
+fn setAutoSaveConfig(workspace: EditorWorkspace, config: EditorAutoSaveConfig) =
+    if workspace == nil:
+        return
+        var effective = config
+        if effective.delayMs <= 0:
+            effective.delayMs = DefaultAutosaveDelayMs
+            workspace.autoSaveConfig = effective
+            if ! effective.enabled:
+                clearIdInt64Table(workspace.pendingAutoSave)
+                return
+                let now = nowMillis()
+                clearIdInt64Table(workspace.pendingAutoSave)
+                for id in workspace.documentOrder:
+                    let doc = workspace.documentById(id)
+                    if doc != nil && doc.dirty:
+                        setIdInt64(workspace.pendingAutoSave, id, now + workspace.autoSaveConfig.delayMs)
+fn setAnalysisDebounce(workspace: EditorWorkspace, delayMs: int64) =
+    if workspace == nil:
+        return if delayMs <= 0: workspace.analysisDebounceMs = DefaultAnalysisDebounceMs
+    else:
+        workspace.analysisDebounceMs = delayMs
+fn saveDocument(workspace: EditorWorkspace, id: EditorDocumentId): bool =
+    saveDocument(workspace, id, false)
+fn saveDocument(workspace: EditorWorkspace, id: EditorDocumentId, for ce: bool): bool =
+    if workspace == nil:
+        return false
+        let doc = workspace.documentById(id)
+        if doc == nil || len(doc.path) == 0:
+            return false
+            if ! doc.dirty && ! for ce:
+                cancelPendingAutoSave(workspace, id)
+                return true
+                try:
+                    writeFile(doc.path, doc.content)
+                    doc.savedHash = doc.currentHash
+                    doc.dirty = false
+                    doc.lastSavedAt = nowMillis()
+                    cancelPendingAutoSave(workspace, id) true
+                except CatchableError:
+                    doc.autoSaveEligible = false
+                    cancelPendingAutoSave(workspace, id) false
+fn saveAll(workspace: EditorWorkspace): EditorDocumentId[] =
+    if workspace == nil:
+        return default[EditorDocumentId[]]
+        var saved = default[EditorDocumentId[]]
+        for id in workspace.documentOrder:
+            if workspace.saveDocument(id):
+                saved.add(id) saved
+fn tickAutoSave(workspace: EditorWorkspace) =
+    tickAutoSave(workspace, nowMillis())
+fn tickAutoSave(workspace: EditorWorkspace, nowMs: int64) =
+    if workspace == nil || len(workspace.pendingAutoSave.keys) == 0:
+        return
+        var due = default[EditorDocumentId[]]
+        for idx in 0..<len(workspace.pendingAutoSave.keys):
+            let id = workspace.pendingAutoSave.keys[idx]
+            let deadline = workspace.pendingAutoSave.values[idx]
+            if nowMs >= deadline:
+                due.add(id)
+                for id in due:
+                    workspace.saveDocument(id)
+fn runDocumentAnalysis(workspace: EditorWorkspace, adapter: var LspAdapter, doc: EditorDocument, nowMs: int64): bool =
+    if workspace == nil || doc == nil || adapter == nil:
+        return false
+        let diagResult = diagnostics(adapter, doc.path, doc.content)
+        var snapshot: EditorAnalysisSnapshot
+        snapshot.checksum = doc.currentHash
+        snapshot.updatedAtMs = nowMs
+        snapshot.diagnostics = diagResult.diagnostics
+        snapshot.outline = diagResult.outline
+        snapshot.events = diagResult.events
+        snapshot.borrowList = newJArray()
+        snapshot.borrowSummary = newJObject()
+        snapshot.borrowCodeLens = newJArray()
+        snapshot.hasErrors = diagResult.hasErrors
+        if diagResult.borrow.has:
+            let borrow = diagResult.borrow.value
+            snapshot.borrowList = borrow.listJson
+            snapshot.borrowSummary = borrow.summaryJson
+            snapshot.borrowCodeLens = borrow.codeLensJson
+            setAnalysisState(workspace.analysisState, doc.id, snapshot) true
+fn tickAnalysis(workspace: EditorWorkspace, adapter: var LspAdapter): EditorDocumentId[] =
+    tickAnalysis(workspace, adapter, nowMillis())
+fn tickAnalysis(workspace: EditorWorkspace, adapter: var LspAdapter, nowMs: int64): EditorDocumentId[] =
+    result = default[EditorDocumentId[]]
+    if workspace == nil || adapter == nil || len(workspace.pendingAnalysis.keys) == 0:
+        return
+        var due = default[EditorDocumentId[]]
+        for idx in 0..<len(workspace.pendingAnalysis.keys):
+            let id = workspace.pendingAnalysis.keys[idx]
+            let deadline = workspace.pendingAnalysis.values[idx]
+            if nowMs >= deadline:
+                due.add(id)
+                if len(due) == 0:
+                    return for id in due: removeIdInt64(workspace.pendingAnalysis, id)
+                    let doc = workspace.documentById(id)
+                    if doc == nil:
+                        continue
+                        let existing = getAnalysisStateOrDefault(workspace.analysisState, id, emptyAnalysisSnapshot())
+                        if existing.checksum == doc.currentHash && existing.updatedAtMs > 0:
+                            continue if runDocumentAnalysis(workspace, adapter, doc, nowMs): result.add(id)
+fn analysisSnapshot(workspace: EditorWorkspace, id: EditorDocumentId, snapshot: var EditorAnalysisSnapshot): bool =
+    if workspace == nil || len(id) == 0:
+        return false
+        if ! hasAnalysisStateKey(workspace.analysisState, id):
+            return false
+            var stored = getAnalysisStateOrDefault(workspace.analysisState, id, emptyAnalysisSnapshot())
+            if stored.borrowList == nil || stored.borrowList.kind == jkNull:
+                stored.borrowList = newJArray()
+                if stored.borrowSummary == nil || stored.borrowSummary.kind == jkNull:
+                    stored.borrowSummary = newJObject()
+                    if stored.borrowCodeLens == nil || stored.borrowCodeLens.kind == jkNull:
+                        stored.borrowCodeLens = newJArray()
+                        setAnalysisState(workspace.analysisState, id, stored)
+                        snapshot = stored true

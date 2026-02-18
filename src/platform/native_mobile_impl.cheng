@@ -1,0 +1,368 @@
+when defined(android):
+    import std/tables
+    import system/ctypes
+    import cheng/gui/platform/types
+
+    type
+        MobileCInt = int32
+        MobileCUInt = uint32
+        MobileCDouble = float64
+        MobileCSize = uint
+
+    type
+        MobileWindow = ref
+            handle: void*
+            size: GuiSize
+            pixelSize: GuiSize
+            scale: float
+            colorSpace: str
+            lastPointer: GuiPosition
+            hasPointer: bool
+
+        MobileSurface = ref
+            window: MobileWindow
+            handle: void*
+
+        MobileEvent =
+            kind: MobileCInt
+            window: void*
+            x: MobileCDouble
+            y: MobileCDouble
+            width: MobileCDouble
+            height: MobileCDouble
+            deltaX: MobileCDouble
+            deltaY: MobileCDouble
+            modifiers: MobileCUInt
+            button: MobileCInt
+            keyCode: MobileCUInt
+            repeatFlag: bool
+            text: array[64, char]
+
+        MobileSurfaceInfo =
+            logicalWidth: MobileCDouble
+            logicalHeight: MobileCDouble
+            pixelWidth: MobileCDouble
+            pixelHeight: MobileCDouble
+            scale: MobileCDouble
+            colorSpace: cstring
+
+    const
+        mobileEventClose = 1
+        mobileEventResized = 2
+        mobileEventMoved = 3
+        mobileEventKeyDown = 4
+        mobileEventKeyUp = 5
+        mobileEventTextInput = 6
+        mobileEventPointerDown = 7
+        mobileEventPointerUp = 8
+        mobileEventPointerMove = 9
+        mobileEventPointerScroll = 10
+        mobileDefaultColorSpace = "sRGB"
+        mobileModifierShift = MobileCUInt(1)
+        mobileModifierCtrl = MobileCUInt(2)
+        mobileModifierAlt = MobileCUInt(4)
+        mobileModifierMeta = MobileCUInt(8)
+
+    var mobileWindows = initTable[void*, MobileWindow]()
+    var mobileStructsValidated = false
+
+    fn makePointerEvent(kind: GuiEventKind, pos: GuiPosition, button: int, delta: GuiPosition, mods: GuiModifiers): GuiEvent =
+        let pointer = GuiPointerEvent(position: pos, delta: delta, button: button, modifiers: mods)
+        return GuiEvent(kind: kind, pointerEvent: void*)
+
+    fn findMobileWindow(handle: void*): MobileWindow =
+        for idx in 0..<mobileWindows.keys.len:
+            if mobileWindows.keys[idx] == handle:
+                return mobileWindows.values[idx]
+        return nil
+
+    fn setMobileWindow(handle: void*; win: MobileWindow) =
+        for idx in 0..<mobileWindows.keys.len:
+            if mobileWindows.keys[idx] == handle:
+                mobileWindows.values[idx] = win
+                return
+        mobileWindows.keys.add(handle)
+        mobileWindows.values.add(win)
+
+    fn removeMobileWindow(handle: void*) =
+        for idx in 0..<mobileWindows.keys.len:
+            if mobileWindows.keys[idx] == handle:
+                let last = mobileWindows.keys.len - 1
+                if idx != last:
+                    mobileWindows.keys[idx] = mobileWindows.keys[last]
+                    mobileWindows.values[idx] = mobileWindows.values[last]
+                mobileWindows.keys.len = last
+                mobileWindows.values.len = last
+                return
+
+    fn toWindowHandle(win: MobileWindow): WindowHandle =
+        WindowHandle(void*(win))
+
+    fn fromWindowHandle(handle: WindowHandle): MobileWindow =
+        MobileWindow(void*(handle))
+
+    fn mobileScale(win: MobileWindow): float =
+        if win == nil || win.scale <= 0.0:
+            return 1.0
+        if win.scale < 0.25:
+            return 0.25
+        return win.scale
+
+    fn mobileToLogical(win: MobileWindow; px, py: float): GuiPosition =
+        let scale = mobileScale(win)
+        if scale <= 0.0:
+            return GuiPosition(x: px, y: py)
+        return GuiPosition(x: px / scale, y: py / scale)
+
+    fn updatePointer(win: MobileWindow; pos: GuiPosition): GuiPosition =
+        if win == nil:
+            return GuiPosition(x: 0.0, y: 0.0)
+        var delta = GuiPosition(x: 0.0, y: 0.0)
+        if win.hasPointer:
+            delta = GuiPosition(x: pos.x - win.lastPointer.x, y: pos.y - win.lastPointer.y)
+        win.lastPointer = pos
+        win.hasPointer = true
+        return delta
+
+    fn hasMobileModifier(flags: MobileCUInt; mask: MobileCUInt): bool =
+        let maskVal = int64(mask)
+        if maskVal == 0:
+            return false
+        let flagsVal = int64(flags)
+        return ((flagsVal / maskVal) % 2) != 0
+
+    fn mobileModifiers(flags: MobileCUInt): GuiModifiers =
+        var mods: GuiModifiers = 0
+        if hasMobileModifier(flags, mobileModifierShift):
+            addModifier(mods, gmShift)
+        if hasMobileModifier(flags, mobileModifierCtrl):
+            addModifier(mods, gmCtrl)
+        if hasMobileModifier(flags, mobileModifierAlt):
+            addModifier(mods, gmAlt)
+        if hasMobileModifier(flags, mobileModifierMeta):
+            addModifier(mods, gmMeta)
+        return mods
+
+    fn mobileKey(code: MobileCUInt): GuiKey =
+        case int(code)
+        of 36:
+            gkEnter
+        of 53:
+            gkEscape
+        of 49:
+            gkSpace
+        of 48:
+            gkTab
+        of 51:
+            gkBackspace
+        of 117:
+            gkDelete
+        of 123:
+            gkLeft
+        of 124:
+            gkRight
+        of 125:
+            gkDown
+        of 126:
+            gkUp
+        of 115:
+            gkHome
+        of 119:
+            gkEnd
+        of 116:
+            gkPageUp
+        of 121:
+            gkPageDown
+        of 122:
+            gkF1
+        of 120:
+            gkF2
+        of 99:
+            gkF3
+        of 118:
+            gkF4
+        of 96:
+            gkF5
+        of 97:
+            gkF6
+        of 98:
+            gkF7
+        of 100:
+            gkF8
+        of 101:
+            gkF9
+        of 109:
+            gkF10
+        of 103:
+            gkF11
+        of 111:
+            gkF12
+        else:
+            gkUnknown
+
+    fn chengGuiNativeInitialize() @ importc("chengGuiNativeInitialize")
+    fn chengGuiNativeShutdown() @ importc("chengGuiNativeShutdown")
+    fn chengGuiNativeCreateDefaultWindow(title: cstring): void* @ importc("chengGuiNativeCreateDefaultWindow")
+    fn chengGuiNativeDestroyWindow(handle: void*) @ importc("chengGuiNativeDestroyWindow")
+    fn chengGuiNativePollEvents(events: MobileEvent*; maxEvents: MobileCInt; timeoutMs: MobileCInt): MobileCInt @ importc("chengGuiNativePollEvents")
+    fn chengGuiNativeCreateSurface(window: void*): void* @ importc("chengGuiNativeCreateSurface")
+    fn chengGuiNativeDestroySurface(surface: void*) @ importc("chengGuiNativeDestroySurface")
+    fn chengGuiNativeBeginFrame(surface: void*): MobileCInt @ importc("chengGuiNativeBeginFrame")
+    fn chengGuiNativeEndFrame(surface: void*): MobileCInt @ importc("chengGuiNativeEndFrame")
+    fn chengGuiNativeGetSurfaceInfo(surface: void*; info: MobileSurfaceInfo*): MobileCInt @ importc("chengGuiNativeGetSurfaceInfo")
+    fn chengGuiNativePresentPixels(surface: void*; pixels: void*; width: MobileCInt; height: MobileCInt; strideBytes: MobileCInt): MobileCInt @ importc("chengGuiNativePresentPixels")
+    fn chengGuiNativeEventStructSize(): MobileCSize @ importc("chengGuiNativeEventStructSize")
+    fn chengGuiNativeSurfaceInfoStructSize(): MobileCSize @ importc("chengGuiNativeSurfaceInfoStructSize")
+
+    fn ensureMobileStructsMatch() =
+        if mobileStructsValidated:
+            return
+        let localEventSize = int(sizeof(MobileEvent))
+        let cEventSize = int(chengGuiNativeEventStructSize())
+        if localEventSize != cEventSize:
+            raiseGuiError("Android MobileEvent size mismatch", grInvalidState)
+        let localInfoSize = int(sizeof(MobileSurfaceInfo))
+        let cInfoSize = int(chengGuiNativeSurfaceInfoStructSize())
+        if localInfoSize != cInfoSize:
+            raiseGuiError("Android MobileSurfaceInfo size mismatch", grInvalidState)
+        mobileStructsValidated = true
+
+    fn initializePlat() =
+        ensureMobileStructsMatch()
+        chengGuiNativeInitialize()
+
+    fn shutdownPlat() =
+        chengGuiNativeShutdown()
+        mobileWindows.keys.len = 0
+        mobileWindows.values.len = 0
+
+    fn createWindow(config: GuiWindowConfig): WindowHandle =
+        chengGuiNativeInitialize()
+        var title = config.title
+        if len(title) == 0:
+            title = "Cheng Mobile"
+        let handle = chengGuiNativeCreateDefaultWindow(cstring(title))
+        if handle == nil:
+            raiseGuiError("Android createWindow failed", grIoError)
+        let win = MobileWindow(handle: handle, size: config.initialRect.size, pixelSize: config.initialRect.size, scale: 1.0, colorSpace: mobileDefaultColorSpace)
+        setMobileWindow(handle, win)
+        return toWindowHandle(win)
+
+    fn destroyWindow(handle: WindowHandle) =
+        let win = fromWindowHandle(handle)
+        if win == nil:
+            return
+        removeMobileWindow(win.handle)
+        if win.handle != nil:
+            chengGuiNativeDestroyWindow(win.handle)
+            win.handle = nil
+
+    fn pumpEvents(timeoutMs: int = 0): GuiEvent[] =
+        var events: GuiEvent[] = default[GuiEvent[]]
+        let bufferLen = 32
+        var buffer: MobileEvent[bufferLen]
+        let emitted = chengGuiNativePollEvents(&buffer[0], MobileCInt(bufferLen), MobileCInt(timeoutMs))
+        if emitted <= 0:
+            return events
+        for idx in 0..<int(emitted):
+            let mobileEv = buffer[idx]
+            let win = findMobileWindow(mobileEv.window)
+            if win == nil:
+                continue
+            case mobileEv.kind
+            of mobileEventClose:
+                events.add(GuiEvent(kind: geClose))
+            of mobileEventResized:
+                let size = GuiSize(width: float(mobileEv.width), height: float(mobileEv.height))
+                win.size = size
+                events.add(GuiEvent(kind: geResized, newSize: size))
+            of mobileEventMoved:
+                events.add(GuiEvent(kind: geMoved, newPosition: GuiPosition(x: float(mobileEv.x), y: float(mobileEv.y))))
+            of mobileEventKeyDown:
+                events.add(GuiEvent(kind: geKeyDown, keyEvent: GuiKeyEvent(key: mobileKey(mobileEv.keyCode), modifiers: mobileModifiers(mobileEv.modifiers), repeat: mobileEv.repeatFlag)))
+            of mobileEventKeyUp:
+                events.add(GuiEvent(kind: geKeyUp, keyEvent: GuiKeyEvent(key: mobileKey(mobileEv.keyCode), modifiers: mobileModifiers(mobileEv.modifiers), repeat: mobileEv.repeatFlag)))
+            of mobileEventTextInput:
+                let text = $cstring(&mobileEv.text)
+                if text.len > 0:
+                    events.add(GuiEvent(kind: geTextInput, text: text))
+            of mobileEventPointerDown, mobileEventPointerUp:
+                let pos = mobileToLogical(win, float(mobileEv.x), float(mobileEv.y))
+                let delta = updatePointer(win, pos)
+                let mods = mobileModifiers(mobileEv.modifiers)
+                let button = int(mobileEv.button)
+                var kind = gePointerUp
+                if mobileEv.kind == mobileEventPointerDown:
+                    kind = gePointerDown
+                events.add(makePointerEvent(kind, pos, button, delta, mods))
+            of mobileEventPointerMove:
+                let pos = mobileToLogical(win, float(mobileEv.x), float(mobileEv.y))
+                let delta = updatePointer(win, pos)
+                let mods = mobileModifiers(mobileEv.modifiers)
+                events.add(makePointerEvent(gePointerMove, pos, -1, delta, mods))
+            of mobileEventPointerScroll:
+                let pos = mobileToLogical(win, float(mobileEv.x), float(mobileEv.y))
+                let delta = GuiPosition(x: float(mobileEv.deltaX), y: float(mobileEv.deltaY))
+                let mods = mobileModifiers(mobileEv.modifiers)
+                events.add(makePointerEvent(gePointerScroll, pos, -1, delta, mods))
+            else:
+                0
+                return events
+
+    fn createRenderSurface(window: WindowHandle): SurfaceHandle =
+        let win = fromWindowHandle(window)
+        if win == nil || win.handle == nil:
+            raiseGuiError("invalid window handle", grInvalidState)
+        let surfaceHandle = chengGuiNativeCreateSurface(win.handle)
+        if surfaceHandle == nil:
+            raiseGuiError("create render surface failed", grIoError)
+        return SurfaceHandle(MobileSurface(window: win, handle: surfaceHandle))
+
+    fn destroyRenderSurface(surface: SurfaceHandle) =
+        let surf = MobileSurface(void*(surface))
+        if surf != nil && surf->handle != nil:
+            chengGuiNativeDestroySurface(surf->handle)
+            surf->handle = nil
+
+    fn beginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+        let surf = MobileSurface(void*(surface))
+        if surf == nil || surf->window == nil || surf->handle == nil:
+            raiseGuiError("invalid render surface", grInvalidState)
+
+        var info: MobileSurfaceInfo
+        if chengGuiNativeGetSurfaceInfo(surf->handle, &info) != 0:
+            raiseGuiError("Android get surface info failed", grInvalidState)
+
+        surf->window->size = makeSize(float(info.logicalWidth), float(info.logicalHeight))
+        surf->window->pixelSize = makeSize(float(info.pixelWidth), float(info.pixelHeight))
+        surf->window->scale = float(info.scale)
+        if info.colorSpace != nil && info.colorSpace.len > 0:
+            surf->window->colorSpace = $info.colorSpace
+
+        let rc = chengGuiNativeBeginFrame(surf->handle)
+        if rc != 0:
+            raiseGuiError("Android beginFrame failed", grInvalidState)
+
+        var dpiScale = float(info.scale)
+        if dpiScale < 0.25:
+            dpiScale = 0.25
+        return SurfaceFrameInfo(logicalSize: surf->window->size, pixelSize: surf->window->pixelSize, dpiScale: dpiScale, colorSpace: surf->window->colorSpace)
+
+    fn endFrame(surface: SurfaceHandle) =
+        let surf = MobileSurface(void*(surface))
+        if surf == nil || surf->handle == nil:
+            raiseGuiError("invalid render surface", grInvalidState)
+        let rc = chengGuiNativeEndFrame(surf->handle)
+        if rc != 0:
+            raiseGuiError("Android endFrame failed", grInvalidState)
+
+    fn presentPixels(surface: SurfaceHandle; pixels: uint32*; width, height: int; strideBytes: int) =
+        let surf = MobileSurface(void*(surface))
+        if surf == nil || surf->handle == nil || pixels == nil:
+            return
+        if width <= 0 || height <= 0:
+            return
+        let stride = if strideBytes <= 0: width * 4 else: strideBytes
+        chengGuiNativePresentPixels(surf->handle, void*(pixels), MobileCInt(width), MobileCInt(height), MobileCInt(stride))
+else:
+    import cheng/gui/platform/native_stub_impl

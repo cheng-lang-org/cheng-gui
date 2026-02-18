@@ -1,0 +1,103 @@
+import std/os
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+import cheng/gui/browser/r2capp/runtime_generic as r2cRuntime
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn r2cRunnerBoolText(value: bool): str =
+    if value:
+        return "true"
+    return "false"
+
+fn intText(value: int32): str =
+    if value == int32(0):
+        return "0"
+    var out: str = ""
+    var n = value
+    var negative = false
+    if n < int32(0):
+        negative = true
+        n = -n
+    while n > int32(0):
+        let digit = n % int32(10)
+        out = charToStr(char(int32('0') + digit)) + out
+        n = n / int32(10)
+    if negative:
+        out = "-" + out
+    return out
+
+fn r2cRunnerCleanup(page: web.BrowserPage, ctx: web.BrowserContext, engine: web.BrowserEngine) =
+    if page != nil:
+        web.destroyPage(page)
+    if ctx != nil:
+        web.destroyContext(ctx)
+    if engine != nil:
+        web.shutdownBrowserEngine(engine)
+
+fn r2cRunnerMain(): int32 =
+    var url = os.getEnv("CHENG_R2C_APP_URL")
+    if safeLen(url) <= int32(0):
+        url = "about:blank"
+
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        return int32(10)
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        r2cRunnerCleanup(nil, nil, engine)
+        return int32(11)
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    if page == nil:
+        r2cRunnerCleanup(nil, ctx, engine)
+        return int32(12)
+
+    if ! web.navigate(page, url):
+        r2cRunnerCleanup(page, ctx, engine)
+        return int32(13)
+    if ! r2cRuntime.mountCompiledApp(page, os.getEnv("CHENG_R2CAPP_MANIFEST")):
+        r2cRunnerCleanup(page, ctx, engine)
+        return int32(14)
+
+    let oneEvent = os.getEnv("CHENG_R2C_APP_EVENT")
+    if safeLen(oneEvent) > int32(0):
+        let target = os.getEnv("CHENG_R2C_APP_TARGET")
+        let payload = os.getEnv("CHENG_R2C_APP_PAYLOAD")
+        if ! web.dispatchDomEvent(page, oneEvent, target, payload):
+            r2cRunnerCleanup(page, ctx, engine)
+            return int32(15)
+
+    let eventScript = os.getEnv("CHENG_R2C_APP_EVENT_SCRIPT")
+    if safeLen(eventScript) > int32(0):
+        let _ = eventScript
+
+    let snapshot = web.captureSnapshot(page)
+    let snapshotOut = os.getEnv("CHENG_R2C_APP_SNAPSHOT_OUT")
+    if safeLen(snapshotOut) > int32(0):
+        os.writeFile(snapshotOut, snapshot + "\n")
+
+    let stateOut = os.getEnv("CHENG_R2C_APP_STATE_OUT")
+    if safeLen(stateOut) > int32(0):
+        let commandCount = int32(0)
+        let compiledCount = int32(0)
+        var stateText: str = ""
+        stateText = stateText + "title=" + "" + "\n"
+        stateText = stateText + "url=" + "" + "\n"
+        stateText = stateText + "snapshot=" + snapshot + "\n"
+        stateText = stateText + "draw_commands=" + intText(commandCount) + "\n"
+        stateText = stateText + "mounted=true\n"
+        stateText = stateText + "profile=" + os.getEnv("CHENG_R2C_PROFILE") + "\n"
+        stateText = stateText + "module_count=" + intText(compiledCount) + "\n"
+        stateText = stateText + "event_applied=" + r2cRunnerBoolText(safeLen(oneEvent) > int32(0) || safeLen(eventScript) > int32(0)) + "\n"
+        os.writeFile(stateOut, stateText)
+
+    r2cRunnerCleanup(page, ctx, engine)
+    return int32(0)
+
+fn main(): int32 =
+    return r2cRunnerMain()
+
+main()

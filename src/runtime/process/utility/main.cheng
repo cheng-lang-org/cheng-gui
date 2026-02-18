@@ -1,0 +1,42 @@
+import cheng/gui/browser/types
+
+type
+    UtilityProcess = ref
+        pid: int64
+        alive: bool
+        restartCount: int32
+
+var nextUtilityPid: int64 = int64(4000)
+
+fn spawnUtilityProcess(): UtilityProcess =
+    var proc: UtilityProcess
+    new(proc)
+    proc.pid = nextUtilityPid
+    nextUtilityPid = nextUtilityPid + int64(1)
+    proc.alive = true
+    proc.restartCount = int32(0)
+    return proc
+
+fn shutdownUtilityProcess(proc: UtilityProcess) =
+    if proc == nil:
+        return
+    proc.alive = false
+
+fn crashUtilityProcess(proc: UtilityProcess, reason: str): types.CrashReport =
+    var report = types.defaultCrashReport()
+    report.processRole = types.prUtility
+    if proc != nil:
+        report.processId = proc.pid
+        proc.alive = false
+    report.reason = reason
+    report.fatal = true
+    report.recovered = false
+    report.timestampMs = report.processId
+    return report
+
+fn recoverUtilityProcess(proc: UtilityProcess): bool =
+    if proc == nil:
+        return false
+    proc.alive = true
+    proc.restartCount = proc.restartCount + int32(1)
+    return true

@@ -1,0 +1,67 @@
+
+fn drawTitleBar(pixels: void*, width, height, strideBytes: int32, theme: GuiTheme, state: GuiState) =
+    let layout = state.layout
+    let scale = layout.scale
+    let topH = layout.topH
+    
+    # Menus
+    var menuX: float64 = 80.0 * scale # Leave space for macOS traffic lights
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "File")
+    menuX = menuX + textWidthForFont("File", layout.smallFont, layout) + 16.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "Edit")
+    menuX = menuX + textWidthForFont("Edit", layout.smallFont, layout) + 16.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "Selection")
+    menuX = menuX + textWidthForFont("Selection", layout.smallFont, layout) + 16.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "View")
+    menuX = menuX + textWidthForFont("View", layout.smallFont, layout) + 16.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "Go")
+    menuX = menuX + textWidthForFont("Go", layout.smallFont, layout) + 16.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "Run")
+    menuX = menuX + textWidthForFont("Run", layout.smallFont, layout) + 16.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "Terminal")
+    menuX = menuX + textWidthForFont("Terminal", layout.smallFont, layout) + 16.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, menuX, float64(topH) * 0.3, theme.text, layout.smallFont, "Help")
+    menuX = menuX + textWidthForFont("Help", layout.smallFont, layout) + 16.0 * scale
+
+    # Title
+    let title = "Cheng IDE - " + workspaceRootLabelFromPath(state.projectRoot)
+    let titleW = textWidthForFont(title, layout.smallFont, layout)
+    let titleX = (float64(width) - titleW) * 0.5
+    drawTextLine(pixels, width, height, strideBytes, titleX, float64(topH) * 0.3, theme.text, layout.smallFont, title)
+
+fn drawStatusBar(pixels: void*, width, height, strideBytes: int32, theme: GuiTheme, state: GuiState) =
+    let layout = state.layout
+    let scale = layout.scale
+    let statusH = layout.statusH
+    let y = float64(height - statusH) + 4.0 * scale
+    
+    # Left: Git Branch
+    var x: float64 = 10.0 * scale
+    let gitIcon = codiconGlyph(CodiconSourceControl)
+    drawTextLine(pixels, width, height, strideBytes, x, y, theme.text, layout.smallFont, gitIcon)
+    x = x + 16.0 * scale
+    let branch = if len(state.vcsRoot) > 0: "main" else: "" # Mock branch for now if unknown
+    if len(branch) > 0:
+        drawTextLine(pixels, width, height, strideBytes, x, y, theme.text, layout.smallFont, branch)
+    
+    # Right: Cursor, Encoding, Language
+    let lang = "Cheng" # Dynamic language logic later
+    let langW = textWidthForFont(lang, layout.smallFont, layout)
+    
+    let encoding = "UTF-8"
+    let encW = textWidthForFont(encoding, layout.smallFont, layout)
+    
+    let cursor = "Ln " + intToStr(state.editor.cursorLine + 1) + ", Col " + intToStr(state.editor.cursorCol + 1)
+    let curW = textWidthForFont(cursor, layout.smallFont, layout)
+    
+    var rightX = float64(width) - 20.0 * scale
+    rightX = rightX - 20.0 * scale # Notification Bell placeholder
+    
+    rightX = rightX - langW
+    drawTextLine(pixels, width, height, strideBytes, rightX, y, theme.text, layout.smallFont, lang)
+    
+    rightX = rightX - encW - 20.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, rightX, y, theme.text, layout.smallFont, encoding)
+    
+    rightX = rightX - curW - 20.0 * scale
+    drawTextLine(pixels, width, height, strideBytes, rightX, y, theme.text, layout.smallFont, cursor)

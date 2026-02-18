@@ -1,0 +1,62 @@
+type
+    StorageEntry =
+        key: str
+        value: str
+
+    StorageStore = ref
+        entries: StorageEntry[]
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn storeStrEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn appendEntry(entries: var StorageEntry[], entry: StorageEntry) =
+    let idx = len(entries)
+    setLen(entries, idx + 1)
+    entries[idx] = entry
+
+fn newStore(): StorageStore =
+    var store: StorageStore
+    new(store)
+    return store
+
+fn setValue(store: StorageStore, key, value: str) =
+    if store == nil:
+        return
+    for idx in 0..<len(store.entries):
+        let current = store.entries[idx]
+        if storeStrEq(current.key, key):
+            var updated = current
+            updated.value = value
+            store.entries[idx] = updated
+            return
+    appendEntry(store.entries, StorageEntry(key: key, value: value))
+
+fn getValue(store: StorageStore, key: str): str =
+    if store == nil:
+        return ""
+    for idx in 0..<len(store.entries):
+        let current = store.entries[idx]
+        if storeStrEq(current.key, key):
+            return current.value
+    return ""

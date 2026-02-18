@@ -1,0 +1,28 @@
+type
+    GeoPermission = ref
+        location: str
+
+    GeoPosition = ref
+        lat: float
+        lng: float
+        ok: bool
+
+fn adapterId(): str =
+    return "@capacitor/geolocation"
+
+fn checkPermissions(): GeoPermission =
+    var out: GeoPermission
+    new(out)
+    out.location = "granted"
+    return out
+
+fn requestPermissions(): GeoPermission =
+    return checkPermissions()
+
+fn getCurrentPosition(): GeoPosition =
+    var out: GeoPosition
+    new(out)
+    out.lat = 37.7749
+    out.lng = -122.4194
+    out.ok = true
+    return out

@@ -1,0 +1,418 @@
+import cheng/gui/platform/types_v1
+
+type
+    ThemeToken = enum
+        ttBackground
+        ttSurface
+        ttTextPrimary
+        ttTextSecondary
+        ttAccent
+        ttAccentContrast
+        ttBorder
+
+    ThemeColor =
+        token: ThemeToken
+        value: uint32
+
+    ThemeSpec =
+        name: str
+        scale: float
+        highContrast: bool
+        colors: ThemeColor[]
+
+    NodeKind = enum
+        nkCustom
+        nkView
+        nkText
+        nkImage
+        nkIcon
+        nkSpacer
+        nkScrollView
+        nkListView
+        nkGridView
+        nkButton
+        nkTextField
+        nkCheckbox
+        nkRadio
+        nkSwitch
+        nkSlider
+        nkSelect
+        nkDialog
+        nkPopover
+        nkTooltip
+        nkTabs
+        nkNavStack
+        nkDataTable
+        nkChart
+        nkRichTextEditor
+        nkWebView
+        nkPdfView
+        nkAudioPlayer
+        nkVideoPlayer
+
+    A11yRole = enum
+        arNone
+        arContainer
+        arText
+        arImage
+        arButton
+        arTextField
+        arCheckbox
+        arRadio
+        arSwitch
+        arSlider
+        arSelect
+        arDialog
+        arTab
+        arTable
+        arChart
+        arDocument
+        arWebDocument
+        arPdfDocument
+        arAudio
+        arVideo
+
+    Node = ref
+        id: int64
+        key: str
+        kind: NodeKind
+        role: A11yRole
+        name: str
+        propsHash: uint64
+        frame: GuiRect
+        text: str
+        enabled: bool
+        focusable: bool
+        children: Node[]
+
+    StateToken = int64
+
+    StateCell = ref
+        token: StateToken
+        key: str
+        valueSize: int32
+        valueBuffer: void*
+
+    EffectCell = ref
+        key: str
+        cleanup: fn ()
+
+    UiContext = ref
+        appId: str
+        title: str
+        route: str
+        locale: str
+        dpiScale: float
+        frameIndex: int64
+        nextNodeId: int64
+        nextStateToken: StateToken
+        theme: ThemeSpec
+        states: StateCell[]
+        effects: EffectCell[]
+        invalidated: bool
+
+fn appendThemeColor(items: var ThemeColor[], value: ThemeColor) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = value
+
+fn appendNode(items: var Node[], value: Node) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = value
+
+fn appendStateCell(items: var StateCell[], value: StateCell) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = value
+
+fn appendEffectCell(items: var EffectCell[], value: EffectCell) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = value
+
+fn defaultThemeSpec(): ThemeSpec =
+    var theme: ThemeSpec
+    theme.name = "default"
+    theme.scale = 1.0
+    theme.highContrast = false
+    appendThemeColor(theme.colors, ThemeColor(token: ttBackground, value: uint32(0xFF101216)))
+    appendThemeColor(theme.colors, ThemeColor(token: ttSurface, value: uint32(0xFF1C2129)))
+    appendThemeColor(theme.colors, ThemeColor(token: ttTextPrimary, value: uint32(0xFFF2F4F8)))
+    appendThemeColor(theme.colors, ThemeColor(token: ttTextSecondary, value: uint32(0xFFB2BCC8)))
+    appendThemeColor(theme.colors, ThemeColor(token: ttAccent, value: uint32(0xFF2B8AFA)))
+    appendThemeColor(theme.colors, ThemeColor(token: ttAccentContrast, value: uint32(0xFFFFFFFF)))
+    appendThemeColor(theme.colors, ThemeColor(token: ttBorder, value: uint32(0xFF3A4454)))
+    return theme
+
+fn colorOf(theme: ThemeSpec, token: ThemeToken): uint32 =
+    for idx in 0..<len(theme.colors):
+        let item = theme.colors[idx]
+        if item.token == token:
+            return item.value
+    return uint32(0)
+
+fn defaultRoleForKind(kind: NodeKind): A11yRole =
+    case kind
+    of nkText:
+        return arText
+    of nkImage, nkIcon:
+        return arImage
+    of nkButton:
+        return arButton
+    of nkTextField:
+        return arTextField
+    of nkCheckbox:
+        return arCheckbox
+    of nkRadio:
+        return arRadio
+    of nkSwitch:
+        return arSwitch
+    of nkSlider:
+        return arSlider
+    of nkSelect:
+        return arSelect
+    of nkDialog:
+        return arDialog
+    of nkTabs:
+        return arTab
+    of nkDataTable:
+        return arTable
+    of nkChart:
+        return arChart
+    of nkRichTextEditor:
+        return arDocument
+    of nkWebView:
+        return arWebDocument
+    of nkPdfView:
+        return arPdfDocument
+    of nkAudioPlayer:
+        return arAudio
+    of nkVideoPlayer:
+        return arVideo
+    else:
+        return arContainer
+
+fn hashStr(value: str): uint64 =
+    var h: uint64 = uint64(1469598103934665603)
+    for idx in 0..<len(value):
+        let ch = value[idx]
+        h = h ^ uint64(int32(ch))
+        h = h * uint64(1099511628211)
+    return h
+
+fn newUiContext(appId, title: str): UiContext =
+    var ctx: UiContext
+    new(ctx)
+    ctx.appId = appId
+    ctx.title = title
+    ctx.route = "/"
+    ctx.locale = "en-US"
+    ctx.dpiScale = 1.0
+    ctx.frameIndex = 0
+    ctx.nextNodeId = 1
+    ctx.nextStateToken = 1
+    ctx.theme = defaultThemeSpec()
+    ctx.invalidated = true
+    return ctx
+
+fn newUiContext(): UiContext =
+    return newUiContext("cheng.gui.app", "Cheng GUI")
+
+fn invalidate(ctx: UiContext) =
+    if ctx == nil:
+        return
+    ctx.invalidated = true
+
+fn clearInvalidation(ctx: UiContext) =
+    if ctx == nil:
+        return
+    ctx.invalidated = false
+
+fn allocateNodeId(ctx: UiContext): int64 =
+    if ctx == nil:
+        return int64(0)
+    let id = ctx.nextNodeId
+    ctx.nextNodeId = ctx.nextNodeId + 1
+    return id
+
+fn newNode(ctx: UiContext, kind: NodeKind, key: str): Node =
+    var node: Node
+    new(node)
+    let keyHash = hashStr(key)
+    node.id = allocateNodeId(ctx)
+    node.key = key
+    node.kind = kind
+    node.role = defaultRoleForKind(kind)
+    node.name = ""
+    node.propsHash = keyHash
+    node.frame = makeRect(0.0, 0.0, 0.0, 0.0)
+    node.text = ""
+    node.enabled = true
+    node.focusable = false
+    return node
+
+fn setChildren(node: Node, children: Node[]) =
+    if node == nil:
+        return
+    node.children = children
+
+fn appendChild(node: Node, child: Node) =
+    if node == nil || child == nil:
+        return
+    appendNode(node.children, child)
+
+fn findStateIndex(ctx: UiContext, key: str): int =
+    if ctx == nil:
+        return -1
+    for idx in 0..<len(ctx.states):
+        let cell = ctx.states[idx]
+        if cell != nil && cell.key == key:
+            return idx
+    return -1
+
+fn findStateByToken(ctx: UiContext, token: StateToken): int =
+    if ctx == nil:
+        return -1
+    for idx in 0..<len(ctx.states):
+        let cell = ctx.states[idx]
+        if cell != nil && cell.token == token:
+            return idx
+    return -1
+
+fn ensureStateCell[T](ctx: UiContext, key: str, initial: T): StateCell =
+    if ctx == nil:
+        return nil
+    var resolvedKey = key
+    if len(resolvedKey) == 0:
+        resolvedKey = "$state:" + $ ctx.nextStateToken
+    let idx = findStateIndex(ctx, resolvedKey)
+    let expectedSize = int32(sizeof(T))
+    if idx >= 0:
+        let current = ctx.states[idx]
+        if current != nil && current.valueSize == expectedSize:
+            return current
+        if current != nil:
+            if current.valueBuffer != nil:
+                dealloc(current.valueBuffer)
+            current.valueSize = expectedSize
+            if expectedSize > 0:
+                current.valueBuffer = alloc(expectedSize)
+                let ptrValue: T* = T*(current.valueBuffer)
+                *ptrValue = initial
+            else:
+                current.valueBuffer = nil
+            return current
+    var cell: StateCell
+    new(cell)
+    cell.token = ctx.nextStateToken
+    ctx.nextStateToken = ctx.nextStateToken + 1
+    cell.key = resolvedKey
+    cell.valueSize = expectedSize
+    if expectedSize > 0:
+        cell.valueBuffer = alloc(expectedSize)
+        let ptrValue: T* = T*(cell.valueBuffer)
+        *ptrValue = initial
+    else:
+        cell.valueBuffer = nil
+    appendStateCell(ctx.states, cell)
+    return cell
+
+fn useState[T](ctx: UiContext, key: str, initial: T): tuple[value: T, token: StateToken] =
+    if ctx == nil:
+        return (value: initial, token: StateToken(0))
+    let cell = ensureStateCell(ctx, key, initial)
+    if cell == nil:
+        return (value: initial, token: StateToken(0))
+    if cell.valueBuffer == nil:
+        return (value: initial, token: cell.token)
+    let ptrValue: T* = T*(cell.valueBuffer)
+    return (value: *ptrValue, token: cell.token)
+
+fn setState[T](ctx: UiContext, token: StateToken, value: T) =
+    if ctx == nil:
+        return
+    let idx = findStateByToken(ctx, token)
+    if idx < 0:
+        return
+    let cell = ctx.states[idx]
+    if cell == nil:
+        return
+    let expectedSize = int32(sizeof(T))
+    if cell.valueSize != expectedSize:
+        if cell.valueBuffer != nil:
+            dealloc(cell.valueBuffer)
+        cell.valueSize = expectedSize
+        if expectedSize > 0:
+            cell.valueBuffer = alloc(expectedSize)
+        else:
+            cell.valueBuffer = nil
+    if cell.valueBuffer != nil:
+        let ptrValue: T* = T*(cell.valueBuffer)
+        *ptrValue = value
+    invalidate(ctx)
+
+fn findEffectIndex(ctx: UiContext, key: str): int =
+    if ctx == nil:
+        return -1
+    for idx in 0..<len(ctx.effects):
+        let effect = ctx.effects[idx]
+        if effect != nil && effect.key == key:
+            return idx
+    return -1
+
+fn useEffect(ctx: UiContext, key: str, effect: fn (): fn ()) =
+    if ctx == nil || effect == nil:
+        return
+    let cleanup = effect()
+    let idx = findEffectIndex(ctx, key)
+    if idx >= 0:
+        let current = ctx.effects[idx]
+        if current != nil && current.cleanup != nil:
+            current.cleanup()
+        if current != nil:
+            current.cleanup = cleanup
+            return
+    var entry: EffectCell
+    new(entry)
+    entry.key = key
+    entry.cleanup = cleanup
+    appendEffectCell(ctx.effects, entry)
+
+fn runEffectCleanups(ctx: UiContext) =
+    if ctx == nil:
+        return
+    for idx in 0..<len(ctx.effects):
+        let item = ctx.effects[idx]
+        if item != nil && item.cleanup != nil:
+            item.cleanup()
+    setLen[EffectCell](&ctx.effects, 0)
+
+fn clearState(ctx: UiContext) =
+    if ctx == nil:
+        return
+    for idx in 0..<len(ctx.states):
+        let cell = ctx.states[idx]
+        if cell != nil && cell.valueBuffer != nil:
+            dealloc(cell.valueBuffer)
+            cell.valueBuffer = nil
+    setLen[StateCell](&ctx.states, 0)
+
+fn shutdownContext(ctx: UiContext) =
+    if ctx == nil:
+        return
+    runEffectCleanups(ctx)
+    clearState(ctx)
+    ctx.invalidated = false
+
+fn uiBeginFrame(ctx: UiContext, dpiScale: float) =
+    if ctx == nil:
+        return
+    ctx.frameIndex = ctx.frameIndex + 1
+    if dpiScale > 0.0:
+        ctx.dpiScale = dpiScale
+
+fn uiEndFrame(ctx: UiContext) =
+    if ctx == nil:
+        return
+    clearInvalidation(ctx)

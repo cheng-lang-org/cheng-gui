@@ -1,0 +1,573 @@
+import std/seqs
+import cheng/gui/examples_games/common/protocol
+import cheng/gui/examples_games/common/p2p_node
+import cheng/gui/examples_games/common/gui_runtime
+import cheng/gui/examples_games/common/session_store
+import cheng/gui/examples_games/common/string_utils as sutil
+import cheng/gui/examples_games/werewolf/state as ww
+
+const
+    GameId = "werewolf"
+
+
+type
+    WolfAppContext =
+        scene: GuiSceneState
+        node: P2PNode
+        gameState: ww.WerewolfState
+        isHost: bool
+        roomCode: str
+        localName: str
+        localToken: str
+        localSeat: int32
+        hostPeerId: str
+        hostAddr: str
+        peerBySeat: str[]
+        lastPublicSnapshot: str
+        lastPrivateSnapshot: str
+
+var gCtx: WolfAppContext
+var gCtxInited = false
+
+fn i32ToStr(value: int32): str =
+    return intToStr(value)
+
+fn joinIntList(values: int32[]): str =
+    if len(values) <= 0:
+        return ""
+    var parts: str[] = default[str[]]
+    for idx in 0..<len(values):
+        add(parts, i32ToStr(values[idx]))
+    return sutil.joinWith(parts, ",")
+
+fn aliveCampSummary(state: ww.WerewolfState): tuple[wolves: int32, villagers: int32, gods: int32] =
+    var wolves: int32 = 0
+    var villagers: int32 = 0
+    var gods: int32 = 0
+    for idx in 0..<ww.WolfPlayerCount:
+        let p: ww.WolfPlayer = state.players[idx]
+        if p.alive:
+            if p.role == "wolf":
+                wolves = wolves + 1
+            elif p.role == "villager":
+                villagers = villagers + 1
+            else:
+                gods = gods + 1
+    return (wolves: wolves, villagers: villagers, gods: gods)
+
+fn safeSeqGet(items: str[], idx: int32): str =
+    if idx < 0 || idx >= len(items):
+        return ""
+    return get(items, idx)
+
+fn peerAt(seat: int32): str =
+    if ! gCtxInited:
+        return ""
+    if seat < 0 || seat >= ww.WolfPlayerCount:
+        return ""
+    if seat >= len(gCtx.peerBySeat):
+        return ""
+    return get(gCtx.peerBySeat, seat)
+
+fn peerSet(seat: int32, peerId: str) =
+    if ! gCtxInited:
+        return
+    if seat < 0 || seat >= ww.WolfPlayerCount:
+        return
+    var next: str[] = default[str[]]
+    for idx in 0..<ww.WolfPlayerCount:
+        if idx == seat:
+            add(next, peerId)
+        else:
+            add(next, peerAt(idx))
+    gCtx.peerBySeat = next
+
+fn parseInputByPipe(text: str): str[] =
+    let raw: str[] = sutil.splitByChar(text, '|')
+    var outVal: str[] = default[str[]]
+    for idx in 0..<len(raw):
+        add(outVal, sutil.strip(raw[idx]))
+    return outVal
+
+fn parseCommand(text: str): tuple[actionType: str, args: str] =
+    let trimmed: str = sutil.strip(text)
+    if len(trimmed) == 0:
+        return (actionType: "", args: "")
+    let pos: int32 = sutil.indexOfSubstr(trimmed, " ", 0)
+    if pos < 0:
+        return (actionType: sutil.toLowerAscii(trimmed), args: "")
+    var left = ""
+    var right = ""
+    if pos > 0:
+        left = sutil.sliceRange(trimmed, 0, pos - 1)
+    if pos + 1 < len(trimmed):
+        right = sutil.sliceRange(trimmed, pos + 1, len(trimmed) - 1)
+    return (actionType: sutil.toLowerAscii(left), args: sutil.strip(right))
+
+fn defaultListenAddr(): str =
+    let port: int32 = 19000 + int32(sutil.nowMillis() % int64(1000))
+    return "/ip4/0.0.0.0/tcp/" + i32ToStr(port)
+
+fn makeRoomCode(): str =
+    return "W" + i32ToStr(int32(sutil.nowMillis() % int64(1000000)))
+
+fn makeToken(name: str): str =
+    let base: str = if len(name) > 0: name else: "wolf"
+    return base + "-" + intToStr(int32(sutil.nowMillis()))
+
+fn addLog(text: str) =
+    if ! gCtxInited:
+        return
+    gCtx.scene = addSceneLog(gCtx.scene, text, 200)
+
+fn newAction(id: str, label: str): GuiActionRect =
+    var a: GuiActionRect
+    a.id = id
+    a.label = label
+    a.enabled = true
+    return a
+
+fn fillBaseActions(actions: var GuiActionRect[]) =
+    actions = []
+    add(actions, newAction("create", "Create Room"))
+    add(actions, newAction("join", "Join Host"))
+    add(actions, newAction("ready", "Ready"))
+    add(actions, newAction("start", "Start"))
+    add(actions, newAction("send", "Send Action"))
+    add(actions, newAction("advance", "Advance Stage"))
+    add(actions, newAction("bot", "Bot Fill"))
+    add(actions, newAction("reconnect", "Reconnect"))
+
+fn ensureContext(scene: GuiSceneState) =
+    if gCtxInited:
+        return
+    gCtx.scene = scene
+    gCtx.gameState = ww.newState()
+    gCtx.isHost = false
+    gCtx.roomCode = ""
+    gCtx.localName = "Player"
+    gCtx.localToken = ""
+    gCtx.localSeat = -1
+    gCtx.hostPeerId = ""
+    gCtx.hostAddr = ""
+    gCtx.peerBySeat = []
+    setLen(gCtx.peerBySeat, ww.WolfPlayerCount)
+    gCtx.lastPublicSnapshot = ""
+    gCtx.lastPrivateSnapshot = ""
+    fillBaseActions(gCtx.scene.actions)
+    gCtx.scene.description = "Cmd: sheriff_run / sheriff_vote 2 / guard_protect 3 / wolf_kill 4 / seer_check 8 / witch_save 1 / vote 6"
+    gCtxInited = true
+
+fn firstEmptySeat(state: ww.WerewolfState): int32 =
+    for idx in 0..<ww.WolfPlayerCount:
+        let p: ww.WolfPlayer = state.players[idx]
+        if len(p.token) == 0:
+            return idx
+    return -1
+
+fn findSeatByToken(state: ww.WerewolfState, token: str): int32 =
+    return ww.recoverPlayerSession(state, token)
+
+fn saveLocalSession() =
+    if ! gCtxInited:
+        return
+    if len(gCtx.localName) > 0 && len(gCtx.localToken) > 0:
+        savePlayerToken(GameId, gCtx.localName, gCtx.localToken)
+    if len(gCtx.hostAddr) > 0:
+        saveLastEndpoint(GameId, gCtx.roomCode + "|" + gCtx.hostPeerId + "|" + gCtx.hostAddr + "|" + gCtx.localName)
+
+fn publishActionApplied(applied: ActionApplied) =
+    if ! gCtxInited || gCtx.node == nil:
+        return
+    let env: NetEnvelope = actionAppliedToEnvelope(applied, GameId, gCtx.roomCode, p2pSelfPeerId(gCtx.node))
+    let errText: str = p2pPublishPublic(gCtx.node, encodeNetEnvelope(env))
+    errText
+
+fn pushPrivateSyncToSeat(seat: int32) =
+    if ! gCtxInited || gCtx.node == nil:
+        return
+    if seat < 0 || seat >= ww.WolfPlayerCount:
+        return
+    let peerId: str = peerAt(seat)
+    if len(peerId) == 0:
+        return
+    let game: ww.WerewolfState = gCtx.gameState
+    let p: ww.WolfPlayer = game.players[seat]
+    let token: str = p.token
+    if len(token) == 0:
+        return
+
+    var msg: PrivateSync = initPrivateSync()
+    msg.playerToken = token
+    msg.privateSnapshot = ww.buildPrivateSnapshot(game, seat)
+    msg.allowedActions = "ready,start,advance,sheriff_run,sheriff_vote,guard_protect,wolf_kill,seer_check,witch_save,witch_poison,vote,speak"
+    msg.stateSeq = game.seq
+
+    let env: NetEnvelope = privateSyncToEnvelope(msg, GameId, gCtx.roomCode, p2pSelfPeerId(gCtx.node), peerId)
+    let resp: str = p2pRequestPrivate(gCtx.node, peerId, encodeNetEnvelope(env))
+    resp
+
+fn broadcastPrivateSyncAll() =
+    for seat in 0..<ww.WolfPlayerCount:
+        pushPrivateSyncToSeat(seat)
+
+fn applyHostAction(req: ActionRequest) =
+    let applied: ActionApplied = ww.applyAction(gCtx.gameState, req.seat, req)
+    if applied.applied:
+        addLog("[Host] action applied: " + req.actionType)
+    else:
+        addLog("[Host] action rejected: " + applied.note)
+    publishActionApplied(applied)
+    broadcastPrivateSyncAll()
+
+fn handleJoinEnvelope(env: NetEnvelope) =
+    let joinMsg: RoomJoin = envelopeToRoomJoin(env)
+    var seat: int32 = findSeatByToken(gCtx.gameState, joinMsg.playerToken)
+    if seat < 0:
+        seat = firstEmptySeat(gCtx.gameState)
+    if seat < 0:
+        addLog("room full")
+        return
+
+    ww.setPlayer(gCtx.gameState, seat, joinMsg.playerName, joinMsg.playerToken, true, false)
+    peerSet(seat, env.senderPeerId)
+    addLog("player joined seat=" + i32ToStr(seat))
+    let game: ww.WerewolfState = gCtx.gameState
+
+    var applied: ActionApplied = initActionApplied()
+    applied.applied = true
+    applied.actionType = "join"
+    applied.actionArgs = joinMsg.playerName
+    applied.stateSeq = game.seq + int64(1)
+    game.seq = applied.stateSeq
+    applied.publicSnapshot = ww.buildPublicSnapshot(game)
+    publishActionApplied(applied)
+    pushPrivateSyncToSeat(seat)
+
+fn handleActionRequestEnvelope(env: NetEnvelope) =
+    var req: ActionRequest = envelopeToActionRequest(env)
+    if req.seat < 0:
+        req.seat = findSeatByToken(gCtx.gameState, req.playerToken)
+    if req.seat < 0:
+        addLog("unknown action request")
+        return
+    if len(peerAt(req.seat)) == 0:
+        peerSet(req.seat, env.senderPeerId)
+    applyHostAction(req)
+
+fn consumePublicMessages() =
+    if ! gCtxInited || gCtx.node == nil:
+        return
+    var msg: P2PPublicMessage
+    while p2pPollPublic(gCtx.node, msg):
+        let env: NetEnvelope = decodeNetEnvelope(msg.envelopeText)
+        if env.game != GameId:
+            continue
+        if len(gCtx.roomCode) > 0 && env.roomCode != gCtx.roomCode:
+            continue
+
+        if env.kind == "room_hello":
+            if ! gCtx.isHost:
+                gCtx.hostPeerId = env.senderPeerId
+                gCtx.hostAddr = env.publicPayload
+                addLog("host discovered")
+
+        elif env.kind == "room_join" && gCtx.isHost:
+            handleJoinEnvelope(env)
+
+        elif env.kind == "action_request" && gCtx.isHost:
+            handleActionRequestEnvelope(env)
+
+        elif env.kind == "action_applied":
+            let applied: ActionApplied = envelopeToActionApplied(env)
+            gCtx.lastPublicSnapshot = applied.publicSnapshot
+            addLog("sync: " + applied.actionType)
+
+fn privateRequestHandler(reqText: str): str =
+    if ! gCtxInited:
+        return reqText
+    let env: NetEnvelope = decodeNetEnvelope(reqText)
+    if env.game != GameId:
+        return reqText
+
+    if env.kind == "private_sync":
+        gCtx.lastPrivateSnapshot = env.privatePayload
+        let seatByToken: int32 = findSeatByToken(gCtx.gameState, env.playerToken)
+        if seatByToken >= 0:
+            gCtx.localSeat = seatByToken
+        addLog("private snapshot received")
+        var ack: NetEnvelope = initNetEnvelope()
+        ack.kind = "ack"
+        ack.game = GameId
+        ack.roomCode = gCtx.roomCode
+        ack.ok = true
+        return encodeNetEnvelope(ack)
+
+    if env.kind == "reconnect_claim" && gCtx.isHost:
+        let claim: ReconnectClaim = envelopeToReconnectClaim(env)
+        let seat: int32 = findSeatByToken(gCtx.gameState, claim.playerToken)
+        var reply: NetEnvelope = initNetEnvelope()
+        reply.kind = "reconnect_snapshot"
+        reply.game = GameId
+        reply.roomCode = gCtx.roomCode
+        if seat < 0:
+            reply.ok = false
+            reply.errorMessage = "token not found"
+            return encodeNetEnvelope(reply)
+
+        var snap: ReconnectSnapshot = initReconnectSnapshot()
+        snap.publicSnapshot = ww.buildPublicSnapshot(gCtx.gameState)
+        snap.privateSnapshot = ww.buildPrivateSnapshot(gCtx.gameState, seat)
+        snap.allowedActions = "ready,start,advance,sheriff_run,sheriff_vote,guard_protect,wolf_kill,seer_check,witch_save,witch_poison,vote,speak"
+        let game: ww.WerewolfState = gCtx.gameState
+        snap.stateSeq = game.seq
+        snap.seat = seat
+        reply = reconnectSnapshotToEnvelope(snap, GameId, gCtx.roomCode, p2pSelfPeerId(gCtx.node), env.senderPeerId)
+        reply.ok = true
+        return encodeNetEnvelope(reply)
+
+    if env.kind == "reconnect_snapshot":
+        let snap: ReconnectSnapshot = envelopeToReconnectSnapshot(env)
+        gCtx.lastPublicSnapshot = snap.publicSnapshot
+        gCtx.lastPrivateSnapshot = snap.privateSnapshot
+        gCtx.localSeat = snap.seat
+        addLog("reconnect recovered seat=" + i32ToStr(snap.seat))
+        var ack: NetEnvelope = initNetEnvelope()
+        ack.kind = "ack"
+        ack.game = GameId
+        ack.roomCode = gCtx.roomCode
+        ack.ok = true
+        return encodeNetEnvelope(ack)
+
+    return reqText
+
+fn tryCreateRoom(input: str) =
+    let parts: str[] = parseInputByPipe(input)
+    let room: str = if len(safeSeqGet(parts, 0)) > 0: safeSeqGet(parts, 0) else: makeRoomCode()
+    let listenAddr: str = if len(safeSeqGet(parts, 1)) > 0: safeSeqGet(parts, 1) else: defaultListenAddr()
+    let name: str = if len(safeSeqGet(parts, 2)) > 0: safeSeqGet(parts, 2) else: "Host"
+
+    gCtx.roomCode = room
+    gCtx.localName = name
+    gCtx.localToken = loadPlayerToken(GameId, name)
+    if len(gCtx.localToken) == 0:
+        gCtx.localToken = makeToken(name)
+
+    gCtx.node = initP2PNode(GameId, room)
+    let err: str = p2pStart(gCtx.node, listenAddr, true)
+    if len(err) > 0:
+        addLog("create room failed: " + err)
+        return
+
+    p2pSetRequestHandler(gCtx.node, privateRequestHandler)
+    gCtx.isHost = true
+    gCtx.localSeat = 0
+    gCtx.hostPeerId = p2pSelfPeerId(gCtx.node)
+    gCtx.hostAddr = p2pListenAddr(gCtx.node)
+
+    ww.setPlayer(gCtx.gameState, 0, name, gCtx.localToken, true, false)
+    peerSet(0, gCtx.hostPeerId)
+
+    var hello: RoomHello = initRoomHello()
+    hello.game = GameId
+    hello.roomCode = room
+    hello.hostPeerId = gCtx.hostPeerId
+    hello.hostMultiaddr = gCtx.hostAddr
+    hello.note = "room_open"
+    let pubErr: str = p2pPublishPublic(gCtx.node, encodeNetEnvelope(roomHelloToEnvelope(hello)))
+    pubErr
+
+    addLog("room created room=" + room)
+    saveLocalSession()
+
+fn tryJoinRoom(input: str) =
+    let parts: str[] = parseInputByPipe(input)
+    let room: str = safeSeqGet(parts, 0)
+    let hostPeerId: str = safeSeqGet(parts, 1)
+    let hostAddr: str = safeSeqGet(parts, 2)
+    let name: str = if len(safeSeqGet(parts, 3)) > 0: safeSeqGet(parts, 3) else: "Player"
+    let listenAddr: str = if len(safeSeqGet(parts, 4)) > 0: safeSeqGet(parts, 4) else: defaultListenAddr()
+
+    if len(room) == 0 || len(hostPeerId) == 0 || len(hostAddr) == 0:
+        addLog("join args missing")
+        return
+
+    gCtx.roomCode = room
+    gCtx.localName = name
+    gCtx.localToken = loadPlayerToken(GameId, name)
+    if len(gCtx.localToken) == 0:
+        gCtx.localToken = makeToken(name)
+
+    gCtx.node = initP2PNode(GameId, room)
+    let startErr: str = p2pStart(gCtx.node, listenAddr, false)
+    if len(startErr) > 0:
+        addLog("node start failed: " + startErr)
+        return
+    p2pSetRequestHandler(gCtx.node, privateRequestHandler)
+
+    let connErr: str = p2pConnectHost(gCtx.node, hostPeerId, hostAddr)
+    if len(connErr) > 0:
+        addLog("connect host failed: " + connErr)
+        return
+
+    gCtx.isHost = false
+    gCtx.hostPeerId = hostPeerId
+    gCtx.hostAddr = hostAddr
+    gCtx.localSeat = -1
+
+    var joinMsg: RoomJoin = initRoomJoin()
+    joinMsg.playerName = name
+    joinMsg.playerToken = gCtx.localToken
+    joinMsg.desiredSeat = -1
+    let env: NetEnvelope = roomJoinToEnvelope(joinMsg, GameId, room, p2pSelfPeerId(gCtx.node))
+    let joinErr: str = p2pPublishPublic(gCtx.node, encodeNetEnvelope(env))
+    joinErr
+    addLog("join request sent")
+    saveLocalSession()
+
+fn sendAction(kind: str, args: str) =
+    if ! gCtxInited || gCtx.node == nil:
+        addLog("please create or join a room first")
+        return
+    var req: ActionRequest = initActionRequest()
+    req.actionType = kind
+    req.actionArgs = args
+    let game: ww.WerewolfState = gCtx.gameState
+    req.clientSeq = game.seq + int64(1)
+    req.playerToken = gCtx.localToken
+    req.seat = gCtx.localSeat
+    if gCtx.isHost:
+        applyHostAction(req)
+    else:
+        let env: NetEnvelope = actionRequestToEnvelope(req, GameId, gCtx.roomCode, p2pSelfPeerId(gCtx.node))
+        let pubErr: str = p2pPublishPublic(gCtx.node, encodeNetEnvelope(env))
+        pubErr
+
+fn runBotStep() =
+    if ! gCtxInited || ! gCtx.isHost:
+        addLog("only host can run bot")
+        return
+    let game: ww.WerewolfState = gCtx.gameState
+    for seat in 0..<ww.WolfPlayerCount:
+        let p: ww.WolfPlayer = game.players[seat]
+        if p.isBot && p.alive:
+            let botReq: ActionRequest = ww.makeBotAction(game, seat)
+            applyHostAction(botReq)
+            return
+    addLog("no available bot action")
+
+fn requestReconnect() =
+    if ! gCtxInited || gCtx.node == nil || gCtx.isHost:
+        addLog("only client can reconnect")
+        return
+    var claim: ReconnectClaim = initReconnectClaim()
+    claim.playerToken = gCtx.localToken
+    claim.playerName = gCtx.localName
+    let env: NetEnvelope = reconnectClaimToEnvelope(claim, GameId, gCtx.roomCode, p2pSelfPeerId(gCtx.node))
+    let respText: str = p2pRequestPrivate(gCtx.node, gCtx.hostPeerId, encodeNetEnvelope(env))
+    if len(respText) == 0:
+        addLog("reconnect failed: " + p2pLastError(gCtx.node))
+        return
+    let ack: str = privateRequestHandler(respText)
+    ack
+
+fn handleAction(actionId: str, input: str) =
+    if actionId == "create":
+        tryCreateRoom(input)
+    elif actionId == "join":
+        tryJoinRoom(input)
+    elif actionId == "ready":
+        sendAction("ready", "")
+    elif actionId == "start":
+        sendAction("start", "")
+    elif actionId == "send":
+        let cmd = parseCommand(input)
+        sendAction(cmd.actionType, cmd.args)
+    elif actionId == "advance":
+        sendAction("advance", "")
+    elif actionId == "bot":
+        runBotStep()
+    elif actionId == "reconnect":
+        requestReconnect()
+
+fn refreshScene(base: GuiSceneState): GuiSceneState =
+    var scene: GuiSceneState = base
+    if ! gCtxInited:
+        return scene
+    let game: ww.WerewolfState = gCtx.gameState
+
+    var conn: str[] = []
+    add(conn, "role=" + (if gCtx.isHost: "host" else: "client"))
+    add(conn, "room=" + gCtx.roomCode)
+    if gCtx.node != nil:
+        add(conn, "selfPeer=" + p2pSelfPeerId(gCtx.node))
+        add(conn, "listen=" + p2pListenAddr(gCtx.node))
+    add(conn, "hostPeer=" + gCtx.hostPeerId)
+    add(conn, "hostAddr=" + gCtx.hostAddr)
+    scene.connectionLines = conn
+
+    var seats: str[] = []
+    for i in 0..<ww.WolfPlayerCount:
+        let p: ww.WolfPlayer = game.players[i]
+        var roleText = "?"
+        if gCtx.isHost || i == gCtx.localSeat:
+            roleText = p.role
+        elif gCtx.localSeat >= 0 && gCtx.localSeat < ww.WolfPlayerCount:
+            let me: ww.WolfPlayer = game.players[gCtx.localSeat]
+            if me.role == "wolf" && p.role == "wolf":
+                roleText = "wolf"
+        add(
+            seats,
+            i32ToStr(i) + ". " + p.name + " [" + (if p.alive: "alive" else: "dead") + "] "
+            + (if p.online: "on" else: "off") + " role=" + roleText
+        )
+    scene.seatLines = seats
+
+    let camps = aliveCampSummary(game)
+    var status: str[] = []
+    add(status, "localName=" + gCtx.localName)
+    add(status, "localSeat=" + i32ToStr(gCtx.localSeat))
+    add(status, "localToken=" + gCtx.localToken)
+    add(status, "stage=" + game.stage + " day=" + i32ToStr(game.dayIndex) + " night=" + i32ToStr(game.nightIndex))
+    add(status, "sheriff=" + i32ToStr(game.sheriffSeat) + " winner=" + game.winnerCamp)
+    add(status, "alive wolves=" + i32ToStr(camps.wolves) + " villagers=" + i32ToStr(camps.villagers) + " gods=" + i32ToStr(camps.gods))
+    add(status, "guard=" + i32ToStr(game.guardTarget) + " wolf_kill=" + i32ToStr(game.wolfKillTarget) + " pending_dead=" + joinIntList(game.pendingDead))
+    if len(gCtx.lastPrivateSnapshot) > 0:
+        add(status, "private=ok")
+    scene.statusLines = status
+
+    if len(gCtx.lastPublicSnapshot) > 0:
+        scene.notice = "latest public snapshot: " + sutil.sliceRange(gCtx.lastPublicSnapshot, 0, sutil.minInt(120, len(gCtx.lastPublicSnapshot) - 1))
+    else:
+        scene.notice = "public snapshot not received yet"
+
+    fillBaseActions(scene.actions)
+    return scene
+
+fn reducer(scene: GuiSceneState, eventKind: str, payload: str): GuiSceneState =
+    ensureContext(scene)
+    gCtx.scene = scene
+
+    if eventKind == "tick":
+        if gCtx.node != nil:
+            p2pTick(gCtx.node)
+            consumePublicMessages()
+
+    elif eventKind == "action":
+        let inputText: str = sutil.strip(gCtx.scene.inputState.text)
+        handleAction(payload, inputText)
+
+    elif eventKind == "submit":
+        let cmd = parseCommand(payload)
+        sendAction(cmd.actionType, cmd.args)
+
+    gCtx.scene = refreshScene(gCtx.scene)
+    return gCtx.scene
+
+fn runWerewolfExample(): int32 =
+    var scene: GuiSceneState = newSceneState("Werewolf 12p", "Sheriff election, last words, side-win")
+    scene.icon = "W"
+    scene.rating = "4.7"
+    fillBaseActions(scene.actions)
+    scene.inputState.placeholder = "create room|listen|name; join room|hostPeer|hostAddr|name|listen; send wolf_kill 3"
+    return runExampleApp(scene, reducer)

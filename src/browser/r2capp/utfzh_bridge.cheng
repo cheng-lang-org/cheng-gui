@@ -1,0 +1,108 @@
+import cheng/gui/ime/cangwu_assets_loader as cwAssets
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/utfzh_codec as utfzh
+
+type
+    UtfZhRoundtripResult =
+        ok: bool
+        text: str
+        bytes: str
+        errorCount: int32
+        lastError: str
+
+var utfzhBridgeReady = false
+var utfzhBridgeDict: UtfZhDict
+var utfzhBridgeErr = ""
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn strEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen != bLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if ! cEq(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn utfzhFirstErrorMessage(decoded: UtfZhDecodeResult): str =
+    if len(decoded.errors) <= int32(0):
+        return "utfzh-decode-failed"
+    return decoded.errors[0].message
+
+fn utfzhFirstEncodeError(encoded: UtfZhEncodeResult): str =
+    if len(encoded.errors) <= int32(0):
+        return "utfzh-encode-failed"
+    return encoded.errors[0].message
+
+fn utfzhCanonicalMismatch(encoded: UtfZhEncodeResult, decoded: UtfZhDecodeResult, dict: UtfZhDict): tuple[ok: bool, errorCount: int32, message: str] =
+    let reEncoded = utfzh.utfZhEncodeStrict(decoded.text, dict)
+    if ! reEncoded.ok:
+        return (ok: false, errorCount: reEncoded.errorCount, message: utfzhFirstEncodeError(reEncoded))
+    if ! strEq(reEncoded.bytes, encoded.bytes):
+        return (ok: false, errorCount: int32(1), message: "utfzh-canonical-mismatch")
+    return (ok: true, errorCount: int32(0), message: "")
+
+fn ensureUtfZhEngine(): bool =
+    if utfzhBridgeReady:
+        return len(utfzhBridgeDict.codepoints) > int32(0)
+    utfzhBridgeReady = true
+    let dictPath = cwAssets.cwDataPath("", "utfzh_dict_v1.tsv")
+    utfzhBridgeDict = cwAssets.cwParseUtfZhDict(dictPath)
+    if len(utfzhBridgeDict.codepoints) <= int32(0):
+        utfzhBridgeErr = "utfzh-dict-empty"
+        return false
+    utfzhBridgeErr = ""
+    return true
+
+fn utfZhReady(): bool =
+    return ensureUtfZhEngine()
+
+fn utfZhLastError(): str =
+    return utfzhBridgeErr
+
+fn utfZhRoundtripStrict(text: str): UtfZhRoundtripResult =
+    var result: UtfZhRoundtripResult
+    result.ok = false
+    result.text = ""
+    result.bytes = ""
+    result.errorCount = int32(0)
+    result.lastError = ""
+    if ! ensureUtfZhEngine():
+        result.errorCount = int32(1)
+        result.lastError = utfzhBridgeErr
+        return result
+    let encoded = utfzh.utfZhEncodeStrict(text, utfzhBridgeDict)
+    let decoded = utfzh.utfZhDecodeStrict(encoded.bytes, utfzhBridgeDict)
+    result.text = decoded.text
+    result.bytes = encoded.bytes
+    result.errorCount = encoded.errorCount + decoded.errorCount
+    if ! encoded.ok:
+        result.lastError = utfzhFirstEncodeError(encoded)
+        utfzhBridgeErr = result.lastError
+        return result
+    if ! decoded.ok:
+        result.lastError = utfzhFirstErrorMessage(decoded)
+        utfzhBridgeErr = result.lastError
+        return result
+    let canonical = utfzhCanonicalMismatch(encoded, decoded, utfzhBridgeDict)
+    result.errorCount = result.errorCount + canonical.errorCount
+    if ! canonical.ok:
+        result.lastError = canonical.message
+        utfzhBridgeErr = result.lastError
+        return result
+    # In strict mode we preserve caller text to avoid codepoint-equivalent display drift.
+    result.text = text
+    result.ok = true
+    result.lastError = ""
+    utfzhBridgeErr = ""
+    return result

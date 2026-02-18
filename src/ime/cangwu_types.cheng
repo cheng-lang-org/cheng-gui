@@ -1,0 +1,297 @@
+type
+    CwIntMapEntry =
+        key: str
+        value: int32
+
+    CwIntSeqMapEntry =
+        key: str
+        value: int32[]
+
+    CwStruct = enum
+        csLR
+        csUD
+        csENC
+        csMIX
+
+    CwStructFilter = enum
+        cfAny
+        cfLR
+        cfUD
+        cfENC
+        cfMIX
+
+    CwSingleEntry =
+        text: str
+        code: str
+        canonical: str
+        structKind: CwStruct
+        freq: int64
+        pinyin: str
+
+    CwPhraseEntry =
+        text: str
+        code: str
+        freq: int64
+
+    CwReverseEntry =
+        mode: str
+        key: str
+        text: str
+        code: str
+        canonical: str
+        structKind: CwStruct
+        freq: int64
+        pinyin: str
+
+    CwCandidateSource = enum
+        csrcSingle
+        csrcPhrase
+
+    CwCandidate =
+        text: str
+        code: str
+        canonical: str
+        structKind: CwStruct
+        freq: int64
+        userFreq: int32
+        source: CwCandidateSource
+        matchKind: int32
+        score: int64
+        pinyin: str
+
+    CwTutorHint =
+        active: bool
+        keyHint: str
+        reason: str
+
+    CwQueryResult =
+        candidates: CwCandidate[]
+        total: int32
+        page: int32
+        pageSize: int32
+        hasMore: bool
+        tutorHint: CwTutorHint
+
+    CwCommitResult =
+        committed: bool
+        text: str
+
+    CwReverseResult =
+        items: CwCandidate[]
+        total: int32
+        page: int32
+        pageSize: int32
+        hasMore: bool
+
+    UtfZhError =
+        offset: int32
+        message: str
+
+    UtfZhDict =
+        chars: str[]
+        codepoints: int32[]
+        cpToIndex: CwIntMapEntry[]
+        bmpIndex: int32[]
+        nonBmpCp: int32[]
+        nonBmpIdx: int32[]
+
+    UtfZhEncodeResult =
+        ok: bool
+        bytes: str
+        errorCount: int32
+        errors: UtfZhError[]
+
+    UtfZhDecodeResult =
+        ok: bool
+        text: str
+        errorCount: int32
+        errors: UtfZhError[]
+
+    UtfZhValidateResult =
+        ok: bool
+        errorCount: int32
+        errors: UtfZhError[]
+
+    LegacyEncoding = enum
+        leAuto
+        leUtf8
+        leUtf16Le
+        leUtf16Be
+        leGbk
+        leGb2312
+
+    LegacyDecodeError =
+        offset: int32
+        message: str
+
+    LegacyDecodeResult =
+        ok: bool
+        textUtf8: str
+        detected: LegacyEncoding
+        errorCount: int32
+        errors: LegacyDecodeError[]
+
+    UtfZhTranscodeResult =
+        ok: bool
+        bytes: str
+        detected: LegacyEncoding
+        errorCount: int32
+        errors: UtfZhError[]
+
+    LegacyAssets =
+        gbkToUnicode: CwIntMapEntry[]
+        gb2312ToUnicode: CwIntMapEntry[]
+
+    CwAssets =
+        dict: UtfZhDict
+        singles: CwSingleEntry[]
+        phrases: CwPhraseEntry[]
+        reverse: CwReverseEntry[]
+
+    CwEngine =
+        ready: bool
+        assets: CwAssets
+        singleIndex1: CwIntSeqMapEntry[]
+        singleIndex2: CwIntSeqMapEntry[]
+        phraseIndex1: CwIntSeqMapEntry[]
+        phraseIndex2: CwIntSeqMapEntry[]
+        reverseIndex: CwIntSeqMapEntry[]
+        userFreq: CwIntMapEntry[]
+
+fn cwIntMapInit(capacity: int32): CwIntMapEntry[] =
+    if capacity <= 0:
+        return []
+    return []
+
+fn cwIntMapHas(map: CwIntMapEntry[], key: str): bool =
+    for idx in 0..<len(map):
+        if map[idx].key == key:
+            return true
+    return false
+
+fn cwIntMapGet(map: var CwIntMapEntry[], key: str, found: var bool): int32 =
+    found = false
+    for idx in 0..<len(map):
+        if map[idx].key == key:
+            found = true
+            return map[idx].value
+    return 0
+
+fn cwIntMapPut(map: var CwIntMapEntry[], key: str, value: int32) =
+    if len(key) == 0:
+        return
+    for idx in 0..<len(map):
+        if map[idx].key == key:
+            map[idx].value = value
+            return
+    var entry: CwIntMapEntry
+    entry.key = key
+    entry.value = value
+    add(map, entry)
+
+fn cwIntMapInc(map: var CwIntMapEntry[], key: str, delta: int32): int32 =
+    var found = false
+    let old = cwIntMapGet(map, key, found)
+    let next = if found: old + delta else: delta
+    cwIntMapPut(map, key, next)
+    return next
+
+fn cwIntSeqMapInit(capacity: int32): CwIntSeqMapEntry[] =
+    if capacity <= 0:
+        return []
+    return []
+
+fn cwIntSeqMapHas(map: CwIntSeqMapEntry[], key: str): bool =
+    for idx in 0..<len(map):
+        if map[idx].key == key:
+            return true
+    return false
+
+fn cwIntSeqMapGet(map: var CwIntSeqMapEntry[], key: str, found: var bool): int32[] =
+    found = false
+    for idx in 0..<len(map):
+        if map[idx].key == key:
+            found = true
+            return map[idx].value
+    return []
+
+fn cwIntSeqMapPut(map: var CwIntSeqMapEntry[], key: str, value: int32[]) =
+    if len(key) == 0:
+        return
+    for idx in 0..<len(map):
+        if map[idx].key == key:
+            map[idx].value = value
+            return
+    var entry: CwIntSeqMapEntry
+    entry.key = key
+    entry.value = value
+    add(map, entry)
+
+fn cwIntSeqMapAppend(map: var CwIntSeqMapEntry[], key: str, value: int32) =
+    if len(key) == 0:
+        return
+    for idx in 0..<len(map):
+        if map[idx].key == key:
+            var arr = map[idx].value
+            add(arr, value)
+            map[idx].value = arr
+            return
+    var arr: int32[]
+    add(arr, value)
+    var entry: CwIntSeqMapEntry
+    entry.key = key
+    entry.value = arr
+    add(map, entry)
+
+fn cwDefaultTutorHint(): CwTutorHint =
+    var hint: CwTutorHint
+    hint.active = false
+    hint.keyHint = ""
+    hint.reason = ""
+    return hint
+
+fn cwDefaultQueryResult(page: int32, pageSize: int32): CwQueryResult =
+    var result: CwQueryResult
+    result.candidates = []
+    result.total = 0
+    result.page = page
+    result.pageSize = pageSize
+    result.hasMore = false
+    result.tutorHint = cwDefaultTutorHint()
+    return result
+
+fn cwDefaultReverseResult(page: int32, pageSize: int32): CwReverseResult =
+    var result: CwReverseResult
+    result.items = []
+    result.total = 0
+    result.page = page
+    result.pageSize = pageSize
+    result.hasMore = false
+    return result
+
+fn cwStructLabel(kind: CwStruct): str =
+    if kind == csLR:
+        return "LR"
+    if kind == csUD:
+        return "UD"
+    if kind == csENC:
+        return "ENC"
+    return "MIX"
+
+fn cwStructFilterFromStruct(kind: CwStruct): CwStructFilter =
+    if kind == csLR:
+        return cfLR
+    if kind == csUD:
+        return cfUD
+    if kind == csENC:
+        return cfENC
+    return cfMIX
+
+fn cwStructKeyHint(kind: CwStruct): str =
+    if kind == csUD:
+        return ";"
+    if kind == csENC:
+        return "'"
+    if kind == csMIX:
+        return "/"
+    return "(default)"

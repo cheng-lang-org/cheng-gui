@@ -1,0 +1,42 @@
+import cheng/gui/browser/types
+
+type
+    BrowserProcess = ref
+        pid: int64
+        alive: bool
+        restartCount: int32
+
+var nextBrowserPid: int64 = int64(1000)
+
+fn spawnBrowserProcess(): BrowserProcess =
+    var proc: BrowserProcess
+    new(proc)
+    proc.pid = nextBrowserPid
+    nextBrowserPid = nextBrowserPid + int64(1)
+    proc.alive = true
+    proc.restartCount = int32(0)
+    return proc
+
+fn shutdownBrowserProcess(proc: BrowserProcess) =
+    if proc == nil:
+        return
+    proc.alive = false
+
+fn crashBrowserProcess(proc: BrowserProcess, reason: str): types.CrashReport =
+    var report = types.defaultCrashReport()
+    report.processRole = types.prBrowser
+    if proc != nil:
+        report.processId = proc.pid
+        proc.alive = false
+    report.reason = reason
+    report.fatal = true
+    report.recovered = false
+    report.timestampMs = report.processId
+    return report
+
+fn recoverBrowserProcess(proc: BrowserProcess): bool =
+    if proc == nil:
+        return false
+    proc.alive = true
+    proc.restartCount = proc.restartCount + int32(1)
+    return true

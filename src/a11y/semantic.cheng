@@ -1,0 +1,132 @@
+import cheng/gui/core/component
+
+type
+    A11yAction = enum
+        aaActivate
+        aaIncrement
+        aaDecrement
+        aaDismiss
+        aaFocusNext
+        aaFocusPrevious
+
+    SemanticNode = ref
+        id: int64
+        role: component.A11yRole
+        name: str
+        focusable: bool
+        children: SemanticNode[]
+
+    SemanticTree = ref
+        root: SemanticNode
+        focusOrder: int64[]
+
+fn appendSemantic(items: var SemanticNode[], item: SemanticNode) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn appendFocus(items: var int64[], item: int64) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn newSemanticNode(): SemanticNode =
+    var node: SemanticNode
+    new(node)
+    node.id = 0
+    node.role = component.arNone
+    node.name = ""
+    node.focusable = false
+    return node
+
+fn fromUiNode(node: component.Node): SemanticNode =
+    if node == nil:
+        return nil
+    var semantic = newSemanticNode()
+    semantic.id = node.id
+    semantic.role = node.role
+    semantic.name = if len(node.name) > 0: node.name else: node.text
+    semantic.focusable = node.focusable
+    for idx in 0..<len(node.children):
+        let semanticChild = fromUiNode(node.children[idx])
+        if semanticChild != nil:
+            appendSemantic(semantic.children, semanticChild)
+    return semantic
+
+fn collectFocusOrder(node: SemanticNode, focusOrder: var int64[]) =
+    if node == nil:
+        return
+    if node.focusable:
+        appendFocus(focusOrder, node.id)
+    for idx in 0..<len(node.children):
+        collectFocusOrder(node.children[idx], focusOrder)
+
+fn buildSemanticTree(rootNode: component.Node): SemanticTree =
+    var tree: SemanticTree
+    new(tree)
+    tree.root = fromUiNode(rootNode)
+    collectFocusOrder(tree.root, tree.focusOrder)
+    return tree
+
+fn roleLabel(role: component.A11yRole): str =
+    case role
+    of component.arContainer:
+        return "container"
+    of component.arText:
+        return "text"
+    of component.arImage:
+        return "image"
+    of component.arButton:
+        return "button"
+    of component.arTextField:
+        return "textfield"
+    of component.arCheckbox:
+        return "checkbox"
+    of component.arRadio:
+        return "radio"
+    of component.arSwitch:
+        return "switch"
+    of component.arSlider:
+        return "slider"
+    of component.arSelect:
+        return "select"
+    of component.arDialog:
+        return "dialog"
+    of component.arTab:
+        return "tab"
+    of component.arTable:
+        return "table"
+    of component.arChart:
+        return "chart"
+    of component.arDocument:
+        return "document"
+    of component.arWebDocument:
+        return "web-document"
+    of component.arPdfDocument:
+        return "pdf-document"
+    of component.arAudio:
+        return "audio"
+    of component.arVideo:
+        return "video"
+    else:
+        return "none"
+
+fn appendSnapshotLine(node: SemanticNode, depth: int, outText: var str) =
+    if node == nil:
+        return
+    var indent = ""
+    for idx in 0..<depth:
+        indent = indent + "  "
+    outText = outText + indent + "- " + roleLabel(node.role) + " #" + $ node.id
+    if len(node.name) > 0:
+        outText = outText + " (" + node.name + ")"
+    outText = outText + "\n"
+    for idx in 0..<len(node.children):
+        appendSnapshotLine(node.children[idx], depth + 1, outText)
+
+fn snapshotText(tree: SemanticTree): str =
+    if tree == nil || tree.root == nil:
+        return ""
+    var outText = ""
+    appendSnapshotLine(tree.root, 0, outText)
+    return outText

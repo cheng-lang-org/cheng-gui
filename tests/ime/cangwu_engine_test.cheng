@@ -1,0 +1,83 @@
+import cheng/gui/ime/cangwu_engine
+import cheng/gui/ime/cangwu_types
+
+fn cExit(code: int32): int32 @ importc("exit")
+
+fn miniAssets(): CwAssets =
+    var assets: CwAssets
+    assets.dict.chars = []
+    assets.dict.codepoints = []
+    assets.dict.cpToIndex = []
+    assets.dict.bmpIndex = []
+    assets.dict.nonBmpCp = []
+    assets.dict.nonBmpIdx = []
+    assets.singles = []
+    assets.phrases = []
+    assets.reverse = []
+
+    var s1: CwSingleEntry
+    s1.text = "A"
+    s1.code = "PCDE"
+    s1.canonical = "PCDE"
+    s1.structKind = csUD
+    s1.freq = 1000
+    s1.pinyin = "jia"
+    add(assets.singles, s1)
+
+    var s2: CwSingleEntry
+    s2.text = "B"
+    s2.code = "CCDE"
+    s2.canonical = "CCDE"
+    s2.structKind = csENC
+    s2.freq = 900
+    s2.pinyin = "yi"
+    add(assets.singles, s2)
+
+    return assets
+
+fn testQueryAndFilter(): int32 =
+    let engine = cwCreateEngine(miniAssets())
+    let r = cwQuery(engine, "PC", cfAny, 0, 9)
+    if len(r.candidates) <= 0:
+        return 101
+    let f = cwStructFilterFromStruct(r.candidates[0].structKind)
+    let rf = cwQuery(engine, "PC", f, 0, 9)
+    if len(rf.candidates) <= 0:
+        return 102
+    for idx in 0..<len(rf.candidates):
+        let c = rf.candidates[idx]
+        if f == cfUD && c.structKind != csUD:
+            return 103
+        if f == cfENC && c.structKind != csENC:
+            return 104
+        if f == cfMIX && c.structKind != csMIX:
+            return 105
+        if f == cfLR && c.structKind != csLR:
+            return 106
+    return 0
+
+fn testFuzzy(): int32 =
+    let engine = cwCreateEngine(miniAssets())
+    let r = cwQuery(engine, "CCDE", cfAny, 0, 12)
+    if len(r.candidates) <= 0:
+        return 201
+    var foundA = false
+    for idx in 0..<len(r.candidates):
+        if r.candidates[idx].text == "A":
+            foundA = true
+            break
+    if ! foundA:
+        return 202
+    return 0
+
+fn main(): int32 =
+    var rc = testQueryAndFilter()
+    if rc != 0:
+        return rc
+    rc = testFuzzy()
+    if rc != 0:
+        return rc
+    return 0
+
+let rc = main()
+cExit(rc)

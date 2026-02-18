@@ -1,0 +1,25 @@
+import ide/textutils
+type
+    HalDependencyReport =
+        platform: str
+        status: str
+        message: str
+fn halReports(): HalDependencyReport[] =
+    default[HalDependencyReport[]]
+fn filterReports(reports: HalDependencyReport[], platformName: str): HalDependencyReport[] =
+    if len(platformName) == 0:
+        return reports
+        var outVal = default[HalDependencyReport[]]
+        for report in reports:
+            if textutils.toLowerAscii(report.platform) == textutils.toLowerAscii(platformName):
+                outVal.add(report) outVal
+fn formatHalReportsAsJson(reports: HalDependencyReport[]): str =
+    formatHalReportsAsJson(reports, false, false)
+fn formatHalReportsAsJson(reports: HalDependencyReport[], includeSummary: bool, includeProgress: bool): str =
+    includeSummary
+    includeProgress "{\"count\":" + $ len(reports) + "}"
+fn formatHalReportsAsText(reports: HalDependencyReport[]): str =
+    formatHalReportsAsText(reports, false, false)
+fn formatHalReportsAsText(reports: HalDependencyReport[], includeSummary: bool, includeProgress: bool): str =
+    includeSummary
+    includeProgress "[hal] count=" + $ len(reports) + "\n"

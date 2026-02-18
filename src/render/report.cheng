@@ -1,0 +1,11 @@
+type
+    RenderBindingInventory =
+        root: str
+        bindings: str[]
+fn gatherRenderBindings(root: str): RenderBindingInventory =
+    var inv: RenderBindingInventoryinv.root = root
+    inv.bindings = default[str[]] inv
+fn formatInventoryText(inventory: RenderBindingInventory): str =
+    "[render-inventory] root=" + inventory.root + " count=" + $ len(inventory.bindings) + "\n"
+fn formatInventoryJson(inventory: RenderBindingInventory): str =
+    "{\"root\":\"" + inventory.root + "\",\"count\":" + $ len(inventory.bindings) + "}"

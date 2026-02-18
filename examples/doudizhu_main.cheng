@@ -1,0 +1,6 @@
+import cheng/gui/examples_games/doudizhu/app
+
+fn main(): int32 =
+    return runDoudizhuExample()
+
+main()

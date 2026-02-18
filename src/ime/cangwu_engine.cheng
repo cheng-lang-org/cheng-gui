@@ -1,0 +1,294 @@
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/cangwu_rules
+
+fn cwPrefixKey(code: str, n: int32): str =
+    let normalized = cwNormalizeCodeInput(code)
+    if len(normalized) <= 0:
+        return ""
+    if n <= 1:
+        return cwSlicePrefix(normalized, 1)
+    if len(normalized) == 1:
+        return cwSlicePrefix(normalized, 1)
+    return cwSlicePrefix(normalized, 2)
+
+fn cwIndexPut(table: var CwIntSeqMapEntry[], key: str, value: int32) =
+    cwIntSeqMapAppend(table, key, value)
+
+fn cwBuildIndexes(engine: var CwEngine) =
+    var single1 = engine.singleIndex1
+    var single2 = engine.singleIndex2
+    var phrase1 = engine.phraseIndex1
+    var phrase2 = engine.phraseIndex2
+    var rev = engine.reverseIndex
+    for idx in 0..<len(engine.assets.singles):
+        let entry = engine.assets.singles[idx]
+        cwIndexPut(single1, cwPrefixKey(entry.code, 1), idx)
+        cwIndexPut(single2, cwPrefixKey(entry.code, 2), idx)
+    for idx in 0..<len(engine.assets.phrases):
+        let entry = engine.assets.phrases[idx]
+        cwIndexPut(phrase1, cwPrefixKey(entry.code, 1), idx)
+        cwIndexPut(phrase2, cwPrefixKey(entry.code, 2), idx)
+    for idx in 0..<len(engine.assets.reverse):
+        let entry = engine.assets.reverse[idx]
+        let key = entry.mode + ":" + entry.key
+        cwIndexPut(rev, key, idx)
+    engine.singleIndex1 = single1
+    engine.singleIndex2 = single2
+    engine.phraseIndex1 = phrase1
+    engine.phraseIndex2 = phrase2
+    engine.reverseIndex = rev
+
+fn cwCreateEngine(assets: CwAssets): CwEngine =
+    var engine: CwEngine
+    engine.ready = true
+    engine.assets = assets
+    engine.singleIndex1 = cwIntSeqMapInit(8192)
+    engine.singleIndex2 = cwIntSeqMapInit(8192)
+    engine.phraseIndex1 = cwIntSeqMapInit(8192)
+    engine.phraseIndex2 = cwIntSeqMapInit(8192)
+    engine.reverseIndex = cwIntSeqMapInit(8192)
+    engine.userFreq = cwIntMapInit(8192)
+    cwBuildIndexes(engine)
+    return engine
+
+fn cwEngineDict(engine: CwEngine): UtfZhDict =
+    if ! engine.ready:
+        var dict: UtfZhDict
+        return dict
+    return engine.assets.dict
+
+fn cwEngineSingles(engine: CwEngine): CwSingleEntry[] =
+    if ! engine.ready:
+        return []
+    return engine.assets.singles
+
+fn cwEnginePhrases(engine: CwEngine): CwPhraseEntry[] =
+    if ! engine.ready:
+        return []
+    return engine.assets.phrases
+
+fn cwEngineReverseEntries(engine: CwEngine): CwReverseEntry[] =
+    if ! engine.ready:
+        return []
+    return engine.assets.reverse
+
+fn cwCandidateUserFreq(engine: CwEngine, text: str): int32 =
+    if ! engine.ready || len(text) == 0:
+        return 0
+    var userFreq = engine.userFreq
+    var found = false
+    let value = cwIntMapGet(userFreq, text, found)
+    if found:
+        return value
+    return 0
+
+fn cwComputeScore(queryLen: int32, source: CwCandidateSource, matchKind: int32, freq: int64, userFreq: int32): int64 =
+    var score: int64 = int64(0)
+    if matchKind == 2:
+        score = score + int64(3000000000)
+    elif matchKind == 1:
+        score = score + int64(2000000000)
+    else:
+        score = score + int64(1000000000)
+    if queryLen >= 3:
+        if source == csrcPhrase:
+            score = score + int64(200000000)
+        else:
+            score = score + int64(100000000)
+    if userFreq > 0:
+        score = score + int64(userFreq) * int64(100000)
+    score = score + freq
+    return score
+
+fn cwInsertSorted(items: var CwCandidate[], cand: CwCandidate) =
+    var pos: int32 = len(items)
+    for idx in 0..<len(items):
+        let old = items[idx]
+        if cand.score > old.score:
+            pos = idx
+            break
+        if cand.score == old.score && cand.text < old.text:
+            pos = idx
+            break
+    if pos >= len(items):
+        add(items, cand)
+        return
+    add(items, cand)
+    var move = len(items) - 1
+    while move > pos:
+        items[move] = items[move - 1]
+        move = move - 1
+    items[pos] = cand
+
+fn cwMatchKind(code: str, query: str, variants: str[]): int32 =
+    if len(query) == 0:
+        return 0
+    if cwCodeEquals(code, query):
+        return 2
+    if cwCodeStartsWith(code, query):
+        return 1
+    for idx in 0..<len(variants):
+        let v = variants[idx]
+        if v == query:
+            continue
+        if cwCodeEquals(code, v) || cwCodeStartsWith(code, v):
+            return 0
+    return -1
+
+fn cwAddSingleMatches(engine: CwEngine, query: str, variants: str[], filter: CwStructFilter, ids: int32[], out: var CwCandidate[]) =
+    var seen = cwIntMapInit(len(ids) * 2 + 8)
+    for pIdx in 0..<len(ids):
+        let idx = ids[pIdx]
+        if idx < 0 || idx >= len(engine.assets.singles):
+            continue
+        let sk = intToStr(idx)
+        if cwIntMapHas(seen, sk):
+            continue
+        cwIntMapPut(seen, sk, 1)
+        let entry = engine.assets.singles[idx]
+        if ! cwStructMatches(filter, entry.structKind):
+            continue
+        let mk = cwMatchKind(entry.code, query, variants)
+        if mk < 0:
+            continue
+        var cand: CwCandidate
+        cand.text = entry.text
+        cand.code = entry.code
+        cand.canonical = entry.canonical
+        cand.structKind = entry.structKind
+        cand.freq = entry.freq
+        cand.userFreq = cwCandidateUserFreq(engine, entry.text)
+        cand.source = csrcSingle
+        cand.matchKind = mk
+        cand.pinyin = entry.pinyin
+        cand.score = cwComputeScore(len(query), cand.source, cand.matchKind, cand.freq, cand.userFreq)
+        cwInsertSorted(out, cand)
+    
+
+fn cwAddPhraseMatches(engine: CwEngine, query: str, variants: str[], filter: CwStructFilter, ids: int32[], out: var CwCandidate[]) =
+    if filter != cfAny:
+        return
+    var seen = cwIntMapInit(len(ids) * 2 + 8)
+    for pIdx in 0..<len(ids):
+        let idx = ids[pIdx]
+        if idx < 0 || idx >= len(engine.assets.phrases):
+            continue
+        let sk = intToStr(idx)
+        if cwIntMapHas(seen, sk):
+            continue
+        cwIntMapPut(seen, sk, 1)
+        let entry = engine.assets.phrases[idx]
+        let mk = cwMatchKind(entry.code, query, variants)
+        if mk < 0:
+            continue
+        var cand: CwCandidate
+        cand.text = entry.text
+        cand.code = entry.code
+        cand.canonical = ""
+        cand.structKind = csLR
+        cand.freq = entry.freq
+        cand.userFreq = cwCandidateUserFreq(engine, entry.text)
+        cand.source = csrcPhrase
+        cand.matchKind = mk
+        cand.pinyin = ""
+        cand.score = cwComputeScore(len(query), cand.source, cand.matchKind, cand.freq, cand.userFreq)
+        cwInsertSorted(out, cand)
+
+fn cwGatherIds(table1: CwIntSeqMapEntry[], table2: CwIntSeqMapEntry[], query: str, variants: str[]): int32[] =
+    var out: int32[]
+    var seen = cwIntMapInit(1024)
+    for vIdx in 0..<len(variants):
+        let keySrc = variants[vIdx]
+        var key: str = ""
+        if len(query) >= 2 && len(keySrc) >= 2:
+            key = cwSlicePrefix(keySrc, 2)
+            var table2v = table2
+            var found2 = false
+            let items = cwIntSeqMapGet(table2v, key, found2)
+            if found2:
+                for idx in 0..<len(items):
+                    let id = items[idx]
+                    let sk = intToStr(id)
+                    if ! cwIntMapHas(seen, sk):
+                        cwIntMapPut(seen, sk, 1)
+                        add(out, id)
+        elif len(query) >= 1 && len(keySrc) >= 1:
+            key = cwSlicePrefix(keySrc, 1)
+            var table1v = table1
+            var found1 = false
+            let items = cwIntSeqMapGet(table1v, key, found1)
+            if found1:
+                for idx in 0..<len(items):
+                    let id = items[idx]
+                    let sk = intToStr(id)
+                    if ! cwIntMapHas(seen, sk):
+                        cwIntMapPut(seen, sk, 1)
+                        add(out, id)
+    return out
+
+fn cwTutorHint(result: CwQueryResult, filter: CwStructFilter): CwTutorHint =
+    var hint = cwDefaultTutorHint()
+    if filter != cfAny:
+        return hint
+    if len(result.candidates) < 2:
+        return hint
+    let top = result.candidates[0]
+    let second = result.candidates[1]
+    if top.text == second.text:
+        return hint
+    if top.source != csrcSingle:
+        return hint
+    hint.active = true
+    hint.keyHint = cwStructKeyHint(top.structKind)
+    hint.reason = "ghost-tutor"
+    return hint
+
+fn cwPaginate(items: CwCandidate[], page: int32, pageSize: int32): CwQueryResult =
+    let safePageSize = if pageSize <= 0: int32(9) else: pageSize
+    let safePage = if page < 0: int32(0) else: page
+    var result = cwDefaultQueryResult(safePage, safePageSize)
+    result.total = len(items)
+    let start = safePage * safePageSize
+    var stop = start + safePageSize
+    if stop > len(items):
+        stop = len(items)
+    if start < len(items):
+        for idx in start..<stop:
+            add(result.candidates, items[idx])
+    result.hasMore = stop < len(items)
+    return result
+
+fn cwQuery(engine: CwEngine, query: str, filter: CwStructFilter, page: int32, pageSize: int32): CwQueryResult =
+    if ! engine.ready:
+        return cwDefaultQueryResult(page, pageSize)
+    let q = cwNormalizeCodeInput(query)
+    if len(q) == 0:
+        return cwDefaultQueryResult(page, pageSize)
+    let variants = cwFuzzyVariants(q)
+    let singleIds = cwGatherIds(engine.singleIndex1, engine.singleIndex2, q, variants)
+    let phraseIds = cwGatherIds(engine.phraseIndex1, engine.phraseIndex2, q, variants)
+    var matched: CwCandidate[]
+    cwAddPhraseMatches(engine, q, variants, filter, phraseIds, matched)
+    cwAddSingleMatches(engine, q, variants, filter, singleIds, matched)
+    var result = cwPaginate(matched, page, pageSize)
+    result.tutorHint = cwTutorHint(result, filter)
+    return result
+
+fn cwCommit(engine: var CwEngine, candidate: CwCandidate): CwCommitResult =
+    var result: CwCommitResult
+    result.committed = false
+    result.text = ""
+    if ! engine.ready || len(candidate.text) == 0:
+        return result
+    let committedText = candidate.text + ""
+    result.committed = true
+    result.text = committedText
+    var userMap = engine.userFreq
+    var found = false
+    let old = cwIntMapGet(userMap, committedText, found)
+    if found:
+        cwIntMapPut(userMap, committedText, old + 1)
+    else:
+        cwIntMapPut(userMap, committedText, 1)
+    engine.userFreq = userMap
+    return result

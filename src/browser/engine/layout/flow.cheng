@@ -1,0 +1,98 @@
+import cheng/gui/browser/engine/dom/model
+import cheng/gui/platform/types_v1
+
+type
+    LayoutMetrics = ref
+        viewportWidth: int32
+        viewportHeight: int32
+        lineCount: int32
+        overflow: bool
+
+fn layoutClampFloat(value, lower, upper: float): float =
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+fn layoutMeasureText(text: str, fontSize: float, availWidth: float): tuple[height: float, lines: int32] =
+    if len(text) == 0:
+        return (height: 0.0, lines: int32(0))
+    let fs = layoutClampFloat(fontSize, 8.0, 72.0)
+    let charW = fs * 0.6
+    let lineH = fs * 1.2
+    var maxChars: int32 = int32(1)
+    if availWidth > 0.0 && charW > 0.0:
+        maxChars = int32(availWidth / charW)
+        if maxChars <= 0:
+            maxChars = int32(1)
+    let n = int32(len(text))
+    var lines: int32 = int32(1)
+    if maxChars > 0:
+        lines = (n + maxChars - int32(1)) / maxChars
+    let h = float(lines) * lineH
+    return (height: h, lines: lines)
+
+fn layoutNode(node: model.DomNode, x, y, width: float, metrics: LayoutMetrics): float =
+    if node == nil:
+        return 0.0
+    if node.displayNone:
+        node.layout = makeRect(x, y, 0.0, 0.0)
+        return 0.0
+
+    if node.kind == model.dnText:
+        let measured = layoutMeasureText(node.text, node.fontSize, width)
+        node.layout = makeRect(x, y, width, measured.height)
+        if metrics != nil:
+            metrics.lineCount = metrics.lineCount + measured.lines
+        return measured.height
+
+    let margin = layoutClampFloat(node.margin, 0.0, 128.0)
+    let padding = layoutClampFloat(node.padding, 0.0, 128.0)
+    var outerW = width - 2.0 * margin
+    if outerW < 0.0:
+        outerW = 0.0
+    var innerW = outerW - 2.0 * padding
+    if innerW < 0.0:
+        innerW = 0.0
+
+    let outerX = x + margin
+    let outerY = y + margin
+    let innerX = outerX + padding
+    let innerY = outerY + padding
+
+    var cursorY = innerY
+    for childIdx in 0..<len(node.children):
+        let child = node.children[childIdx]
+        if child != nil:
+            let used = layoutNode(child, innerX, cursorY, innerW, metrics)
+            cursorY = cursorY + used
+
+    let contentH = cursorY - innerY
+    var outerH = contentH + 2.0 * padding
+    if outerH < 0.0:
+        outerH = 0.0
+    node.layout = makeRect(outerX, outerY, outerW, outerH)
+    return outerH + 2.0 * margin
+
+fn computeLayout(doc: model.DomDocument, viewportWidth, viewportHeight: int32): LayoutMetrics =
+    var metrics: LayoutMetrics
+    new(metrics)
+    metrics.viewportWidth = viewportWidth
+    metrics.viewportHeight = viewportHeight
+    if metrics.viewportWidth <= int32(0):
+        metrics.viewportWidth = int32(1280)
+    if metrics.viewportHeight <= int32(0):
+        metrics.viewportHeight = int32(720)
+    metrics.lineCount = int32(0)
+    metrics.overflow = false
+
+    if doc == nil || doc.root == nil:
+        return metrics
+
+    let w = float(metrics.viewportWidth)
+    let h = float(metrics.viewportHeight)
+    let used = layoutNode(doc.root, 0.0, 0.0, w, metrics)
+    if used > h:
+        metrics.overflow = true
+    return metrics

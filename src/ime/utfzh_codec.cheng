@@ -1,0 +1,288 @@
+import cheng/gui/ime/cangwu_types
+
+const UtfZhReplacement = int32(0xFFFD)
+
+fn utfzhByte(ch: char): int32 =
+    var code: int32 = int32(ch)
+    if code < 0:
+        code = code + 256
+    return code
+
+fn utfzhIsTrail(b: int32): bool =
+    return b >= 0x80 && b <= 0xBF
+
+fn utfzhIsScalar(cp: int32): bool =
+    if cp < 0 || cp > 0x10FFFF:
+        return false
+    if cp >= 0xD800 && cp <= 0xDFFF:
+        return false
+    return true
+
+fn utfzhAppendError(errors: var UtfZhError[], offset: int32, message: str) =
+    var err: UtfZhError
+    err.offset = offset
+    err.message = message
+    add(errors, err)
+
+fn utfzhEncodeUtf8Codepoint(cp: int32): str =
+    if cp < 0x80:
+        return charToStr(char(cp))
+    if cp < 0x800:
+        return charToStr(char(0xC0 + (cp / 64))) + charToStr(char(0x80 + (cp % 64)))
+    if cp < 0x10000:
+        let b1 = 0xE0 + (cp / 4096)
+        let remain = cp % 4096
+        let b2 = 0x80 + (remain / 64)
+        let b3 = 0x80 + (remain % 64)
+        return charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3))
+    let b1 = 0xF0 + (cp / 262144)
+    let remainA = cp % 262144
+    let b2 = 0x80 + (remainA / 4096)
+    let remainB = remainA % 4096
+    let b3 = 0x80 + (remainB / 64)
+    let b4 = 0x80 + (remainB % 64)
+    return charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3)) + charToStr(char(b4))
+
+fn utfzhDecodeUtf8At(text: str, offset: int32): tuple[cp: int32, step: int32, ok: bool] =
+    if offset < 0 || offset >= len(text):
+        return (cp: UtfZhReplacement, step: int32(1), ok: false)
+    let b0 = utfzhByte(text[offset])
+    if b0 < 0x80:
+        return (cp: b0, step: int32(1), ok: true)
+    if b0 >= 0xC2 && b0 <= 0xDF:
+        if offset + 1 >= len(text):
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        let b1 = utfzhByte(text[offset + 1])
+        if ! utfzhIsTrail(b1):
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        return (cp: ((b0 & 0x1F) * 64) + (b1 & 0x3F), step: int32(2), ok: true)
+    if b0 >= 0xE0 && b0 <= 0xEF:
+        if offset + 2 >= len(text):
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        let b1 = utfzhByte(text[offset + 1])
+        let b2 = utfzhByte(text[offset + 2])
+        if ! utfzhIsTrail(b1) || ! utfzhIsTrail(b2):
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        let cp = ((b0 & 0x0F) * 4096) + ((b1 & 0x3F) * 64) + (b2 & 0x3F)
+        if cp < 0x800:
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        if ! utfzhIsScalar(cp):
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        return (cp: cp, step: int32(3), ok: true)
+    if b0 >= 0xF0 && b0 <= 0xF4:
+        if offset + 3 >= len(text):
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        let b1 = utfzhByte(text[offset + 1])
+        let b2 = utfzhByte(text[offset + 2])
+        let b3 = utfzhByte(text[offset + 3])
+        if ! utfzhIsTrail(b1) || ! utfzhIsTrail(b2) || ! utfzhIsTrail(b3):
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        let cp = ((b0 & 0x07) * 262144) + ((b1 & 0x3F) * 4096) + ((b2 & 0x3F) * 64) + (b3 & 0x3F)
+        if cp < 0x10000 || cp > 0x10FFFF:
+            return (cp: UtfZhReplacement, step: int32(1), ok: false)
+        return (cp: cp, step: int32(4), ok: true)
+    return (cp: UtfZhReplacement, step: int32(1), ok: false)
+
+fn utfzhFindNonBmp(dict: UtfZhDict, cp: int32): int32 =
+    if len(dict.nonBmpCp) <= 0:
+        return -1
+    var lo: int32 = 0
+    var hi: int32 = len(dict.nonBmpCp) - 1
+    while lo <= hi:
+        let mid = (lo + hi) / 2
+        let pivot = dict.nonBmpCp[mid]
+        if pivot == cp:
+            return dict.nonBmpIdx[mid]
+        if cp < pivot:
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    return -1
+
+fn utfzhDictIndex(dict: UtfZhDict, cp: int32): int32 =
+    if len(dict.codepoints) <= 0:
+        return -1
+    if cp >= 0 && cp < 65536 && len(dict.bmpIndex) == 65536:
+        let idx1 = dict.bmpIndex[cp]
+        if idx1 > 0:
+            return idx1 - 1
+        return -1
+    if cp >= 65536:
+        return utfzhFindNonBmp(dict, cp)
+    let key = intToStr(cp)
+    var cpToIndex = dict.cpToIndex
+    var found = false
+    let idx = cwIntMapGet(cpToIndex, key, found)
+    if found:
+        return idx
+    return -1
+
+fn utfzhEncodeOne(cp: int32, dict: UtfZhDict): tuple[data: str, ok: bool, err: str] =
+    if cp < 0x80:
+        return (data: charToStr(char(cp)), ok: true, err: "")
+    let idx = utfzhDictIndex(dict, cp)
+    if idx >= 0:
+        if idx <= 33:
+            return (data: charToStr(char(0xC0 + idx)), ok: true, err: "")
+        if idx <= 1505:
+            let n = idx - 34
+            let b1 = 0xE2 + (n / 64)
+            let b2 = 0x80 + (n % 64)
+            return (data: charToStr(char(b1)) + charToStr(char(b2)), ok: true, err: "")
+        let n = idx - 1506
+        let b1 = 0xF9 + (n / 4096)
+        let remain = n % 4096
+        let b2 = 0x80 + (remain / 64)
+        let b3 = 0x80 + (remain % 64)
+        return (data: charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3)), ok: true, err: "")
+    if ! utfzhIsScalar(cp):
+        return (data: "", ok: false, err: "non-scalar")
+    let b1 = 0xFB + (cp / 262144)
+    let remainA = cp % 262144
+    let b2 = 0x80 + (remainA / 4096)
+    let remainB = remainA % 4096
+    let b3 = 0x80 + (remainB / 64)
+    let b4 = 0x80 + (remainB % 64)
+    return (data: charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3)) + charToStr(char(b4)), ok: true, err: "")
+
+fn utfZhEncodeStrict(text: str, dict: UtfZhDict): UtfZhEncodeResult =
+    var result: UtfZhEncodeResult
+    result.ok = true
+    result.bytes = ""
+    result.errorCount = 0
+    result.errors = []
+
+    var idx: int32 = 0
+    while idx < len(text):
+        let decoded = utfzhDecodeUtf8At(text, idx)
+        var cp = decoded.cp
+        var ok = decoded.ok
+        var step = decoded.step
+        if step <= 0:
+            step = 1
+        if ! ok:
+            cp = UtfZhReplacement
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            utfzhAppendError(result.errors, idx, "invalid utf-8")
+        let enc = utfzhEncodeOne(cp, dict)
+        if ! enc.ok:
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            utfzhAppendError(result.errors, idx, enc.err)
+            let fallback = utfzhEncodeOne(UtfZhReplacement, dict)
+            result.bytes = result.bytes + fallback.data
+        else:
+            result.bytes = result.bytes + enc.data
+        idx = idx + step
+    return result
+
+fn utfzhDecodeDict(dict: UtfZhDict, idx: int32): tuple[cp: int32, ok: bool] =
+    if idx < 0 || idx >= len(dict.codepoints):
+        return (cp: UtfZhReplacement, ok: false)
+    let cp = dict.codepoints[idx]
+    if ! utfzhIsScalar(cp):
+        return (cp: UtfZhReplacement, ok: false)
+    return (cp: cp, ok: true)
+
+fn utfZhDecodeStrict(bytes: str, dict: UtfZhDict): UtfZhDecodeResult =
+    var result: UtfZhDecodeResult
+    result.ok = true
+    result.text = ""
+    result.errorCount = 0
+    result.errors = []
+
+    var idx: int32 = 0
+    while idx < len(bytes):
+        let b1 = utfzhByte(bytes[idx])
+        var cp: int32 = UtfZhReplacement
+        var step: int32 = 1
+        var ok = true
+
+        if b1 < 0x80:
+            cp = b1
+        elif b1 < 0xC0:
+            ok = false
+            utfzhAppendError(result.errors, idx, "continuation as lead")
+        elif b1 <= 0xE1:
+            let d = utfzhDecodeDict(dict, b1 - 0xC0)
+            cp = d.cp
+            ok = d.ok
+            if ! d.ok:
+                utfzhAppendError(result.errors, idx, "dict index out of range")
+        elif b1 <= 0xF8:
+            if idx + 1 >= len(bytes):
+                ok = false
+                utfzhAppendError(result.errors, idx, "truncated 2-byte")
+            else:
+                let b2 = utfzhByte(bytes[idx + 1])
+                if ! utfzhIsTrail(b2):
+                    ok = false
+                    utfzhAppendError(result.errors, idx, "invalid 2-byte trail")
+                else:
+                    let dIdx = 34 + ((b1 - 0xE2) * 64) + (b2 & 0x3F)
+                    let d = utfzhDecodeDict(dict, dIdx)
+                    cp = d.cp
+                    ok = d.ok
+                    if ! d.ok:
+                        utfzhAppendError(result.errors, idx, "dict index out of range")
+                    step = 2
+        elif b1 <= 0xFA:
+            if idx + 2 >= len(bytes):
+                ok = false
+                utfzhAppendError(result.errors, idx, "truncated 3-byte")
+            else:
+                let b2 = utfzhByte(bytes[idx + 1])
+                let b3 = utfzhByte(bytes[idx + 2])
+                if ! utfzhIsTrail(b2) || ! utfzhIsTrail(b3):
+                    ok = false
+                    utfzhAppendError(result.errors, idx, "invalid 3-byte trail")
+                else:
+                    let dIdx = 1506 + ((b1 - 0xF9) * 4096) + ((b2 & 0x3F) * 64) + (b3 & 0x3F)
+                    let d = utfzhDecodeDict(dict, dIdx)
+                    cp = d.cp
+                    ok = d.ok
+                    if ! d.ok:
+                        utfzhAppendError(result.errors, idx, "dict index out of range")
+                    step = 3
+        else:
+            if idx + 3 >= len(bytes):
+                ok = false
+                utfzhAppendError(result.errors, idx, "truncated 4-byte")
+            else:
+                let b2 = utfzhByte(bytes[idx + 1])
+                let b3 = utfzhByte(bytes[idx + 2])
+                let b4 = utfzhByte(bytes[idx + 3])
+                if ! utfzhIsTrail(b2) || ! utfzhIsTrail(b3) || ! utfzhIsTrail(b4):
+                    ok = false
+                    utfzhAppendError(result.errors, idx, "invalid 4-byte trail")
+                else:
+                    cp = ((b1 - 0xFB) * 262144) + ((b2 & 0x3F) * 4096) + ((b3 & 0x3F) * 64) + (b4 & 0x3F)
+                    step = 4
+                    if ! utfzhIsScalar(cp):
+                        ok = false
+                        utfzhAppendError(result.errors, idx, "non-scalar codepoint")
+                    elif cp < 0x80:
+                        ok = false
+                        utfzhAppendError(result.errors, idx, "overlong ascii")
+                    elif utfzhDictIndex(dict, cp) >= 0:
+                        ok = false
+                        utfzhAppendError(result.errors, idx, "overlong dict member")
+
+        if ! ok:
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            cp = UtfZhReplacement
+            if step < 1:
+                step = 1
+        result.text = result.text + utfzhEncodeUtf8Codepoint(cp)
+        idx = idx + step
+    return result
+
+fn utfZhValidateStrict(bytes: str, dict: UtfZhDict): UtfZhValidateResult =
+    let decoded = utfZhDecodeStrict(bytes, dict)
+    var result: UtfZhValidateResult
+    result.ok = decoded.ok
+    result.errorCount = decoded.errorCount
+    result.errors = decoded.errors
+    return result

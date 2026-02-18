@@ -1,0 +1,403 @@
+import std/os
+
+type
+    JsxAttrKind = enum
+        jaBool
+        jaString
+        jaExpr
+
+    JsxAttr = ref
+        name: str
+        kind: JsxAttrKind
+        value: str
+
+    JsxNodeKind = enum
+        jxElement
+        jxText
+        jxExpr
+
+    JsxNode = ref
+        kind: JsxNodeKind
+        tag: str
+        attrs: JsxAttr[]
+        children: JsxNode[]
+        text: str
+
+fn debugMark(mark: str) =
+    if len(os.getEnv("CHENG_R2C_DEBUG")) == 0:
+        return
+    let outRoot = os.getEnv("CHENG_R2C_OUT_ROOT")
+    if len(outRoot) == 0:
+        return
+    os.writeFile(outRoot + "/r2capp_jsx_debug_mark.txt", mark + "\n")
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn isSpace(ch: char): bool =
+    return cEq(ch, ' ') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t')
+
+fn isIdentStart(ch: char): bool =
+    return (cGe(ch, 'a') && cLe(ch, 'z')) || (cGe(ch, 'A') && cLe(ch, 'Z')) || cEq(ch, '_') || cEq(ch, '$')
+
+fn isIdentCont(ch: char): bool =
+    return isIdentStart(ch) || (cGe(ch, '0') && cLe(ch, '9')) || cEq(ch, '-') || cEq(ch, ':')
+
+fn skipSpaces(text: str, idx0: int32): int32 =
+    var idx = idx0
+    while idx < safeLen(text) && isSpace(text[idx]):
+        idx = idx + int32(1)
+    return idx
+
+fn scanIdent(text: str, idx0: int32): tuple[value: str, next: int32, ok: bool] =
+    if text == nil:
+        return (value: "", next: idx0, ok: false)
+    var idx = idx0
+    if idx < int32(0):
+        idx = int32(0)
+    if idx >= safeLen(text):
+        return (value: "", next: idx, ok: false)
+    if ! isIdentStart(text[idx]):
+        return (value: "", next: idx, ok: false)
+    var out: str = ""
+    while idx < safeLen(text) && isIdentCont(text[idx]):
+        out = out + charToStr(text[idx])
+        idx = idx + int32(1)
+    return (value: out, next: idx, ok: len(out) > 0)
+
+fn parseStringLiteral(text: str, idx0: int32): tuple[value: str, next: int32, err: str] =
+    if text == nil:
+        return (value: "", next: idx0, err: "nil-text")
+    var idx = idx0
+    if idx >= safeLen(text):
+        return (value: "", next: idx, err: "eof")
+    let quote = text[idx]
+    if cNe(quote, '\'') && cNe(quote, '"'):
+        return (value: "", next: idx, err: "expected-quote")
+    idx = idx + int32(1)
+    var out: str = ""
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cEq(ch, quote):
+            return (value: out, next: idx + int32(1), err: "")
+        if cEq(ch, '\\') && idx + int32(1) < safeLen(text):
+            let esc = text[idx + int32(1)]
+            if cEq(esc, 'n'):
+                out = out + "\n"
+            elif cEq(esc, 'r'):
+                out = out + "\r"
+            elif cEq(esc, 't'):
+                out = out + "\t"
+            else:
+                out = out + charToStr(esc)
+            idx = idx + int32(2)
+            continue
+        out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return (value: "", next: idx, err: "unterminated-string")
+
+fn findMatchingBrace(text: str, idxOpen: int32): tuple[next: int32, ok: bool] =
+    debugMark("jsx:brace:start")
+    if text == nil:
+        return (next: idxOpen, ok: false)
+    if idxOpen < int32(0) || idxOpen >= safeLen(text) || cNe(text[idxOpen], '{'):
+        return (next: idxOpen, ok: false)
+    var idx = idxOpen + int32(1)
+    var depth: int32 = int32(1)
+    var quote: char = '\0'
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cNe(quote, '\0'):
+            if cEq(ch, '\\') && idx + int32(1) < safeLen(text):
+                idx = idx + int32(2)
+                continue
+            if cEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, '\'') || cEq(ch, '"') || cEq(ch, '`'):
+            quote = ch
+            idx = idx + int32(1)
+            continue
+        if cEq(ch, '{'):
+            depth = depth + int32(1)
+        elif cEq(ch, '}'):
+            depth = depth - int32(1)
+            if depth == int32(0):
+                return (next: idx + int32(1), ok: true)
+        idx = idx + int32(1)
+    return (next: idx, ok: false)
+
+fn sliceText(text: str, start: int32, endExclusive: int32, maxChars: int32): str =
+    if text == nil:
+        return ""
+    var s = start
+    if s < int32(0):
+        s = int32(0)
+    var e = endExclusive
+    let n = safeLen(text)
+    if e > n:
+        e = n
+    if e < s:
+        return ""
+    var limit = maxChars
+    if limit <= int32(0):
+        limit = e - s
+    var out: str = ""
+    var idx: int32 = s
+    while idx < e && limit > int32(0):
+        out = out + charToStr(text[idx])
+        idx = idx + int32(1)
+        limit = limit - int32(1)
+    return out
+
+fn appendAttr(attrs: var JsxAttr[], attr: JsxAttr) =
+    let idx = len(attrs)
+    setLen(attrs, idx + 1)
+    attrs[idx] = attr
+
+fn appendNode(children: var JsxNode[], child: JsxNode) =
+    let idx = len(children)
+    setLen(children, idx + 1)
+    children[idx] = child
+
+fn newTextNode(text: str): JsxNode =
+    var node: JsxNode
+    new(node)
+    node.kind = jxText
+    node.tag = ""
+    setLen[JsxAttr](&node.attrs, 0)
+    setLen[JsxNode](&node.children, 0)
+    node.text = text
+    return node
+
+fn newExprNode(expr: str): JsxNode =
+    var node: JsxNode
+    new(node)
+    node.kind = jxExpr
+    node.tag = ""
+    setLen[JsxAttr](&node.attrs, 0)
+    setLen[JsxNode](&node.children, 0)
+    node.text = expr
+    return node
+
+fn newElementNode(tag: str): JsxNode =
+    var node: JsxNode
+    new(node)
+    node.kind = jxElement
+    node.tag = tag
+    setLen[JsxAttr](&node.attrs, 0)
+    setLen[JsxNode](&node.children, 0)
+    node.text = ""
+    return node
+
+fn parseOpenTag(text: str, idx0: int32): tuple[node: JsxNode, next: int32, selfClosing: bool, err: str] =
+    debugMark("jsx:open:start")
+    # Expects idx0 at '<'
+    if text == nil || idx0 < int32(0) || idx0 >= safeLen(text) || cNe(text[idx0], '<'):
+        return (node: nil, next: idx0, selfClosing: false, err: "expected-<")
+    var idx = idx0 + int32(1)
+    idx = skipSpaces(text, idx)
+    if idx >= safeLen(text):
+        return (node: nil, next: idx, selfClosing: false, err: "eof")
+    if cEq(text[idx], '/'):
+        return (node: nil, next: idx, selfClosing: false, err: "unexpected-close")
+    let tagRes = scanIdent(text, idx)
+    if ! tagRes.ok:
+        return (node: nil, next: idx, selfClosing: false, err: "expected-tag-name")
+    let node = newElementNode(tagRes.value)
+    idx = tagRes.next
+    debugMark("jsx:open:attrs")
+
+    while true:
+        idx = skipSpaces(text, idx)
+        if idx >= safeLen(text):
+            return (node: nil, next: idx, selfClosing: false, err: "unterminated-tag")
+        if cEq(text[idx], '>'):
+            return (node: node, next: idx + int32(1), selfClosing: false, err: "")
+        if cEq(text[idx], '/') && idx + int32(1) < safeLen(text) && cEq(text[idx + int32(1)], '>'):
+            return (node: node, next: idx + int32(2), selfClosing: true, err: "")
+
+        let nameRes = scanIdent(text, idx)
+        if ! nameRes.ok:
+            return (node: nil, next: idx, selfClosing: false, err: "expected-attr-name")
+        idx = nameRes.next
+        idx = skipSpaces(text, idx)
+
+        var attr: JsxAttr
+        new(attr)
+        attr.name = nameRes.value
+        attr.kind = jaBool
+        attr.value = "true"
+
+        if idx < safeLen(text) && cEq(text[idx], '='):
+            idx = skipSpaces(text, idx + int32(1))
+            if idx >= safeLen(text):
+                return (node: nil, next: idx, selfClosing: false, err: "attr-eof")
+            if cEq(text[idx], '\'') || cEq(text[idx], '"'):
+                let s = parseStringLiteral(text, idx)
+                if len(s.err) > 0:
+                    return (node: nil, next: s.next, selfClosing: false, err: "attr-string:" + s.err)
+                attr.kind = jaString
+                attr.value = s.value
+                idx = s.next
+            elif cEq(text[idx], '{'):
+                let brace = findMatchingBrace(text, idx)
+                if ! brace.ok:
+                    return (node: nil, next: idx, selfClosing: false, err: "attr-expr-unmatched")
+                attr.kind = jaExpr
+                attr.value = sliceText(text, idx + int32(1), brace.next - int32(1), int32(512))
+                idx = brace.next
+            else:
+                # Unsupported form: treat as error to avoid silent misparse.
+                return (node: nil, next: idx, selfClosing: false, err: "attr-unsupported")
+        appendAttr(node.attrs, attr)
+
+fn parseCloseTag(text: str, idx0: int32): tuple[tag: str, next: int32, err: str] =
+    # Expects idx0 at '</'
+    if text == nil || idx0 < int32(0) || idx0 + int32(1) >= safeLen(text):
+        return (tag: "", next: idx0, err: "eof")
+    if cNe(text[idx0], '<') || cNe(text[idx0 + int32(1)], '/'):
+        return (tag: "", next: idx0, err: "expected-</")
+    var idx = idx0 + int32(2)
+    idx = skipSpaces(text, idx)
+    let tagRes = scanIdent(text, idx)
+    if ! tagRes.ok:
+        return (tag: "", next: idx, err: "expected-close-tag-name")
+    idx = skipSpaces(text, tagRes.next)
+    if idx >= safeLen(text) || cNe(text[idx], '>'):
+        return (tag: tagRes.value, next: idx, err: "expected->")
+    return (tag: tagRes.value, next: idx + int32(1), err: "")
+
+fn parseElement(text: str, idx0: int32): tuple[node: JsxNode, next: int32, err: str]
+
+fn parseChildren(text: str, idx0: int32, tagName: str): tuple[children: JsxNode[], next: int32, err: str] =
+    debugMark("jsx:children:start")
+    var children: JsxNode[]
+    setLen[JsxNode](&children, 0)
+    var idx = idx0
+    while idx < safeLen(text):
+        if cEq(text[idx], '<') && idx + int32(1) < safeLen(text) && cEq(text[idx + int32(1)], '/'):
+            let close = parseCloseTag(text, idx)
+            if len(close.err) > 0:
+                return (children: children, next: close.next, err: close.err)
+            if close.tag != tagName:
+                return (children: children, next: close.next, err: "close-tag-mismatch")
+            return (children: children, next: close.next, err: "")
+        if cEq(text[idx], '<'):
+            let child = parseElement(text, idx)
+            if len(child.err) > 0:
+                return (children: children, next: child.next, err: child.err)
+            appendNode(children, child.node)
+            idx = child.next
+            continue
+        if cEq(text[idx], '{'):
+            let brace = findMatchingBrace(text, idx)
+            if ! brace.ok:
+                return (children: children, next: idx, err: "expr-unmatched")
+            let exprText = sliceText(text, idx + int32(1), brace.next - int32(1), int32(1024))
+            appendNode(children, newExprNode(exprText))
+            idx = brace.next
+            continue
+        # Text
+        var raw: str = ""
+        while idx < safeLen(text):
+            let ch = text[idx]
+            if cEq(ch, '<') || cEq(ch, '{'):
+                break
+            raw = raw + charToStr(ch)
+            idx = idx + int32(1)
+        if safeLen(raw) > int32(0):
+            appendNode(children, newTextNode(raw))
+    return (children: children, next: idx, err: "missing-close-tag")
+
+fn parseElement(text: str, idx0: int32): tuple[node: JsxNode, next: int32, err: str] =
+    debugMark("jsx:element:start")
+    let open = parseOpenTag(text, idx0)
+    if len(open.err) > 0:
+        return (node: nil, next: open.next, err: open.err)
+    let node = open.node
+    var idx = open.next
+    if open.selfClosing:
+        return (node: node, next: idx, err: "")
+    let kids = parseChildren(text, idx, node.tag)
+    if len(kids.err) > 0:
+        return (node: nil, next: kids.next, err: kids.err)
+    node.children = kids.children
+    return (node: node, next: kids.next, err: "")
+
+fn findFirstElementStart(text: str, start: int32): int32 =
+    var idx = start
+    if idx < int32(0):
+        idx = int32(0)
+    while idx < safeLen(text):
+        if cEq(text[idx], '<') && idx + int32(1) < safeLen(text) && cNe(text[idx + int32(1)], '/'):
+            return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn parseFirstElement(text: str): tuple[node: JsxNode, err: str] =
+    let idx = findFirstElementStart(text, int32(0))
+    if idx < int32(0):
+        return (node: nil, err: "missing-element")
+    let parsed = parseElement(text, idx)
+    if len(parsed.err) > 0:
+        return (node: nil, err: parsed.err)
+    return (node: parsed.node, err: "")
+
+fn parseFirstElementFrom(text: str, start: int32): tuple[node: JsxNode, err: str] =
+    debugMark("jsx:parseFrom:start")
+    let idx = findFirstElementStart(text, start)
+    if idx < int32(0):
+        return (node: nil, err: "missing-element")
+    debugMark("jsx:parseFrom:found")
+    let parsed = parseElement(text, idx)
+    debugMark("jsx:parseFrom:done")
+    if len(parsed.err) > 0:
+        return (node: nil, err: parsed.err)
+    return (node: parsed.node, err: "")
+
+fn parseElementAt(text: str, idx0: int32): tuple[node: JsxNode, next: int32, err: str] =
+    let parsed = parseElement(text, idx0)
+    return (node: parsed.node, next: parsed.next, err: parsed.err)
+
+fn lowerSExpr(node: JsxNode): str =
+    if node == nil:
+        return "()"
+    if node.kind == jxText:
+        return "(text \"" + node.text + "\")"
+    if node.kind == jxExpr:
+        return "(expr \"" + node.text + "\")"
+    var out: str = "(" + node.tag
+    for idx in 0..<len(node.attrs):
+        let a = node.attrs[idx]
+        var kindText: str = "bool"
+        if a.kind == jaString:
+            kindText = "str"
+        elif a.kind == jaExpr:
+            kindText = "expr"
+        out = out + " (attr " + kindText + " " + a.name + " \"" + a.value + "\")"
+    for idx in 0..<len(node.children):
+        out = out + " " + lowerSExpr(node.children[idx])
+    out = out + ")"
+    return out

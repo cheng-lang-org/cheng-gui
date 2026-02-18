@@ -1,0 +1,358 @@
+type
+    ProcessRole = enum
+        prBrowser
+        prRenderer
+        prGpu
+        prUtility
+
+    SandboxProfile = enum
+        spStrict
+        spBalanced
+        spCompat
+
+    WebCompatProfile = enum
+        wcpEs2020DomFetch
+        wcpEs2020DomFetchStrict
+        wcpLegacyCompat
+
+    BrowserEngineConfig =
+        appId: str
+        productName: str
+        userDataDir: str
+        maxRendererProcesses: int32
+        siteIsolation: bool
+        sandbox: SandboxProfile
+        compat: WebCompatProfile
+        enableGpuProcess: bool
+        enableUtilityProcess: bool
+        enableCrashReport: bool
+
+    BrowserContextOptions =
+        name: str
+        partition: str
+        incognito: bool
+        acceptLanguage: str
+        enableJavascript: bool
+        enableCookies: bool
+        enableStorage: bool
+
+    PageOptions =
+        initialUrl: str
+        viewportWidth: int32
+        viewportHeight: int32
+        deviceScaleFactor: float
+        javaScriptEnabled: bool
+        enablePdf: bool
+        enableMedia: bool
+
+    BrowserMetricsSnapshot =
+        timestampMs: int64
+        totalContexts: int32
+        totalPages: int32
+        rendererProcesses: int32
+        gpuProcessAlive: bool
+        utilityProcessAlive: bool
+        frameP95Ms: float
+        jsTaskP95Ms: float
+        layoutP95Ms: float
+        memoryMb: float
+        crashCount: int32
+
+    CrashReport =
+        processRole: ProcessRole
+        processId: int64
+        reason: str
+        fatal: bool
+        recovered: bool
+        timestampMs: int64
+
+    WebSourceKind = enum
+        wsUrl
+        wsHtml
+
+    WebPageRequest =
+        sourceKind: WebSourceKind
+        url: str
+        html: str
+        baseUrl: str
+        userAgent: str
+        javascriptEnabled: bool
+        allowPopups: bool
+
+    WebSessionState = enum
+        wssIdle
+        wssLoading
+        wssReady
+        wssError
+
+    PdfSourceKind = enum
+        psPath
+        psBytes
+
+    PdfOpenRequest =
+        sourceKind: PdfSourceKind
+        path: str
+        bytes: str
+        password: str
+
+    PdfRenderOptions =
+        pageIndex: int32
+        zoom: float
+        fitWidth: bool
+
+    PdfSessionState = enum
+        pssClosed
+        pssLoading
+        pssReady
+        pssError
+
+    MediaKind = enum
+        mkAudio
+        mkVideo
+
+    MediaSourceKind = enum
+        msUrl
+        msFile
+        msBytes
+
+    MediaSource =
+        sourceKind: MediaSourceKind
+        uri: str
+        bytes: str
+        mime: str
+
+    MediaPlaybackState = enum
+        mpsIdle
+        mpsPreparing
+        mpsPlaying
+        mpsPaused
+        mpsEnded
+        mpsError
+
+    MediaOptions =
+        autoplay: bool
+        loop: bool
+        muted: bool
+        volume: float
+        playbackRate: float
+
+    MediaPlaybackMetrics =
+        state: MediaPlaybackState
+        droppedFrames: int32
+        decodedFrames: int32
+        bufferedSec: float
+        avgDecodeMs: float
+        avSyncDriftMs: float
+
+fn clampFloat(value, lower, upper: float): float =
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+fn defaultBrowserEngineConfig(): BrowserEngineConfig =
+    var config: BrowserEngineConfig
+    config.appId = "cheng.gui.browser"
+    config.productName = "Cheng Chromium"
+    config.userDataDir = "./build/chromium_profile"
+    config.maxRendererProcesses = int32(4)
+    config.siteIsolation = true
+    config.sandbox = spStrict
+    config.compat = wcpEs2020DomFetch
+    config.enableGpuProcess = true
+    config.enableUtilityProcess = true
+    config.enableCrashReport = true
+    return config
+
+fn normalizeBrowserEngineConfig(input: BrowserEngineConfig): BrowserEngineConfig =
+    var config = input
+    if len(config.appId) == 0:
+        config.appId = "cheng.gui.browser"
+    if len(config.productName) == 0:
+        config.productName = "Cheng Chromium"
+    if len(config.userDataDir) == 0:
+        config.userDataDir = "./build/chromium_profile"
+    if config.maxRendererProcesses <= int32(0):
+        config.maxRendererProcesses = int32(1)
+    if config.maxRendererProcesses > int32(32):
+        config.maxRendererProcesses = int32(32)
+    return config
+
+fn defaultBrowserContextOptions(): BrowserContextOptions =
+    var options: BrowserContextOptions
+    options.name = "default"
+    options.partition = "persist:default"
+    options.incognito = false
+    options.acceptLanguage = "en-US"
+    options.enableJavascript = true
+    options.enableCookies = true
+    options.enableStorage = true
+    return options
+
+fn normalizeBrowserContextOptions(input: BrowserContextOptions): BrowserContextOptions =
+    var options = input
+    if len(options.name) == 0:
+        options.name = "default"
+    if len(options.partition) == 0:
+        options.partition = "persist:" + options.name
+    if len(options.acceptLanguage) == 0:
+        options.acceptLanguage = "en-US"
+    return options
+
+fn defaultPageOptions(): PageOptions =
+    var options: PageOptions
+    options.initialUrl = "about:blank"
+    options.viewportWidth = int32(1280)
+    options.viewportHeight = int32(720)
+    options.deviceScaleFactor = 1.0
+    options.javaScriptEnabled = true
+    options.enablePdf = true
+    options.enableMedia = true
+    return options
+
+fn normalizePageOptions(input: PageOptions): PageOptions =
+    var options = input
+    if len(options.initialUrl) == 0:
+        options.initialUrl = "about:blank"
+    if options.viewportWidth <= int32(0):
+        options.viewportWidth = int32(1280)
+    if options.viewportHeight <= int32(0):
+        options.viewportHeight = int32(720)
+    if options.deviceScaleFactor <= 0.0:
+        options.deviceScaleFactor = 1.0
+    options.deviceScaleFactor = clampFloat(options.deviceScaleFactor, 0.5, 4.0)
+    return options
+
+fn defaultBrowserMetricsSnapshot(): BrowserMetricsSnapshot =
+    var metrics: BrowserMetricsSnapshot
+    metrics.timestampMs = int64(0)
+    metrics.totalContexts = int32(0)
+    metrics.totalPages = int32(0)
+    metrics.rendererProcesses = int32(0)
+    metrics.gpuProcessAlive = false
+    metrics.utilityProcessAlive = false
+    metrics.frameP95Ms = 0.0
+    metrics.jsTaskP95Ms = 0.0
+    metrics.layoutP95Ms = 0.0
+    metrics.memoryMb = 0.0
+    metrics.crashCount = int32(0)
+    return metrics
+
+fn defaultCrashReport(): CrashReport =
+    var report: CrashReport
+    report.processRole = prBrowser
+    report.processId = int64(0)
+    report.reason = ""
+    report.fatal = false
+    report.recovered = false
+    report.timestampMs = int64(0)
+    return report
+
+fn defaultWebPageRequest(): WebPageRequest =
+    var req: WebPageRequest
+    req.sourceKind = wsUrl
+    req.url = "about:blank"
+    req.html = ""
+    req.baseUrl = "about:blank"
+    req.userAgent = "ChengGUI/1.0"
+    req.javascriptEnabled = true
+    req.allowPopups = false
+    return req
+
+fn normalizeWebPageRequest(input: WebPageRequest): WebPageRequest =
+    var req = input
+    if len(req.userAgent) == 0:
+        req.userAgent = "ChengGUI/1.0"
+    if req.sourceKind == wsUrl:
+        if len(req.url) == 0:
+            req.url = "about:blank"
+        req.baseUrl = req.url
+    else:
+        if len(req.html) == 0:
+            req.html = "<html><body></body></html>"
+        if len(req.baseUrl) == 0:
+            req.baseUrl = "about:blank"
+    return req
+
+fn defaultPdfOpenRequest(): PdfOpenRequest =
+    var req: PdfOpenRequest
+    req.sourceKind = psPath
+    req.path = ""
+    req.bytes = ""
+    req.password = ""
+    return req
+
+fn normalizePdfOpenRequest(input: PdfOpenRequest): PdfOpenRequest =
+    var req = input
+    if req.sourceKind == psPath && len(req.path) == 0:
+        req.path = "memory.pdf"
+    if req.sourceKind == psBytes && len(req.bytes) == 0:
+        req.bytes = "%PDF-1.7\n"
+    return req
+
+fn defaultPdfRenderOptions(): PdfRenderOptions =
+    var options: PdfRenderOptions
+    options.pageIndex = int32(0)
+    options.zoom = 1.0
+    options.fitWidth = true
+    return options
+
+fn normalizePdfRenderOptions(input: PdfRenderOptions): PdfRenderOptions =
+    var options = input
+    if options.pageIndex < int32(0):
+        options.pageIndex = int32(0)
+    if options.zoom <= 0.0:
+        options.zoom = 1.0
+    options.zoom = clampFloat(options.zoom, 0.25, 4.0)
+    return options
+
+fn defaultMediaSource(kind: MediaKind, uri: str): MediaSource =
+    var source: MediaSource
+    source.sourceKind = msUrl
+    source.uri = uri
+    source.bytes = ""
+    if kind == mkAudio:
+        source.mime = "audio/basic"
+    else:
+        source.mime = "video/basic"
+    return source
+
+fn normalizeMediaSource(input: MediaSource): MediaSource =
+    var source = input
+    if source.sourceKind == msBytes:
+        if len(source.bytes) == 0:
+            source.bytes = "binary"
+    else:
+        if len(source.uri) == 0:
+            source.uri = "memory://media"
+    if len(source.mime) == 0:
+        source.mime = "application/octet-stream"
+    return source
+
+fn defaultMediaOptions(): MediaOptions =
+    var options: MediaOptions
+    options.autoplay = false
+    options.loop = false
+    options.muted = false
+    options.volume = 1.0
+    options.playbackRate = 1.0
+    return options
+
+fn normalizeMediaOptions(input: MediaOptions): MediaOptions =
+    var options = input
+    if options.playbackRate <= 0.0:
+        options.playbackRate = 1.0
+    options.volume = clampFloat(options.volume, 0.0, 1.0)
+    options.playbackRate = clampFloat(options.playbackRate, 0.25, 4.0)
+    return options
+
+fn defaultMediaPlaybackMetrics(): MediaPlaybackMetrics =
+    var metrics: MediaPlaybackMetrics
+    metrics.state = mpsIdle
+    metrics.droppedFrames = int32(0)
+    metrics.decodedFrames = int32(0)
+    metrics.bufferedSec = 0.0
+    metrics.avgDecodeMs = 0.0
+    metrics.avSyncDriftMs = 0.0
+    return metrics

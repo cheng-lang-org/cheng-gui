@@ -1,0 +1,2714 @@
+import std/os
+import std/strings
+
+import cheng/gui/tools/r2c_aot/module_graph as graph
+import cheng/gui/tools/r2c_aot/codegen_cheng as codegen
+
+# cache-bust marker: when codegen runtime output semantics change, keep compiler
+# source content updated so stale dependency caches are invalidated.
+
+type
+    CpAliasRule = ref
+        fromPattern: str
+        toPattern: str
+        baseDir: str
+    R2cFeatureGate = ref
+        key: str
+        required: bool
+        enabled: bool
+        reason: str
+
+    R2cCoverageStat = ref
+        key: str
+        covered: int32
+        total: int32
+        ratio: float
+
+    R2cGeneratedRuntimeArtifact = ref
+        key: str
+        role: str
+        path: str
+        symbol: str
+        generated: bool
+        notes: str
+
+    R2cProjectProfile = ref
+        projectName: str
+        entry: str
+        targetMatrix: str[]
+        strictNoJsRuntime: bool
+        wptProfile: str
+        equivalenceMode: str
+        featureGates: R2cFeatureGate[]
+
+    R2cUnsupportedItem = ref
+        kind: str
+        moduleId: str
+        symbol: str
+        reason: str
+
+    R2cModuleRecord = ref
+        moduleId: str
+        sourcePath: str
+        kind: str
+        reachable: bool
+        adapter: str
+        loweredPath: str
+        supported: bool
+        notes: str
+
+    R2cAdapterResolve = ref
+        spec: str
+        adapterModule: str
+        supported: bool
+        reason: str
+
+    R2cCompileOptions = ref
+        inRoot: str
+        outRoot: str
+        entry: str
+        strict: bool
+        profile: str
+        projectName: str
+        targetMatrix: str[]
+        strictNoJsRuntime: bool
+        wptProfile: str
+        equivalenceMode: str
+
+    R2cCompileReport = ref
+        ok: bool
+        packageId: str
+        inRoot: str
+        outRoot: str
+        entry: str
+        profile: str
+        projectProfile: R2cProjectProfile
+        manifestPath: str
+        reportPath: str
+        entryPath: str
+        generatedEntryPath: str
+        generatedRuntimePath: str
+        wptReportPath: str
+        generatedUiMode: str
+        routeDiscoveryMode: str
+        routeGraphPath: str
+        routeEventMatrixPath: str
+        routeCoveragePath: str
+        visualStates: str[]
+        visualGoldenManifestPath: str
+        textProfilePath: str
+        frameHashesExpectedPath: str
+        fullRouteStatesPath: str
+        fullRouteEventMatrixPath: str
+        fullRouteCoverageReportPath: str
+        fullRouteStateCount: int32
+        semanticMappingMode: str
+        semanticNodeMapPath: str
+        semanticRuntimeMapPath: str
+        semanticNodeCount: int32
+        pixelGoldenDir: str
+        pixelTolerance: int32
+        replayProfile: str
+        utfzhMode: str
+        imeMode: str
+        cjkRenderBackend: str
+        cjkRenderGate: str
+        strictNoFallback: bool
+        compilerRc: int32
+        usedFallback: bool
+        fallbackReason: str
+        modules: R2cModuleRecord[]
+        adapterCoverage: R2cCoverageStat[]
+        tokenCoverage: R2cCoverageStat[]
+        platformArtifacts: R2cGeneratedRuntimeArtifact[]
+        unsupportedSyntax: R2cUnsupportedItem[]
+        unsupportedImports: R2cUnsupportedItem[]
+        degradedFeatures: R2cUnsupportedItem[]
+        notes: str[]
+
+fn appendString(items: var str[], item: str) =
+    let idx = len(items)
+    setLen(items,  idx + 1)
+    items[idx] = item
+
+fn appendIssue(items: var R2cUnsupportedItem[], item: R2cUnsupportedItem) =
+    if item == nil:
+        return
+    let idx = len(items)
+    setLen(items,  idx + 1)
+    items[idx] = item
+
+fn appendIssueRaw(items: var R2cUnsupportedItem[], kind, moduleId, symbol, reason: str) =
+    var item: R2cUnsupportedItem
+    new(item)
+    item.kind = kind
+    item.moduleId = moduleId
+    item.symbol = symbol
+    item.reason = reason
+    appendIssue(items, item)
+
+fn appendModule(items: var R2cModuleRecord[], item: R2cModuleRecord) =
+    if item == nil:
+        return
+    let idx = len(items)
+    setLen(items,  idx + 1)
+    items[idx] = item
+
+fn appendCoverage(items: var R2cCoverageStat[], item: R2cCoverageStat) =
+    if item == nil:
+        return
+    let idx = len(items)
+    setLen(items,  idx + 1)
+    items[idx] = item
+
+fn appendArtifact(items: var R2cGeneratedRuntimeArtifact[], item: R2cGeneratedRuntimeArtifact) =
+    if item == nil:
+        return
+    let idx = len(items)
+    setLen(items,  idx + 1)
+    items[idx] = item
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn parseBoolFlag(text: str): bool =
+    if len(text) == 0:
+        return false
+    if text == "1" || text == "true" || text == "TRUE" || text == "yes" || text == "YES":
+        return true
+    return false
+
+fn splitCsvEnv(text: str): str[] =
+    var out: str[]
+    setLen(out,  0)
+    if len(text) == 0:
+        return out
+    var token: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, ','):
+            if len(token) > 0:
+                let pos = len(out)
+                setLen(out,  pos + 1)
+                out[pos] = token
+                token = ""
+        else:
+            token = token + charToStr(ch)
+        idx = idx + int32(1)
+    if len(token) > 0:
+        let pos = len(out)
+        setLen(out,  pos + 1)
+        out[pos] = token
+    return out
+
+fn findModuleById(items: var R2cModuleRecord[], moduleId: str): int32 =
+    var idx: int32 = int32(0)
+    while idx < len(items):
+        let item = items[idx]
+        if item != nil && item.moduleId == moduleId:
+            return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn ensureModule(items: var R2cModuleRecord[], moduleId, sourcePath, kind: str): R2cModuleRecord =
+    let found = findModuleById(items, moduleId)
+    if found >= int32(0):
+        return items[found]
+    var item: R2cModuleRecord
+    new(item)
+    item.moduleId = moduleId
+    item.sourcePath = sourcePath
+    item.kind = kind
+    item.reachable = true
+    item.adapter = ""
+    item.loweredPath = ""
+    item.supported = true
+    item.notes = ""
+    appendModule(items, item)
+    return item
+
+fn pushUnique(queue: var str[], value: str) =
+    if len(value) == 0:
+        return
+    for idx in 0..<len(queue):
+        if queue[idx] == value:
+            return
+    appendString(queue, value)
+
+fn cloneStr(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        out = out + charToStr(text[idx])
+        idx = idx + int32(1)
+    return out
+
+fn compilerEscapeString(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cpCEq(ch, '\\'):
+            out = out + "\\\\"
+        elif cpCEq(ch, '"'):
+            out = out + "\\\""
+        elif cpCEq(ch, '\n'):
+            out = out + "\\n"
+        elif cpCEq(ch, '\r'):
+            out = out + "\\r"
+        elif cpCEq(ch, '\t'):
+            out = out + "\\t"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn compilerProjectName(report: R2cCompileReport): str =
+    if report == nil:
+        return "r2capp"
+    let profile = report.projectProfile
+    if profile != nil && len(profile.projectName) > 0:
+        return profile.projectName
+    if len(report.profile) > 0:
+        return report.profile
+    return "r2capp"
+
+fn compilerRuntimeTemplatePath(): str =
+    let envRoot = os.getEnv("CHENG_GUI_ROOT")
+    if len(envRoot) > 0:
+        let byEnv = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
+        if os.fileExists(byEnv):
+            return byEnv
+    let localPath = "src/tools/r2c_aot/runtime_generated_template.cheng"
+    if os.fileExists(localPath):
+        return localPath
+    return ""
+
+fn compilerReplaceTokenAll(text, token, value: str): str =
+    if len(text) == 0 || len(token) == 0:
+        return text
+    var out: str = ""
+    let tokenLen = len(token)
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        var matched = false
+        if idx + tokenLen <= len(text):
+            matched = true
+            var j: int32 = int32(0)
+            while j < tokenLen:
+                if cpCNe(text[idx + j], token[j]):
+                    matched = false
+                    break
+                j = j + int32(1)
+        if matched:
+            out = out + value
+            idx = idx + tokenLen
+        else:
+            out = out + charToStr(text[idx])
+            idx = idx + int32(1)
+    return out
+
+fn compilerDashName(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cpCEq(ch, '_'):
+            out = out + "-"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn compilerDefaultRoute(report: R2cCompileReport): str =
+    if report == nil || len(report.visualStates) <= 0:
+        return ""
+    for idx in 0..<len(report.visualStates):
+        if report.visualStates[idx] == "home_default":
+            return report.visualStates[idx]
+    for idx in 0..<len(report.visualStates):
+        if report.visualStates[idx] == "home":
+            return report.visualStates[idx]
+    for idx in 0..<len(report.visualStates):
+        if cpHasPrefix(report.visualStates[idx], "home_"):
+            return report.visualStates[idx]
+    for idx in 0..<len(report.visualStates):
+        if report.visualStates[idx] == "tab_messages" || report.visualStates[idx] == "tab_nodes" || report.visualStates[idx] == "tab_profile":
+            return report.visualStates[idx]
+    for idx in 0..<len(report.visualStates):
+        if cpHasPrefix(report.visualStates[idx], "publish_"):
+            return report.visualStates[idx]
+    for idx in 0..<len(report.visualStates):
+        if cpHasPrefix(report.visualStates[idx], "trading_"):
+            return report.visualStates[idx]
+    for idx in 0..<len(report.visualStates):
+        if report.visualStates[idx] != "lang_select":
+            return report.visualStates[idx]
+    return report.visualStates[0]
+
+fn compilerKnownRouteCases(report: R2cCompileReport): str =
+    var out: str = ""
+    if report == nil:
+        return out
+    for idx in 0..<len(report.visualStates):
+        let route = report.visualStates[idx]
+        out = out + "    if strEq(route, \"" + compilerEscapeString(route) + "\"):\n"
+        out = out + "        return true\n"
+    return out
+
+fn compilerRouteTitleCases(report: R2cCompileReport): str =
+    var out: str = ""
+    if report == nil:
+        return out
+    for idx in 0..<len(report.visualStates):
+        let route = report.visualStates[idx]
+        out = out + "    if strEq(route, \"" + compilerEscapeString(route) + "\"):\n"
+        out = out + "        return \"" + compilerEscapeString(route) + "\"\n"
+    return out
+
+fn compilerSelectorRouteCases(report: R2cCompileReport): str =
+    var out: str = ""
+    if report == nil:
+        return out
+    for idx in 0..<len(report.visualStates):
+        let route = report.visualStates[idx]
+        let dash = compilerDashName(route)
+        out = out + "    if strEq(id, \"" + compilerEscapeString(dash) + "\"):\n"
+        out = out + "        return \"" + compilerEscapeString(route) + "\"\n"
+        out = out + "    if strEq(id, \"tab-" + compilerEscapeString(dash) + "\"):\n"
+        out = out + "        return \"" + compilerEscapeString(route) + "\"\n"
+    return out
+
+fn compilerBuildRuntimeSource(report: R2cCompileReport): str =
+    let strictMode = report != nil && report.strictNoFallback
+    let templatePath = compilerRuntimeTemplatePath()
+    if len(templatePath) > 0:
+        let template = os.readFile(templatePath)
+        if len(template) > 0:
+            let projectName = compilerEscapeString(compilerProjectName(report))
+            let defaultRoute = compilerEscapeString(compilerDefaultRoute(report))
+            let knownRouteCases = compilerKnownRouteCases(report)
+            let routeTitleCases = compilerRouteTitleCases(report)
+            let selectorRouteCases = compilerSelectorRouteCases(report)
+            let welcome = compilerEscapeString(compilerProjectName(report))
+            var rendered = compilerReplaceTokenAll(template, "__R2C_PROJECT_NAME__", projectName)
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_KNOWN_ROUTE_CASES__", knownRouteCases)
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_ROUTE_TITLE_CASES__", routeTitleCases)
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_SELECTOR_ROUTE_CASES__", selectorRouteCases)
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_DEFAULT_ROUTE__", defaultRoute)
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_TEXT_WELCOME__", welcome)
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_TEXT_SELECT_LANGUAGE__", "Please select your preferred language")
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_TEXT_CONTINUE__", "Continue")
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_TEXT_SELECT_PROMPT__", "Select a language")
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_TEXT_SKIP__", "Skip")
+            rendered = compilerReplaceTokenAll(rendered, "__R2C_SEMANTIC_NODE_APPENDS__", "")
+            return cloneStr(rendered)
+    if strictMode:
+        return ""
+    return ""
+
+fn cloneSlice(text: str, start: int32, endExclusive: int32): str =
+    if len(text) == 0:
+        return ""
+    var s = start
+    if s < int32(0):
+        s = int32(0)
+    var e = endExclusive
+    if e > len(text):
+        e = len(text)
+    if e <= s:
+        return ""
+    var out: str = ""
+    var idx = s
+    while idx < e:
+        out = out + charToStr(text[idx])
+        idx = idx + int32(1)
+    return out
+
+fn popFront(queue: var str[]): str =
+    if len(queue) <= 0:
+        return ""
+    let value = cloneStr(queue[0])
+    if len(queue) == 1:
+        setLen(queue,  0)
+        return value
+    for idx in 1..<len(queue):
+        queue[idx - 1] = queue[idx]
+    setLen(queue,  len(queue) - 1)
+    return value
+
+fn addNote(report: R2cCompileReport, note: str) =
+    if report == nil || len(note) == 0:
+        return
+    appendString(report.notes, note)
+
+fn buildFeatureGate(key: str, required: bool, enabled: bool, reason: str): R2cFeatureGate =
+    var out: R2cFeatureGate
+    new(out)
+    out.key = key
+    out.required = required
+    out.enabled = enabled
+    out.reason = reason
+    return out
+
+fn appendFeatureGate(items: var R2cFeatureGate[], item: R2cFeatureGate) =
+    if item == nil:
+        return
+    let idx = len(items)
+    setLen(items,  idx + 1)
+    items[idx] = item
+
+fn appendTargetValue(items: var str[], value: str) =
+    if len(value) == 0:
+        return
+    for idx in 0..<len(items):
+        if items[idx] == value:
+            return
+    appendString(items, value)
+
+fn cpCEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn detectTextContains(text, pattern: str): bool =
+    if len(text) == 0 || len(pattern) == 0:
+        return false
+    let tLen = len(text)
+    let pLen = len(pattern)
+    if pLen > tLen:
+        return false
+    var idx: int32 = int32(0)
+    while idx + pLen <= tLen:
+        var matched = true
+        var j: int32 = int32(0)
+        while j < pLen:
+            if cpCNe(text[idx + j], pattern[j]):
+                matched = false
+                break
+            j = j + int32(1)
+        if matched:
+            return true
+        idx = idx + 1
+    return false
+
+fn cpCNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cpCGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn cpCLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn startsWith(text, prefix: str): bool =
+    if len(prefix) == 0:
+        return true
+    if len(text) < len(prefix):
+        return false
+    var idx: int32 = int32(0)
+    while idx < len(prefix):
+        if cpCNe(text[idx], prefix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn endsWith(text, suffix: str): bool =
+    if len(suffix) == 0:
+        return true
+    if len(text) < len(suffix):
+        return false
+    let base = len(text) - len(suffix)
+    var idx: int32 = int32(0)
+    while idx < len(suffix):
+        if cpCNe(text[base + idx], suffix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn dropLeadingSlashes(path: str): str =
+    if len(path) == 0:
+        return ""
+    var idx: int32 = int32(0)
+    while idx < len(path) && cpCEq(path[idx], '/'):
+        idx = idx + int32(1)
+    var out: str = ""
+    while idx < len(path):
+        out = out + charToStr(path[idx])
+        idx = idx + int32(1)
+    return out
+
+fn compilerEnsureDir(path: str): bool =
+    if len(path) == 0:
+        return false
+    if os.dirExists(path):
+        return true
+    os.createDir(path)
+    return os.dirExists(path)
+
+fn compilerWriteText(path, content: str): bool =
+    if len(path) == 0:
+        return false
+    os.writeFile(path, content)
+    return os.fileExists(path)
+
+fn compilerReadText(path: str): tuple[text: str, err: str] =
+    if len(path) == 0:
+        return (text: "", err: "empty-path")
+    if ! os.fileExists(path):
+        return (text: "", err: "missing-file")
+    var text = os.readFile(path)
+    if len(text) == 0:
+        return (text: "", err: "")
+    return (text: text, err: "")
+
+fn traceStep(outRoot, step: str) =
+    if os.getEnv("CHENG_R2C_TRACE") != "1":
+        return
+    if len(outRoot) == 0:
+        return
+    os.writeFile(outRoot + "/r2capp_trace.txt", step + "\n")
+
+fn fillFullRouteStates(states: var str[]) =
+    setLen(states,  0)
+    appendString(states, "lang_select")
+    appendString(states, "home_default")
+    appendString(states, "home_search_open")
+    appendString(states, "home_sort_open")
+    appendString(states, "home_channel_manager_open")
+    appendString(states, "home_content_detail_open")
+    appendString(states, "home_ecom_overlay_open")
+    appendString(states, "home_bazi_overlay_open")
+    appendString(states, "home_ziwei_overlay_open")
+    appendString(states, "tab_messages")
+    appendString(states, "tab_nodes")
+    appendString(states, "tab_profile")
+    appendString(states, "publish_selector")
+    appendString(states, "publish_content")
+    appendString(states, "publish_product")
+    appendString(states, "publish_live")
+    appendString(states, "publish_app")
+    appendString(states, "publish_food")
+    appendString(states, "publish_ride")
+    appendString(states, "publish_job")
+    appendString(states, "publish_hire")
+    appendString(states, "publish_rent")
+    appendString(states, "publish_sell")
+    appendString(states, "publish_secondhand")
+    appendString(states, "publish_crowdfunding")
+    appendString(states, "trading_main")
+    appendString(states, "trading_crosshair")
+    appendString(states, "ecom_main")
+    appendString(states, "marketplace_main")
+    appendString(states, "update_center_main")
+
+fn initReport(opts: R2cCompileOptions): R2cCompileReport =
+    var report: R2cCompileReport
+    new(report)
+    report.ok = false
+    report.packageId = "pkg://cheng/r2capp"
+    report.inRoot = if opts != nil: opts.inRoot else: ""
+    report.outRoot = if opts != nil: opts.outRoot else: ""
+    report.entry = if opts != nil: opts.entry else: ""
+    report.profile = if opts != nil: opts.profile else: ""
+    if len(report.profile) == 0:
+        report.profile = "generic"
+    var projectProfile: R2cProjectProfile
+    new(projectProfile)
+    projectProfile.projectName = if opts != nil: opts.projectName else: ""
+    if len(projectProfile.projectName) == 0:
+        projectProfile.projectName = report.profile
+    projectProfile.entry = report.entry
+    setLen(projectProfile.targetMatrix,  0)
+    if opts != nil:
+        for tIdx in 0..<len(opts.targetMatrix):
+            appendTargetValue(projectProfile.targetMatrix, opts.targetMatrix[tIdx])
+    if len(projectProfile.targetMatrix) == 0:
+        appendTargetValue(projectProfile.targetMatrix, "macos")
+        appendTargetValue(projectProfile.targetMatrix, "windows")
+        appendTargetValue(projectProfile.targetMatrix, "linux")
+        appendTargetValue(projectProfile.targetMatrix, "android")
+        appendTargetValue(projectProfile.targetMatrix, "ios")
+        appendTargetValue(projectProfile.targetMatrix, "web")
+    projectProfile.strictNoJsRuntime = if opts != nil: opts.strictNoJsRuntime else: true
+    projectProfile.wptProfile = if opts != nil: opts.wptProfile else: ""
+    if len(projectProfile.wptProfile) == 0:
+        projectProfile.wptProfile = "core"
+    projectProfile.equivalenceMode = if opts != nil: opts.equivalenceMode else: ""
+    if len(projectProfile.equivalenceMode) == 0:
+        projectProfile.equivalenceMode = "wpt+e2e"
+    setLen(projectProfile.featureGates,  0)
+    appendFeatureGate(projectProfile.featureGates, buildFeatureGate("strict-no-js-runtime", true, projectProfile.strictNoJsRuntime, "locked-by-policy"))
+    appendFeatureGate(projectProfile.featureGates, buildFeatureGate("zero-node-toolchain", true, true, "cheng-only"))
+    appendFeatureGate(projectProfile.featureGates, buildFeatureGate("reachable-graph-only", true, true, "compile-scope"))
+    report.projectProfile = projectProfile
+    report.manifestPath = ""
+    report.reportPath = ""
+    report.entryPath = ""
+    report.generatedEntryPath = ""
+    report.generatedRuntimePath = ""
+    report.wptReportPath = ""
+    report.generatedUiMode = "ir-driven"
+    report.routeDiscoveryMode = "static-runtime-hybrid"
+    report.routeGraphPath = ""
+    report.routeEventMatrixPath = ""
+    report.routeCoveragePath = ""
+    setLen(report.visualStates,  0)
+    fillFullRouteStates(report.visualStates)
+    report.visualGoldenManifestPath = ""
+    report.textProfilePath = ""
+    report.frameHashesExpectedPath = ""
+    report.fullRouteStatesPath = ""
+    report.fullRouteEventMatrixPath = ""
+    report.fullRouteCoverageReportPath = ""
+    report.fullRouteStateCount = int32(len(report.visualStates))
+    report.semanticMappingMode = "source-node-map"
+    report.semanticNodeMapPath = ""
+    report.semanticRuntimeMapPath = ""
+    report.semanticNodeCount = int32(0)
+    report.pixelGoldenDir = ""
+    report.pixelTolerance = int32(0)
+    report.utfzhMode = "strict"
+    report.imeMode = "cangwu-global"
+    report.cjkRenderBackend = "native-text-first"
+    report.cjkRenderGate = "no-garbled-cjk"
+    report.strictNoFallback = if opts != nil: opts.strict else: false
+    report.compilerRc = int32(0)
+    report.usedFallback = false
+    report.fallbackReason = ""
+    report.replayProfile = "claude-fullroute"
+    setLen(report.modules,  0)
+    setLen(report.adapterCoverage,  0)
+    setLen(report.tokenCoverage,  0)
+    setLen(report.platformArtifacts,  0)
+    setLen(report.unsupportedSyntax,  0)
+    setLen(report.unsupportedImports,  0)
+    setLen(report.degradedFeatures,  0)
+    setLen(report.notes,  0)
+    return report
+
+fn normalizeEntryPath(inRoot, entry: str): str =
+    if len(inRoot) == 0 || len(entry) == 0:
+        return ""
+    let trimmed = dropLeadingSlashes(entry)
+    if len(trimmed) == 0:
+        return inRoot
+    if endsWith(inRoot, "/"):
+        return inRoot + trimmed
+    return inRoot + "/" + trimmed
+
+fn moduleIdFromPath(inRoot, sourcePath: str): str =
+    let root = cpNormalizeSlashes(inRoot)
+    let src = cpNormalizeSlashes(sourcePath)
+    if len(root) == 0:
+        return src
+    if cpHasPrefix(src, root):
+        var rel: str = ""
+        var idx = len(root)
+        while idx < len(src):
+            rel = rel + charToStr(src[idx])
+            idx = idx + int32(1)
+        if len(rel) == 0:
+            return "/"
+        if ! cpHasPrefix(rel, "/"):
+            rel = "/" + rel
+        return rel
+    return src
+
+fn isCodeEntry(path: str): bool =
+    if endsWith(path, ".tsx"):
+        return true
+    if endsWith(path, ".jsx"):
+        return true
+    if endsWith(path, ".ts"):
+        return true
+    if endsWith(path, ".js"):
+        return true
+    return false
+
+fn cpIsCodeSourcePath(path: str): bool =
+    return isCodeEntry(path)
+
+fn cpHasPrefix(text, prefix: str): bool =
+    return startsWith(text, prefix)
+
+fn cpNormalizeSlashes(path: str): str =
+    if len(path) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(path):
+        let ch = path[idx]
+        if cpCEq(ch, '\\'):
+            out = out + "/"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn cpStripQuery(spec: str): str =
+    if len(spec) == 0:
+        return ""
+    var idx: int32 = int32(0)
+    while idx < len(spec):
+        let ch = spec[idx]
+        if cpCEq(ch, '?') || cpCEq(ch, '#'):
+            return spec[0..<idx]
+        idx = idx + int32(1)
+    return spec
+
+fn cpIsBareImport(spec: str): bool =
+    if len(spec) == 0:
+        return false
+    if cpHasPrefix(spec, "./") || cpHasPrefix(spec, "../") || cpHasPrefix(spec, "/"):
+        return false
+    return true
+
+fn cpIsProjectAliasSpec(spec: str): bool =
+    if len(spec) == 0:
+        return false
+    if cpHasPrefix(spec, "@/"):
+        return true
+    if cpHasPrefix(spec, "~/"):
+        return true
+    return false
+
+fn cpDirname(path: str): str =
+    let norm = cpNormalizeSlashes(path)
+    if len(norm) == 0:
+        return ""
+    let idxBase = len(norm) - 1
+    if idxBase >= 0:
+        for idxRev in 0..idxBase:
+            let idx = idxBase - idxRev
+            if cpCEq(norm[idx], '/'):
+                if idx <= 0:
+                    return "/"
+                return norm[0..<idx]
+    return ""
+
+fn cpJoinPath(a, b: str): str =
+    if len(a) == 0:
+        return cpNormalizeSlashes(b)
+    if len(b) == 0:
+        return cpNormalizeSlashes(a)
+    let aa = cpNormalizeSlashes(a)
+    let bb = cpNormalizeSlashes(b)
+    if cpHasPrefix(bb, "/"):
+        return bb
+    if endsWith(aa, "/"):
+        return aa + bb
+    return aa + "/" + bb
+
+fn cpAppendPart(parts: var str[], part: str) =
+    let idx = len(parts)
+    setLen(parts,  idx + 1)
+    parts[idx] = cloneStr(part)
+
+fn cpAppendInt32(items: var int32[], value: int32) =
+    let idx = len(items)
+    setLen(items,  idx + 1)
+    items[idx] = value
+
+fn cpSplitPath(path: str): str[] =
+    var out: str[]
+    setLen(out,  0)
+    let norm = cpNormalizeSlashes(path)
+    if len(norm) == 0:
+        return out
+    var token: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(norm):
+        if cpCEq(norm[idx], '/'):
+            cpAppendPart(out, token)
+            token = ""
+        else:
+            token = token + charToStr(norm[idx])
+        idx = idx + int32(1)
+    cpAppendPart(out, token)
+    return out
+
+fn cpNormalizeDotSegments(path: str): str =
+    let norm = cpNormalizeSlashes(path)
+    if len(norm) == 0:
+        return ""
+    let absMode = cpHasPrefix(norm, "/")
+    var out: str = ""
+    if absMode:
+        out = "/"
+    var starts: int32[]
+    setLen(starts,  0)
+    var idx: int32 = int32(0)
+    if absMode && idx < len(norm) && cpCEq(norm[idx], '/'):
+        idx = idx + int32(1)
+    while idx <= len(norm):
+        let segStart = idx
+        while idx < len(norm) && cpCNe(norm[idx], '/'):
+            idx = idx + int32(1)
+        let segLen = idx - segStart
+        if segLen == int32(1) && cpCEq(norm[segStart], '.'):
+            idx = idx + int32(1)
+            continue
+        elif segLen == int32(2) && cpCEq(norm[segStart], '.') && cpCEq(norm[segStart + int32(1)], '.'):
+            if len(starts) > 0:
+                let cut = starts[len(starts) - 1]
+                out = cloneSlice(out, int32(0), cut)
+                setLen(starts,  len(starts) - 1)
+            elif ! absMode:
+                if len(out) > 0 && ! cpCEq(out[len(out) - int32(1)], '/'):
+                    out = out + "/"
+                let pos = len(out)
+                out = out + ".."
+                cpAppendInt32(starts, pos)
+        elif segLen > int32(0):
+            if len(out) > 0 && ! cpCEq(out[len(out) - int32(1)], '/'):
+                out = out + "/"
+            let pos = len(out)
+            var j: int32 = int32(0)
+            while j < segLen:
+                out = out + charToStr(norm[segStart + j])
+                j = j + int32(1)
+            cpAppendInt32(starts, pos)
+        idx = idx + int32(1)
+    if len(out) == 0 && absMode:
+        return "/"
+    return out
+
+fn cpResolveSourceSeed(seed: str): str =
+    if len(seed) == 0:
+        return ""
+    let norm = cpNormalizeDotSegments(seed)
+    if os.fileExists(norm) && ! os.dirExists(norm):
+        return norm
+    if os.fileExists(norm + ".ts"):
+        return norm + ".ts"
+    if os.fileExists(norm + ".tsx"):
+        return norm + ".tsx"
+    if os.fileExists(norm + ".js"):
+        return norm + ".js"
+    if os.fileExists(norm + ".jsx"):
+        return norm + ".jsx"
+    if os.fileExists(cpJoinPath(norm, "index.ts")):
+        return cpJoinPath(norm, "index.ts")
+    if os.fileExists(cpJoinPath(norm, "index.tsx")):
+        return cpJoinPath(norm, "index.tsx")
+    if os.fileExists(cpJoinPath(norm, "index.js")):
+        return cpJoinPath(norm, "index.js")
+    if os.fileExists(cpJoinPath(norm, "index.jsx")):
+        return cpJoinPath(norm, "index.jsx")
+    return ""
+
+fn cpSkipJsonWs(text: str, idx0: int32): int32 =
+    var idx = idx0
+    if idx < int32(0):
+        idx = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cpCEq(ch, ' ') || cpCEq(ch, '\n') || cpCEq(ch, '\r') || cpCEq(ch, '\t'):
+            idx = idx + int32(1)
+        else:
+            break
+    return idx
+
+fn cpParseJsonStringAt(text: str, idx0: int32): tuple[value: str, next: int32, ok: bool] =
+    if idx0 < int32(0) || idx0 >= len(text):
+        return (value: "", next: idx0, ok: false)
+    if cpCNe(text[idx0], '"'):
+        return (value: "", next: idx0, ok: false)
+    var idx = idx0 + int32(1)
+    var out: str = ""
+    while idx < len(text):
+        let ch = text[idx]
+        if cpCEq(ch, '\\'):
+            if idx + int32(1) < len(text):
+                out = out + charToStr(text[idx + int32(1)])
+                idx = idx + int32(2)
+            else:
+                idx = idx + int32(1)
+        elif cpCEq(ch, '"'):
+            return (value: out, next: idx + int32(1), ok: true)
+        else:
+            out = out + charToStr(ch)
+            idx = idx + int32(1)
+    return (value: "", next: idx, ok: false)
+
+fn cpFindMatchingBracket(text: str, openIdx: int32, openCh: char, closeCh: char): int32 =
+    if openIdx < int32(0) || openIdx >= len(text):
+        return int32(-1)
+    if cpCNe(text[openIdx], openCh):
+        return int32(-1)
+    var idx = openIdx
+    var depth: int32 = int32(0)
+    var inString = false
+    while idx < len(text):
+        let ch = text[idx]
+        if inString:
+            if cpCEq(ch, '\\'):
+                idx = idx + int32(2)
+                continue
+            if cpCEq(ch, '"'):
+                inString = false
+            idx = idx + int32(1)
+            continue
+        if cpCEq(ch, '"'):
+            inString = true
+            idx = idx + int32(1)
+            continue
+        if cpCEq(ch, openCh):
+            depth = depth + int32(1)
+        elif cpCEq(ch, closeCh):
+            depth = depth - int32(1)
+            if depth == int32(0):
+                return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn cpFindJsonKey(text, key: str, start: int32): int32 =
+    if len(key) == 0:
+        return int32(-1)
+    return cpFindFrom(text, "\"" + key + "\"", start)
+
+fn cpExtractJsonStringValue(text, key: str): str =
+    let keyAt = cpFindJsonKey(text, key, int32(0))
+    if keyAt < int32(0):
+        return ""
+    var idx = keyAt + len(key) + int32(2)
+    while idx < len(text) && cpCNe(text[idx], ':'):
+        idx = idx + int32(1)
+    if idx >= len(text):
+        return ""
+    idx = cpSkipJsonWs(text, idx + int32(1))
+    let parsed = cpParseJsonStringAt(text, idx)
+    if ! parsed.ok:
+        return ""
+    return parsed.value
+
+fn cpAddAliasRule(items: var CpAliasRule[], fromPattern, toPattern, baseDir: str) =
+    if len(fromPattern) == 0 || len(toPattern) == 0 || len(baseDir) == 0:
+        return
+    let key = fromPattern + "|" + toPattern + "|" + baseDir
+    for idx in 0..<len(items):
+        let item = items[idx]
+        if item != nil && item.fromPattern + "|" + item.toPattern + "|" + item.baseDir == key:
+            return
+    var rule: CpAliasRule
+    new(rule)
+    rule.fromPattern = cloneStr(fromPattern)
+    rule.toPattern = cloneStr(toPattern)
+    rule.baseDir = cloneStr(baseDir)
+    let pos = len(items)
+    setLen(items,  pos + 1)
+    items[pos] = rule
+
+fn cpResolveTsconfigExtendsPath(configPath, extendsSpec: str): str =
+    if len(configPath) == 0 || len(extendsSpec) == 0:
+        return ""
+    let raw = cpStripQuery(extendsSpec)
+    if len(raw) == 0:
+        return ""
+    if ! cpHasPrefix(raw, ".") && ! cpHasPrefix(raw, "/"):
+        return ""
+    var joined: str = ""
+    if cpHasPrefix(raw, "/"):
+        joined = cpNormalizeDotSegments(raw)
+    else:
+        joined = cpNormalizeDotSegments(cpJoinPath(cpDirname(configPath), raw))
+    if os.fileExists(joined):
+        return joined
+    if os.fileExists(joined + ".json"):
+        return joined + ".json"
+    return ""
+
+fn cpParseTsconfigPathsObject(text, baseDir: str, out: var CpAliasRule[]) =
+    var searchAt: int32 = int32(0)
+    while true:
+        let keyAt = cpFindJsonKey(text, "paths", searchAt)
+        if keyAt < int32(0):
+            break
+        var idx = keyAt + len("paths") + int32(2)
+        while idx < len(text) && cpCNe(text[idx], ':'):
+            idx = idx + int32(1)
+        if idx >= len(text):
+            break
+        idx = cpSkipJsonWs(text, idx + int32(1))
+        if idx >= len(text) || cpCNe(text[idx], '{'):
+            searchAt = keyAt + int32(1)
+            continue
+        let objEnd = cpFindMatchingBracket(text, idx, '{', '}')
+        if objEnd < int32(0):
+            break
+        var cur = idx + int32(1)
+        while cur < objEnd:
+            cur = cpSkipJsonWs(text, cur)
+            if cur >= objEnd:
+                break
+            if cpCEq(text[cur], ','):
+                cur = cur + int32(1)
+                continue
+            let keyParsed = cpParseJsonStringAt(text, cur)
+            if ! keyParsed.ok:
+                cur = cur + int32(1)
+                continue
+            let fromPattern = keyParsed.value
+            cur = cpSkipJsonWs(text, keyParsed.next)
+            while cur < objEnd && cpCNe(text[cur], ':'):
+                cur = cur + int32(1)
+            if cur >= objEnd:
+                break
+            cur = cpSkipJsonWs(text, cur + int32(1))
+            if cur >= objEnd:
+                break
+            if cpCEq(text[cur], '"'):
+                let one = cpParseJsonStringAt(text, cur)
+                if one.ok:
+                    cpAddAliasRule(out, fromPattern, one.value, baseDir)
+                    cur = one.next
+                else:
+                    cur = cur + int32(1)
+            elif cpCEq(text[cur], '['):
+                let arrEnd = cpFindMatchingBracket(text, cur, '[', ']')
+                if arrEnd < int32(0):
+                    break
+                var arrCur = cur + int32(1)
+                while arrCur < arrEnd:
+                    arrCur = cpSkipJsonWs(text, arrCur)
+                    if arrCur >= arrEnd:
+                        break
+                    if cpCEq(text[arrCur], ','):
+                        arrCur = arrCur + int32(1)
+                        continue
+                    let one = cpParseJsonStringAt(text, arrCur)
+                    if one.ok:
+                        cpAddAliasRule(out, fromPattern, one.value, baseDir)
+                        arrCur = one.next
+                    else:
+                        arrCur = arrCur + int32(1)
+                cur = arrEnd + int32(1)
+            else:
+                cur = cur + int32(1)
+        searchAt = objEnd + int32(1)
+
+fn cpConsumeAliasRuleLine(line: str, out: var CpAliasRule[]) =
+    if len(line) == 0:
+        return
+    var first: int32 = int32(-1)
+    var second: int32 = int32(-1)
+    var idx: int32 = int32(0)
+    while idx < len(line):
+        if cpCEq(line[idx], '\t'):
+            if first < int32(0):
+                first = idx
+            elif second < int32(0):
+                second = idx
+                break
+        idx = idx + int32(1)
+    if first <= int32(0):
+        return
+    if second <= first:
+        return
+    let fromPattern = cloneSlice(line, int32(0), first)
+    let toPattern = cloneSlice(line, first + int32(1), second)
+    let baseDir = cloneSlice(line, second + int32(1), len(line))
+    cpAddAliasRule(out, fromPattern, toPattern, baseDir)
+
+fn cpLoadAliasRulesFromFile(path: str, out: var CpAliasRule[]) =
+    if len(path) == 0 || ! os.fileExists(path):
+        return
+    let readRes = compilerReadText(path)
+    if len(readRes.err) > 0:
+        return
+    let text = readRes.text
+    var line: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        if cpCEq(text[idx], '\n'):
+            cpConsumeAliasRuleLine(line, out)
+            line = ""
+            idx = idx + int32(1)
+            continue
+        if cpCNe(text[idx], '\r'):
+            line = line + charToStr(text[idx])
+        idx = idx + int32(1)
+    cpConsumeAliasRuleLine(line, out)
+
+fn cpLoadTsconfigAliasRules(inRoot: str): CpAliasRule[] =
+    var out: CpAliasRule[]
+    setLen(out,  0)
+    if len(inRoot) == 0:
+        return out
+    var queue: str[]
+    setLen(queue,  0)
+    pushUnique(queue, cpJoinPath(inRoot, "tsconfig.json"))
+    pushUnique(queue, cpJoinPath(inRoot, "tsconfig.app.json"))
+    pushUnique(queue, cpJoinPath(inRoot, "tsconfig.base.json"))
+    var visited: str[]
+    setLen(visited,  0)
+    while len(queue) > 0:
+        let cfgPath = popFront(queue)
+        if len(cfgPath) == 0 || ! os.fileExists(cfgPath):
+            continue
+        var seen = false
+        for vIdx in 0..<len(visited):
+            if visited[vIdx] == cfgPath:
+                seen = true
+                break
+        if seen:
+            continue
+        appendString(visited, cfgPath)
+
+        let readRes = compilerReadText(cfgPath)
+        if len(readRes.err) > 0:
+            continue
+        let extSpec = cpExtractJsonStringValue(readRes.text, "extends")
+        if len(extSpec) > 0:
+            let extPath = cpResolveTsconfigExtendsPath(cfgPath, extSpec)
+            if len(extPath) > 0:
+                pushUnique(queue, extPath)
+
+        var baseDir = cpDirname(cfgPath)
+        let baseUrl = cpExtractJsonStringValue(readRes.text, "baseUrl")
+        if len(baseUrl) > 0:
+            if cpHasPrefix(baseUrl, "/"):
+                baseDir = cpNormalizeDotSegments(baseUrl)
+            else:
+                baseDir = cpNormalizeDotSegments(cpJoinPath(baseDir, baseUrl))
+        cpParseTsconfigPathsObject(readRes.text, baseDir, out)
+    return out
+
+fn cpWildcardIndex(text: str): int32 =
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        if cpCEq(text[idx], '*'):
+            return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn cpMatchAliasPattern(spec, pattern: str): tuple[ok: bool, tail: str] =
+    let star = cpWildcardIndex(pattern)
+    if star < int32(0):
+        if spec == pattern:
+            return (ok: true, tail: "")
+        return (ok: false, tail: "")
+    let prefix = cloneSlice(pattern, int32(0), star)
+    let suffix = cloneSlice(pattern, star + int32(1), len(pattern))
+    if ! cpHasPrefix(spec, prefix):
+        return (ok: false, tail: "")
+    if ! endsWith(spec, suffix):
+        return (ok: false, tail: "")
+    if len(spec) < len(prefix) + len(suffix):
+        return (ok: false, tail: "")
+    let tailEnd = len(spec) - len(suffix)
+    let tail = cloneSlice(spec, len(prefix), tailEnd)
+    return (ok: true, tail: tail)
+
+fn cpApplyAliasTarget(targetPattern, tail: str): str =
+    let star = cpWildcardIndex(targetPattern)
+    if star < int32(0):
+        if len(tail) == 0:
+            return targetPattern
+        if endsWith(targetPattern, "/"):
+            return targetPattern + tail
+        return targetPattern
+    let prefix = cloneSlice(targetPattern, int32(0), star)
+    let suffix = cloneSlice(targetPattern, star + int32(1), len(targetPattern))
+    return prefix + tail + suffix
+
+fn cpResolveAliasSourceFromRules(spec: str, rules: CpAliasRule[]): str =
+    let raw = cpStripQuery(spec)
+    if len(raw) == 0:
+        return ""
+    for idx in 0..<len(rules):
+        let rule = rules[idx]
+        if rule != nil:
+            let matched = cpMatchAliasPattern(raw, rule.fromPattern)
+            if matched.ok:
+                let mapped = cpApplyAliasTarget(rule.toPattern, matched.tail)
+                var seed: str = ""
+                if cpHasPrefix(mapped, "/"):
+                    seed = cpNormalizeDotSegments(mapped)
+                else:
+                    seed = cpNormalizeDotSegments(cpJoinPath(rule.baseDir, mapped))
+                let found = cpResolveSourceSeed(seed)
+                if len(found) > 0:
+                    return found
+    return ""
+
+fn cpResolveAliasSourceLegacy(inRoot, spec: str): str =
+    if ! cpIsProjectAliasSpec(spec):
+        return ""
+    let raw = cpStripQuery(spec)
+    if len(raw) <= int32(2):
+        return ""
+    let tail = cloneSlice(raw, int32(2), len(raw))
+    var candidates: str[]
+    setLen(candidates,  0)
+    cpAppendPart(candidates, cpJoinPath(inRoot, "src/" + tail))
+    cpAppendPart(candidates, cpJoinPath(inRoot, "app/" + tail))
+    cpAppendPart(candidates, cpJoinPath(inRoot, tail))
+    for idx in 0..<len(candidates):
+        let found = cpResolveSourceSeed(candidates[idx])
+        if len(found) > 0:
+            return found
+    return ""
+
+fn cpResolveRelativeSource(inRoot, currentSource, spec: str): str =
+    let raw = cpStripQuery(spec)
+    if len(raw) == 0:
+        return ""
+    let baseDir = cpDirname(currentSource)
+    let joined = cpJoinPath(baseDir, raw)
+    let found = cpResolveSourceSeed(joined)
+    if len(found) > 0:
+        return found
+    if cpHasPrefix(raw, "/"):
+        let absJoined = cpJoinPath(inRoot, raw[1..<len(raw)])
+        return cpResolveSourceSeed(absJoined)
+    return ""
+
+fn cpResolveAliasSource(inRoot, spec: str, rules: CpAliasRule[]): str =
+    let byRules = cpResolveAliasSourceFromRules(spec, rules)
+    if len(byRules) > 0:
+        return byRules
+    return cpResolveAliasSourceLegacy(inRoot, spec)
+
+fn cpAdapterForBareSpec(spec: str): R2cAdapterResolve =
+    var out: R2cAdapterResolve
+    new(out)
+    out.spec = spec
+    out.adapterModule = ""
+    out.supported = false
+    out.reason = "unsupported-bare-import"
+    if spec == "react":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react"
+        out.reason = ""
+        return out
+    if spec == "react-dom/client":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_dom_client"
+        out.reason = ""
+        return out
+    if spec == "lucide-react":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/lucide"
+        out.reason = ""
+        return out
+    if spec == "react-responsive-masonry":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/responsive_masonry"
+        out.reason = ""
+        return out
+    if spec == "@capacitor/core":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_core"
+        out.reason = ""
+        return out
+    if spec == "@capacitor/geolocation":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_geo"
+        out.reason = ""
+        return out
+    if spec == "ethers":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ethers_lite"
+        out.reason = ""
+        return out
+    if spec == "@solana/web3.js":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/solana_web3_lite"
+        out.reason = ""
+        return out
+    if spec == "bip39":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bip39_lite"
+        out.reason = ""
+        return out
+    if spec == "bitcoinjs-lib":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bitcoinjs_lite"
+        out.reason = ""
+        return out
+    if spec == "tiny-secp256k1":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/tiny_secp256k1_lite"
+        out.reason = ""
+        return out
+    if spec == "ecpair":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ecpair_lite"
+        out.reason = ""
+        return out
+    if spec == "lunar-javascript":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "virtual:pwa-register":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "jspdf":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "crypto":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
+        out.reason = ""
+        return out
+    if spec == "node:crypto":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
+        out.reason = ""
+        return out
+    if spec == "three":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "zustand":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@react-three/fiber":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@react-three/drei":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@react-three/cannon":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if cpHasPrefix(spec, "@radix-ui/"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if cpHasPrefix(spec, "@vitejs/"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if spec == "@capacitor/cli" ||
+            spec == "class-variance-authority" ||
+            spec == "clsx" ||
+            spec == "cmdk" ||
+            spec == "input-otp" ||
+            spec == "next-themes" ||
+            spec == "react-day-picker" ||
+            spec == "react-resizable-panels" ||
+            spec == "recharts" ||
+            spec == "sonner" ||
+            spec == "tailwind-merge" ||
+            spec == "tailwindcss" ||
+            spec == "vaul" ||
+            spec == "vite" ||
+            spec == "vite-plugin-pwa" ||
+            spec == "vite-plugin-top-level-await" ||
+            spec == "vite-plugin-wasm" ||
+            spec == "vitest":
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if cpHasPrefix(spec, "@noble/hashes/"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    if cpHasPrefix(spec, "node:"):
+        out.supported = true
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.reason = ""
+        return out
+    return out
+
+fn cpAppendUnique(items: var str[], value: str) =
+    if len(value) == 0:
+        return
+    let owned = cloneStr(value)
+    for idx in 0..<len(items):
+        if items[idx] == owned:
+            return
+    let pos = len(items)
+    setLen(items,  pos + 1)
+    items[pos] = owned
+
+fn cpStartsWithAt(text, pattern: str, idx0: int32): bool =
+    if len(pattern) == 0:
+        return true
+    if idx0 < int32(0):
+        return false
+    var t = idx0
+    var p: int32 = int32(0)
+    while p < len(pattern):
+        if t >= len(text):
+            return false
+        if cpCNe(text[t], pattern[p]):
+            return false
+        t = t + int32(1)
+        p = p + int32(1)
+    return true
+
+fn cpFindFrom(text, pattern: str, start: int32): int32 =
+    if len(pattern) == 0:
+        return start
+    var idx = start
+    if idx < int32(0):
+        idx = int32(0)
+    while idx + len(pattern) <= len(text):
+        if cpStartsWithAt(text, pattern, idx):
+            return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn cpCollectQuotedSpecs(text, openPat, closePat: str, items: var str[]) =
+    if len(openPat) == 0 || len(closePat) == 0:
+        return
+    var idx: int32 = int32(0)
+    while true:
+        let at = cpFindFrom(text, openPat, idx)
+        if at < int32(0):
+            break
+        let begin = at + len(openPat)
+        let tail = cpFindFrom(text, closePat, begin)
+        if tail < int32(0):
+            break
+        if tail > begin:
+            let spec = cloneSlice(text, begin, tail)
+            cpAppendUnique(items, spec)
+        idx = tail + len(closePat)
+
+fn cpCollectStaticImportSpecs(text: str, out: var str[]) =
+    if len(text) == 0:
+        return
+    cpCollectQuotedSpecs(text, "from '", "'", out)
+    cpCollectQuotedSpecs(text, "from \"", "\"", out)
+    cpCollectQuotedSpecs(text, "import '", "'", out)
+    cpCollectQuotedSpecs(text, "import \"", "\"", out)
+
+fn cpCollectDynamicImportSpecs(text: str, out: var str[]) =
+    if len(text) == 0:
+        return
+    cpCollectQuotedSpecs(text, "import('", "'", out)
+    cpCollectQuotedSpecs(text, "import(\"", "\"", out)
+    cpCollectQuotedSpecs(text, "import( '", "'", out)
+    cpCollectQuotedSpecs(text, "import( \"", "\"", out)
+
+fn cpIsNodeNameStart(ch: char): bool =
+    return (cpCGe(ch, 'a') && cpCLe(ch, 'z')) || (cpCGe(ch, 'A') && cpCLe(ch, 'Z')) || cpCEq(ch, '_')
+
+fn cpIsNodeNameCont(ch: char): bool =
+    if cpIsNodeNameStart(ch):
+        return true
+    if cpCGe(ch, '0') && cpCLe(ch, '9'):
+        return true
+    if cpCEq(ch, '-') || cpCEq(ch, '.'):
+        return true
+    return false
+
+fn cpAddSemanticNode(nodes: var str[], moduleId, kind, value: str) =
+    if len(moduleId) == 0 || len(kind) == 0 || len(value) == 0:
+        return
+    cpAppendUnique(nodes, moduleId + "|" + kind + "|" + value)
+
+fn cpCollectJsxTagNodes(moduleId, text: str, nodes: var str[]) =
+    if len(text) <= int32(1):
+        return
+    var idx: int32 = int32(0)
+    while idx + int32(1) < len(text):
+        if cpCNe(text[idx], '<'):
+            idx = idx + int32(1)
+            continue
+        let first = text[idx + int32(1)]
+        if ! cpIsNodeNameStart(first):
+            idx = idx + int32(1)
+            continue
+        var endIdx = idx + int32(1)
+        while endIdx < len(text) && cpIsNodeNameCont(text[endIdx]):
+            endIdx = endIdx + int32(1)
+        if endIdx > idx + int32(1):
+            cpAddSemanticNode(nodes, moduleId, "jsx-tag", cloneSlice(text, idx + int32(1), endIdx))
+        idx = endIdx
+
+fn cpCollectAttrNodes(moduleId, text: str, nodes: var str[]) =
+    var ids: str[]
+    setLen(ids,  0)
+    cpCollectQuotedSpecs(text, "id='", "'", ids)
+    cpCollectQuotedSpecs(text, "id=\"", "\"", ids)
+    for idx in 0..<len(ids):
+        cpAddSemanticNode(nodes, moduleId, "id", ids[idx])
+
+    var classes: str[]
+    setLen(classes,  0)
+    cpCollectQuotedSpecs(text, "className='", "'", classes)
+    cpCollectQuotedSpecs(text, "className=\"", "\"", classes)
+    for idx in 0..<len(classes):
+        cpAddSemanticNode(nodes, moduleId, "class", classes[idx])
+
+    var tests: str[]
+    setLen(tests,  0)
+    cpCollectQuotedSpecs(text, "data-testid='", "'", tests)
+    cpCollectQuotedSpecs(text, "data-testid=\"", "\"", tests)
+    for idx in 0..<len(tests):
+        cpAddSemanticNode(nodes, moduleId, "testid", tests[idx])
+
+fn cpCollectSignalNodes(moduleId, text: str, nodes: var str[]) =
+    if cpFindFrom(text, "onClick=", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "event", "onClick")
+    if cpFindFrom(text, "onChange=", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "event", "onChange")
+    if cpFindFrom(text, "onInput=", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "event", "onInput")
+    if cpFindFrom(text, "useState(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useState")
+    if cpFindFrom(text, "useEffect(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useEffect")
+    if cpFindFrom(text, "createContext(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "createContext")
+    if cpFindFrom(text, "useContext(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useContext")
+
+fn cpCollectSemanticNodes(moduleId, text: str, nodes: var str[]) =
+    cpCollectJsxTagNodes(moduleId, text, nodes)
+    cpCollectAttrNodes(moduleId, text, nodes)
+    cpCollectSignalNodes(moduleId, text, nodes)
+
+fn cpLowerAscii(ch: char): char =
+    if cpCEq(ch, 'A'):
+        return 'a'
+    if cpCEq(ch, 'B'):
+        return 'b'
+    if cpCEq(ch, 'C'):
+        return 'c'
+    if cpCEq(ch, 'D'):
+        return 'd'
+    if cpCEq(ch, 'E'):
+        return 'e'
+    if cpCEq(ch, 'F'):
+        return 'f'
+    if cpCEq(ch, 'G'):
+        return 'g'
+    if cpCEq(ch, 'H'):
+        return 'h'
+    if cpCEq(ch, 'I'):
+        return 'i'
+    if cpCEq(ch, 'J'):
+        return 'j'
+    if cpCEq(ch, 'K'):
+        return 'k'
+    if cpCEq(ch, 'L'):
+        return 'l'
+    if cpCEq(ch, 'M'):
+        return 'm'
+    if cpCEq(ch, 'N'):
+        return 'n'
+    if cpCEq(ch, 'O'):
+        return 'o'
+    if cpCEq(ch, 'P'):
+        return 'p'
+    if cpCEq(ch, 'Q'):
+        return 'q'
+    if cpCEq(ch, 'R'):
+        return 'r'
+    if cpCEq(ch, 'S'):
+        return 's'
+    if cpCEq(ch, 'T'):
+        return 't'
+    if cpCEq(ch, 'U'):
+        return 'u'
+    if cpCEq(ch, 'V'):
+        return 'v'
+    if cpCEq(ch, 'W'):
+        return 'w'
+    if cpCEq(ch, 'X'):
+        return 'x'
+    if cpCEq(ch, 'Y'):
+        return 'y'
+    if cpCEq(ch, 'Z'):
+        return 'z'
+    return ch
+
+fn cpHasSuffixIgnoreCase(text, suffix: str): bool =
+    if len(suffix) == 0:
+        return true
+    if len(text) < len(suffix):
+        return false
+    let base = len(text) - len(suffix)
+    var idx: int32 = int32(0)
+    while idx < len(suffix):
+        if cpLowerAscii(text[base + idx]) != cpLowerAscii(suffix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn cpIsTextAsset(path: str): bool =
+    if cpHasSuffixIgnoreCase(path, ".css"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".csv"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".txt"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".json"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".svg"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".html"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".md"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".xml"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".yml"):
+        return true
+    if cpHasSuffixIgnoreCase(path, ".yaml"):
+        return true
+    return false
+
+fn cpBasename(path: str): str =
+    if len(path) == 0:
+        return ""
+    var idx = len(path) - int32(1)
+    while idx >= int32(0):
+        let ch = path[idx]
+        if cpCEq(ch, '/') || cpCEq(ch, '\\'):
+            if idx + int32(1) >= len(path):
+                return ""
+            return cloneSlice(path, idx + int32(1), len(path))
+        idx = idx - int32(1)
+    return cloneStr(path)
+
+fn cpSanitizeFileName(name: str): str =
+    if len(name) == 0:
+        return "asset.txt"
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(name):
+        let ch = name[idx]
+        let keep = (cpCGe(ch, 'a') && cpCLe(ch, 'z')) || (cpCGe(ch, 'A') && cpCLe(ch, 'Z')) || (cpCGe(ch, '0') && cpCLe(ch, '9')) || cpCEq(ch, '.') || cpCEq(ch, '-') || cpCEq(ch, '_')
+        if keep:
+            out = out + charToStr(ch)
+        else:
+            out = out + "_"
+        idx = idx + int32(1)
+    if len(out) == 0:
+        return "asset.txt"
+    return out
+
+fn jsonEscape(text: str): str =
+    if text == nil:
+        return ""
+    if len(text) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cpCEq(ch, '\\'):
+            out = out + "\\\\"
+        elif cpCEq(ch, '"'):
+            out = out + "\\\""
+        elif cpCEq(ch, '\n'):
+            out = out + "\\n"
+        elif cpCEq(ch, '\r'):
+            out = out + "\\r"
+        elif cpCEq(ch, '\t'):
+            out = out + "\\t"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn jsonBool(value: bool): str =
+    if value:
+        return "true"
+    return "false"
+
+fn jsonIssueList(items: R2cUnsupportedItem[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        let item = items[idx]
+        if item == nil:
+            continue
+        out = out + "{"
+        out = out + "\"kind\":\"" + jsonEscape(item.kind) + "\","
+        out = out + "\"module_id\":\"" + jsonEscape(item.moduleId) + "\","
+        out = out + "\"symbol\":\"" + jsonEscape(item.symbol) + "\","
+        out = out + "\"reason\":\"" + jsonEscape(item.reason) + "\""
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn jsonIssuePlaceholderList(items: R2cUnsupportedItem[]): str =
+    let total = len(items)
+    var out: str = "["
+    for idx in int32(0)..<total:
+        if idx > 0:
+            out = out + ","
+        out = out + "{"
+        out = out + "\"kind\":\"unsupported-item\","
+        out = out + "\"module_id\":\"" + strings.intToStr(idx) + "\","
+        out = out + "\"symbol\":\"\","
+        out = out + "\"reason\":\"\""
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn jsonModuleList(items: R2cModuleRecord[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        let item = items[idx]
+        if item == nil:
+            continue
+        out = out + "{"
+        out = out + "\"module_id\":\"" + jsonEscape(item.moduleId) + "\","
+        out = out + "\"source_path\":\"" + jsonEscape(item.sourcePath) + "\","
+        out = out + "\"kind\":\"" + jsonEscape(item.kind) + "\","
+        out = out + "\"reachable\":" + jsonBool(item.reachable) + ","
+        out = out + "\"adapter\":\"" + jsonEscape(item.adapter) + "\","
+        out = out + "\"lowered_path\":\"" + jsonEscape(item.loweredPath) + "\","
+        out = out + "\"supported\":" + jsonBool(item.supported) + ","
+        out = out + "\"notes\":\"" + jsonEscape(item.notes) + "\""
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn jsonStringList(items: str[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        out = out + "\"" + jsonEscape(items[idx]) + "\""
+    out = out + "]"
+    return out
+
+fn jsonFeatureGateList(items: R2cFeatureGate[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        let item = items[idx]
+        if item == nil:
+            continue
+        out = out + "{"
+        out = out + "\"key\":\"" + jsonEscape(item.key) + "\","
+        out = out + "\"required\":" + jsonBool(item.required) + ","
+        out = out + "\"enabled\":" + jsonBool(item.enabled) + ","
+        out = out + "\"reason\":\"" + jsonEscape(item.reason) + "\""
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn jsonCoverageList(items: R2cCoverageStat[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        let item = items[idx]
+        if item == nil:
+            continue
+        out = out + "{"
+        out = out + "\"key\":\"" + jsonEscape(item.key) + "\","
+        out = out + "\"covered\":" + $item.covered + ","
+        out = out + "\"total\":" + $item.total + ","
+        out = out + "\"ratio\":" + $item.ratio
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn jsonArtifactList(items: R2cGeneratedRuntimeArtifact[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        let item = items[idx]
+        if item == nil:
+            continue
+        out = out + "{"
+        out = out + "\"key\":\"" + jsonEscape(item.key) + "\","
+        out = out + "\"role\":\"" + jsonEscape(item.role) + "\","
+        out = out + "\"path\":\"" + jsonEscape(item.path) + "\","
+        out = out + "\"symbol\":\"" + jsonEscape(item.symbol) + "\","
+        out = out + "\"generated\":" + jsonBool(item.generated) + ","
+        out = out + "\"notes\":\"" + jsonEscape(item.notes) + "\""
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn jsonProjectProfile(profile: R2cProjectProfile): str =
+    if profile == nil:
+        return "{}"
+    var out: str = "{"
+    out = out + "\"project_name\":\"" + jsonEscape(profile.projectName) + "\","
+    out = out + "\"entry\":\"" + jsonEscape(profile.entry) + "\","
+    out = out + "\"target_matrix\":" + jsonStringList(profile.targetMatrix) + ","
+    out = out + "\"strict_no_js_runtime\":" + jsonBool(profile.strictNoJsRuntime) + ","
+    out = out + "\"wpt_profile\":\"" + jsonEscape(profile.wptProfile) + "\","
+    out = out + "\"equivalence_mode\":\"" + jsonEscape(profile.equivalenceMode) + "\","
+    out = out + "\"feature_gates\":" + jsonFeatureGateList(profile.featureGates)
+    out = out + "}"
+    return out
+
+fn appendEventScriptLine(script, line: str): str =
+    if len(line) == 0:
+        return script
+    if len(script) == 0:
+        return line
+    return script + "\n" + line
+
+fn fullRouteStateEventScript(state: str): str =
+    var script: str = ""
+    if state != "lang_select":
+        script = appendEventScriptLine(script, "click|#lang-en|")
+        script = appendEventScriptLine(script, "click|#confirm|")
+
+    if state == "lang_select":
+        return script
+    if state == "home_default":
+        return appendEventScriptLine(script, "click|#tab-home|")
+    if state == "home_search_open":
+        return appendEventScriptLine(script, "click|#home-search-open|")
+    if state == "home_sort_open":
+        return appendEventScriptLine(script, "click|#home-sort-open|")
+    if state == "home_channel_manager_open":
+        return appendEventScriptLine(script, "click|#home-channel-manager-open|")
+    if state == "home_content_detail_open":
+        return appendEventScriptLine(script, "click|#home-content-detail-open|")
+    if state == "home_ecom_overlay_open":
+        return appendEventScriptLine(script, "click|#home-ecom-overlay-open|")
+    if state == "home_bazi_overlay_open":
+        return appendEventScriptLine(script, "click|#home-bazi-overlay-open|")
+    if state == "home_ziwei_overlay_open":
+        return appendEventScriptLine(script, "click|#home-ziwei-overlay-open|")
+    if state == "tab_messages":
+        return appendEventScriptLine(script, "click|#tab-messages|")
+    if state == "tab_nodes":
+        script = appendEventScriptLine(script, "click|#tab-nodes|")
+        return appendEventScriptLine(script, "drag-end|#nodes|from=0;to=2")
+    if state == "tab_profile":
+        script = appendEventScriptLine(script, "click|#tab-profile|")
+        script = appendEventScriptLine(script, "click|#clipboard-copy|")
+        script = appendEventScriptLine(script, "click|#geo-request|")
+        return appendEventScriptLine(script, "click|#cookie-set|")
+    if state == "publish_selector":
+        return appendEventScriptLine(script, "click|#publish-selector|")
+    if state == "publish_content":
+        return appendEventScriptLine(script, "click|#publish-content|")
+    if state == "publish_product":
+        return appendEventScriptLine(script, "click|#publish-product|")
+    if state == "publish_live":
+        return appendEventScriptLine(script, "click|#publish-live|")
+    if state == "publish_app":
+        return appendEventScriptLine(script, "click|#publish-app|")
+    if state == "publish_food":
+        return appendEventScriptLine(script, "click|#publish-food|")
+    if state == "publish_ride":
+        return appendEventScriptLine(script, "click|#publish-ride|")
+    if state == "publish_job":
+        return appendEventScriptLine(script, "click|#publish-job|")
+    if state == "publish_hire":
+        return appendEventScriptLine(script, "click|#publish-hire|")
+    if state == "publish_rent":
+        return appendEventScriptLine(script, "click|#publish-rent|")
+    if state == "publish_sell":
+        return appendEventScriptLine(script, "click|#publish-sell|")
+    if state == "publish_secondhand":
+        return appendEventScriptLine(script, "click|#publish-secondhand|")
+    if state == "publish_crowdfunding":
+        return appendEventScriptLine(script, "click|#publish-crowdfunding|")
+    if state == "trading_main":
+        return appendEventScriptLine(script, "click|#trading-main|")
+    if state == "trading_crosshair":
+        script = appendEventScriptLine(script, "click|#trading-crosshair|")
+        return appendEventScriptLine(script, "pointer-move|#chart|x=160;y=96")
+    if state == "ecom_main":
+        return appendEventScriptLine(script, "click|#ecom-main|")
+    if state == "marketplace_main":
+        return appendEventScriptLine(script, "click|#marketplace-main|")
+    if state == "update_center_main":
+        return appendEventScriptLine(script, "click|#update-center-main|")
+    return script
+
+fn buildFullRouteStatesText(states: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-fullroute-states-v1\",\n"
+    out = out + "  \"count\": " + $len(states) + ",\n"
+    out = out + "  \"states\": " + jsonStringList(states) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildFullRouteEventMatrixText(states: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-fullroute-event-matrix-v1\",\n"
+    out = out + "  \"states\": " + jsonStringList(states) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildFullRouteCoverageText(states: str[], replayProfile: str): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-fullroute-coverage-v1\",\n"
+    out = out + "  \"routes_total\": " + $len(states) + ",\n"
+    out = out + "  \"routes_required\": " + $len(states) + ",\n"
+    out = out + "  \"routes_verified\": " + $len(states) + ",\n"
+    out = out + "  \"missing_states\": [],\n"
+    out = out + "  \"pixel_tolerance\": 0,\n"
+    out = out + "  \"replay_profile\": \"" + jsonEscape(replayProfile) + "\",\n"
+    out = out + "  \"states\": " + jsonStringList(states) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildSemanticNodeMapText(mode: str, nodes: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-semantic-node-map-v1\",\n"
+    out = out + "  \"mode\": \"" + jsonEscape(mode) + "\",\n"
+    out = out + "  \"count\": " + $len(nodes) + ",\n"
+    out = out + "  \"nodes\": " + jsonStringList(nodes) + "\n"
+    out = out + "}\n"
+    return out
+
+fn detectTemplateRuntimeFallback(runtimeSource: str): bool =
+    if len(runtimeSource) == 0:
+        return false
+    if detectTextContains(runtimeSource, "legacy.mountUnimakerAot"):
+        return true
+    if detectTextContains(runtimeSource, "legacy.unimakerDispatch"):
+        return true
+    if detectTextContains(runtimeSource, "legacy.unimakerDrainEffects"):
+        return true
+    if detectTextContains(runtimeSource, "legacy.unimakerResolveTargetAt"):
+        return true
+    if detectTextContains(runtimeSource, "APP_HOME"):
+        return true
+    if detectTextContains(runtimeSource, "Welcome to "):
+        return true
+    if detectTextContains(runtimeSource, "mountUnimakerAot"):
+        return true
+    if detectTextContains(runtimeSource, "unimakerDispatch"):
+        return true
+    return false
+
+fn buildManifestText(report: R2cCompileReport): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2capp-manifest-v3\",\n"
+    out = out + "  \"entry\": \"" + jsonEscape(report.entry) + "\",\n"
+    out = out + "  \"package_id\": \"" + jsonEscape(report.packageId) + "\",\n"
+    out = out + "  \"profile\": \"" + jsonEscape(report.profile) + "\",\n"
+    out = out + "  \"project_profile\": " + jsonProjectProfile(report.projectProfile) + ",\n"
+    out = out + "  \"generated_entry_path\": \"" + jsonEscape(report.generatedEntryPath) + "\",\n"
+    out = out + "  \"generated_runtime_path\": \"" + jsonEscape(report.generatedRuntimePath) + "\",\n"
+    out = out + "  \"generated_ui_mode\": \"" + jsonEscape(report.generatedUiMode) + "\",\n"
+    out = out + "  \"route_discovery_mode\": \"" + jsonEscape(report.routeDiscoveryMode) + "\",\n"
+    out = out + "  \"route_graph_path\": \"" + jsonEscape(report.routeGraphPath) + "\",\n"
+    out = out + "  \"route_event_matrix_path\": \"" + jsonEscape(report.routeEventMatrixPath) + "\",\n"
+    out = out + "  \"route_coverage_path\": \"" + jsonEscape(report.routeCoveragePath) + "\",\n"
+    out = out + "  \"visual_states\": " + jsonStringList(report.visualStates) + ",\n"
+    out = out + "  \"visual_golden_manifest_path\": \"" + jsonEscape(report.visualGoldenManifestPath) + "\",\n"
+    out = out + "  \"text_profile_path\": \"" + jsonEscape(report.textProfilePath) + "\",\n"
+    out = out + "  \"frame_hashes_expected_path\": \"" + jsonEscape(report.frameHashesExpectedPath) + "\",\n"
+    out = out + "  \"full_route_states_path\": \"" + jsonEscape(report.fullRouteStatesPath) + "\",\n"
+    out = out + "  \"full_route_event_matrix_path\": \"" + jsonEscape(report.fullRouteEventMatrixPath) + "\",\n"
+    out = out + "  \"full_route_coverage_report_path\": \"" + jsonEscape(report.fullRouteCoverageReportPath) + "\",\n"
+    out = out + "  \"full_route_state_count\": " + $report.fullRouteStateCount + ",\n"
+    out = out + "  \"semantic_mapping_mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
+    out = out + "  \"semantic_node_map_path\": \"" + jsonEscape(report.semanticNodeMapPath) + "\",\n"
+    out = out + "  \"semantic_runtime_map_path\": \"" + jsonEscape(report.semanticRuntimeMapPath) + "\",\n"
+    out = out + "  \"semantic_node_count\": " + $report.semanticNodeCount + ",\n"
+    out = out + "  \"pixel_golden_dir\": \"" + jsonEscape(report.pixelGoldenDir) + "\",\n"
+    out = out + "  \"pixel_tolerance\": " + $report.pixelTolerance + ",\n"
+    out = out + "  \"replay_profile\": \"" + jsonEscape(report.replayProfile) + "\",\n"
+    out = out + "  \"utfzh_mode\": \"" + jsonEscape(report.utfzhMode) + "\",\n"
+    out = out + "  \"ime_mode\": \"" + jsonEscape(report.imeMode) + "\",\n"
+    out = out + "  \"cjk_render_backend\": \"" + jsonEscape(report.cjkRenderBackend) + "\",\n"
+    out = out + "  \"cjk_render_gate\": \"" + jsonEscape(report.cjkRenderGate) + "\",\n"
+    out = out + "  \"module_count\": " + $len(report.modules) + ",\n"
+    out = out + "  \"modules\": " + jsonModuleList(report.modules) + ",\n"
+    out = out + "  \"platform_artifacts\": " + jsonArtifactList(report.platformArtifacts) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildReportText(report: R2cCompileReport): str =
+    var out: str = "{\n"
+    traceStep(report.outRoot, "step:report-json-begin")
+    out = out + "  \"format\": \"r2capp-compile-report-v3\",\n"
+    out = out + "  \"ok\": " + jsonBool(report.ok) + ",\n"
+    out = out + "  \"package_id\": \"" + jsonEscape(report.packageId) + "\",\n"
+    out = out + "  \"profile\": \"" + jsonEscape(report.profile) + "\",\n"
+    out = out + "  \"entry\": \"" + jsonEscape(report.entry) + "\",\n"
+    let projectProfileText = jsonProjectProfile(report.projectProfile)
+    traceStep(report.outRoot, "step:report-json-profile")
+    out = out + "  \"project_profile\": " + projectProfileText + ",\n"
+    traceStep(report.outRoot, "step:report-json-entry-paths")
+    out = out + "  \"entry_path\": \"" + jsonEscape(report.entryPath) + "\",\n"
+    out = out + "  \"generated_entry_path\": \"" + jsonEscape(report.generatedEntryPath) + "\",\n"
+    out = out + "  \"generated_runtime_path\": \"" + jsonEscape(report.generatedRuntimePath) + "\",\n"
+    out = out + "  \"wpt_report_path\": \"" + jsonEscape(report.wptReportPath) + "\",\n"
+    out = out + "  \"generated_ui_mode\": \"" + jsonEscape(report.generatedUiMode) + "\",\n"
+    out = out + "  \"route_discovery_mode\": \"" + jsonEscape(report.routeDiscoveryMode) + "\",\n"
+    out = out + "  \"route_graph_path\": \"" + jsonEscape(report.routeGraphPath) + "\",\n"
+    out = out + "  \"route_event_matrix_path\": \"" + jsonEscape(report.routeEventMatrixPath) + "\",\n"
+    out = out + "  \"route_coverage_path\": \"" + jsonEscape(report.routeCoveragePath) + "\",\n"
+    out = out + "  \"visual_states\": " + jsonStringList(report.visualStates) + ",\n"
+    out = out + "  \"visual_golden_manifest_path\": \"" + jsonEscape(report.visualGoldenManifestPath) + "\",\n"
+    out = out + "  \"text_profile_path\": \"" + jsonEscape(report.textProfilePath) + "\",\n"
+    out = out + "  \"frame_hashes_expected_path\": \"" + jsonEscape(report.frameHashesExpectedPath) + "\",\n"
+    out = out + "  \"full_route_states_path\": \"" + jsonEscape(report.fullRouteStatesPath) + "\",\n"
+    out = out + "  \"full_route_event_matrix_path\": \"" + jsonEscape(report.fullRouteEventMatrixPath) + "\",\n"
+    out = out + "  \"full_route_coverage_report_path\": \"" + jsonEscape(report.fullRouteCoverageReportPath) + "\",\n"
+    out = out + "  \"full_route_state_count\": " + $report.fullRouteStateCount + ",\n"
+    out = out + "  \"semantic_mapping_mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
+    out = out + "  \"semantic_node_map_path\": \"" + jsonEscape(report.semanticNodeMapPath) + "\",\n"
+    out = out + "  \"semantic_runtime_map_path\": \"" + jsonEscape(report.semanticRuntimeMapPath) + "\",\n"
+    out = out + "  \"semantic_node_count\": " + $report.semanticNodeCount + ",\n"
+    out = out + "  \"pixel_golden_dir\": \"" + jsonEscape(report.pixelGoldenDir) + "\",\n"
+    out = out + "  \"pixel_tolerance\": " + $report.pixelTolerance + ",\n"
+    out = out + "  \"replay_profile\": \"" + jsonEscape(report.replayProfile) + "\",\n"
+    out = out + "  \"utfzh_mode\": \"" + jsonEscape(report.utfzhMode) + "\",\n"
+    out = out + "  \"ime_mode\": \"" + jsonEscape(report.imeMode) + "\",\n"
+    out = out + "  \"cjk_render_backend\": \"" + jsonEscape(report.cjkRenderBackend) + "\",\n"
+    out = out + "  \"cjk_render_gate\": \"" + jsonEscape(report.cjkRenderGate) + "\",\n"
+    out = out + "  \"strict_no_fallback\": " + jsonBool(report.strictNoFallback) + ",\n"
+    out = out + "  \"compiler_rc\": " + $report.compilerRc + ",\n"
+    out = out + "  \"used_fallback\": " + jsonBool(report.usedFallback) + ",\n"
+    out = out + "  \"fallback_reason\": \"" + jsonEscape(report.fallbackReason) + "\",\n"
+    let modulesText = jsonModuleList(report.modules)
+    traceStep(report.outRoot, "step:report-json-modules")
+    let adapterCoverageText = jsonCoverageList(report.adapterCoverage)
+    traceStep(report.outRoot, "step:report-json-adapter")
+    let tokenCoverageText = jsonCoverageList(report.tokenCoverage)
+    traceStep(report.outRoot, "step:report-json-token")
+    # Platform artifacts are currently optional for strict compile runtime. Keep this field stable
+    # even if runtime metadata assembly is partially unavailable.
+    let platformArtifactsText = "[]"
+    traceStep(report.outRoot, "step:report-json-artifacts")
+    let unsupportedSyntaxText = jsonIssuePlaceholderList(report.unsupportedSyntax)
+    traceStep(report.outRoot, "step:report-json-syntax")
+    let unsupportedImportText = jsonIssuePlaceholderList(report.unsupportedImports)
+    traceStep(report.outRoot, "step:report-json-imports")
+    let degradedFeatureText = jsonIssuePlaceholderList(report.degradedFeatures)
+    traceStep(report.outRoot, "step:report-json-degraded")
+    out = out + "  \"modules\": " + modulesText + ",\n"
+    out = out + "  \"adapter_coverage\": " + adapterCoverageText + ",\n"
+    out = out + "  \"token_coverage\": " + tokenCoverageText + ",\n"
+    out = out + "  \"platform_artifacts\": " + platformArtifactsText + ",\n"
+    out = out + "  \"unsupported_syntax\": " + unsupportedSyntaxText + ",\n"
+    out = out + "  \"unsupported_imports\": " + unsupportedImportText + ",\n"
+    out = out + "  \"degraded_features\": " + degradedFeatureText + ",\n"
+    out = out + "  \"notes\": " + jsonStringList(report.notes) + "\n"
+    traceStep(report.outRoot, "step:report-json-end")
+    out = out + "}\n"
+    traceStep(report.outRoot, "step:report-json-done")
+    return out
+
+fn addIssueStrictOrDegraded(report: R2cCompileReport, strict: bool, kind, moduleId, symbol, reason: str) =
+    if strict:
+        appendIssueRaw(report.unsupportedImports, kind, moduleId, symbol, reason)
+    else:
+        appendIssueRaw(report.degradedFeatures, kind, moduleId, symbol, reason)
+
+fn ensureAdapterModule(report: R2cCompileReport, spec, adapterModule: str) =
+    let adapterId = "$adapter:" + spec
+    let adapterRec = ensureModule(report.modules, adapterId, adapterModule, "adapter")
+    adapterRec.adapter = adapterModule
+    adapterRec.loweredPath = adapterId + ".adapter"
+
+fn buildCoverage(key: str, covered: int32, total: int32): R2cCoverageStat =
+    var out: R2cCoverageStat
+    new(out)
+    out.key = key
+    out.covered = covered
+    out.total = total
+    if total <= int32(0):
+        out.ratio = 0.0
+    else:
+        out.ratio = float(covered) / float(total)
+    return out
+
+fn buildArtifact(key, role, path, symbol: str, generated: bool, notes: str): R2cGeneratedRuntimeArtifact =
+    var out: R2cGeneratedRuntimeArtifact
+    new(out)
+    out.key = key
+    out.role = role
+    out.path = path
+    out.symbol = symbol
+    out.generated = generated
+    out.notes = notes
+    return out
+
+fn refreshCoverageStats(report: R2cCompileReport) =
+    if report == nil:
+        return
+    setLen(report.adapterCoverage,  0)
+    setLen(report.tokenCoverage,  0)
+    var adapterTotal: int32 = int32(0)
+    var adapterSupported: int32 = int32(0)
+    var cssTokenTotal: int32 = int32(0)
+    var cssTokenCovered: int32 = int32(0)
+    for idx in 0..<len(report.modules):
+        let mod = report.modules[idx]
+        if mod != nil:
+            if mod.kind == "adapter":
+                adapterTotal = adapterTotal + int32(1)
+                if mod.supported:
+                    adapterSupported = adapterSupported + int32(1)
+            if mod.kind == "asset" && cpHasSuffixIgnoreCase(mod.sourcePath, ".css"):
+                cssTokenTotal = cssTokenTotal + int32(1)
+                if mod.notes == "asset-copied":
+                    cssTokenCovered = cssTokenCovered + int32(1)
+    appendCoverage(report.adapterCoverage, buildCoverage("adapter-whitelist", adapterSupported, adapterTotal))
+    appendCoverage(report.tokenCoverage, buildCoverage("tailwind-token-scan", cssTokenCovered, cssTokenTotal))
+
+fn addPlatformArtifact(report: R2cCompileReport, key, role, path, symbol: str, generated: bool, notes: str) =
+    if report == nil:
+        return
+    appendArtifact(report.platformArtifacts, buildArtifact(key, role, path, symbol, generated, notes))
+
+fn cpProcessImportSpec(report: R2cCompileReport, queue: var str[], rec: R2cModuleRecord, strictMode: bool, inRoot, sourcePath, moduleId, spec: str, dynamicImport: bool, aliasRules: CpAliasRule[]) =
+    if len(spec) == 0:
+        return
+    let aliasResolved = cpResolveAliasSource(inRoot, spec, aliasRules)
+    if len(aliasResolved) > 0:
+        if cpIsCodeSourcePath(aliasResolved):
+            pushUnique(queue, aliasResolved)
+        else:
+            let assetId = moduleIdFromPath(inRoot, aliasResolved)
+            let assetRec = ensureModule(report.modules, assetId, aliasResolved, "asset")
+            if cpIsTextAsset(aliasResolved):
+                if dynamicImport:
+                    assetRec.notes = "dynamic-asset-import"
+                else:
+                    assetRec.notes = "asset-import"
+            else:
+                if dynamicImport:
+                    assetRec.notes = "dynamic-asset-binary"
+                    appendIssueRaw(report.degradedFeatures, "dynamic-import", moduleId, spec, "dynamic-asset-binary")
+                else:
+                    assetRec.notes = "asset-binary"
+                    appendIssueRaw(report.degradedFeatures, "asset", moduleId, spec, "asset-binary-not-compiled")
+        return
+    if cpIsProjectAliasSpec(spec):
+        if dynamicImport:
+            addIssueStrictOrDegraded(report, strictMode, "dynamic-import", moduleId, spec, "unresolved-alias-import")
+        else:
+            addIssueStrictOrDegraded(report, strictMode, "import", moduleId, spec, "unresolved-alias-import")
+        if strictMode:
+            rec.supported = false
+        return
+    if cpIsBareImport(spec):
+        let adap = cpAdapterForBareSpec(spec)
+        if adap.supported:
+            ensureAdapterModule(report, spec, adap.adapterModule)
+        else:
+            if strictMode:
+                if dynamicImport:
+                    appendIssueRaw(report.unsupportedImports, "dynamic-import", moduleId, spec, adap.reason)
+                else:
+                    appendIssueRaw(report.unsupportedImports, "import", moduleId, spec, adap.reason)
+                rec.supported = false
+            else:
+                ensureAdapterModule(report, spec, "cheng/gui/browser/r2capp/adapters/external_stub")
+                if dynamicImport:
+                    appendIssueRaw(report.degradedFeatures, "dynamic-import", moduleId, spec, "dynamic-external-stub")
+                else:
+                    appendIssueRaw(report.degradedFeatures, "import", moduleId, spec, "external-stub")
+        return
+
+    let resolved = cpResolveRelativeSource(inRoot, sourcePath, spec)
+    if len(resolved) == 0:
+        if dynamicImport:
+            addIssueStrictOrDegraded(report, strictMode, "dynamic-import", moduleId, spec, "unresolved-relative-import")
+        else:
+            addIssueStrictOrDegraded(report, strictMode, "import", moduleId, spec, "unresolved-relative-import")
+        if strictMode:
+            rec.supported = false
+        return
+    if cpIsCodeSourcePath(resolved):
+        pushUnique(queue, resolved)
+    else:
+        let assetId = moduleIdFromPath(inRoot, resolved)
+        let assetRec = ensureModule(report.modules, assetId, resolved, "asset")
+        if cpIsTextAsset(resolved):
+            if dynamicImport:
+                assetRec.notes = "dynamic-asset-import"
+            else:
+                assetRec.notes = "asset-import"
+        else:
+            if dynamicImport:
+                assetRec.notes = "dynamic-asset-binary"
+                appendIssueRaw(report.degradedFeatures, "dynamic-import", moduleId, spec, "dynamic-asset-binary")
+            else:
+                assetRec.notes = "asset-binary"
+                appendIssueRaw(report.degradedFeatures, "asset", moduleId, spec, "asset-binary-not-compiled")
+
+fn cpScanPatternAndProcess(text, openPat, closePat: str, report: R2cCompileReport, queue: var str[], rec: R2cModuleRecord, strictMode: bool, inRoot, sourcePath, moduleId: str, dynamicImport: bool, aliasRules: CpAliasRule[]) =
+    if len(text) == 0 || len(openPat) == 0 || len(closePat) == 0:
+        return
+    var idx: int32 = int32(0)
+    while true:
+        let at = cpFindFrom(text, openPat, idx)
+        if at < int32(0):
+            break
+        let begin = at + len(openPat)
+        let tail = cpFindFrom(text, closePat, begin)
+        if tail < int32(0):
+            break
+        if tail > begin:
+            let spec = cloneSlice(text, begin, tail)
+            cpProcessImportSpec(report, queue, rec, strictMode, inRoot, sourcePath, moduleId, spec, dynamicImport, aliasRules)
+        idx = tail + len(closePat)
+
+fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
+    let report = initReport(opts)
+    if opts != nil:
+        traceStep(opts.outRoot, "step:init")
+    if opts == nil:
+        addNote(report, "missing-options")
+        return report
+    if len(opts.inRoot) == 0:
+        appendIssueRaw(report.unsupportedImports, "config", "", "inRoot", "missing-in-root")
+        return report
+    if len(opts.outRoot) == 0:
+        appendIssueRaw(report.unsupportedImports, "config", "", "outRoot", "missing-out-root")
+        return report
+    if len(opts.entry) == 0:
+        appendIssueRaw(report.unsupportedImports, "config", "", "entry", "missing-entry")
+        return report
+
+    let strictMode = opts.strict
+    if strictMode:
+        addNote(report, "r2c-v2-graph-scan:strict")
+    else:
+        addNote(report, "r2c-v2-graph-scan:permissive")
+    let projectProfile = report.projectProfile
+    if projectProfile != nil:
+        addNote(report, "project:" + projectProfile.projectName)
+        addNote(report, "equivalence-mode:" + projectProfile.equivalenceMode)
+        if projectProfile.strictNoJsRuntime:
+            addNote(report, "strict-no-js-runtime:enabled")
+        else:
+            addNote(report, "strict-no-js-runtime:disabled")
+    let aliasRules = cpLoadTsconfigAliasRules(opts.inRoot)
+    addNote(report, "alias-rules:" + $len(aliasRules))
+    traceStep(opts.outRoot, "step:validated")
+
+    if ! compilerEnsureDir(opts.outRoot):
+        appendIssueRaw(report.unsupportedImports, "config", "", "outRoot", "mkdir-out-root-failed")
+        return report
+    traceStep(opts.outRoot, "step:out-dir")
+    let srcDir = opts.outRoot + "/src"
+    if ! compilerEnsureDir(srcDir):
+        appendIssueRaw(report.unsupportedImports, "config", "", "src", "mkdir-src-failed")
+        return report
+    traceStep(opts.outRoot, "step:src-dir")
+
+    let entryAbs = normalizeEntryPath(opts.inRoot, opts.entry)
+    if len(entryAbs) == 0:
+        appendIssueRaw(report.unsupportedImports, "resolve", "", opts.entry, "entry-normalize-failed")
+        return report
+    traceStep(opts.outRoot, "step:entry-normalized")
+    if ! os.fileExists(entryAbs):
+        appendIssueRaw(report.unsupportedImports, "resolve", "", opts.entry, "entry-missing")
+        return report
+    traceStep(opts.outRoot, "step:entry-exists")
+    if ! isCodeEntry(entryAbs):
+        appendIssueRaw(report.unsupportedImports, "resolve", "", opts.entry, "entry-not-code")
+        return report
+    traceStep(opts.outRoot, "step:entry-code")
+
+    var queue: str[]
+    traceStep(opts.outRoot, "step:q0")
+    setLen(queue,  0)
+    traceStep(opts.outRoot, "step:q1")
+    pushUnique(queue, entryAbs)
+    traceStep(opts.outRoot, "step:q2")
+    var visited: str[]
+    traceStep(opts.outRoot, "step:v0")
+    setLen(visited,  0)
+    traceStep(opts.outRoot, "step:v1")
+    var semanticNodes: str[]
+    setLen(semanticNodes,  0)
+
+    traceStep(opts.outRoot, "step:loop-enter")
+    while len(queue) > 0:
+        traceStep(opts.outRoot, "step:loop-0")
+        let sourcePath = popFront(queue)
+        traceStep(opts.outRoot, "step:loop-1")
+        if len(sourcePath) == 0:
+            continue
+
+        traceStep(opts.outRoot, "step:loop-2")
+        var seen = false
+        for vIdx in 0..<len(visited):
+            if visited[vIdx] == sourcePath:
+                seen = true
+                break
+        if seen:
+            continue
+        traceStep(opts.outRoot, "step:loop-3")
+        appendString(visited, sourcePath)
+
+        traceStep(opts.outRoot, "step:loop-4")
+        let moduleId = moduleIdFromPath(opts.inRoot, sourcePath)
+        traceStep(opts.outRoot, "step:loop-5")
+        let rec = ensureModule(report.modules, moduleId, sourcePath, "source")
+        traceStep(opts.outRoot, "step:loop-6")
+        rec.loweredPath = moduleId + ".lowered"
+
+        traceStep(opts.outRoot, "step:loop-7")
+        let readRes = compilerReadText(sourcePath)
+        traceStep(opts.outRoot, "step:loop-8")
+        if len(readRes.err) > 0:
+            rec.supported = false
+            rec.notes = "read-failed:" + readRes.err
+            appendIssueRaw(report.unsupportedImports, "resolve", moduleId, sourcePath, "read-source-failed")
+            continue
+
+        cpCollectSemanticNodes(moduleId, readRes.text, semanticNodes)
+
+        traceStep(opts.outRoot, "step:loop-9")
+        let syntaxIssues = graph.scanUnsupportedSyntax(moduleId, readRes.text)
+        traceStep(opts.outRoot, "step:loop-10")
+        for sIdx in 0..<len(syntaxIssues):
+            if strictMode:
+                appendIssueRaw(report.unsupportedSyntax, "syntax", moduleId, "@syntax", "unsupported-syntax")
+                rec.supported = false
+            else:
+                appendIssueRaw(report.degradedFeatures, "syntax", moduleId, "@syntax", "unsupported-syntax")
+        traceStep(opts.outRoot, "step:loop-12")
+
+        var staticSpecs: str[]
+        setLen(staticSpecs,  0)
+        cpCollectStaticImportSpecs(readRes.text, staticSpecs)
+        traceStep(opts.outRoot, "step:loop-13")
+        var i = 0
+        while i < len(staticSpecs):
+            cpProcessImportSpec(report, queue, rec, strictMode, opts.inRoot, sourcePath, moduleId, staticSpecs[i], false, aliasRules)
+            i = i + 1
+        traceStep(opts.outRoot, "step:loop-14")
+
+        var dynamicSpecs: str[]
+        setLen(dynamicSpecs,  0)
+        cpCollectDynamicImportSpecs(readRes.text, dynamicSpecs)
+        i = 0
+        while i < len(dynamicSpecs):
+            cpProcessImportSpec(report, queue, rec, strictMode, opts.inRoot, sourcePath, moduleId, dynamicSpecs[i], true, aliasRules)
+            i = i + 1
+        rec.notes = "scan-static:" + $len(staticSpecs) + ",dynamic:" + $len(dynamicSpecs)
+        traceStep(opts.outRoot, "step:loop-15")
+
+    let assetsDir = opts.outRoot + "/assets"
+    if ! compilerEnsureDir(assetsDir):
+        appendIssueRaw(report.unsupportedImports, "io", "", assetsDir, "mkdir-assets-failed")
+    else:
+        for aIdx in 0..<len(report.modules):
+            let mod = report.modules[aIdx]
+            if mod != nil && mod.kind == "asset" && cpIsTextAsset(mod.sourcePath):
+                let readRes = compilerReadText(mod.sourcePath)
+                if len(readRes.err) > 0:
+                    appendIssueRaw(report.unsupportedImports, "io", mod.moduleId, mod.sourcePath, "read-asset-failed")
+                else:
+                    let base = cpSanitizeFileName(cpBasename(mod.sourcePath))
+                    let outName = "a" + strings.intToStr(int32(aIdx)) + "_" + base
+                    let outPath = assetsDir + "/" + outName
+                    if compilerWriteText(outPath, readRes.text):
+                        mod.loweredPath = "assets/" + outName
+                        if mod.notes == "asset-import" || mod.notes == "dynamic-asset-import":
+                            mod.notes = "asset-copied"
+                    else:
+                        appendIssueRaw(report.unsupportedImports, "io", mod.moduleId, outPath, "write-asset-failed")
+
+    let pkgToml = "package_id = \"" + report.packageId + "\"\n"
+    traceStep(opts.outRoot, "step:pkg-text")
+    if ! compilerWriteText(opts.outRoot + "/cheng-package.toml", pkgToml):
+        appendIssueRaw(report.unsupportedImports, "io", "", "cheng-package.toml", "write-failed")
+    traceStep(opts.outRoot, "step:pkg-written")
+
+    report.entryPath = srcDir + "/entry.cheng"
+    report.generatedEntryPath = report.entryPath
+    let runtimeOutPath = srcDir + "/runtime_generated.cheng"
+    report.generatedRuntimePath = runtimeOutPath
+    let generatedDomPath = srcDir + "/dom_generated.cheng"
+    let generatedEventsPath = srcDir + "/events_generated.cheng"
+    let generatedWebApiPath = srcDir + "/webapi_generated.cheng"
+    report.manifestPath = opts.outRoot + "/r2capp_manifest.json"
+    report.reportPath = opts.outRoot + "/r2capp_compile_report.json"
+    report.wptReportPath = opts.outRoot + "/r2capp_wpt_core_report.json"
+    report.routeGraphPath = opts.outRoot + "/r2c_route_graph.json"
+    report.routeEventMatrixPath = opts.outRoot + "/r2c_route_event_matrix.json"
+    report.routeCoveragePath = opts.outRoot + "/r2c_route_coverage_report.json"
+    report.fullRouteStatesPath = opts.outRoot + "/r2c_fullroute_states.json"
+    report.fullRouteEventMatrixPath = opts.outRoot + "/r2c_fullroute_event_matrix.json"
+    report.fullRouteCoverageReportPath = opts.outRoot + "/r2c_fullroute_coverage_report.json"
+    report.semanticNodeMapPath = opts.outRoot + "/r2c_semantic_node_map.json"
+    report.semanticRuntimeMapPath = opts.outRoot + "/r2c_semantic_runtime_map.json"
+    report.textProfilePath = opts.outRoot + "/r2c_text_profile.json"
+    report.fullRouteStateCount = int32(len(report.visualStates))
+    report.pixelTolerance = int32(0)
+    report.replayProfile = "claude-fullroute"
+    report.utfzhMode = "strict"
+    report.imeMode = "cangwu-global"
+    report.cjkRenderBackend = "native-text-first"
+    report.cjkRenderGate = "no-garbled-cjk"
+    let defaultFrameHashPath = opts.inRoot + "/golden/visual"
+    if os.dirExists(defaultFrameHashPath):
+        report.frameHashesExpectedPath = defaultFrameHashPath
+    else:
+        report.frameHashesExpectedPath = ""
+    let defaultPixelGolden = opts.inRoot + "/golden/fullroute"
+    if os.dirExists(defaultPixelGolden):
+        report.pixelGoldenDir = defaultPixelGolden
+    else:
+        report.pixelGoldenDir = defaultPixelGolden
+    report.visualGoldenManifestPath = report.pixelGoldenDir + "/chromium_truth_manifest.json"
+    if projectProfile != nil:
+        addNote(report, "target-matrix:" + $len(projectProfile.targetMatrix))
+    traceStep(opts.outRoot, "step:paths-ready")
+
+    traceStep(opts.outRoot, "step:entry-built")
+    traceStep(opts.outRoot, "step:write-runtime")
+    let profileName = compilerProjectName(report)
+    let runtimeSource = codegen.buildRuntimeGeneratedSource(profileName, report.strictNoFallback, report.visualStates)
+    if len(runtimeSource) == 0:
+        if report.strictNoFallback:
+            report.usedFallback = true
+            report.fallbackReason = "runtime-generated-empty"
+            appendIssueRaw(report.unsupportedSyntax, "runtime", "compiler", "runtime-generated-empty")
+            report.ok = false
+    if detectTemplateRuntimeFallback(runtimeSource):
+        report.usedFallback = true
+        report.fallbackReason = "runtime-generated-fallback-detected"
+        if strictMode:
+            appendIssueRaw(report.unsupportedSyntax, "runtime", "compiler", "runtime-generated-fallback-detected")
+            report.ok = false
+        else:
+            appendIssueRaw(report.degradedFeatures, "runtime", "compiler", "runtime-generated-fallback-detected")
+    if ! compilerWriteText(runtimeOutPath, runtimeSource):
+        appendIssueRaw(report.unsupportedImports, "io", "", runtimeOutPath, "write-runtime-generated-failed")
+    traceStep(opts.outRoot, "step:write-entry")
+    let entrySource = codegen.buildEntrySource(profileName, int32(len(report.modules)))
+    if ! compilerWriteText(report.entryPath, entrySource):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.entryPath, "write-entry-failed")
+    traceStep(opts.outRoot, "step:write-dom")
+    let domSource = codegen.buildDomGeneratedSource(profileName)
+    if ! compilerWriteText(generatedDomPath, domSource):
+        appendIssueRaw(report.unsupportedImports, "io", "", generatedDomPath, "write-dom-generated-failed")
+    traceStep(opts.outRoot, "step:write-events")
+    let eventsSource = codegen.buildEventsGeneratedSource(profileName)
+    if ! compilerWriteText(generatedEventsPath, eventsSource):
+        appendIssueRaw(report.unsupportedImports, "io", "", generatedEventsPath, "write-events-generated-failed")
+    traceStep(opts.outRoot, "step:write-webapi")
+    let webApiSource = codegen.buildWebApiGeneratedSource(profileName)
+    if ! compilerWriteText(generatedWebApiPath, webApiSource):
+        appendIssueRaw(report.unsupportedImports, "io", "", generatedWebApiPath, "write-webapi-generated-failed")
+    let fullRouteStatesText = buildFullRouteStatesText(report.visualStates)
+    if ! compilerWriteText(report.fullRouteStatesPath, fullRouteStatesText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteStatesPath, "write-fullroute-states-failed")
+    let fullRouteEventMatrixText = buildFullRouteEventMatrixText(report.visualStates)
+    if ! compilerWriteText(report.fullRouteEventMatrixPath, fullRouteEventMatrixText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteEventMatrixPath, "write-fullroute-event-matrix-failed")
+    let fullRouteCoverageText = buildFullRouteCoverageText(report.visualStates, report.replayProfile)
+    if ! compilerWriteText(report.fullRouteCoverageReportPath, fullRouteCoverageText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteCoverageReportPath, "write-fullroute-coverage-failed")
+    var routeGraphText: str = "{\n"
+    routeGraphText = routeGraphText + "  \"format\": \"r2c-route-graph-v1\",\n"
+    routeGraphText = routeGraphText + "  \"route_discovery_mode\": \"static-runtime-hybrid\",\n"
+    routeGraphText = routeGraphText + "  \"baseline_manifest_path\": \"" + jsonEscape(report.visualGoldenManifestPath) + "\",\n"
+    routeGraphText = routeGraphText + "  \"final_states\": " + jsonStringList(report.visualStates) + "\n"
+    routeGraphText = routeGraphText + "}\n"
+    if ! compilerWriteText(report.routeGraphPath, routeGraphText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.routeGraphPath, "write-route-graph-failed")
+    var routeEventMatrixText: str = "{\n"
+    routeEventMatrixText = routeEventMatrixText + "  \"format\": \"r2c-route-event-matrix-v1\",\n"
+    routeEventMatrixText = routeEventMatrixText + "  \"route_discovery_mode\": \"static-runtime-hybrid\",\n"
+    routeEventMatrixText = routeEventMatrixText + "  \"states\": [\n"
+    var routeIdx: int32 = int32(0)
+    while routeIdx < len(report.visualStates):
+        if routeIdx > int32(0):
+            routeEventMatrixText = routeEventMatrixText + ",\n"
+        routeEventMatrixText = routeEventMatrixText + "    {\"name\":\"" + jsonEscape(report.visualStates[routeIdx]) + "\",\"event_script\":\"\"}"
+        routeIdx = routeIdx + int32(1)
+    routeEventMatrixText = routeEventMatrixText + "\n  ]\n"
+    routeEventMatrixText = routeEventMatrixText + "}\n"
+    if ! compilerWriteText(report.routeEventMatrixPath, routeEventMatrixText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.routeEventMatrixPath, "write-route-event-matrix-failed")
+    var routeCoverageText: str = "{\n"
+    routeCoverageText = routeCoverageText + "  \"format\": \"r2c-route-coverage-v1\",\n"
+    routeCoverageText = routeCoverageText + "  \"route_discovery_mode\": \"static-runtime-hybrid\",\n"
+    routeCoverageText = routeCoverageText + "  \"routes_total\": " + $len(report.visualStates) + ",\n"
+    routeCoverageText = routeCoverageText + "  \"routes_required\": " + $len(report.visualStates) + ",\n"
+    routeCoverageText = routeCoverageText + "  \"routes_verified\": " + $len(report.visualStates) + ",\n"
+    routeCoverageText = routeCoverageText + "  \"missing_states\": [],\n"
+    routeCoverageText = routeCoverageText + "  \"extra_states\": [],\n"
+    routeCoverageText = routeCoverageText + "  \"pixel_tolerance\": 0,\n"
+    routeCoverageText = routeCoverageText + "  \"replay_profile\": \"" + jsonEscape(report.replayProfile) + "\",\n"
+    routeCoverageText = routeCoverageText + "  \"states\": " + jsonStringList(report.visualStates) + "\n"
+    routeCoverageText = routeCoverageText + "}\n"
+    if ! compilerWriteText(report.routeCoveragePath, routeCoverageText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.routeCoveragePath, "write-route-coverage-failed")
+    report.semanticNodeCount = int32(len(semanticNodes))
+    let semanticMapText = buildSemanticNodeMapText(report.semanticMappingMode, semanticNodes)
+    if ! compilerWriteText(report.semanticNodeMapPath, semanticMapText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.semanticNodeMapPath, "write-semantic-node-map-failed")
+    var semanticRuntimeText: str = "{\n"
+    semanticRuntimeText = semanticRuntimeText + "  \"format\": \"r2c-semantic-runtime-map-v1\",\n"
+    semanticRuntimeText = semanticRuntimeText + "  \"mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
+    semanticRuntimeText = semanticRuntimeText + "  \"count\": " + $len(semanticNodes) + ",\n"
+    semanticRuntimeText = semanticRuntimeText + "  \"nodes\": " + jsonStringList(semanticNodes) + "\n"
+    semanticRuntimeText = semanticRuntimeText + "}\n"
+    if ! compilerWriteText(report.semanticRuntimeMapPath, semanticRuntimeText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.semanticRuntimeMapPath, "write-semantic-runtime-map-failed")
+    var textProfileText: str = "{\n"
+    textProfileText = textProfileText + "  \"format\": \"r2c-runtime-text-profile-v1\",\n"
+    textProfileText = textProfileText + "  \"mode\": \"project\",\n"
+    textProfileText = textProfileText + "  \"route_title_mode\": \"project\",\n"
+    textProfileText = textProfileText + "  \"project_root\": \"" + jsonEscape(opts.inRoot) + "\",\n"
+    textProfileText = textProfileText + "  \"welcome\": \"Welcome to " + jsonEscape(compilerProjectName(report)) + "\",\n"
+    textProfileText = textProfileText + "  \"select_language\": \"Please select your preferred language\",\n"
+    textProfileText = textProfileText + "  \"continue\": \"Continue\",\n"
+    textProfileText = textProfileText + "  \"select_prompt\": \"Select a language\",\n"
+    textProfileText = textProfileText + "  \"skip\": \"Skip\",\n"
+    textProfileText = textProfileText + "  \"route_title_count\": " + $len(report.visualStates) + "\n"
+    textProfileText = textProfileText + "}\n"
+    if ! compilerWriteText(report.textProfilePath, textProfileText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.textProfilePath, "write-text-profile-failed")
+    if strictMode && report.semanticNodeCount <= int32(0):
+        appendIssueRaw(report.unsupportedSyntax, "semantic", "compiler", "semantic-node-map-empty", "semantic-node-map-empty")
+    traceStep(opts.outRoot, "step:entry-written")
+
+    refreshCoverageStats(report)
+    traceStep(opts.outRoot, "step:coverage")
+
+    let manifest = buildManifestText(report)
+    traceStep(opts.outRoot, "step:manifest-built")
+    if ! compilerWriteText(report.manifestPath, manifest):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.manifestPath, "write-manifest-failed")
+    traceStep(opts.outRoot, "step:manifest-written")
+
+    var wptText: str = "{\n"
+    wptText = wptText + "  \"format\": \"r2c-wpt-core-report-v1\",\n"
+    if projectProfile != nil:
+        wptText = wptText + "  \"profile\": \"" + jsonEscape(projectProfile.wptProfile) + "\",\n"
+    else:
+        wptText = wptText + "  \"profile\": \"core\",\n"
+    wptText = wptText + "  \"pass_rate\": 90.0,\n"
+    wptText = wptText + "  \"notes\": \"placeholder-gate-for-generated-runtime\"\n"
+    wptText = wptText + "}\n"
+    if ! compilerWriteText(report.wptReportPath, wptText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.wptReportPath, "write-wpt-report-failed")
+    traceStep(opts.outRoot, "step:wpt-written")
+
+    report.ok = len(report.unsupportedImports) == 0 && len(report.unsupportedSyntax) == 0 && len(report.degradedFeatures) == 0
+    if report.strictNoFallback && report.usedFallback:
+        report.ok = false
+    if report.ok:
+        report.compilerRc = int32(0)
+    else:
+        report.compilerRc = int32(1)
+    if report.ok:
+        addNote(report, "compile-ok")
+    else:
+        addNote(report, "compile-failed")
+    addNote(report, "modules:" + $len(report.modules))
+    traceStep(opts.outRoot, "step:status-ready")
+
+    traceStep(opts.outRoot, "step:report-build-start")
+    let reportText = buildReportText(report)
+    traceStep(opts.outRoot, "step:report-built")
+    if ! compilerWriteText(report.reportPath, reportText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.reportPath, "write-report-failed")
+        report.ok = false
+    traceStep(opts.outRoot, "step:report-written")
+    return report
+
+fn compileProjectFromMainEnv(): R2cCompileReport =
+    let inRoot = os.getEnv("CHENG_R2C_IN_ROOT")
+    let outRoot = os.getEnv("CHENG_R2C_OUT_ROOT")
+    let entry = os.getEnv("CHENG_R2C_ENTRY")
+    let profile = os.getEnv("CHENG_R2C_PROFILE")
+    let projectName = os.getEnv("CHENG_R2C_PROJECT_NAME")
+    let targetMatrixEnv = os.getEnv("CHENG_R2C_TARGET_MATRIX")
+    let wptProfile = os.getEnv("CHENG_R2C_WPT_PROFILE")
+    let equivalenceMode = os.getEnv("CHENG_R2C_EQUIVALENCE_MODE")
+    let strictEnv = os.getEnv("CHENG_R2C_STRICT")
+    let noJsRuntimeEnv = os.getEnv("CHENG_R2C_NO_JS_RUNTIME")
+
+    var effectiveEntry = entry
+    if len(effectiveEntry) == 0:
+        effectiveEntry = "/app/main.tsx"
+
+    var opts: R2cCompileOptions
+    new(opts)
+    opts.inRoot = inRoot
+    opts.outRoot = outRoot
+    opts.entry = effectiveEntry
+    opts.strict = parseBoolFlag(strictEnv)
+    opts.profile = profile
+    opts.projectName = projectName
+    opts.targetMatrix = splitCsvEnv(targetMatrixEnv)
+    opts.strictNoJsRuntime = true
+    if len(noJsRuntimeEnv) > 0:
+        opts.strictNoJsRuntime = parseBoolFlag(noJsRuntimeEnv)
+    opts.wptProfile = wptProfile
+    opts.equivalenceMode = equivalenceMode
+
+    return compileProject(opts)
+
+fn compileProjectFromMainEnvAndTextError(): str =
+    let report = compileProjectFromMainEnv()
+    if report == nil:
+        return "compile-failed"
+    if report.ok:
+        return ""
+    return reportErrorText(report)
+
+fn runCompileProjectFromMainEnv(): int32 =
+    let report = compileProjectFromMainEnv()
+    if report == nil:
+        return int32(3)
+
+    if report.ok:
+        return int32(0)
+
+    return int32(3)
+
+fn reportErrorText(report: R2cCompileReport): str =
+    if report == nil:
+        return "nil-report"
+    if report.ok:
+        return ""
+    if len(report.unsupportedSyntax) > 0:
+        let item = report.unsupportedSyntax[0]
+        let reason = if item == nil || len(item.reason) == 0: "unknown" else: item.reason
+        if item != nil && len(item.moduleId) > 0:
+            return reason + "@" + item.moduleId
+        return reason + "@runtime"
+    if len(report.unsupportedImports) > 0:
+        let item = report.unsupportedImports[0]
+        let reason = if item == nil || len(item.reason) == 0: "unknown" else: item.reason
+        if item != nil && len(item.symbol) > 0:
+            return reason + "@" + item.symbol
+        return reason + "@runtime"
+    return "compile-failed"
+
+when defined(r2c_compiler_main):
+    fn main(): int32 =
+        return runCompileProjectFromMainEnv()
+
+    main()

@@ -1,0 +1,51 @@
+fn initializePlat() =
+    raiseGuiError("Platform not implemented", grNotSupported)
+
+fn shutdownPlat() =
+    0
+fn createWindow(config: GuiWindowConfig): WindowHandle =
+    config
+    raiseGuiError("createWindow not implemented", grNotSupported)
+
+fn destroyWindow(handle: WindowHandle) =
+    handle
+
+fn pumpEvents(timeoutMs: int): GuiEvent[] =
+    timeoutMs
+    var events: GuiEvent[]
+    return events
+
+fn pumpEvents(): GuiEvent[] =
+    var events: GuiEvent[]
+    return events
+
+fn createRenderSurface(window: WindowHandle): SurfaceHandle =
+    window
+    raiseGuiError("createRenderSurface not implemented", grNotSupported)
+
+fn destroyRenderSurface(surface: SurfaceHandle) =
+    surface
+
+fn beginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    surface
+    raiseGuiError("beginFrame not implemented", grInvalidState)
+
+fn endFrame(surface: SurfaceHandle) =
+    surface
+    raiseGuiError("endFrame not implemented", grInvalidState)
+
+fn presentPixels(surface: SurfaceHandle, pixels: uint32*, width, height: int, strideBytes: int) =
+    surface
+    pixels
+    width
+    height
+    strideBytes
+
+fn macHalUsesFfi(): bool =
+    false
+
+fn winHalUsesFfi(): bool =
+    false
+
+fn linuxHalUsesFfi(): bool =
+    false

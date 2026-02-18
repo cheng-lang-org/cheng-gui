@@ -1,0 +1,105 @@
+type
+    MobileUiSpacing =
+        xxs: int32
+        xs: int32
+        sm: int32
+        md: int32
+        lg: int32
+        xl: int32
+        xxl: int32
+
+    MobileUiTypography =
+        caption: int32
+        body: int32
+        bodyStrong: int32
+        title: int32
+        titleStrong: int32
+        h1: int32
+
+    MobileUiRadii =
+        chip: int32
+        input: int32
+        card: int32
+        panel: int32
+        sheet: int32
+
+    MobileUiTheme =
+        bgCanvas: uint32
+        bgSurface: uint32
+        bgSubtle: uint32
+        bgElevated: uint32
+        textPrimary: uint32
+        textSecondary: uint32
+        textMuted: uint32
+        textOnPrimary: uint32
+        borderStrong: uint32
+        borderSoft: uint32
+        accent: uint32
+        accentPressed: uint32
+        success: uint32
+        warning: uint32
+        danger: uint32
+        overlay: uint32
+        spacing: MobileUiSpacing
+        typo: MobileUiTypography
+        radii: MobileUiRadii
+
+fn uiColor(r, g, b, a: int32): uint32 =
+    let packed: int32 = ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF)
+    return uint32(packed)
+
+fn uiPx(dp: float64, scale: float64): int32 =
+    return int32(dp * scale + 0.5)
+
+fn businessSpacing(scale: float64): MobileUiSpacing =
+    var out: MobileUiSpacing
+    out.xxs = uiPx(2.0, scale)
+    out.xs = uiPx(4.0, scale)
+    out.sm = uiPx(8.0, scale)
+    out.md = uiPx(12.0, scale)
+    out.lg = uiPx(16.0, scale)
+    out.xl = uiPx(20.0, scale)
+    out.xxl = uiPx(24.0, scale)
+    return out
+
+fn businessTypography(scale: float64): MobileUiTypography =
+    var out: MobileUiTypography
+    out.caption = uiPx(11.0, scale)
+    out.body = uiPx(13.0, scale)
+    out.bodyStrong = uiPx(14.0, scale)
+    out.title = uiPx(16.0, scale)
+    out.titleStrong = uiPx(18.0, scale)
+    out.h1 = uiPx(22.0, scale)
+    return out
+
+fn businessRadii(scale: float64): MobileUiRadii =
+    var out: MobileUiRadii
+    out.chip = uiPx(10.0, scale)
+    out.input = uiPx(12.0, scale)
+    out.card = uiPx(14.0, scale)
+    out.panel = uiPx(16.0, scale)
+    out.sheet = uiPx(18.0, scale)
+    return out
+
+fn mobileBusinessTheme(scale: float64): MobileUiTheme =
+    var out: MobileUiTheme
+    out.bgCanvas = uiColor(242, 245, 250, 255)
+    out.bgSurface = uiColor(255, 255, 255, 255)
+    out.bgSubtle = uiColor(247, 250, 255, 255)
+    out.bgElevated = uiColor(255, 255, 255, 255)
+    out.textPrimary = uiColor(15, 23, 42, 255)
+    out.textSecondary = uiColor(51, 65, 85, 255)
+    out.textMuted = uiColor(100, 116, 139, 255)
+    out.textOnPrimary = uiColor(255, 255, 255, 255)
+    out.borderStrong = uiColor(203, 213, 225, 255)
+    out.borderSoft = uiColor(226, 232, 240, 255)
+    out.accent = uiColor(26, 86, 219, 255)
+    out.accentPressed = uiColor(30, 64, 175, 255)
+    out.success = uiColor(22, 163, 74, 255)
+    out.warning = uiColor(202, 138, 4, 255)
+    out.danger = uiColor(220, 38, 38, 255)
+    out.overlay = uiColor(15, 23, 42, 112)
+    out.spacing = businessSpacing(scale)
+    out.typo = businessTypography(scale)
+    out.radii = businessRadii(scale)
+    return out

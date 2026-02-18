@@ -1,0 +1,236 @@
+import std/os
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/cangwu_rules
+
+fn cwParseInt64(text: str): int64 =
+    if len(text) == 0:
+        return int64(0)
+    var idx: int32 = 0
+    var sign: int64 = int64(1)
+    if text[0] == '-':
+        sign = int64(-1)
+        idx = 1
+    var value: int64 = int64(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if ch >= '0' && ch <= '9':
+            value = value * int64(10) + int64(int32(ch) - int32('0'))
+            idx = idx + 1
+        else:
+            break
+    return value * sign
+
+fn cwParseInt32(text: str, fallback: int32): int32 =
+    if len(text) == 0:
+        return fallback
+    var idx: int32 = 0
+    var sign: int32 = 1
+    if text[0] == '-':
+        sign = -1
+        idx = 1
+    var value: int32 = 0
+    var saw = false
+    while idx < len(text):
+        let ch = text[idx]
+        if ch >= '0' && ch <= '9':
+            value = value * 10 + int32(ch) - int32('0')
+            saw = true
+            idx = idx + 1
+        else:
+            break
+    if ! saw:
+        return fallback
+    return value * sign
+
+fn cwSplitTsvLine(line: str): str[] =
+    var out: str[]
+    var start: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(line):
+        if idx == len(line) || line[idx] == '\t':
+            add(out, cwSliceRange(line, start, idx))
+            start = idx + 1
+        idx = idx + 1
+    return out
+
+fn cwTrimLine(line: str): str =
+    if len(line) == 0:
+        return ""
+    var start: int32 = 0
+    var stop: int32 = len(line) - 1
+    while start <= stop && (line[start] == ' ' || line[start] == '\t' || line[start] == '\r' || line[start] == '\n'):
+        start = start + 1
+    while stop >= start && (line[stop] == ' ' || line[stop] == '\t' || line[stop] == '\r' || line[stop] == '\n'):
+        stop = stop - 1
+    if stop < start:
+        return ""
+    return cwSliceRange(line, start, stop + 1)
+
+fn cwStructFromLabel(text: str): CwStruct =
+    if text == "UD":
+        return csUD
+    if text == "ENC":
+        return csENC
+    if text == "MIX":
+        return csMIX
+    return csLR
+
+fn cwInsertNonBmp(dict: var UtfZhDict, cp: int32, idx: int32) =
+    var pos: int32 = len(dict.nonBmpCp)
+    for i in 0..<len(dict.nonBmpCp):
+        if cp < dict.nonBmpCp[i]:
+            pos = i
+            break
+    add(dict.nonBmpCp, cp)
+    add(dict.nonBmpIdx, idx)
+    if pos >= len(dict.nonBmpCp) - 1:
+        return
+    var move = len(dict.nonBmpCp) - 1
+    while move > pos:
+        dict.nonBmpCp[move] = dict.nonBmpCp[move - 1]
+        dict.nonBmpIdx[move] = dict.nonBmpIdx[move - 1]
+        move = move - 1
+    dict.nonBmpCp[pos] = cp
+    dict.nonBmpIdx[pos] = idx
+
+fn cwBuildUtfZhIndex(dict: var UtfZhDict) =
+    dict.bmpIndex = []
+    var fill: int32 = 0
+    while fill < 65536:
+        add(dict.bmpIndex, 0)
+        fill = fill + 1
+    for i in 0..<len(dict.codepoints):
+        let cp = dict.codepoints[i]
+        if cp >= 0 && cp < 65536:
+            dict.bmpIndex[cp] = i + 1
+        else:
+            cwInsertNonBmp(dict, cp, i)
+
+fn cwParseUtfZhDict(path: str): UtfZhDict =
+    var dict: UtfZhDict
+    dict.cpToIndex = cwIntMapInit(16384)
+    var cpIndex = dict.cpToIndex
+    if ! fileExists(path):
+        return dict
+    let content = readFile(path)
+    var lineStart: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(content):
+        if idx == len(content) || content[idx] == '\n':
+            let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
+            if len(clean) > 0 && clean[0] != '#':
+                let cols = cwSplitTsvLine(clean)
+                if len(cols) >= 3:
+                    let ch = cols[1]
+                    let cp64 = cwParseInt64(cols[2])
+                    let cp: int32 = int32(cp64)
+                    let row = len(dict.codepoints)
+                    add(dict.chars, ch)
+                    add(dict.codepoints, cp)
+                    cwIntMapPut(cpIndex, cols[2], row)
+            lineStart = idx + 1
+        idx = idx + 1
+    dict.cpToIndex = cpIndex
+    cwBuildUtfZhIndex(dict)
+    return dict
+
+fn cwParseSingles(path: str): CwSingleEntry[] =
+    var out: CwSingleEntry[]
+    if ! fileExists(path):
+        return out
+    let content = readFile(path)
+    var lineStart: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(content):
+        if idx == len(content) || content[idx] == '\n':
+            let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
+            if len(clean) > 0 && clean[0] != '#':
+                let cols = cwSplitTsvLine(clean)
+                if len(cols) >= 6:
+                    var entry: CwSingleEntry
+                    entry.text = cols[0]
+                    entry.code = cwNormalizeCodeInput(cols[1])
+                    entry.structKind = cwStructFromLabel(cols[2])
+                    entry.canonical = cwNormalizeCodeInput(cols[3])
+                    entry.freq = cwParseInt64(cols[4])
+                    entry.pinyin = cols[5]
+                    add(out, entry)
+            lineStart = idx + 1
+        idx = idx + 1
+    return out
+
+fn cwParsePhrases(path: str): CwPhraseEntry[] =
+    var out: CwPhraseEntry[]
+    let limit = cwParseInt32(getEnv("CHENG_CW_IME_MAX_PHRASES"), 0)
+    if ! fileExists(path):
+        return out
+    let content = readFile(path)
+    var lineStart: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(content):
+        if idx == len(content) || content[idx] == '\n':
+            let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
+            if len(clean) > 0 && clean[0] != '#':
+                let cols = cwSplitTsvLine(clean)
+                if len(cols) >= 3:
+                    var entry: CwPhraseEntry
+                    entry.text = cols[0]
+                    entry.code = cwNormalizeCodeInput(cols[1])
+                    entry.freq = cwParseInt64(cols[2])
+                    add(out, entry)
+                    if limit > 0 && len(out) >= limit:
+                        return out
+            lineStart = idx + 1
+        idx = idx + 1
+    return out
+
+fn cwParseReverse(path: str): CwReverseEntry[] =
+    var out: CwReverseEntry[]
+    let limit = cwParseInt32(getEnv("CHENG_CW_IME_MAX_REVERSE"), 0)
+    if ! fileExists(path):
+        return out
+    let content = readFile(path)
+    var lineStart: int32 = 0
+    var idx: int32 = 0
+    while idx <= len(content):
+        if idx == len(content) || content[idx] == '\n':
+            let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
+            if len(clean) > 0 && clean[0] != '#':
+                let cols = cwSplitTsvLine(clean)
+                if len(cols) >= 8:
+                    var entry: CwReverseEntry
+                    entry.mode = cols[0]
+                    entry.key = cols[1]
+                    entry.text = cols[2]
+                    entry.code = cwNormalizeCodeInput(cols[3])
+                    entry.canonical = cwNormalizeCodeInput(cols[4])
+                    entry.structKind = cwStructFromLabel(cols[5])
+                    entry.freq = cwParseInt64(cols[6])
+                    entry.pinyin = cols[7]
+                    add(out, entry)
+                    if limit > 0 && len(out) >= limit:
+                        return out
+            lineStart = idx + 1
+        idx = idx + 1
+    return out
+
+fn cwDataPath(root: str, fileName: str): str =
+    if len(root) == 0:
+        return "src/ime/data/" + fileName
+    return root + "/" + fileName
+
+fn cwLoadAssets(dataRoot: str): CwAssets =
+    var assets: CwAssets
+    let dictPath = cwDataPath(dataRoot, "utfzh_dict_v1.tsv")
+    let singlePath = cwDataPath(dataRoot, "cangwu_single_v1.tsv")
+    let phrasePath = cwDataPath(dataRoot, "cangwu_phrase_v1.tsv")
+    let reversePath = cwDataPath(dataRoot, "cangwu_reverse_v1.tsv")
+    assets.dict = cwParseUtfZhDict(dictPath)
+    assets.singles = cwParseSingles(singlePath)
+    assets.phrases = cwParsePhrases(phrasePath)
+    assets.reverse = cwParseReverse(reversePath)
+    return assets
+
+fn cwLoadUtfZhDict(dataRoot: str): UtfZhDict =
+    let dictPath = cwDataPath(dataRoot, "utfzh_dict_v1.tsv")
+    return cwParseUtfZhDict(dictPath)

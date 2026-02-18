@@ -1,0 +1,105 @@
+import cheng/gui/tools/r2c_aot/types
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn escapeJson(text: str): str =
+    if text == nil:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, '\\'):
+            out = out + "\\\\"
+        elif cEq(ch, '"'):
+            out = out + "\\\""
+        elif cEq(ch, '\n'):
+            out = out + "\\n"
+        elif cEq(ch, '\r'):
+            out = out + "\\r"
+        elif cEq(ch, '\t'):
+            out = out + "\\t"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn boolJson(value: bool): str =
+    if value:
+        return "true"
+    return "false"
+
+fn unsupportedListJson(items: types.R2cUnsupportedItem[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        let item = items[idx]
+        out = out + "{"
+        out = out + "\"kind\":\"" + escapeJson(item.kind) + "\","
+        out = out + "\"module_id\":\"" + escapeJson(item.moduleId) + "\","
+        out = out + "\"symbol\":\"" + escapeJson(item.symbol) + "\","
+        out = out + "\"reason\":\"" + escapeJson(item.reason) + "\""
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn moduleListJson(items: types.R2cModuleRecord[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        let item = items[idx]
+        out = out + "{"
+        out = out + "\"module_id\":\"" + escapeJson(item.moduleId) + "\","
+        out = out + "\"source_path\":\"" + escapeJson(item.sourcePath) + "\","
+        out = out + "\"kind\":\"" + escapeJson(item.kind) + "\","
+        out = out + "\"reachable\":" + boolJson(item.reachable) + ","
+        out = out + "\"adapter\":\"" + escapeJson(item.adapter) + "\","
+        out = out + "\"lowered_path\":\"" + escapeJson(item.loweredPath) + "\","
+        out = out + "\"supported\":" + boolJson(item.supported) + ","
+        out = out + "\"notes\":\"" + escapeJson(item.notes) + "\""
+        out = out + "}"
+    out = out + "]"
+    return out
+
+fn notesJson(items: str[]): str =
+    var out: str = "["
+    for idx in 0..<len(items):
+        if idx > 0:
+            out = out + ","
+        out = out + "\"" + escapeJson(items[idx]) + "\""
+    out = out + "]"
+    return out
+
+fn buildCompileReportJson(report: types.R2cCompileReport): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2capp-compile-report-v2\",\n"
+    out = out + "  \"ok\": " + boolJson(report.ok) + ",\n"
+    out = out + "  \"package_id\": \"" + escapeJson(report.packageId) + "\",\n"
+    out = out + "  \"profile\": \"" + escapeJson(report.profile) + "\",\n"
+    out = out + "  \"entry\": \"" + escapeJson(report.entry) + "\",\n"
+    out = out + "  \"modules\": " + moduleListJson(report.modules) + ",\n"
+    out = out + "  \"unsupported_syntax\": " + unsupportedListJson(report.unsupportedSyntax) + ",\n"
+    out = out + "  \"unsupported_imports\": " + unsupportedListJson(report.unsupportedImports) + ",\n"
+    out = out + "  \"degraded_features\": " + unsupportedListJson(report.degradedFeatures) + ",\n"
+    out = out + "  \"notes\": " + notesJson(report.notes) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildManifestJson(report: types.R2cCompileReport): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2capp-manifest-v2\",\n"
+    out = out + "  \"entry\": \"" + escapeJson(report.entry) + "\",\n"
+    out = out + "  \"package_id\": \"" + escapeJson(report.packageId) + "\",\n"
+    out = out + "  \"profile\": \"" + escapeJson(report.profile) + "\",\n"
+    out = out + "  \"module_count\": " + $ len(report.modules) + "\n"
+    out = out + "}\n"
+    return out

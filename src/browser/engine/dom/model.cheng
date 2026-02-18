@@ -1,0 +1,102 @@
+import cheng/gui/platform/types_v1
+
+type
+    DomNodeKind = enum
+        dnElement
+        dnText
+
+    DomNode = ref
+        kind: DomNodeKind
+        tag: str
+        text: str
+
+        id: str
+        classList: str
+        styleText: str
+
+        # Computed style (subset for V1 render closed loop).
+        displayNone: bool
+        bgColor: uint32 # ARGB 0xAARRGGBB, 0 means transparent
+        fgColor: uint32 # ARGB 0xAARRGGBB
+        fontSize: float # px
+        margin: float   # px (uniform)
+        padding: float  # px (uniform)
+
+        layout: GuiRect
+        children: DomNode[]
+
+    DomDocument = ref
+        url: str
+        title: str
+        root: DomNode
+        stylesText: str
+        plainText: str
+
+fn appendDomNode(nodes: var DomNode[], node: DomNode) =
+    let idx = len(nodes)
+    setLen(nodes, idx + 1)
+    nodes[idx] = node
+
+fn newElementNode(tag: str): DomNode =
+    var node: DomNode
+    new(node)
+    node.kind = dnElement
+    node.tag = tag
+    node.text = ""
+    node.id = ""
+    node.classList = ""
+    node.styleText = ""
+    node.displayNone = false
+    node.bgColor = uint32(0)
+    node.fgColor = uint32(0xFF000000)
+    node.fontSize = 16.0
+    node.margin = 0.0
+    node.padding = 0.0
+    node.layout = makeRect(0.0, 0.0, 0.0, 0.0)
+    return node
+
+fn newTextNode(text: str): DomNode =
+    var node: DomNode
+    new(node)
+    node.kind = dnText
+    node.tag = "#text"
+    node.text = text
+    node.id = ""
+    node.classList = ""
+    node.styleText = ""
+    node.displayNone = false
+    node.bgColor = uint32(0)
+    node.fgColor = uint32(0xFF000000)
+    node.fontSize = 16.0
+    node.margin = 0.0
+    node.padding = 0.0
+    node.layout = makeRect(0.0, 0.0, 0.0, 0.0)
+    return node
+
+fn appendChild(parent: DomNode, child: DomNode): DomNode =
+    if parent == nil || child == nil:
+        return nil
+    appendDomNode(parent.children, child)
+    return child
+
+fn newDocument(url, title: str): DomDocument =
+    var doc: DomDocument
+    new(doc)
+    doc.url = url
+    doc.title = title
+    doc.root = newElementNode("document")
+    doc.stylesText = ""
+    doc.plainText = ""
+    return doc
+
+fn setTitle(doc: DomDocument, title: str) =
+    if doc == nil:
+        return
+    doc.title = title
+
+fn summary(doc: DomDocument): str =
+    if doc == nil:
+        return ""
+    if len(doc.title) > 0:
+        return doc.title
+    return doc.url

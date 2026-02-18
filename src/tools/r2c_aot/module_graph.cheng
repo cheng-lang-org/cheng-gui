@@ -1,0 +1,341 @@
+type
+    R2cSyntaxIssue = ref
+        kind: str
+        moduleId: str
+        symbol: str
+        reason: str
+
+fn mgSafeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn mgCEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn mgCNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn mgCGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn mgCLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn mgIsSpace(ch: char): bool =
+    return mgCEq(ch, ' ') || mgCEq(ch, '\n') || mgCEq(ch, '\r') || mgCEq(ch, '\t')
+
+fn mgIsIdentStart(ch: char): bool =
+    return (mgCGe(ch, 'a') && mgCLe(ch, 'z')) || (mgCGe(ch, 'A') && mgCLe(ch, 'Z')) || mgCEq(ch, '_') || mgCEq(ch, '$')
+
+fn mgIsIdentCont(ch: char): bool =
+    return mgIsIdentStart(ch) || (mgCGe(ch, '0') && mgCLe(ch, '9'))
+
+fn mgAppendString(items: var str[], item: str) =
+    let idx = len(items)
+    setLen[str](&items, idx + 1)
+    items[idx] = item
+
+fn mgAppendIssue(items: var R2cSyntaxIssue[], kind, moduleId, symbol, reason: str) =
+    let idx = len(items)
+    setLen[R2cSyntaxIssue](&items, idx + 1)
+    var item: R2cSyntaxIssue
+    new(item)
+    item.kind = kind
+    item.moduleId = moduleId
+    item.symbol = symbol
+    item.reason = reason
+    items[idx] = item
+
+fn mgStartsWithAt(text, pattern: str, idx0: int32): bool =
+    if idx0 < int32(0):
+        return false
+    let n = mgSafeLen(pattern)
+    if idx0 + n > mgSafeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if mgCNe(text[idx0 + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn mgKeywordAt(text, keyword: str, idx0: int32): bool =
+    if ! mgStartsWithAt(text, keyword, idx0):
+        return false
+    if idx0 > int32(0):
+        let before = text[idx0 - int32(1)]
+        if mgIsIdentCont(before):
+            return false
+    let after = idx0 + mgSafeLen(keyword)
+    if after < mgSafeLen(text):
+        if mgIsIdentCont(text[after]):
+            return false
+    return true
+
+fn mgSkipSpaces(text: str, idx0: int32): int32 =
+    var idx = idx0
+    while idx < mgSafeLen(text) && mgIsSpace(text[idx]):
+        idx = idx + int32(1)
+    return idx
+
+fn mgParseQuoted(text: str, idx0: int32): tuple[value: str, next: int32, ok: bool] =
+    if idx0 < int32(0) || idx0 >= mgSafeLen(text):
+        return (value: "", next: idx0, ok: false)
+    let quote = text[idx0]
+    if mgCNe(quote, '\'') && mgCNe(quote, '"'):
+        return (value: "", next: idx0, ok: false)
+    var out: str = ""
+    var idx = idx0 + int32(1)
+    while idx < mgSafeLen(text):
+        let ch = text[idx]
+        if mgCEq(ch, '\\') && idx + int32(1) < mgSafeLen(text):
+            out = out + charToStr(text[idx + int32(1)])
+            idx = idx + int32(2)
+            continue
+        if mgCEq(ch, quote):
+            return (value: out, next: idx + int32(1), ok: true)
+        out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return (value: out, next: idx, ok: false)
+
+fn mgFindImportStmtEnd(text: str, idx0: int32): int32 =
+    var idx = idx0
+    var quote: char = '\0'
+    while idx < mgSafeLen(text):
+        let ch = text[idx]
+        if mgCNe(quote, '\0'):
+            if mgCEq(ch, '\\') && idx + int32(1) < mgSafeLen(text):
+                idx = idx + int32(2)
+                continue
+            if mgCEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+        if mgCEq(ch, '\'') || mgCEq(ch, '"'):
+            quote = ch
+            idx = idx + int32(1)
+            continue
+        if mgCEq(ch, ';') || mgCEq(ch, '\n'):
+            return idx + int32(1)
+        idx = idx + int32(1)
+    return idx
+
+fn mgParseImportSpecFromStmt(stmt: str): str =
+    if mgSafeLen(stmt) <= int32(0):
+        return ""
+    var idx: int32 = int32(0)
+    idx = mgSkipSpaces(stmt, idx)
+    if ! mgKeywordAt(stmt, "import", idx):
+        return ""
+    idx = mgSkipSpaces(stmt, idx + mgSafeLen("import"))
+    if mgKeywordAt(stmt, "type", idx):
+        idx = mgSkipSpaces(stmt, idx + mgSafeLen("type"))
+    if idx < mgSafeLen(stmt) && (mgCEq(stmt[idx], '\'') || mgCEq(stmt[idx], '"')):
+        let parsed = mgParseQuoted(stmt, idx)
+        if parsed.ok:
+            return parsed.value
+        return ""
+    # find "from"
+    var fromIdx: int32 = int32(-1)
+    idx = int32(0)
+    while idx < mgSafeLen(stmt):
+        if mgKeywordAt(stmt, "from", idx):
+            fromIdx = idx
+            break
+        idx = idx + int32(1)
+    if fromIdx < int32(0):
+        return ""
+    idx = mgSkipSpaces(stmt, fromIdx + mgSafeLen("from"))
+    if idx >= mgSafeLen(stmt):
+        return ""
+    if mgCEq(stmt[idx], '\'') || mgCEq(stmt[idx], '"'):
+        let parsed = mgParseQuoted(stmt, idx)
+        if parsed.ok:
+            return parsed.value
+    return ""
+
+fn parseStaticImportSpecs(text: str): str[] =
+    var out: str[]
+    setLen[str](&out, 0)
+    if mgSafeLen(text) <= int32(0):
+        return out
+    var idx: int32 = int32(0)
+    var quote: char = '\0'
+    var inLineComment = false
+    var inBlockComment = false
+    while idx < mgSafeLen(text):
+        let ch = text[idx]
+        if inLineComment:
+            if mgCEq(ch, '\n'):
+                inLineComment = false
+            idx = idx + int32(1)
+            continue
+        if inBlockComment:
+            if mgCEq(ch, '*') && idx + int32(1) < mgSafeLen(text) && mgCEq(text[idx + int32(1)], '/'):
+                inBlockComment = false
+                idx = idx + int32(2)
+                continue
+            idx = idx + int32(1)
+            continue
+        if mgCNe(quote, '\0'):
+            if mgCEq(ch, '\\') && idx + int32(1) < mgSafeLen(text):
+                idx = idx + int32(2)
+                continue
+            if mgCEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+        if mgCEq(ch, '/') && idx + int32(1) < mgSafeLen(text):
+            if mgCEq(text[idx + int32(1)], '/'):
+                inLineComment = true
+                idx = idx + int32(2)
+                continue
+            if mgCEq(text[idx + int32(1)], '*'):
+                inBlockComment = true
+                idx = idx + int32(2)
+                continue
+        if mgCEq(ch, '\'') || mgCEq(ch, '"') || mgCEq(ch, '`'):
+            quote = ch
+            idx = idx + int32(1)
+            continue
+        if mgKeywordAt(text, "import", idx):
+            let endIdx = mgFindImportStmtEnd(text, idx)
+            let stmt = text[idx..<endIdx]
+            let spec = mgParseImportSpecFromStmt(stmt)
+            if len(spec) > 0:
+                mgAppendString(out, spec)
+            idx = endIdx
+            continue
+        idx = idx + int32(1)
+    return out
+
+fn parseDynamicImportSpecs(text: str): str[] =
+    var out: str[]
+    setLen[str](&out, 0)
+    if mgSafeLen(text) <= int32(0):
+        return out
+    var idx: int32 = int32(0)
+    var quote: char = '\0'
+    var inLineComment = false
+    var inBlockComment = false
+    while idx < mgSafeLen(text):
+        let ch = text[idx]
+        if inLineComment:
+            if mgCEq(ch, '\n'):
+                inLineComment = false
+            idx = idx + int32(1)
+            continue
+        if inBlockComment:
+            if mgCEq(ch, '*') && idx + int32(1) < mgSafeLen(text) && mgCEq(text[idx + int32(1)], '/'):
+                inBlockComment = false
+                idx = idx + int32(2)
+                continue
+            idx = idx + int32(1)
+            continue
+        if mgCNe(quote, '\0'):
+            if mgCEq(ch, '\\') && idx + int32(1) < mgSafeLen(text):
+                idx = idx + int32(2)
+                continue
+            if mgCEq(ch, quote):
+                quote = '\0'
+            idx = idx + int32(1)
+            continue
+        if mgCEq(ch, '/') && idx + int32(1) < mgSafeLen(text):
+            if mgCEq(text[idx + int32(1)], '/'):
+                inLineComment = true
+                idx = idx + int32(2)
+                continue
+            if mgCEq(text[idx + int32(1)], '*'):
+                inBlockComment = true
+                idx = idx + int32(2)
+                continue
+        if mgCEq(ch, '\'') || mgCEq(ch, '"') || mgCEq(ch, '`'):
+            quote = ch
+            idx = idx + int32(1)
+            continue
+        if mgKeywordAt(text, "import", idx):
+            var j = mgSkipSpaces(text, idx + mgSafeLen("import"))
+            if j < mgSafeLen(text) && mgCEq(text[j], '('):
+                j = mgSkipSpaces(text, j + int32(1))
+                if j < mgSafeLen(text) && (mgCEq(text[j], '\'') || mgCEq(text[j], '"')):
+                    let parsed = mgParseQuoted(text, j)
+                    if parsed.ok && len(parsed.value) > 0:
+                        mgAppendString(out, parsed.value)
+                        idx = parsed.next
+                        continue
+        idx = idx + int32(1)
+    return out
+
+fn scanUnsupportedSyntax(moduleId, text: str): R2cSyntaxIssue[] =
+    var out: R2cSyntaxIssue[]
+    setLen[R2cSyntaxIssue](&out, 0)
+    if mgSafeLen(text) <= int32(0):
+        return out
+    var idx: int32 = int32(0)
+    var lineStart = true
+    var quote: char = '\0'
+    var inLineComment = false
+    var inBlockComment = false
+    while idx < mgSafeLen(text):
+        let ch = text[idx]
+        if inLineComment:
+            if mgCEq(ch, '\n'):
+                inLineComment = false
+                lineStart = true
+            idx = idx + int32(1)
+            continue
+        if inBlockComment:
+            if mgCEq(ch, '*') && idx + int32(1) < mgSafeLen(text) && mgCEq(text[idx + int32(1)], '/'):
+                inBlockComment = false
+                idx = idx + int32(2)
+                continue
+            idx = idx + int32(1)
+            continue
+        if mgCNe(quote, '\0'):
+            if mgCEq(ch, '\\') && idx + int32(1) < mgSafeLen(text):
+                idx = idx + int32(2)
+                continue
+            if mgCEq(ch, quote):
+                quote = '\0'
+            if mgCEq(ch, '\n'):
+                lineStart = true
+            idx = idx + int32(1)
+            continue
+        if mgCEq(ch, '/') && idx + int32(1) < mgSafeLen(text):
+            if mgCEq(text[idx + int32(1)], '/'):
+                inLineComment = true
+                idx = idx + int32(2)
+                continue
+            if mgCEq(text[idx + int32(1)], '*'):
+                inBlockComment = true
+                idx = idx + int32(2)
+                continue
+        if mgCEq(ch, '\'') || mgCEq(ch, '"') || mgCEq(ch, '`'):
+            quote = ch
+            idx = idx + int32(1)
+            lineStart = false
+            continue
+        if mgCEq(ch, '\n'):
+            lineStart = true
+            idx = idx + int32(1)
+            continue
+        if mgIsSpace(ch):
+            idx = idx + int32(1)
+            continue
+        if lineStart:
+            if mgCEq(ch, '@'):
+                mgAppendIssue(out, "syntax", moduleId, "@decorator", "unsupported-syntax-decorator")
+            elif mgKeywordAt(text, "enum", idx):
+                mgAppendIssue(out, "syntax", moduleId, "enum", "unsupported-syntax-enum")
+            elif mgKeywordAt(text, "namespace", idx):
+                mgAppendIssue(out, "syntax", moduleId, "namespace", "unsupported-syntax-namespace")
+        lineStart = false
+        idx = idx + int32(1)
+    return out

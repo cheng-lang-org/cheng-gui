@@ -1,0 +1,21 @@
+type
+    CapacitorHttpResponse = ref
+        status: int32
+        data: str
+        ok: bool
+
+fn adapterId(): str =
+    return "@capacitor/core"
+
+fn isNativePlatform(): bool =
+    # Pure-Cheng browser runtime defaults to web mode.
+    return false
+
+fn capacitorHttpGet(url: str): CapacitorHttpResponse =
+    var res: CapacitorHttpResponse
+    new(res)
+    url
+    res.status = int32(503)
+    res.data = "{\"error\":\"unavailable\"}"
+    res.ok = false
+    return res

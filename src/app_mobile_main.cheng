@@ -1,0 +1,7 @@
+import cheng/gui/app_render_ui
+import ide/textutils
+
+fn main(): int32 =
+    let summary = runNativeGui(0, "", "", "", default[str[]], "", "", true)
+    textutils.print summary
+    return 0

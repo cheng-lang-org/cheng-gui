@@ -1,0 +1,52 @@
+import cheng/gui/browser/types
+
+type
+    IpcDomain = enum
+        idControl
+        idNavigation
+        idDom
+        idJs
+        idCompositor
+        idMedia
+        idPdf
+        idCrash
+
+    IpcMessage =
+        id: int64
+        domain: IpcDomain
+        sourceRole: types.ProcessRole
+        targetRole: types.ProcessRole
+        code: int32
+        pageId: int64
+        payload: str
+        timestampMs: int64
+
+var nextIpcMessageId: int64 = int64(1)
+
+fn defaultMessage(): IpcMessage =
+    var msg: IpcMessage
+    msg.id = int64(0)
+    msg.domain = idControl
+    msg.sourceRole = types.prBrowser
+    msg.targetRole = types.prRenderer
+    msg.code = int32(0)
+    msg.pageId = int64(0)
+    msg.payload = ""
+    msg.timestampMs = int64(0)
+    return msg
+
+fn makeMessage(domain: IpcDomain, sourceRole: types.ProcessRole, targetRole: types.ProcessRole, code: int32, pageId: int64, payload: str): IpcMessage =
+    var msg = defaultMessage()
+    msg.id = nextIpcMessageId
+    nextIpcMessageId = nextIpcMessageId + int64(1)
+    msg.domain = domain
+    msg.sourceRole = sourceRole
+    msg.targetRole = targetRole
+    msg.code = code
+    msg.pageId = pageId
+    msg.payload = payload
+    msg.timestampMs = msg.id
+    return msg
+
+fn isCrashDomain(domain: IpcDomain): bool =
+    return domain == idCrash

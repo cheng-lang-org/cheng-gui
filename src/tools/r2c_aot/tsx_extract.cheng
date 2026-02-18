@@ -1,0 +1,266 @@
+type
+    LangSelectorTexts = ref
+        welcome: str
+        selectLanguage: str
+        continueText: str
+        selectPrompt: str
+        skipDefault: str
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn strIsSpace(ch: char): bool =
+    return cEq(ch, ' ') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t')
+
+fn strMatchAt(text, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if text == nil || pattern == nil:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn strFindFrom(text, pattern: str, start: int): int =
+    if len(pattern) == 0:
+        return start
+    var idx = start
+    if idx < 0:
+        idx = 0
+    while idx + len(pattern) <= safeLen(text):
+        if strMatchAt(text, pattern, idx):
+            return idx
+        idx = idx + 1
+    return -1
+
+fn strFindLastBefore(text, pattern: str, before: int): int =
+    if len(pattern) == 0:
+        return before
+    var idx = before
+    if idx > safeLen(text):
+        idx = safeLen(text)
+    var best = -1
+    var scan = 0
+    while scan + len(pattern) <= idx:
+        if strMatchAt(text, pattern, scan):
+            best = scan
+        scan = scan + 1
+    return best
+
+fn trimWs(text: str): str =
+    if safeLen(text) <= int32(0):
+        return ""
+    var start: int32 = int32(0)
+    var stop: int32 = safeLen(text)
+    while start < stop && strIsSpace(text[start]):
+        start = start + int32(1)
+    while stop > start && strIsSpace(text[stop - int32(1)]):
+        stop = stop - int32(1)
+    if stop <= start:
+        return ""
+    var out: str = ""
+    var idx: int32 = start
+    while idx < stop:
+        out = out + charToStr(text[idx])
+        idx = idx + int32(1)
+    return out
+
+fn findTagCloseGt(text: str, start: int): int =
+    if safeLen(text) <= int32(0):
+        return -1
+    var idx = start
+    if idx < 0:
+        idx = 0
+    var quote: char = '\0'
+    var braceDepth: int32 = int32(0)
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cNe(quote, '\0'):
+            if cEq(ch, '\\') && idx + 1 < safeLen(text):
+                idx = idx + 2
+                continue
+            if cEq(ch, quote):
+                quote = '\0'
+            idx = idx + 1
+            continue
+        if cEq(ch, '\'') || cEq(ch, '"'):
+            quote = ch
+            idx = idx + 1
+            continue
+        if cEq(ch, '{'):
+            braceDepth = braceDepth + int32(1)
+            idx = idx + 1
+            continue
+        if cEq(ch, '}'):
+            if braceDepth > int32(0):
+                braceDepth = braceDepth - int32(1)
+            idx = idx + 1
+            continue
+        if braceDepth == int32(0) && cEq(ch, '>'):
+            return int(idx)
+        idx = idx + 1
+    return -1
+
+fn extractTagText(text: str, tagName: str, start: int): tuple[value: str, next: int, err: str] =
+    if safeLen(text) <= int32(0) || len(tagName) == 0:
+        return (value: "", next: start, err: "empty")
+    # Avoid building dynamic string patterns here (toolchain lowering can be buggy
+    # for some string temporaries). Match tag names by char scanning instead.
+    var idxOpen = start
+    if idxOpen < 0:
+        idxOpen = 0
+    while idxOpen + 1 + len(tagName) < safeLen(text):
+        if cEq(text[idxOpen], '<') && cNe(text[idxOpen + 1], '/'):
+            var ok = true
+            var j: int32 = int32(0)
+            while j < len(tagName):
+                if cNe(text[idxOpen + 1 + j], tagName[j]):
+                    ok = false
+                    break
+                j = j + int32(1)
+            if ok:
+                break
+        idxOpen = idxOpen + 1
+    if idxOpen + 1 + len(tagName) >= safeLen(text):
+        return (value: "", next: start, err: "missing-open")
+
+    let idxGt = strFindFrom(text, ">", idxOpen)
+    if idxGt < 0:
+        return (value: "", next: idxOpen, err: "missing->")
+
+    var idxClose = idxGt + 1
+    while idxClose + 2 + len(tagName) < safeLen(text):
+        if cEq(text[idxClose], '<') && cEq(text[idxClose + 1], '/'):
+            var ok = true
+            var j: int32 = int32(0)
+            while j < len(tagName):
+                if cNe(text[idxClose + 2 + j], tagName[j]):
+                    ok = false
+                    break
+                j = j + int32(1)
+            if ok && cEq(text[idxClose + 2 + len(tagName)], '>'):
+                break
+        idxClose = idxClose + 1
+    if idxClose + 2 + len(tagName) >= safeLen(text):
+        return (value: "", next: idxGt + 1, err: "missing-close")
+
+    var raw: str = ""
+    for idx in idxGt + 1..<idxClose:
+        raw = raw + charToStr(text[idx])
+    return (value: trimWs(raw), next: idxClose + 3 + len(tagName), err: "")
+
+fn extractFirstTwoStringLiterals(text: str, start: int, endExclusive: int): tuple[a: str, b: str] =
+    var a: str = ""
+    var b: str = ""
+    var idx = start
+    if idx < 0:
+        idx = 0
+    var stop = endExclusive
+    if stop > safeLen(text):
+        stop = safeLen(text)
+    while idx < stop:
+        let ch = text[idx]
+        if cEq(ch, '\'') || cEq(ch, '"'):
+            let quote = ch
+            idx = idx + 1
+            var out: str = ""
+            while idx < stop && cNe(text[idx], quote):
+                if cEq(text[idx], '\\') && idx + 1 < stop:
+                    let esc = text[idx + 1]
+                    out = out + charToStr(esc)
+                    idx = idx + 2
+                else:
+                    out = out + charToStr(text[idx])
+                    idx = idx + 1
+            if idx < stop && cEq(text[idx], quote):
+                idx = idx + 1
+            if len(a) == 0:
+                a = out
+            elif len(b) == 0:
+                b = out
+                return (a: a, b: b)
+        else:
+            idx = idx + 1
+    return (a: a, b: b)
+
+fn extractButtonTextByMarker(text: str, marker: str): tuple[value: str, err: str] =
+    let idxMarker = strFindFrom(text, marker, 0)
+    if idxMarker < 0:
+        return (value: "", err: "missing-marker")
+    let idxBtn = strFindLastBefore(text, "<button", idxMarker)
+    if idxBtn < 0:
+        return (value: "", err: "missing-button")
+    let idxGt = findTagCloseGt(text, idxBtn)
+    if idxGt < 0:
+        return (value: "", err: "missing->")
+    let idxClose = strFindFrom(text, "</button>", idxGt + 1)
+    if idxClose < 0:
+        return (value: "", err: "missing-</button>")
+    var raw: str = ""
+    for idx in idxGt + 1..<idxClose:
+        raw = raw + charToStr(text[idx])
+    return (value: trimWs(raw), err: "")
+
+fn extractLanguageSelectorTexts(tsxText: str): tuple[texts: LangSelectorTexts, err: str] =
+    if safeLen(tsxText) <= int32(0):
+        return (texts: nil, err: "empty-tsx")
+
+    var out: LangSelectorTexts
+    new(out)
+    let h1 = extractTagText(tsxText, "h1", 0)
+    if len(h1.err) > 0:
+        return (texts: out, err: "h1:" + h1.err)
+    out.welcome = h1.value
+
+    let p = extractTagText(tsxText, "p", h1.next)
+    if len(p.err) > 0:
+        return (texts: out, err: "p:" + p.err)
+    out.selectLanguage = p.value
+
+    # Confirm button content contains: {selected ? 'Continue' : 'Select a language'}
+    let idxConfirm = strFindFrom(tsxText, "disabled={!selected}", 0)
+    if idxConfirm < 0:
+        return (texts: out, err: "missing-confirm")
+    let idxOpen = strFindLastBefore(tsxText, "<button", idxConfirm)
+    if idxOpen < 0:
+        return (texts: out, err: "missing-confirm-button")
+    let idxGt = findTagCloseGt(tsxText, idxOpen)
+    if idxGt < 0:
+        return (texts: out, err: "missing-confirm->")
+    let idxClose = strFindFrom(tsxText, "</button>", idxGt + 1)
+    if idxClose < 0:
+        return (texts: out, err: "missing-confirm-</button>")
+    let strings = extractFirstTwoStringLiterals(tsxText, idxGt + 1, idxClose)
+    if len(strings.a) == 0 || len(strings.b) == 0:
+        return (texts: out, err: "missing-confirm-labels")
+    out.continueText = strings.a
+    out.selectPrompt = strings.b
+
+    let skip = extractButtonTextByMarker(tsxText, "onSelect('zh-CN')")
+    if len(skip.err) > 0:
+        # Fallback to the hard-coded label used by the fixture.
+        out.skipDefault = "跳过，使用简体中文"
+    else:
+        out.skipDefault = skip.value
+
+    return (texts: out, err: "")

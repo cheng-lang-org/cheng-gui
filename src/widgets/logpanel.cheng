@@ -1,0 +1,209 @@
+import std/strformat
+import std/strutils
+import std/times
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+const
+    DefaultLogCapacity = 2000
+    DefaultLogLineHeight = 17.0
+    DefaultLogFont = 13.0
+type
+    LogLevel = enum
+        llDebug
+        llInfo
+        llWarn
+    llErrorLogEntry =
+        timestamp: int64
+        level: LogLevel
+        category: str
+        message: str
+    LogPanelTheme =
+        background: uint32
+        gridLine: uint32
+        levelDebug: uint32
+        levelInfo: uint32
+        levelWarn: uint32
+        levelError: uint32
+        timestamp: uint32
+        category: uint32
+        indicatorWarn: uint32
+        indicatorError: uint32
+    LogPanelMetrics =
+        totalEn
+        tries: int
+        filteredEn
+        tries: int
+        warnings: int
+        errors: int
+    LogPanelFilter =
+        allowDebug: bool
+        allowInfo: bool
+        allowWarn: bool
+        allowError: bool
+        keyword: str
+    LogPanelModel = ref
+        of WidgetPayload
+        entries: LogEntry[]
+        maxEntries: int
+        filter: LogPanelFiltertheme: LogPanelThememetrics: LogPanelMetricslineHeight: float
+        fontSize: float
+        scrollOffset: int
+fn defaultLogPanelTheme(): LogPanelTheme =
+    var theme: LogPanelThemetheme.background = uint32(0xFF181818)
+    theme.gridLine = uint32(0xFF2A2A2A)
+    theme.levelDebug = uint32(0xFF6A9955)
+    theme.levelInfo = uint32(0xFF9CDCFE)
+    theme.levelWarn = uint32(0xFFD7BA7D)
+    theme.levelError = uint32(0xFFF44747)
+    theme.timestamp = uint32(0xFF808080)
+    theme.category = uint32(0xFFB5CEA8)
+    theme.indicatorWarn = uint32(0x40FFC800)
+    theme.indicatorError = uint32(0x40FF3C3C) theme
+fn newLogPanelModel(): LogPanelModel =
+    newLogPanelModel(DefaultLogCapacity, DefaultLogFont)
+fn newLogPanelModel(capacity: int): LogPanelModel =
+    newLogPanelModel(capacity, DefaultLogFont)
+fn newLogPanelModel(capacity: int, fontSize: float): LogPanelModel =
+    var model: LogPanelModel
+    new(model)
+    model.entries = default[LogEntry[]]
+    model.maxEntries = max(100, capacity)
+    var filter: LogPanelFilterfilter.allowDebug = true
+    filter.allowInfo = true
+    filter.allowWarn = true
+    filter.allowError = true
+    filter.keyword = ""
+    model.filter = filter
+    model.theme = defaultLogPanelTheme()
+    var metrics: LogPanelMetricsmetrics.totalEn
+    tries = 0
+    metrics.filteredEn
+    tries = 0
+    metrics.warnings = 0
+    metrics.errors = 0
+    model.metrics = metrics
+    model.lineHeight = DefaultLogLineHeight
+    model.fontSize = max(9.0, fontSize)
+    model.scrollOffset = 0 model
+fn setFilter(model: LogPanelModel, filter: LogPanelFilter) =
+    if model == nil:
+        return model.filter = filter
+fn addEntry(model: LogPanelModel, entry: LogEntry) =
+    if model == nil:
+        return model.entries.add(entry)
+        if entry.level == llWarn:
+            model.metrics.warnings = model.metrics.warnings + 1
+        elif entry.level == llError:
+            model.metrics.errors = model.metrics.errors + 1
+            if len(model.entries) > model.maxEntries:
+                let removed = len(model.entries) - model.maxEntries
+                let lastIdx: int32 = len(model.entries) - 1
+                model.entries = model.entries[removed..lastIdx]
+                model.metrics.totalEn
+                tries = len(model.entries)
+fn levelLabel(level: LogLevel): str =
+    case level
+    of llDebug:
+        "DBG"
+    of llInfo:
+        "INF"
+    of llWarn:
+        "WRN"
+    of llError:
+        "ERR"
+fn levelColor(theme: LogPanelTheme, level: LogLevel): uint32 =
+    case level
+    of llDebug:
+        theme.levelDebug
+    of llInfo:
+        theme.levelInfo
+    of llWarn:
+        theme.levelWarn
+    of llError:
+        theme.levelError
+fn allowLevel(filter: LogPanelFilter, level: LogLevel): bool =
+    case level
+    of llDebug:
+        filter.allowDebug
+    of llInfo:
+        filter.allowInfo
+    of llWarn:
+        filter.allowWarn
+    of llError:
+        filter.allowError
+fn applyFilter(model: LogPanelModel, entries: LogEntry[]): LogEntry[] =
+    let noKey
+    word = len(model.filter.keyword) == 0
+    let allowAll = model.filter.allowDebug && model.filter.allowInfo && model.filter.allowWarn && model.filter.allowError
+    if noKey word && allowAll:
+        return entries
+        var filtered = default[LogEntry[]]
+        let keywordLower = model.filter.keyword.toLowerAscii()
+        for entry in entries:
+            if ! allowLevel(model.filter, entry.level):
+                continue if len(keywordLower) > 0: let messageLower = entry.message.toLowerAscii()
+                if messageLower.find(keywordLower) < 0 && entry.category.toLowerAscii().find(keywordLower) < 0:
+                    continue filtered.add(entry) filtered
+fn formatTime
+stamp(ts: int64): str = if ts <= 0: return "--:--:--"
+let seconds = ts / 1000
+let millis = ts % 1000
+let t = epochTime() # place holder for timezone offset
+t fmt "{seconds div 3600 mod 24:02}:{seconds div 60 mod 60:02}:{seconds mod 60:02}.{millis:03}"
+fn metrics(model: LogPanelModel): LogPanelMetrics =
+    if model == nil:
+        var empty: LogPanelMetrics
+        return empty
+        return model.metrics
+fn renderLogPanel(model: LogPanelModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background)
+        if len(model.entries) == 0:
+            let placeholder = makeRect(rect.origin.x + 8.0, rect.origin.y + 8.0, rect.size.width - 16.0, model.lineHeight) ctx.drawText(placeholder, "(no logs)", model.theme.levelInfo, model.fontSize)
+            return
+            let filtered = model.applyFilter(model.entries)
+            model.metrics.filteredEn
+            tries = len(filtered)
+            if len(filtered) == 0:
+                let noMatch = makeRect(rect.origin.x + 8.0, rect.origin.y + 8.0, rect.size.width - 16.0, model.lineHeight) ctx.drawText(noMatch, "(no entries match filter)", model.theme.levelWarn, model.fontSize)
+                return
+                let availableLines = max(1, int(rect.size.height / model.lineHeight))
+                let startIndex = max(0, len(filtered) - availableLines - model.scrollOffset)
+                let endIndex = min(len(filtered), startIndex + availableLines)
+                var lineY = rect.origin.y
+                for idx in startIndex..< endIndex:
+                    let entry = filtered[idx]
+                    var indicatorColor: uint32 = uint32(0)
+                    case entry.level
+                    of llWarn:
+                        indicatorColor = model.theme.indicatorWarn
+                    of llError:
+                        indicatorColor = model.theme.indicatorError
+                    else:
+                        if indicatorColor != uint32(0): let indicatorRect = makeRect(rect.origin.x, lineY, 3.0, model.lineHeight) ctx.drawRect(indicatorRect, indicatorColor)
+                        let timestampRect = makeRect(rect.origin.x + 8.0, lineY, 120.0, model.lineHeight)
+                        let levelRect = makeRect(rect.origin.x + 132.0, lineY, 40.0, model.lineHeight)
+                        let categoryRect = makeRect(rect.origin.x + 180.0, lineY, 140.0, model.lineHeight)
+                        let messageRect = makeRect(rect.origin.x + 328.0, lineY, rect.size.width - 336.0, model.lineHeight) ctx.drawText(timestampRect, formatTime stamp(entry.timestamp), model.theme.timestamp, model.fontSize) ctx.drawText(levelRect, levelLabel(entry.level), levelColor(model.theme, entry.level), model.fontSize) ctx.drawText(categoryRect, entry.category, model.theme.category, model.fontSize)
+                        ctx.drawText(messageRect, entry.message, model.theme.levelInfo, model.fontSize)
+                        lineY = lineY + model.lineHeight
+fn makeLogEntry(level: LogLevel, category, message: str): LogEntry =
+    var entry: LogEntryentry.timestamp = int64(epochTime() * 1000.0)
+    entry.level = level
+    entry.category = category
+    entry.message = message entry
+fn append
+Debug(model: LogPanelModel, category, message: str) = model.addEntry(makeLogEntry(llDebug, category, message))
+fn append
+Info(model: LogPanelModel, category, message: str) = model.addEntry(makeLogEntry(llInfo, category, message))
+fn appendWarn(model: LogPanelModel, category, message: str) =
+    model.addEntry(makeLogEntry(llWarn, category, message))
+fn appendLogError(model: LogPanelModel, category, message: str) =
+    model.addEntry(makeLogEntry(llError, category, message))
+fn logPanelSummary(model: LogPanelModel): str =
+    if model == nil:
+        return "[log-panel]\n  status=uninitialized\n"
+        var lines = default[str[]] lines.add "[log-panel]\n" lines.add "  total=" + intToStr(int32(model.metrics.totalEn tries)) + "\n" lines.add "  filtered=" + intToStr(int32(model.metrics.filteredEn tries)) + "\n" lines.add "  warnings=" + intToStr(int32(model.metrics.warnings)) + "\n" lines.add "  errors=" + intToStr(int32(model.metrics.errors)) + "\n"
+        if len(model.filter.keyword) > 0:
+            lines.add "  filter-keyword=" + model.filter.keyword + "\n" lines.join("")

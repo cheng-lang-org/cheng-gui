@@ -1,0 +1,116 @@
+{
+  "name": "unimaker-app",
+  "description": "ClaudeDesign desktop executable for UniMaker",
+  "author": "UniMaker",
+  "private": true,
+  "version": "0.0.0",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "edge:prepare-models": "node scripts/edge/prepare-model-assets.mjs",
+    "build": "npm run edge:prepare-models && vite build",
+    "preview": "vite preview",
+    "desktop:run": "npm run build && electron .",
+    "desktop:pack:dir": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir --arm64",
+    "desktop:pack:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --arm64",
+    "desktop:pack:zip": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac zip --arm64",
+    "desktop:pack:mac:signed": "npm run build && electron-builder --mac dmg zip --arm64",
+    "desktop:pack:zip:signed": "npm run build && electron-builder --mac zip --arm64",
+    "desktop:smoke": "bash scripts/desktop/smoke_desktop_launch.sh",
+    "smoke:c2c:real": "bash scripts/libp2p/run_c2c_real_closure.sh",
+    "release:desktop": "bash scripts/desktop/release_desktop.sh",
+    "release:android": "bash scripts/android/release_android.sh",
+    "typecheck": "tsc --noEmit -p tsconfig.astrology.json",
+    "bench:generate": "tsx scripts/astrology/generate-benchmark.ts --write",
+    "bench:update": "npm run bench:generate && npm run test:bench -- --update",
+    "bench:refresh": "npm run bench:update",
+    "test:unit": "vitest run",
+    "test:bench": "tsx scripts/astrology/compare-benchmark.ts",
+    "bench:perf": "tsx scripts/astrology/bench-performance.ts",
+    "test:e2e": "npm run build",
+    "release:astrology": "npm run typecheck && npm run test:unit && npm run test:bench && npm run bench:perf && npm run test:e2e"
+  },
+  "build": {
+    "appId": "com.unimaker.claude.desktop",
+    "productName": "ClaudeDesign",
+    "directories": {
+      "output": "artifacts/desktop"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/@capacitor/android/**",
+      "!node_modules/@capacitor/ios/**"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.social-networking",
+      "hardenedRuntime": true,
+      "entitlements": "electron-builder/entitlements.mac.plist",
+      "entitlementsInherit": "electron-builder/entitlements.mac.inherit.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
+    "@capacitor/android": "^8.0.2",
+    "@capacitor/cli": "^8.0.2",
+    "@capacitor/core": "^8.0.2",
+    "@capacitor/geolocation": "^8.1.0",
+    "@capacitor/ios": "^8.0.2",
+    "@mediapipe/selfie_segmentation": "^0.1.1675465747",
+    "@noble/hashes": "^2.0.1",
+    "@react-three/cannon": "^6.6.0",
+    "@react-three/drei": "^9.99.0",
+    "@react-three/fiber": "^8.15.16",
+    "@solana/web3.js": "^1.98.4",
+    "@types/three": "^0.160.0",
+    "bip39": "^3.1.0",
+    "bitcoinjs-lib": "^7.0.1",
+    "ecpair": "^3.0.0",
+    "ethers": "^6.16.0",
+    "jspdf": "^4.1.0",
+    "lucide-react": "^0.400.0",
+    "lunar-javascript": "^1.7.7",
+    "prop-types": "^15.8.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-responsive-masonry": "^2.1.7",
+    "three": "^0.160.0",
+    "tiny-secp256k1": "^2.2.4",
+    "vite-plugin-pwa": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.2.2",
+    "vite": "^6.3.0",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.5.0",
+    "vitest": "^4.0.18"
+  }
+}

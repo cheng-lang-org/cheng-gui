@@ -1,0 +1,503 @@
+import cheng/gui/browser/engine/dom/model
+
+type
+    CssSelectorKind = enum
+        skTag
+        skClass
+        skId
+
+    CssRule = ref
+        selectorKind: CssSelectorKind
+        selector: str
+
+        hasDisplayNone: bool
+        displayNone: bool
+
+        hasBgColor: bool
+        bgColor: uint32
+
+        hasFgColor: bool
+        fgColor: uint32
+
+        hasFontSize: bool
+        fontSize: float
+
+        hasMargin: bool
+        margin: float
+
+        hasPadding: bool
+        padding: float
+
+    CascadeState = ref
+        rulesApplied: int32
+        highContrast: bool
+        hasGrid: bool
+        hasFlex: bool
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return !cGt(a, b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return !cLt(a, b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cssStrEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn cssIsSpace(ch: char): bool =
+    return cEq(ch, ' ') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t')
+
+fn cssLowerAsciiChar(ch: char): char =
+    let v = int32(ch)
+    if v >= int32('A') && v <= int32('Z'):
+        return char(v + int32(32))
+    return ch
+
+fn cssTrim(text: str): str =
+    if len(text) == 0:
+        return ""
+    var start = 0
+    var stop = len(text)
+    while start < stop && cssIsSpace(text[start]):
+        start = start + 1
+    while stop > start && cssIsSpace(text[stop - 1]):
+        stop = stop - 1
+    if stop <= start:
+        return ""
+    return text[start..<stop]
+
+fn cssLowerAscii(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out = ""
+    for idx in 0..<len(text):
+        out = out + charToStr(cssLowerAsciiChar(text[idx]))
+    return out
+
+fn cssMatchAt(text: str, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if text == nil || pattern == nil:
+        return false
+    let n = safeLen(pattern)
+    if offset + n > safeLen(text):
+        return false
+    var idx: int32 = int32(0)
+    while idx < n:
+        if cNe(text[offset + idx], pattern[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn cssFindFrom(text, pattern: str, start: int): int =
+    if len(pattern) == 0:
+        return start
+    var idx = start
+    if idx < 0:
+        idx = 0
+    while idx + len(pattern) <= len(text):
+        if cssMatchAt(text, pattern, idx):
+            return idx
+        idx = idx + 1
+    return -1
+
+fn cssSkipSpaces(text: str, idx0: int): int =
+    var idx = idx0
+    while idx < len(text) && cssIsSpace(text[idx]):
+        idx = idx + 1
+    return idx
+
+fn cssSkipComment(text: str, idx0: int): int =
+    if idx0 + 1 >= len(text):
+        return idx0
+    if cNe(text[idx0], '/') || cNe(text[idx0 + 1], '*'):
+        return idx0
+    let endIdx = cssFindFrom(text, "*/", idx0 + 2)
+    if endIdx < 0:
+        return len(text)
+    return endIdx + 2
+
+fn cssParseInt(text: str): int32 =
+    if len(text) == 0:
+        return int32(0)
+    var value: int32 = int32(0)
+    for idx in 0..<len(text):
+        let ch = text[idx]
+        if cLt(ch, '0') || cGt(ch, '9'):
+            break
+        value = value * int32(10) + int32(int32(ch) - int32('0'))
+    return value
+
+fn cssParsePx(value: str): float =
+    let v0: str = cssLowerAscii(cssTrim(value))
+    if len(v0) == 0:
+        return 0.0
+    var idx = 0
+    while idx < len(v0):
+        let ch = v0[idx]
+        if (cGe(ch, '0') && cLe(ch, '9')) || cEq(ch, '.'):
+            idx = idx + 1
+        else:
+            break
+    # Avoid `var x = if ...: <str> else: <str>`: some backends may lower it
+    # via a 32-bit store and truncate pointers on 64-bit targets.
+    var numText: str = ""
+    if idx > 0:
+        numText = v0[0..<idx]
+    let n = cssParseInt(numText)
+    return float(n)
+
+fn cssHexDigit(ch: char): int32 =
+    if cGe(ch, '0') && cLe(ch, '9'):
+        return int32(ch) - int32('0')
+    if cGe(ch, 'a') && cLe(ch, 'f'):
+        return int32(ch) - int32('a') + int32(10)
+    if cGe(ch, 'A') && cLe(ch, 'F'):
+        return int32(ch) - int32('A') + int32(10)
+    return int32(-1)
+
+fn cssParseHexColor(text: str): uint32 =
+    let s: str = cssTrim(text)
+    if len(s) != 7 || cNe(s[0], '#'):
+        return uint32(0)
+    let r1 = cssHexDigit(s[1])
+    let r2 = cssHexDigit(s[2])
+    let g1 = cssHexDigit(s[3])
+    let g2 = cssHexDigit(s[4])
+    let b1 = cssHexDigit(s[5])
+    let b2 = cssHexDigit(s[6])
+    if r1 < 0 || r2 < 0 || g1 < 0 || g2 < 0 || b1 < 0 || b2 < 0:
+        return uint32(0)
+    let r = uint32(r1 * 16 + r2)
+    let g = uint32(g1 * 16 + g2)
+    let b = uint32(b1 * 16 + b2)
+    return uint32(0xFF000000) | (r << 16) | (g << 8) | b
+
+fn cssParseRgbColor(text: str): uint32 =
+    let s0: str = cssLowerAscii(cssTrim(text))
+    if len(s0) < 10:
+        return uint32(0)
+    if ! cssMatchAt(s0, "rgb(", 0):
+        return uint32(0)
+    if cNe(s0[len(s0) - 1], ')'):
+        return uint32(0)
+    let inner: str = s0[4..<len(s0) - 1]
+    var parts: str[]
+    var start = 0
+    for idx in 0..len(inner):
+        if idx == len(inner) || cEq(inner[idx], ','):
+            let part: str = cssTrim(inner[start..<idx])
+            let pIdx = len(parts)
+            setLen[str](&parts, pIdx + 1)
+            parts[pIdx] = part
+            start = idx + 1
+    if len(parts) < 3:
+        return uint32(0)
+    let r = uint32(cssParseInt(parts[0]) & int32(255))
+    let g = uint32(cssParseInt(parts[1]) & int32(255))
+    let b = uint32(cssParseInt(parts[2]) & int32(255))
+    return uint32(0xFF000000) | (r << 16) | (g << 8) | b
+
+fn cssParseNamedColor(text: str): uint32 =
+    let s: str = cssLowerAscii(cssTrim(text))
+    if cssStrEq(s, "white"):
+        return uint32(0xFFFFFFFF)
+    if cssStrEq(s, "black"):
+        return uint32(0xFF000000)
+    if cssStrEq(s, "red"):
+        return uint32(0xFFFF0000)
+    if cssStrEq(s, "green"):
+        return uint32(0xFF00FF00)
+    if cssStrEq(s, "blue"):
+        return uint32(0xFF0000FF)
+    if cssStrEq(s, "yellow"):
+        return uint32(0xFFFFFF00)
+    if cssStrEq(s, "gray") || cssStrEq(s, "grey"):
+        return uint32(0xFF808080)
+    if cssStrEq(s, "transparent"):
+        return uint32(0)
+    return uint32(0)
+
+fn cssParseColor(text: str): uint32 =
+    let s: str = cssTrim(text)
+    if len(s) == 0:
+        return uint32(0)
+    if cEq(s[0], '#'):
+        return cssParseHexColor(s)
+    let rgb = cssParseRgbColor(s)
+    if rgb != 0:
+        return rgb
+    return cssParseNamedColor(s)
+
+fn cssAppendRule(items: var CssRule[], item: CssRule) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn cssInitRule(selector: str): CssRule =
+    var rule: CssRule
+    new(rule)
+    let sel: str = cssTrim(selector)
+    if len(sel) > 0 && cEq(sel[0], '#'):
+        rule.selectorKind = skId
+        rule.selector = sel[1..<len(sel)]
+    elif len(sel) > 0 && cEq(sel[0], '.'):
+        rule.selectorKind = skClass
+        rule.selector = sel[1..<len(sel)]
+    else:
+        rule.selectorKind = skTag
+        rule.selector = cssLowerAscii(sel)
+    rule.hasDisplayNone = false
+    rule.displayNone = false
+    rule.hasBgColor = false
+    rule.bgColor = uint32(0)
+    rule.hasFgColor = false
+    rule.fgColor = uint32(0)
+    rule.hasFontSize = false
+    rule.fontSize = 0.0
+    rule.hasMargin = false
+    rule.margin = 0.0
+    rule.hasPadding = false
+    rule.padding = 0.0
+    return rule
+
+fn cssParseDeclarations(rule: CssRule, declText: str) =
+    if rule == nil || len(declText) == 0:
+        return
+    var idx = 0
+    while idx < len(declText):
+        idx = cssSkipSpaces(declText, idx)
+        idx = cssSkipComment(declText, idx)
+        idx = cssSkipSpaces(declText, idx)
+        if idx >= len(declText):
+            break
+        let nameStart = idx
+        while idx < len(declText) && cNe(declText[idx], ':') && cNe(declText[idx], ';') && cNe(declText[idx], '}'):
+            idx = idx + 1
+        var name: str = cssTrim(declText[nameStart..<idx])
+        name = cssLowerAscii(name)
+        if idx >= len(declText) || cNe(declText[idx], ':'):
+            let semi = cssFindFrom(declText, ";", idx)
+            if semi < 0:
+                break
+            idx = semi + 1
+            continue
+        idx = idx + 1
+        let valueStart = idx
+        while idx < len(declText) && cNe(declText[idx], ';') && cNe(declText[idx], '}'):
+            idx = idx + 1
+        let value: str = cssTrim(declText[valueStart..<idx])
+        if idx < len(declText) && cEq(declText[idx], ';'):
+            idx = idx + 1
+
+        if cssStrEq(name, "display"):
+            let v = cssLowerAscii(value)
+            if cssStrEq(v, "none"):
+                rule.hasDisplayNone = true
+                rule.displayNone = true
+        elif cssStrEq(name, "margin"):
+            rule.hasMargin = true
+            rule.margin = cssParsePx(value)
+        elif cssStrEq(name, "padding"):
+            rule.hasPadding = true
+            rule.padding = cssParsePx(value)
+        elif cssStrEq(name, "background-color"):
+            rule.hasBgColor = true
+            rule.bgColor = cssParseColor(value)
+        elif cssStrEq(name, "color"):
+            rule.hasFgColor = true
+            rule.fgColor = cssParseColor(value)
+        elif cssStrEq(name, "font-size"):
+            rule.hasFontSize = true
+            rule.fontSize = cssParsePx(value)
+
+fn cssParseStylesheet(cssText: str): CssRule[] =
+    var rules: CssRule[]
+    var idx = 0
+    while idx < len(cssText):
+        idx = cssSkipSpaces(cssText, idx)
+        idx = cssSkipComment(cssText, idx)
+        idx = cssSkipSpaces(cssText, idx)
+        if idx >= len(cssText):
+            break
+        let selStart = idx
+        let brace = cssFindFrom(cssText, "{", idx)
+        if brace < 0:
+            break
+        let selectorsText: str = cssTrim(cssText[selStart..<brace])
+        idx = brace + 1
+        let close = cssFindFrom(cssText, "}", idx)
+        if close < 0:
+            break
+        let decls: str = cssText[idx..<close]
+        idx = close + 1
+
+        # Only simple selectors; if comma-separated, take each piece.
+        var start = 0
+        for i in 0..len(selectorsText):
+            if i == len(selectorsText) || cEq(selectorsText[i], ','):
+                let sel: str = cssTrim(selectorsText[start..<i])
+                if len(sel) > 0:
+                    let rule = cssInitRule(sel)
+                    cssParseDeclarations(rule, decls)
+                    cssAppendRule(rules, rule)
+                start = i + 1
+    return rules
+
+fn cssClassListContains(classList: str, className: str): bool =
+    if len(className) == 0:
+        return false
+    let list: str = cssTrim(classList)
+    if len(list) == 0:
+        return false
+    var idx = 0
+    while idx < len(list):
+        while idx < len(list) && cssIsSpace(list[idx]):
+            idx = idx + 1
+        if idx >= len(list):
+            break
+        let start = idx
+        while idx < len(list) && !cssIsSpace(list[idx]):
+            idx = idx + 1
+        let part: str = list[start..<idx]
+        if cssStrEq(part, className):
+            return true
+    return false
+
+fn cssRuleMatches(rule: CssRule, node: model.DomNode): bool =
+    if rule == nil || node == nil:
+        return false
+    if node.kind != model.dnElement:
+        return false
+    case rule.selectorKind
+    of skTag:
+        return cssStrEq(node.tag, rule.selector)
+    of skId:
+        return cssStrEq(node.id, rule.selector)
+    of skClass:
+        return cssClassListContains(node.classList, rule.selector)
+    return false
+
+fn cssApplyRule(rule: CssRule, node: model.DomNode) =
+    if rule == nil || node == nil:
+        return
+    if rule.hasDisplayNone:
+        node.displayNone = rule.displayNone
+    if rule.hasBgColor:
+        node.bgColor = rule.bgColor
+    if rule.hasFgColor:
+        node.fgColor = rule.fgColor
+    if rule.hasFontSize:
+        node.fontSize = rule.fontSize
+    if rule.hasMargin:
+        node.margin = rule.margin
+    if rule.hasPadding:
+        node.padding = rule.padding
+
+fn cssApplyInlineStyle(node: model.DomNode) =
+    if node == nil || len(node.styleText) == 0:
+        return
+    let rule = cssInitRule(node.tag)
+    cssParseDeclarations(rule, node.styleText)
+    cssApplyRule(rule, node)
+
+fn cssTraverseApply(node: model.DomNode, inheritedFg: uint32, inheritedFontSize: float, rules: CssRule[], state: CascadeState, hidden: bool) =
+    if node == nil:
+        return
+    if hidden:
+        node.displayNone = true
+        return
+    if node.kind == model.dnText:
+        node.displayNone = false
+        node.bgColor = uint32(0)
+        node.fgColor = inheritedFg
+        node.fontSize = inheritedFontSize
+        node.margin = 0.0
+        node.padding = 0.0
+        return
+
+    # Element defaults and inheritance.
+    node.displayNone = false
+    node.bgColor = uint32(0)
+    node.fgColor = inheritedFg
+    node.fontSize = inheritedFontSize
+    node.margin = 0.0
+    node.padding = 0.0
+
+    if cssStrEq(node.tag, "body"):
+        if state != nil && state.highContrast:
+            node.bgColor = uint32(0xFF000000)
+            node.fgColor = uint32(0xFFFFFFFF)
+            node.fontSize = 16.0
+        else:
+            node.bgColor = uint32(0xFFFFFFFF)
+            node.fgColor = uint32(0xFF000000)
+            node.fontSize = 16.0
+
+    for idx in 0..<len(rules):
+        let rule = rules[idx]
+        if cssRuleMatches(rule, node):
+            cssApplyRule(rule, node)
+            if state != nil:
+                state.rulesApplied = state.rulesApplied + int32(1)
+
+    cssApplyInlineStyle(node)
+
+    if node.displayNone:
+        # Skip subtree.
+        return
+
+    for childIdx in 0..<len(node.children):
+        cssTraverseApply(node.children[childIdx], node.fgColor, node.fontSize, rules, state, false)
+
+fn computeCascadeAndApply(doc: model.DomDocument, highContrast: bool): CascadeState =
+    var state: CascadeState
+    new(state)
+    state.rulesApplied = int32(0)
+    state.highContrast = highContrast
+    state.hasGrid = false
+    state.hasFlex = false
+
+    if doc == nil:
+        return state
+
+    let rules = cssParseStylesheet(doc.stylesText)
+    let baseFg = if highContrast: uint32(0xFFFFFFFF) else: uint32(0xFF000000)
+    let baseFont = 16.0
+    cssTraverseApply(doc.root, baseFg, baseFont, rules, state, false)
+    return state

@@ -1,0 +1,358 @@
+# Minimal syntax helpers shared by IDE and future language services.
+
+type
+    SyntaxTokenKind = enum
+        tkText
+        tkKeyword
+        tkType
+        tkString
+        tkNumber
+        tkComment
+
+type
+    SyntaxToken =
+        kind: SyntaxTokenKind
+        text: str
+
+type
+    seq_SyntaxToken =
+        len: int32
+        cap: int32
+        buffer: void*
+
+fn newSeq_SyntaxToken(len: int32, cap: int32): seq_SyntaxToken =
+    var seqInstance: seq_SyntaxToken
+    seqInstance.len = 0
+    seqInstance.cap = cap
+    if cap > 0:
+        var size64: int64 = int64(cap) * sizeof(SyntaxToken)
+        var size32: int32 = int32(size64)
+        seqInstance.buffer = alloc(size32)
+    else:
+        seqInstance.buffer = nil
+    return seqInstance
+
+fn get_SyntaxToken(seqInst: seq_SyntaxToken, i: int32): SyntaxToken =
+    var idx64: int64 = int64(i)
+    var offset64: int64 = idx64 * sizeof(SyntaxToken)
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst.buffer, offset32)
+    var pt: SyntaxToken* = SyntaxToken*(p)
+    return *pt
+
+fn addPtr_SyntaxToken(seqInst: seq_SyntaxToken*, val: SyntaxToken) =
+    if seqInst->len >= seqInst->cap:
+        var newCap: int32 = 4
+        if seqInst->cap != 0:
+            newCap = seqInst->cap * 2
+        seqInst->cap = newCap
+        var cap64: int64 = int64(newCap)
+        var size64: int64 = int64(cap64 * sizeof(SyntaxToken))
+        var size32: int32 = int32(size64)
+        seqInst->buffer = realloc(seqInst->buffer, size32)
+    var idx64: int64 = int64(seqInst->len)
+    var offset64: int64 = int64(idx64 * sizeof(SyntaxToken))
+    var offset32: int32 = int32(offset64)
+    var p: void* = ptr_add(seqInst->buffer, offset32)
+    var pt: SyntaxToken* = SyntaxToken*(p)
+    *pt = val
+    seqInst->len = seqInst->len + 1
+
+fn isDigitChar(ch: char): bool =
+    return ch >= '0' && ch <= '9'
+
+fn isHexDigitChar(ch: char): bool =
+    return isDigitChar(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+
+fn isOctDigitChar(ch: char): bool =
+    return ch >= '0' && ch <= '7'
+
+fn isBinDigitChar(ch: char): bool =
+    return ch == '0' || ch == '1'
+
+fn isAlphaChar(ch: char): bool =
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+
+fn isIdentStart(ch: char): bool =
+    return isAlphaChar(ch) || ch == '_'
+
+fn isIdentChar(ch: char): bool =
+    return isIdentStart(ch) || isDigitChar(ch)
+
+fn hasNonAscii(text: str): bool =
+    for i in 0..<len(text):
+        let code: int32 = int32(ord(text[i]))
+        if code < 0 || code > 127:
+            return true
+    return false
+
+fn firstNonSpaceChar(text: str): char =
+    for i in 0..<len(text):
+        let ch: char = text[i]
+        if ch != ' ' && ch != '\t':
+            return ch
+    return chr(0)
+
+fn syntaxSliceRange(text: str, start, stop: int32): str =
+    let length: int32 = len(text)
+    if length <= 0:
+        return ""
+    var s: int32 = start
+    if s < 0:
+        s = 0
+    if s >= length:
+        return ""
+    var e: int32 = stop
+    if e < s:
+        return ""
+    if e >= length:
+        e = length - 1
+    let count: int32 = e - s + 1
+    if count <= 0:
+        return ""
+    let p: void* = alloc(count + 1)
+    let src: void* = ptr_add(void*(text), s)
+    copyMem(p, src, count)
+    let pEnd: void* = ptr_add(p, count)
+    setMem(pEnd, 0, 1)
+    return str(p)
+
+fn scanQuotedString(line: str, quoteIdx: int32): int32 =
+    let total: int32 = len(line)
+    if quoteIdx < 0 || quoteIdx >= total:
+        return quoteIdx
+    let quote: char = line[quoteIdx]
+    if quoteIdx + 2 < total && line[quoteIdx + 1] == quote && line[quoteIdx + 2] == quote:
+        var i: int32 = quoteIdx + 3
+        while i + 2 < total:
+            let ch: char = line[i]
+            if ch == '\\':
+                if i + 1 < total:
+                    i = i + 2
+                else:
+                    i = i + 1
+                continue
+            if line[i] == quote && line[i + 1] == quote && line[i + 2] == quote:
+                return i + 3
+            i = i + 1
+        return total
+    var i: int32 = quoteIdx + 1
+    while i < total:
+        let ch: char = line[i]
+        if ch == '\\':
+            if i + 1 < total:
+                i = i + 2
+            else:
+                i = i + 1
+        elif ch == quote:
+            return i + 1
+        else:
+            i = i + 1
+    return i
+
+fn stripTrailingStar(word: str): str =
+    if len(word) == 0:
+        return word
+    let lastIdx: int32 = len(word) - 1
+    let last: char = word[lastIdx]
+    if last == '*':
+        if len(word) == 1:
+            return ""
+        return syntaxSliceRange(word, 0, len(word) - 2)
+    return word
+
+fn isKeyword(word: str): bool =
+    if word == "fn" || word == "iterator" || word == "converter":
+        return true
+    if word == "concept" || word == "trait":
+        return true
+    if word == "type" || word == "var" || word == "let" || word == "const":
+        return true
+    if word == "module" || word == "extern":
+        return true
+    if word == "import" || word == "from" || word == "as" || word == "include":
+        return true
+    if word == "if" || word == "elif" || word == "else" || word == "when" || word == "case" || word == "of":
+        return true
+    if word == "for" || word == "in" || word == "notin" || word == "while":
+        return true
+    if word == "return" || word == "break" || word == "continue":
+        return true
+    if word == "defer" || word == "await":
+        return true
+    if word == "async" || word == "mut" || word == "where":
+        return true
+    if word == "fn" || word == "method" || word == "yield" || word == "block":
+        return true
+    if word == "template" || word == "macro":
+        return true
+    if word == "enum" || word == "tuple":
+        return true
+    if word == "and" || word == "or" || word == "not" || word == "is":
+        return true
+    if word == "shl" || word == "shr" || word == "div" || word == "mod" || word == "xor":
+        return true
+    if word == "true" || word == "false" || word == "nil":
+        return true
+    return false
+
+fn isBuiltinType(word: str): bool =
+    if word == "int" || word == "int8" || word == "int16" || word == "int32" || word == "int64":
+        return true
+    if word == "uint" || word == "uint8" || word == "uint16" || word == "uint32" || word == "uint64":
+        return true
+    if word == "float" || word == "float32" || word == "float64":
+        return true
+    if word == "bool" || word == "char" || word == "str" || word == "cstring":
+        return true
+    if word == "ref":
+        return true
+    if word == "seq" || word == "Table" || word == "set" || word == "Result" || word == "Option":
+        return true
+    return false
+
+fn isDefinitionKeyword(word: str): bool =
+    if word == "fn" || word == "iterator" || word == "converter" || word == "fn" || word == "method":
+        return true
+    if word == "type" || word == "let" || word == "var" || word == "const" || word == "enum":
+        return true
+    if word == "concept" || word == "trait":
+        return true
+    if word == "template" || word == "macro":
+        return true
+    return false
+
+fn makeToken(kind: SyntaxTokenKind, text: str): SyntaxToken =
+    var token: SyntaxToken
+    token.kind = kind
+    token.text = text
+    return token
+
+fn addToken(outVal: seq_SyntaxToken*, kind: SyntaxTokenKind, text: str) =
+    addPtr_SyntaxToken(outVal, makeToken(kind, text))
+
+fn scanLineTokens(line: str): seq_SyntaxToken =
+    var outVal: seq_SyntaxToken = newSeq_SyntaxToken(0, 0)
+    var i: int32 = 0
+    let total: int32 = len(line)
+    while i < total:
+        let ch: char = line[i]
+        let code: int32 = int32(ord(ch))
+        if code < 0 || code > 127:
+            let start: int32 = i
+            i = i + 1
+            while i < total:
+                let c: char = line[i]
+                let ccode: int32 = int32(ord(c))
+                if ccode >= 0 && ccode <= 127:
+                    break
+                i = i + 1
+            let token = syntaxSliceRange(line, start, i - 1)
+            addToken(&outVal, tkText, token)
+            continue
+        if ch == '#':
+            let comment = syntaxSliceRange(line, i, total - 1)
+            addToken(&outVal, tkComment, comment)
+            break
+        if ch == '/' && i + 1 < total && line[i + 1] == '/':
+            let comment = syntaxSliceRange(line, i, total - 1)
+            addToken(&outVal, tkComment, comment)
+            break
+        if (ch == 'r' || ch == 'f') && i + 1 < total:
+            let next: char = line[i + 1]
+            if next == '"' || next == '\'':
+                let start: int32 = i
+                let endIdx: int32 = scanQuotedString(line, i + 1)
+                let token = syntaxSliceRange(line, start, endIdx - 1)
+                addToken(&outVal, tkString, token)
+                i = endIdx
+                continue
+        if ch == '"' || ch == '\'':
+            let start: int32 = i
+            let endIdx: int32 = scanQuotedString(line, i)
+            let token = syntaxSliceRange(line, start, endIdx - 1)
+            addToken(&outVal, tkString, token)
+            i = endIdx
+            continue
+        if isDigitChar(ch):
+            let start: int32 = i
+            if ch == '0' && i + 1 < total:
+                let base: char = line[i + 1]
+                if base == 'x' || base == 'X':
+                    i = i + 2
+                    while i < total:
+                        let c: char = line[i]
+                        if isHexDigitChar(c) || c == '_':
+                            i = i + 1
+                        else:
+                            break
+                    let token = syntaxSliceRange(line, start, i - 1)
+                    addToken(&outVal, tkNumber, token)
+                    continue
+                if base == 'b' || base == 'B':
+                    i = i + 2
+                    while i < total:
+                        let c: char = line[i]
+                        if isBinDigitChar(c) || c == '_':
+                            i = i + 1
+                        else:
+                            break
+                    let token = syntaxSliceRange(line, start, i - 1)
+                    addToken(&outVal, tkNumber, token)
+                    continue
+                if base == 'o' || base == 'O':
+                    i = i + 2
+                    while i < total:
+                        let c: char = line[i]
+                        if isOctDigitChar(c) || c == '_':
+                            i = i + 1
+                        else:
+                            break
+                    let token = syntaxSliceRange(line, start, i - 1)
+                    addToken(&outVal, tkNumber, token)
+                    continue
+            i = i + 1
+            while i < total:
+                let c: char = line[i]
+                if isDigitChar(c) || c == '_':
+                    i = i + 1
+                else:
+                    break
+            if i < total && line[i] == '.' && i + 1 < total && isDigitChar(line[i + 1]):
+                i = i + 1
+                while i < total:
+                    let c: char = line[i]
+                    if isDigitChar(c) || c == '_':
+                        i = i + 1
+                    else:
+                        break
+            if i < total && (line[i] == 'e' || line[i] == 'E'):
+                var j: int32 = i + 1
+                if j < total && (line[j] == '+' || line[j] == '-'):
+                    j = j + 1
+                var hasExpDigit: bool = false
+                while j < total:
+                    let c: char = line[j]
+                    if isDigitChar(c) || c == '_':
+                        hasExpDigit = true
+                        j = j + 1
+                    else:
+                        break
+                if hasExpDigit:
+                    i = j
+            let token = syntaxSliceRange(line, start, i - 1)
+            addToken(&outVal, tkNumber, token)
+            continue
+        if isIdentStart(ch):
+            let start: int32 = i
+            i = i + 1
+            while i < total && isIdentChar(line[i]):
+                i = i + 1
+            let token = syntaxSliceRange(line, start, i - 1)
+            let kind: SyntaxTokenKind = if isKeyword(token): tkKeyword elif isBuiltinType(token): tkType else: tkText
+            addToken(&outVal, kind, token)
+            continue
+        let token = charToStr(ch)
+        addToken(&outVal, tkText, token)
+        i = i + 1
+    return outVal

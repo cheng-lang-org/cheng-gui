@@ -1,0 +1,148 @@
+import std/os
+import cheng/gui/ime/cangwu_engine
+import cheng/gui/ime/cangwu_reverse
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/utfzh_codec
+import cheng/gui/ime/panel_state
+import cheng/gui/ime/legacy_codec
+
+fn miniDict(): UtfZhDict =
+    var dict: UtfZhDict
+    dict.chars = []
+    dict.codepoints = []
+    dict.cpToIndex = []
+    dict.bmpIndex = []
+    dict.nonBmpCp = []
+    dict.nonBmpIdx = []
+
+    add(dict.chars, utfzhEncodeUtf8Codepoint(20013))
+    add(dict.codepoints, 20013)
+    var e1: CwIntMapEntry
+    e1.key = "20013"
+    e1.value = 0
+    add(dict.cpToIndex, e1)
+
+    add(dict.chars, utfzhEncodeUtf8Codepoint(25991))
+    add(dict.codepoints, 25991)
+    var e2: CwIntMapEntry
+    e2.key = "25991"
+    e2.value = 1
+    add(dict.cpToIndex, e2)
+    return dict
+
+fn miniLegacyAssets(): LegacyAssets =
+    var assets: LegacyAssets
+    assets.gbkToUnicode = []
+    assets.gb2312ToUnicode = []
+
+    var g1: CwIntMapEntry
+    g1.key = "D6D0"
+    g1.value = 0x4E2D
+    add(assets.gbkToUnicode, g1)
+    add(assets.gb2312ToUnicode, g1)
+
+    var g2: CwIntMapEntry
+    g2.key = "CEC4"
+    g2.value = 0x6587
+    add(assets.gbkToUnicode, g2)
+    add(assets.gb2312ToUnicode, g2)
+    return assets
+
+fn miniAssets(): CwAssets =
+    var assets: CwAssets
+    assets.dict = miniDict()
+    assets.singles = []
+    assets.phrases = []
+    assets.reverse = []
+
+    var s1: CwSingleEntry
+    s1.text = "A"
+    s1.code = "ABCD"
+    s1.canonical = "ABCD"
+    s1.structKind = csUD
+    s1.freq = 1000
+    s1.pinyin = "zhong"
+    add(assets.singles, s1)
+
+    var p1: CwPhraseEntry
+    p1.text = "AB"
+    p1.code = "ABCE"
+    p1.freq = 900
+    add(assets.phrases, p1)
+
+    var r1: CwReverseEntry
+    r1.mode = "char"
+    r1.key = "A"
+    r1.text = "A"
+    r1.code = "ABCD"
+    r1.canonical = "ABCD"
+    r1.structKind = csUD
+    r1.freq = 1000
+    r1.pinyin = "aa"
+    add(assets.reverse, r1)
+
+    var r2: CwReverseEntry
+    r2.mode = "py"
+    r2.key = "aa"
+    r2.text = "A"
+    r2.code = "ABCD"
+    r2.canonical = "ABCD"
+    r2.structKind = csUD
+    r2.freq = 1000
+    r2.pinyin = "aa"
+    add(assets.reverse, r2)
+
+    return assets
+
+fn main(): int32 =
+    let assets = miniAssets()
+    let engine = cwCreateEngine(assets)
+
+    let utfEnc = utfZhEncodeStrict("abc" + utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991), assets.dict)
+    if ! utfEnc.ok:
+        return 1001
+    let utfDec = utfZhDecodeStrict(utfEnc.bytes, assets.dict)
+    if ! utfDec.ok || utfDec.text != "abc" + utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991):
+        return 1002
+
+    let q = cwQuery(engine, "AB", cfAny, 0, 9)
+    if len(q.candidates) <= 0:
+        return 2001
+
+    let ph = cwQuery(engine, "ABCE", cfAny, 0, 9)
+    var foundPhrase = false
+    for idx in 0..<len(ph.candidates):
+        if ph.candidates[idx].text == "AB":
+            foundPhrase = true
+            break
+    if ! foundPhrase:
+        return 2002
+
+    let rv = cwReverse(engine, "zaa", 0, 9)
+    if len(rv.items) <= 0:
+        return 3001
+
+    var state = cwPanelDefault(engine)
+    cwPanelAppendQuery(state, "AB")
+    if len(state.results.candidates) <= 0:
+        return 4001
+    cwPanelCommitCandidate(state, 0)
+    if len(state.outputText) <= 0:
+        return 4002
+    if ! cwPanelSaveUtf8(state, "build/cangwu_all_smoke.txt"):
+        return 4003
+    if ! fileExists("build/cangwu_all_smoke.txt"):
+        return 4004
+
+    let legacy = miniLegacyAssets()
+    let gbk = charToStr(char(0xD6)) + charToStr(char(0xD0)) + charToStr(char(0xCE)) + charToStr(char(0xC4))
+    let trans = utfZhTranscodeStrict(gbk, leGbk, assets.dict, legacy)
+    if ! trans.ok:
+        return 5001
+    let transDec = utfZhDecodeStrict(trans.bytes, assets.dict)
+    if ! transDec.ok || transDec.text != utfzhEncodeUtf8Codepoint(20013) + utfzhEncodeUtf8Codepoint(25991):
+        return 5002
+
+    return 0
+
+main()

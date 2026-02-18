@@ -1,0 +1,116 @@
+import std/os
+import std/tables
+import cheng/runtime/json_runtime as runtimeJson
+import ide/textutils
+import cheng/gui/editor/buffer
+const
+    SessionStateDir = "build/gui"
+    SessionStateFile = "session_state.json"
+    MaxRecentFiles = 10
+type
+    GuiSessionState =
+        lastSelected: str
+        lastRepoRoot: str
+        recentFiles: str[]
+        openFiles: str[]
+fn sessionStatePath(): str =
+    os.joinPath(SessionStateDir, SessionStateFile)
+fn defaultGuiSessionState(): GuiSessionState =
+    GuiSessionState(lastSelected: "", lastRepoRoot: "", recentFiles: [], openFiles: [])
+fn normalizePath(path: str): str =
+    textutils.toForwardSlashes(textutils.strip(path))
+fn loadGuiSessionState(): GuiSessionState =
+    let path = sessionStatePath()
+    if ! os.fileExists(path):
+        return defaultGuiSessionState()
+        let raw = readFile(path)
+        if textutils.strip(raw).len == 0:
+            return defaultGuiSessionState()
+            let parseRes = runtimeJson.parseJsonSafe(raw)
+            if ! parseRes.success:
+                return defaultGuiSessionState()
+                let node = parseRes.value
+                var state = defaultGuiSessionState()
+                if node.hasKey("last_selected"):
+                    state.lastSelected = normalizePath(node["last_selected"].getStr())
+                    if node.hasKey("last_repo_root"):
+                        state.lastRepoRoot = normalizePath(node["last_repo_root"].getStr())
+                        if node.hasKey("recent_files") && node["recent_files"].kind == JArray:
+                            for entry in node["recent_files"]:
+                                if entry.kind in {JString, JInt, JFloat, JBool}:
+                                    let normalized = normalizePath(entry.getStr())
+                                    if normalized.len > 0:
+                                        state.recentFiles.add(normalized)
+                                        if node.hasKey("open_files") && node["open_files"].kind == JArray:
+                                            for entry in node["open_files"]:
+                                                if entry.kind in {JString, JInt, JFloat, JBool}:
+                                                    let normalized = normalizePath(entry.getStr())
+                                                    if normalized.len > 0:
+                                                        state.openFiles.add(normalized) state
+fn ensureStateDir(): bool =
+    if os.dirExists(SessionStateDir):
+        return true
+        try:
+            os.createDir(SessionStateDir) true
+        except CatchableError:
+            false
+fn saveGuiSessionState(state: GuiSessionState) =
+    if ! ensureStateDir():
+        return
+        var node = newJObject()
+        node["last_selected"] = % state.lastSelected
+        node["last_repo_root"] = % state.lastRepoRoot
+        var recentArray = newJArray()
+        for path in state.recentFiles:
+            recentArray.add(% path)
+            node["recent_files"] = recentArray
+            var openArray = newJArray()
+            for path in state.openFiles:
+                openArray.add(% path)
+                node["open_files"] = openArray
+                let text = node.pretty(2) + "\n"
+                try:
+                    writeFile(sessionStatePath(), text)
+                except CatchableError:
+                    0
+fn deduplicate(paths: str[]): str[] =
+    var seen = initTable[str, bool]()
+    var result: str[] = []
+    for path in paths:
+        if path.len == 0:
+            continue
+            let key = normalizePath(path)
+            if key.len == 0:
+                continue if ! seen.hasKey(key): seen[key] = true result.add(key)
+                if result.len >= MaxRecentFiles:
+                    break result
+fn recordSessionState(repoRoot: str; selectedFile: str; documents: EditorDocumentSummary[]) =
+    var state = loadGuiSessionState()
+    let normalizedRepo = normalizePath(repoRoot)
+    let normalizedSelected = normalizePath(selectedFile)
+    state.lastRepoRoot = normalizedRepo
+    if normalizedSelected.len > 0:
+        state.lastSelected = normalizedSelected
+        var candidates: str[] = []
+        if normalizedSelected.len > 0:
+            candidates.add(normalizedSelected)
+            for doc in documents:
+                let normalized = normalizePath(doc.path)
+                if normalized.len > 0:
+                    candidates.add(normalized)
+                    for item in state.recentFiles:
+                        candidates.add(item)
+                        state.recentFiles = deduplicate(candidates)
+                        var openFiles: str[] = []
+                        for doc in documents:
+                            let normalized = normalizePath(doc.path)
+                            if normalized.len > 0:
+                                openFiles.add(normalized)
+                                state.openFiles = deduplicate(openFiles)
+                                saveGuiSessionState(state)
+fn select
+Fallback
+File(state: GuiSessionState): str = if state.lastSelected.len > 0 && os.fileExists(state.lastSelected): return state.lastSelected
+for path in state.recentFiles:
+    if os.fileExists(path):
+        return path ""

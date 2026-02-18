@@ -1,0 +1,395 @@
+import std/tables
+import cheng/gui/platform/types
+
+type
+    MacCInt = int32
+    MacCUInt = uint32
+    MacCDouble = float64
+    MacCSize = uint
+
+type
+    MacWindow = ref
+        handle: void*
+        size: GuiSize
+        pixelSize: GuiSize
+        scale: float
+        colorSpace: str
+        lastPointer: GuiPosition
+        hasPointer: bool
+
+    MacSurface = ref
+        window: MacWindow
+        handle: void*
+        scale: float
+
+    MacEvent =
+        kind: MacCInt
+        x: MacCDouble
+        y: MacCDouble
+        width: MacCDouble
+        height: MacCDouble
+        deltaX: MacCDouble
+        deltaY: MacCDouble
+        window: void*
+        button: MacCInt
+        modifiers: MacCUInt
+        keyCode: MacCUInt
+        repeatFlag: bool
+        text: array[256, char]
+
+    MacSurfaceInfo =
+        logicalWidth: MacCDouble
+        logicalHeight: MacCDouble
+        pixelWidth: MacCDouble
+        pixelHeight: MacCDouble
+        scale: MacCDouble
+        colorSpace: cstring
+
+const
+    macEventClose = 1
+    macEventResized = 2
+    macEventMoved = 3
+    macEventKeyDown = 4
+    macEventKeyUp = 5
+    macEventTextInput = 6
+    macEventPointerDown = 7
+    macEventPointerUp = 8
+    macEventPointerMove = 9
+    macEventPointerScroll = 10
+    macEventPointerLeave = 11
+    macEventImeStart = 12
+    macEventImeUpdate = 13
+    macEventImeEnd = 14
+    macDefaultColorSpace = "sRGB"
+    macModifierShift = MacCUInt(1 << 17)
+    macModifierCtrl = MacCUInt(1 << 18)
+    macModifierAlt = MacCUInt(1 << 19)
+    macModifierMeta = MacCUInt(1 << 20)
+
+var macWindows = initTable[void*, MacWindow]()
+var macStructsValidated = false
+
+fn makePointerEvent(kind: GuiEventKind, pos: GuiPosition, button: int, delta: GuiPosition, mods: GuiModifiers): GuiEvent =
+    let pointer = GuiPointerEvent(position: pos, delta: delta, button: button, modifiers: mods)
+    return GuiEvent(kind: kind, pointerEvent: void*)
+
+fn macHalUsesFfi(): bool =
+    true
+
+fn findMacWindow(handle: void*): MacWindow =
+    for idx in 0..<macWindows.keys.len:
+        if macWindows.keys[idx] == handle:
+            return macWindows.values[idx]
+    return nil
+
+fn setMacWindow(handle: void*; win: MacWindow) =
+    for idx in 0..<macWindows.keys.len:
+        if macWindows.keys[idx] == handle:
+            macWindows.values[idx] = win
+            return
+    macWindows.keys.add(handle)
+    macWindows.values.add(win)
+
+fn removeMacWindow(handle: void*) =
+    for idx in 0..<macWindows.keys.len:
+        if macWindows.keys[idx] == handle:
+            let last = macWindows.keys.len - 1
+            if idx != last:
+                macWindows.keys[idx] = macWindows.keys[last]
+                macWindows.values[idx] = macWindows.values[last]
+            macWindows.keys.len = last
+            macWindows.values.len = last
+            return
+
+fn toWindowHandle(win: MacWindow): WindowHandle =
+    WindowHandle(void*(win))
+
+fn fromWindowHandle(handle: WindowHandle): MacWindow =
+    MacWindow(void*(handle))
+
+fn macScale(win: MacWindow): float =
+    if win == nil || win.scale <= 0.0:
+        return 1.0
+    if win.scale < 0.25:
+        return 0.25
+    return win.scale
+
+fn macToLogical(win: MacWindow; px, py: float): GuiPosition =
+    let scale = macScale(win)
+    if scale <= 0.0:
+        return GuiPosition(x: px, y: py)
+    return GuiPosition(x: px / scale, y: py / scale)
+
+fn updatePointer(win: MacWindow; pos: GuiPosition): GuiPosition =
+    if win == nil:
+        return GuiPosition(x: 0.0, y: 0.0)
+    var delta = GuiPosition(x: 0.0, y: 0.0)
+    if win.hasPointer:
+        delta = GuiPosition(x: pos.x - win.lastPointer.x, y: pos.y - win.lastPointer.y)
+    win.lastPointer = pos
+    win.hasPointer = true
+    return delta
+
+fn hasMacModifier(flags: MacCUInt; mask: MacCUInt): bool =
+    let maskVal = int64(mask)
+    if maskVal == 0:
+        return false
+    let flagsVal = int64(flags)
+    return ((flagsVal / maskVal) % 2) != 0
+
+fn macModifiers(flags: MacCUInt): GuiModifiers =
+    var mods: GuiModifiers = 0
+    if hasMacModifier(flags, macModifierShift):
+        addModifier(mods, gmShift)
+    if hasMacModifier(flags, macModifierCtrl):
+        addModifier(mods, gmCtrl)
+    if hasMacModifier(flags, macModifierAlt):
+        addModifier(mods, gmAlt)
+    if hasMacModifier(flags, macModifierMeta):
+        addModifier(mods, gmMeta)
+    return mods
+
+fn macKey(code: MacCUInt): GuiKey =
+    case int(code):
+    of 36:
+        gkEnter
+    of 53:
+        gkEscape
+    of 49:
+        gkSpace
+    of 48:
+        gkTab
+    of 51:
+        gkBackspace
+    of 117:
+        gkDelete
+    of 123:
+        gkLeft
+    of 124:
+        gkRight
+    of 125:
+        gkDown
+    of 126:
+        gkUp
+    of 115:
+        gkHome
+    of 119:
+        gkEnd
+    of 116:
+        gkPageUp
+    of 121:
+        gkPageDown
+    of 122:
+        gkF1
+    of 120:
+        gkF2
+    of 99:
+        gkF3
+    of 118:
+        gkF4
+    of 96:
+        gkF5
+    of 97:
+        gkF6
+    of 98:
+        gkF7
+    of 100:
+        gkF8
+    of 101:
+        gkF9
+    of 109:
+        gkF10
+    of 103:
+        gkF11
+    of 111:
+        gkF12
+    else:
+        gkUnknown
+
+fn chengGuiMacInitialize() @ importc("chengGuiMacInitialize")
+fn chengGuiMacShutdown() @ importc("chengGuiMacShutdown")
+fn chengGuiMacCreateWindow(title: cstring; x, y, width, height: MacCDouble; resizable: bool; highDpi: bool): void* @ importc("chengGuiMacCreateWindow")
+fn chengGuiMacDestroyWindow(handle: void*) @ importc("chengGuiMacDestroyWindow")
+fn chengGuiMacPollEvents(events: MacEvent*; maxEvents: MacCInt; timeoutMs: MacCInt): MacCInt @ importc("chengGuiMacPollEvents")
+fn chengGuiMacCreateSurface(window: void*): void* @ importc("chengGuiMacCreateSurface")
+fn chengGuiMacDestroySurface(surface: void*) @ importc("chengGuiMacDestroySurface")
+fn chengGuiMacBeginFrame(surface: void*): MacCInt @ importc("chengGuiMacBeginFrame")
+fn chengGuiMacEndFrame(surface: void*): MacCInt @ importc("chengGuiMacEndFrame")
+fn chengGuiMacGetSurfaceInfo(surface: void*; info: MacSurfaceInfo*): MacCInt @ importc("chengGuiMacGetSurfaceInfo")
+fn chengGuiMacPresentPixels(surface: void*; pixels: void*; width: MacCInt; height: MacCInt; strideBytes: MacCInt): MacCInt @ importc("chengGuiMacPresentPixels")
+fn chengGuiMacEventStructSize(): MacCSize @ importc("chengGuiMacEventStructSize")
+fn chengGuiMacSurfaceInfoStructSize(): MacCSize @ importc("chengGuiMacSurfaceInfoStructSize")
+
+fn ensureMacStructsMatch() =
+    if macStructsValidated:
+        return
+    let localEventSize = int(sizeof(MacEvent))
+    let cEventSize = int(chengGuiMacEventStructSize())
+    if localEventSize != cEventSize:
+        raiseGuiError("macOS MacEvent size mismatch", grInvalidState)
+    let localInfoSize = int(sizeof(MacSurfaceInfo))
+    let cInfoSize = int(chengGuiMacSurfaceInfoStructSize())
+    if localInfoSize != cInfoSize:
+        raiseGuiError("macOS MacSurfaceInfo size mismatch", grInvalidState)
+    macStructsValidated = true
+
+fn initializePlat() =
+    ensureMacStructsMatch()
+    chengGuiMacInitialize()
+
+fn shutdownPlat() =
+    chengGuiMacShutdown()
+    macWindows.keys.len = 0
+    macWindows.values.len = 0
+
+fn createWindow(config: GuiWindowConfig): WindowHandle =
+    chengGuiMacInitialize()
+    let rect = config.initialRect
+    var title = config.title
+    if len(title) == 0:
+        title = "Cheng IDE"
+    let handle = chengGuiMacCreateWindow(cstring(title), MacCDouble(rect.origin.x), MacCDouble(rect.origin.y), MacCDouble(rect.size.width), MacCDouble(rect.size.height), config.resizable, config.highDpi)
+    if handle == nil:
+        raiseGuiError("macOS createWindow failed", grIoError)
+    let win = MacWindow(handle: handle, size: rect.size, pixelSize: rect.size, scale: 1.0, colorSpace: macDefaultColorSpace)
+    setMacWindow(handle, win)
+    return toWindowHandle(win)
+
+fn destroyWindow(handle: WindowHandle) =
+    let win = fromWindowHandle(handle)
+    if win == nil:
+        return
+    removeMacWindow(win.handle)
+    if win.handle != nil:
+        chengGuiMacDestroyWindow(win.handle)
+        win.handle = nil
+
+fn pumpEvents(timeoutMs: int = 0): GuiEvent[] =
+    var events: GuiEvent[]
+    let bufferLen = 32
+    var buffer: MacEvent[]
+    setLen[MacEvent](&buffer, bufferLen)
+    let emitted = chengGuiMacPollEvents(&buffer[0], MacCInt(bufferLen), MacCInt(timeoutMs))
+    if emitted <= 0:
+        return events
+    for idx in 0..<int(emitted):
+        let macEv = buffer[idx]
+        let win = findMacWindow(macEv.window)
+        if win == nil:
+            continue
+        case macEv.kind:
+        of macEventClose:
+            events.add(GuiEvent(kind: geClose))
+        of macEventResized:
+            let size = GuiSize(width: float(macEv.width), height: float(macEv.height))
+            win.size = size
+            events.add(GuiEvent(kind: geResized, newSize: size))
+        of macEventMoved:
+            events.add(GuiEvent(kind: geMoved, newPosition: GuiPosition(x: float(macEv.x), y: float(macEv.y))))
+        of macEventKeyDown:
+            events.add(GuiEvent(kind: geKeyDown, keyEvent: GuiKeyEvent(key: macKey(macEv.keyCode), modifiers: macModifiers(macEv.modifiers), repeat: macEv.repeatFlag)))
+        of macEventKeyUp:
+            events.add(GuiEvent(kind: geKeyUp, keyEvent: GuiKeyEvent(key: macKey(macEv.keyCode), modifiers: macModifiers(macEv.modifiers), repeat: macEv.repeatFlag)))
+        of macEventTextInput:
+            let text = $cstring(&macEv.text)
+            if text.len > 0:
+                events.add(GuiEvent(kind: geTextInput, text: text))
+        of macEventPointerDown, macEventPointerUp:
+            let pos = macToLogical(win, float(macEv.x), float(macEv.y))
+            let delta = updatePointer(win, pos)
+            let mods = macModifiers(macEv.modifiers)
+            let button = int(macEv.button)
+            var kind = gePointerUp
+            if macEv.kind == macEventPointerDown:
+                kind = gePointerDown
+            events.add(makePointerEvent(kind, pos, button, delta, mods))
+        of macEventPointerMove:
+            let pos = macToLogical(win, float(macEv.x), float(macEv.y))
+            let delta = updatePointer(win, pos)
+            let mods = macModifiers(macEv.modifiers)
+            events.add(makePointerEvent(gePointerMove, pos, -1, delta, mods))
+        of macEventPointerScroll:
+            let pos = macToLogical(win, float(macEv.x), float(macEv.y))
+            let delta = GuiPosition(x: float(macEv.deltaX), y: float(macEv.deltaY))
+            let mods = macModifiers(macEv.modifiers)
+            events.add(makePointerEvent(gePointerScroll, pos, -1, delta, mods))
+        of macEventPointerLeave:
+            win.hasPointer = false
+            let pos = macToLogical(win, float(macEv.x), float(macEv.y))
+            events.add(makePointerEvent(gePointerLeave, pos, -1, GuiPosition(x: 0.0, y: 0.0), macModifiers(macEv.modifiers)))
+        of macEventImeStart:
+            let text = $cstring(&macEv.text)
+            events.add(GuiEvent(kind: geTextCompositionStart, compositionEvent: GuiCompositionEvent(text: text)))
+        of macEventImeUpdate:
+            let text = $cstring(&macEv.text)
+            events.add(GuiEvent(kind: geTextCompositionUpdate, compositionEvent: GuiCompositionEvent(text: text)))
+        of macEventImeEnd:
+            let text = $cstring(&macEv.text)
+            events.add(GuiEvent(kind: geTextCompositionEnd, compositionEvent: GuiCompositionEvent(text: text)))
+        else:
+            0
+            return events
+
+fn createRenderSurface(window: WindowHandle): SurfaceHandle =
+    let win = fromWindowHandle(window)
+    if win == nil || win.handle == nil:
+        raiseGuiError("invalid window handle", grInvalidState)
+    let surfHandle = chengGuiMacCreateSurface(win.handle)
+    if surfHandle == nil:
+        raiseGuiError("create render surface failed", grIoError)
+    return SurfaceHandle(MacSurface(window: win, handle: surfHandle, scale: win.scale))
+
+fn destroyRenderSurface(surface: SurfaceHandle) =
+    let surf = MacSurface(void*(surface))
+    if surf != nil && surf->handle != nil:
+        chengGuiMacDestroySurface(surf->handle)
+        surf->handle = nil
+
+fn beginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    let surf = MacSurface(void*(surface))
+    if surf == nil || surf->handle == nil:
+        raiseGuiError("invalid render surface", grInvalidState)
+
+    var info: MacSurfaceInfo
+    if chengGuiMacGetSurfaceInfo(surf->handle, &info) != 0:
+        raiseGuiError("macOS get surface info failed", grInvalidState)
+
+    let logical = GuiSize(width: float(info.logicalWidth), height: float(info.logicalHeight))
+    let pixel = GuiSize(width: float(info.pixelWidth), height: float(info.pixelHeight))
+    var scale = float(info.scale)
+    if scale < 0.25:
+        scale = 0.25
+    var colorSpace = surf->window->colorSpace
+    if info.colorSpace != nil && info.colorSpace.len > 0:
+        colorSpace = $info.colorSpace
+
+    surf->window->size = logical
+    surf->window->pixelSize = pixel
+    surf->window->scale = scale
+    surf->window->colorSpace = colorSpace
+    surf->scale = scale
+
+    let rc = chengGuiMacBeginFrame(surf->handle)
+    if rc != 0:
+        raiseGuiError("macOS beginFrame failed", grInvalidState)
+
+    return SurfaceFrameInfo(logicalSize: logical, pixelSize: pixel, dpiScale: scale, colorSpace: colorSpace)
+
+fn endFrame(surface: SurfaceHandle) =
+    let surf = MacSurface(void*(surface))
+    if surf == nil || surf->handle == nil:
+        raiseGuiError("invalid render surface", grInvalidState)
+    let rc = chengGuiMacEndFrame(surf->handle)
+    if rc != 0:
+        raiseGuiError("macOS endFrame failed", grInvalidState)
+
+fn presentPixels(surface: SurfaceHandle; pixels: uint32*; width, height: int; strideBytes: int) =
+    let surf = MacSurface(void*(surface))
+    if surf == nil || surf->handle == nil || pixels == nil:
+        return
+    if width <= 0 || height <= 0:
+        return
+    var stride = strideBytes
+    if stride <= 0:
+        stride = width * 4
+    chengGuiMacPresentPixels(surf->handle, void*(pixels), MacCInt(width), MacCInt(height), MacCInt(stride))

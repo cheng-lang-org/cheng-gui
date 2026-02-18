@@ -1,0 +1,45 @@
+type
+    SolanaConnection = ref
+        endpoint: str
+        available: bool
+
+    SolanaPublicKey = ref
+        value: str
+
+    SolanaKeypair = ref
+        publicKey: SolanaPublicKey
+        secretKey: str
+
+fn adapterId(): str =
+    return "@solana/web3.js"
+
+fn clusterApiUrl(cluster: str): str =
+    if len(cluster) == 0:
+        return "https://api.mainnet-beta.solana.com"
+    return "https://api." + cluster + ".solana.com"
+
+fn newConnection(endpoint: str): SolanaConnection =
+    var out: SolanaConnection
+    new(out)
+    out.endpoint = endpoint
+    out.available = false
+    return out
+
+fn newPublicKey(value: str): SolanaPublicKey =
+    var out: SolanaPublicKey
+    new(out)
+    out.value = value
+    return out
+
+fn newKeypair(publicKey, secretKey: str): SolanaKeypair =
+    var out: SolanaKeypair
+    new(out)
+    out.publicKey = newPublicKey(publicKey)
+    out.secretKey = secretKey
+    return out
+
+fn getBalance(conn: SolanaConnection, pub: SolanaPublicKey): int64 =
+    conn
+    pub
+    return int64(0)
+

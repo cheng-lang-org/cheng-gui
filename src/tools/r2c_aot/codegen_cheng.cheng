@@ -1,0 +1,291 @@
+import std/os
+import std/strings
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn escapeChengString(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, '\\'):
+            out = out + "\\\\"
+        elif cEq(ch, '"'):
+            out = out + "\\\""
+        elif cEq(ch, '\n'):
+            out = out + "\\n"
+        elif cEq(ch, '\r'):
+            out = out + "\\r"
+        elif cEq(ch, '\t'):
+            out = out + "\\t"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn buildProjectName(projectProfileName, profile: str): str =
+    if len(projectProfileName) > 0:
+        return projectProfileName
+    if len(profile) > 0:
+        return profile
+    return "r2capp"
+
+fn buildEntrySource(profile: str, moduleCount: int32): str =
+    var out: str = ""
+    out = out + "import cheng/gui/browser/web\n"
+    out = out + "import cheng/r2capp/runtime_generated as generatedRuntime\n\n"
+    out = out + "fn mount(page: web.BrowserPage): bool =\n"
+    out = out + "    return generatedRuntime.mountGenerated(page)\n\n"
+    out = out + "fn compileProfile(): str =\n"
+    out = out + "    return \"" + escapeChengString(profile) + "\"\n\n"
+    out = out + "fn compiledModuleCount(): int32 =\n"
+    out = out + "    return int32(" + strings.intToStr(moduleCount) + ")\n"
+    return out
+
+fn buildDomGeneratedSource(projectName: str): str =
+    let projectName = buildProjectName(projectName, "")
+    var out: str = ""
+    out = out + "import cheng/gui/browser/web\n\n"
+    out = out + "fn profileId(): str =\n"
+    out = out + "    return \"" + escapeChengString(projectName) + "\"\n\n"
+    out = out + "fn mountDom(page: web.BrowserPage): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    if len(page.r2cApp) == 0:\n"
+    out = out + "        page.r2cApp = \"" + escapeChengString(projectName) + "\"\n"
+    out = out + "    return true\n"
+    return out
+
+fn buildEventsGeneratedSource(projectName: str): str =
+    projectName
+    var out: str = ""
+    out = out + "import cheng/gui/browser/web\n\n"
+    out = out + "fn dispatchEvent(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    page.r2cCurrentTab = page.r2cCurrentTab\n"
+    out = out + "    page.r2cLocale = page.r2cLocale\n"
+    out = out + "    page.snapshotText = page.snapshotText + \"EVENT:\" + eventName + \";TARGET:\" + targetSelector + \";PAYLOAD:\" + payload + \"\\n\"\n"
+    out = out + "    return true\n"
+    return out
+
+fn buildWebApiGeneratedSource(projectName: str): str =
+    projectName
+    var out: str = ""
+    out = out + "import cheng/gui/browser/web\n\n"
+    out = out + "fn bootstrapWebApi(page: web.BrowserPage): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    return true\n\n"
+    out = out + "fn drainEffectsWebApi(page: web.BrowserPage, limit: int32): int32 =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return int32(0)\n"
+    out = out + "    if limit < int32(0):\n"
+    out = out + "        return int32(0)\n"
+    out = out + "    return int32(0)\n"
+    return out
+
+fn runtimeTemplatePath(): str =
+    let envRoot = os.getEnv("CHENG_GUI_ROOT")
+    if len(envRoot) > 0:
+        let byEnv = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
+        if os.fileExists(byEnv):
+            return byEnv
+    let localPath = "src/tools/r2c_aot/runtime_generated_template.cheng"
+    if os.fileExists(localPath):
+        return localPath
+    return ""
+
+fn replaceTokenAll(text, token, value: str): str =
+    if len(text) == 0 || len(token) == 0:
+        return text
+    var out: str = ""
+    var idx: int32 = int32(0)
+    let tLen = len(token)
+    while idx < len(text):
+        var matched = false
+        if idx + tLen <= len(text):
+            matched = true
+            var j: int32 = int32(0)
+            while j < tLen:
+                if int32(text[idx + j]) != int32(token[j]):
+                    matched = false
+                    break
+                j = j + int32(1)
+        if matched:
+            out = out + value
+            idx = idx + tLen
+        else:
+            out = out + charToStr(text[idx])
+            idx = idx + int32(1)
+    return out
+
+fn dashName(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, '_'):
+            out = out + "-"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn hasPrefix(text: str, prefix: str): bool =
+    if len(prefix) == 0:
+        return true
+    if len(text) < len(prefix):
+        return false
+    var idx: int32 = int32(0)
+    while idx < len(prefix):
+        if cNe(text[idx], prefix[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn defaultRouteFromStates(states: str[]): str =
+    if len(states) <= 0:
+        return ""
+    for idx in 0..<len(states):
+        if states[idx] == "home_default":
+            return states[idx]
+    for idx in 0..<len(states):
+        if states[idx] == "home":
+            return states[idx]
+    for idx in 0..<len(states):
+        if hasPrefix(states[idx], "home_"):
+            return states[idx]
+    for idx in 0..<len(states):
+        if states[idx] == "tab_messages" || states[idx] == "tab_nodes" || states[idx] == "tab_profile":
+            return states[idx]
+    for idx in 0..<len(states):
+        if hasPrefix(states[idx], "publish_"):
+            return states[idx]
+    for idx in 0..<len(states):
+        if hasPrefix(states[idx], "trading_"):
+            return states[idx]
+    for idx in 0..<len(states):
+        if states[idx] != "lang_select":
+            return states[idx]
+    return states[0]
+
+fn buildKnownRouteCases(states: str[]): str =
+    var out: str = ""
+    for idx in 0..<len(states):
+        let route = states[idx]
+        out = out + "    if strEq(route, \"" + escapeChengString(route) + "\"):\n"
+        out = out + "        return true\n"
+    return out
+
+fn buildRouteTitleCases(states: str[]): str =
+    var out: str = ""
+    for idx in 0..<len(states):
+        let route = states[idx]
+        out = out + "    if strEq(route, \"" + escapeChengString(route) + "\"):\n"
+        out = out + "        return \"" + escapeChengString(route) + "\"\n"
+    return out
+
+fn buildSelectorRouteCases(states: str[]): str =
+    var out: str = ""
+    for idx in 0..<len(states):
+        let route = states[idx]
+        let dash = dashName(route)
+        out = out + "    if strEq(id, \"" + escapeChengString(dash) + "\"):\n"
+        out = out + "        return \"" + escapeChengString(route) + "\"\n"
+        out = out + "    if strEq(id, \"tab-" + escapeChengString(dash) + "\"):\n"
+        out = out + "        return \"" + escapeChengString(route) + "\"\n"
+    return out
+
+fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states: str[]): str =
+    let projectName = buildProjectName(projectName, "")
+    let defaultRoute = defaultRouteFromStates(states)
+    let knownRouteCases = buildKnownRouteCases(states)
+    let routeTitleCases = buildRouteTitleCases(states)
+    let selectorRouteCases = buildSelectorRouteCases(states)
+    let welcome = projectName
+    let templatePath = runtimeTemplatePath()
+    if len(templatePath) > 0:
+        let template = os.readFile(templatePath)
+        if len(template) > 0:
+            var rendered = replaceTokenAll(template, "__R2C_PROJECT_NAME__", escapeChengString(projectName))
+            rendered = replaceTokenAll(rendered, "__R2C_KNOWN_ROUTE_CASES__", knownRouteCases)
+            rendered = replaceTokenAll(rendered, "__R2C_ROUTE_TITLE_CASES__", routeTitleCases)
+            rendered = replaceTokenAll(rendered, "__R2C_SELECTOR_ROUTE_CASES__", selectorRouteCases)
+            rendered = replaceTokenAll(rendered, "__R2C_DEFAULT_ROUTE__", escapeChengString(defaultRoute))
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_WELCOME__", escapeChengString(welcome))
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_LANGUAGE__", "Please select your preferred language")
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_CONTINUE__", "Continue")
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_PROMPT__", "Select a language")
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SKIP__", "Skip")
+            rendered = replaceTokenAll(rendered, "__R2C_SEMANTIC_NODE_APPENDS__", "")
+            return rendered
+    if strictNoFallback:
+        return ""
+    var out: str = ""
+    out = out + "import cheng/gui/browser/web\n"
+    out = out + "import cheng/gui/browser/r2capp/dom_generated as domGenerated\n"
+    out = out + "import cheng/gui/browser/r2capp/events_generated as eventsGenerated\n"
+    out = out + "import cheng/gui/browser/r2capp/webapi_generated as webapiGenerated\n"
+    out = out + "import cheng/gui/render/drawlist_ir as drawir\n\n"
+    out = out + "var mountedPage: web.BrowserPage = nil\n\n"
+    out = out + "fn profileId(): str =\n"
+    out = out + "    return \"" + escapeChengString(projectName) + "\"\n\n"
+    out = out + "fn ensurePaint(page: web.BrowserPage) =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return\n"
+    out = out + "    if page.paintState == nil:\n"
+    out = out + "        page.paintState = drawir.newDrawList()\n"
+    out = out + "    let list = page.paintState\n"
+    out = out + "    drawir.clear(list)\n"
+    out = out + "    var vw = page.options.viewportWidth\n"
+    out = out + "    var vh = page.options.viewportHeight\n"
+    out = out + "    if vw <= int32(0):\n"
+    out = out + "        vw = int32(1280)\n"
+    out = out + "    if vh <= int32(0):\n"
+    out = out + "        vh = int32(720)\n"
+    out = out + "    drawir.pushRectInt(list, int32(0), int32(0), vw, vh, uint32(0xFFFFFFFF))\n"
+    out = out + "    drawir.pushTextInt(list, int32(16), int32(16), vw - int32(32), int32(24), \"R2C:\" + profileId(), uint32(0xFF111111), 16.0)\n\n"
+    out = out + "fn mountGenerated(page: web.BrowserPage): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    mountedPage = page\n"
+    out = out + "    if ! domGenerated.mountDom(page):\n"
+    out = out + "        return false\n"
+    out = out + "    if ! webapiGenerated.bootstrapWebApi(page):\n"
+    out = out + "        return false\n"
+    out = out + "    page.r2cApp = profileId()\n"
+    out = out + "    page.title = \"R2C:\" + profileId()\n"
+    out = out + "    page.snapshotText = \"R2C runtime mounted:\" + profileId() + \"\\n\"\n"
+    out = out + "    ensurePaint(page)\n"
+    out = out + "    return true\n\n"
+    out = out + "fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    let ok = eventsGenerated.dispatchEvent(page, eventName, targetSelector, payload)\n"
+    out = out + "    ensurePaint(page)\n"
+    out = out + "    return ok\n\n"
+    out = out + "fn drainEffects(limit: int32): int32 =\n"
+    out = out + "    let page = mountedPage\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return int32(0)\n"
+    out = out + "    let count = webapiGenerated.drainEffectsWebApi(page, limit)\n"
+    out = out + "    ensurePaint(page)\n"
+    out = out + "    return count\n\n"
+    out = out + "fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =\n"
+    out = out + "    page\n"
+    out = out + "    x\n"
+    out = out + "    y\n"
+    out = out + "    return \"#root\"\n"
+    return out

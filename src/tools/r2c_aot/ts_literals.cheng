@@ -1,0 +1,392 @@
+type
+    TsValueKind = enum
+        tvNull
+        tvBool
+        tvNumber
+        tvString
+        tvIdent
+        tvArray
+        tvObject
+
+    TsValue = ref
+        kind: TsValueKind
+        boolValue: bool
+        numberValue: float
+        stringValue: str
+        items: TsValue[]
+        keys: str[]
+        values: TsValue[]
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn cEq(a: char, b: char): bool =
+    let va = int32(a)
+    let vb = int32(b)
+    if va < vb:
+        return false
+    if va > vb:
+        return false
+    return true
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn strEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn tsIsSpace(ch: char): bool =
+    return cEq(ch, ' ') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t')
+
+fn tsIsDigit(ch: char): bool =
+    return cGe(ch, '0') && cLe(ch, '9')
+
+fn tsIsIdentStart(ch: char): bool =
+    return (cGe(ch, 'a') && cLe(ch, 'z')) || (cGe(ch, 'A') && cLe(ch, 'Z')) || cEq(ch, '_') || cEq(ch, '$')
+
+fn tsIsIdentCont(ch: char): bool =
+    return tsIsIdentStart(ch) || tsIsDigit(ch)
+
+fn tsSkipLineComment(text: str, idx0: int): int =
+    var idx = idx0
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, '\n'):
+            return idx + 1
+        idx = idx + 1
+    return idx
+
+fn tsSkipBlockComment(text: str, idx0: int): tuple[next: int, ok: bool] =
+    var idx = idx0
+    while idx + 1 < len(text):
+        if cEq(text[idx], '*') && cEq(text[idx + 1], '/'):
+            return (next: idx + 2, ok: true)
+        idx = idx + 1
+    return (next: idx, ok: false)
+
+fn tsSkipTrivia(text: str, idx0: int): tuple[next: int, err: str] =
+    if text == nil:
+        return (next: idx0, err: "nil-text")
+    var idx = idx0
+    while idx < len(text):
+        if tsIsSpace(text[idx]):
+            idx = idx + 1
+            continue
+        if cEq(text[idx], '/') && idx + 1 < len(text):
+            if cEq(text[idx + 1], '/'):
+                idx = tsSkipLineComment(text, idx + 2)
+                continue
+            if cEq(text[idx + 1], '*'):
+                let res = tsSkipBlockComment(text, idx + 2)
+                if ! res.ok:
+                    return (next: idx, err: "unterminated-block-comment")
+                idx = res.next
+                continue
+        break
+    return (next: idx, err: "")
+
+fn tsParseIdentifier(text: str, idx0: int): tuple[value: str, next: int, err: str] =
+    if text == nil:
+        return (value: "", next: idx0, err: "nil-text")
+    var idx = idx0
+    if idx >= len(text):
+        return (value: "", next: idx, err: "eof")
+    if ! tsIsIdentStart(text[idx]):
+        return (value: "", next: idx, err: "expected-ident")
+    var out: str = ""
+    while idx < len(text) && tsIsIdentCont(text[idx]):
+        out = out + charToStr(text[idx])
+        idx = idx + 1
+    return (value: out, next: idx, err: "")
+
+fn tsParseStringLiteral(text: str, idx0: int): tuple[value: str, next: int, err: str] =
+    if text == nil:
+        return (value: "", next: idx0, err: "nil-text")
+    var idx = idx0
+    if idx >= len(text):
+        return (value: "", next: idx, err: "eof")
+    let quote = text[idx]
+    if cNe(quote, '\'') && cNe(quote, '"'):
+        return (value: "", next: idx, err: "expected-quote")
+    let start = idx + 1
+    idx = start
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, quote):
+            return (value: text[start..<idx], next: idx + 1, err: "")
+        if cEq(ch, '\\'):
+            break
+        idx = idx + 1
+    # Slow path: handle escapes.
+    idx = start
+    var out: str = ""
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, quote):
+            return (value: out, next: idx + 1, err: "")
+        if cEq(ch, '\\') && idx + 1 < len(text):
+            let esc = text[idx + 1]
+            if cEq(esc, 'n'):
+                out = out + "\n"
+                idx = idx + 2
+                continue
+            if cEq(esc, 'r'):
+                out = out + "\r"
+                idx = idx + 2
+                continue
+            if cEq(esc, 't'):
+                out = out + "\t"
+                idx = idx + 2
+                continue
+            out = out + charToStr(esc)
+            idx = idx + 2
+            continue
+        out = out + charToStr(ch)
+        idx = idx + 1
+    return (value: "", next: idx, err: "unterminated-string")
+
+fn tsParseNumberLiteral(text: str, idx0: int): tuple[value: float, next: int, err: str] =
+    if text == nil:
+        return (value: 0.0, next: idx0, err: "nil-text")
+    var idx = idx0
+    if idx >= len(text):
+        return (value: 0.0, next: idx, err: "eof")
+    var sign = 1.0
+    if cEq(text[idx], '-'):
+        sign = -1.0
+        idx = idx + 1
+    var intPart: int64 = int64(0)
+    var fracPart: int64 = int64(0)
+    var fracDiv: float = 1.0
+    var sawDigit = false
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, '_'):
+            idx = idx + 1
+            continue
+        if ! tsIsDigit(ch):
+            break
+        sawDigit = true
+        intPart = intPart * int64(10) + int64(int32(ch) - int32('0'))
+        idx = idx + 1
+    if idx < len(text) && cEq(text[idx], '.'):
+        idx = idx + 1
+        while idx < len(text):
+            let ch = text[idx]
+            if cEq(ch, '_'):
+                idx = idx + 1
+                continue
+            if ! tsIsDigit(ch):
+                break
+            sawDigit = true
+            fracPart = fracPart * int64(10) + int64(int32(ch) - int32('0'))
+            fracDiv = fracDiv * 10.0
+            idx = idx + 1
+    if ! sawDigit:
+        return (value: 0.0, next: idx0, err: "expected-number")
+    let value = sign * (float(intPart) + float(fracPart) / fracDiv)
+    return (value: value, next: idx, err: "")
+
+fn appendValue(items: var TsValue[], item: TsValue) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn appendString(items: var str[], item: str) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn newValue(kind: TsValueKind): TsValue =
+    var v: TsValue
+    new(v)
+    v.kind = kind
+    v.boolValue = false
+    v.numberValue = 0.0
+    v.stringValue = ""
+    setLen[TsValue](&v.items, 0)
+    setLen[str](&v.keys, 0)
+    setLen[TsValue](&v.values, 0)
+    return v
+
+fn parseValueAt(text: str, idx0: int): tuple[value: TsValue, next: int, err: str]
+
+fn parseArrayAt(text: str, idx0: int): tuple[value: TsValue, next: int, err: str] =
+    var idx = idx0
+    if idx >= len(text) || cNe(text[idx], '['):
+        return (value: nil, next: idx, err: "expected-[")
+    idx = idx + 1
+    var arr = newValue(tvArray)
+    while true:
+        let triv = tsSkipTrivia(text, idx)
+        if len(triv.err) > 0:
+            return (value: nil, next: triv.next, err: triv.err)
+        idx = triv.next
+        if idx >= len(text):
+            return (value: nil, next: idx, err: "unterminated-array")
+        if cEq(text[idx], ']'):
+            return (value: arr, next: idx + 1, err: "")
+        let itemRes = parseValueAt(text, idx)
+        if len(itemRes.err) > 0:
+            return (value: nil, next: itemRes.next, err: itemRes.err)
+        appendValue(arr.items, itemRes.value)
+        idx = itemRes.next
+        let after = tsSkipTrivia(text, idx)
+        if len(after.err) > 0:
+            return (value: nil, next: after.next, err: after.err)
+        idx = after.next
+        if idx < len(text) && cEq(text[idx], ','):
+            idx = idx + 1
+            continue
+        if idx < len(text) && cEq(text[idx], ']'):
+            return (value: arr, next: idx + 1, err: "")
+        return (value: nil, next: idx, err: "expected-,or-]")
+
+fn parseObjectAt(text: str, idx0: int): tuple[value: TsValue, next: int, err: str] =
+    var idx = idx0
+    if idx >= len(text) || cNe(text[idx], '{'):
+        return (value: nil, next: idx, err: "expected-{")
+    idx = idx + 1
+    var obj = newValue(tvObject)
+    while true:
+        let triv = tsSkipTrivia(text, idx)
+        if len(triv.err) > 0:
+            return (value: nil, next: triv.next, err: triv.err)
+        idx = triv.next
+        if idx >= len(text):
+            return (value: nil, next: idx, err: "unterminated-object")
+        if cEq(text[idx], '}'):
+            return (value: obj, next: idx + 1, err: "")
+
+        var key: str = ""
+        if cEq(text[idx], '\'') || cEq(text[idx], '"'):
+            let keyRes = tsParseStringLiteral(text, idx)
+            if len(keyRes.err) > 0:
+                return (value: nil, next: keyRes.next, err: "bad-object-key:" + keyRes.err)
+            key = keyRes.value
+            idx = keyRes.next
+        else:
+            let keyRes = tsParseIdentifier(text, idx)
+            if len(keyRes.err) > 0:
+                return (value: nil, next: keyRes.next, err: "bad-object-key:" + keyRes.err)
+            key = keyRes.value
+            idx = keyRes.next
+
+        let afterKey = tsSkipTrivia(text, idx)
+        if len(afterKey.err) > 0:
+            return (value: nil, next: afterKey.next, err: afterKey.err)
+        idx = afterKey.next
+        if idx >= len(text) || cNe(text[idx], ':'):
+            return (value: nil, next: idx, err: "expected-:")
+        idx = idx + 1
+
+        let valRes = parseValueAt(text, idx)
+        if len(valRes.err) > 0:
+            return (value: nil, next: valRes.next, err: valRes.err)
+
+        appendString(obj.keys, key)
+        appendValue(obj.values, valRes.value)
+        idx = valRes.next
+
+        let after = tsSkipTrivia(text, idx)
+        if len(after.err) > 0:
+            return (value: nil, next: after.next, err: after.err)
+        idx = after.next
+        if idx < len(text) && cEq(text[idx], ','):
+            idx = idx + 1
+            continue
+        if idx < len(text) && cEq(text[idx], '}'):
+            return (value: obj, next: idx + 1, err: "")
+        return (value: nil, next: idx, err: "expected-,or-}")
+
+fn parseValueAt(text: str, idx0: int): tuple[value: TsValue, next: int, err: str] =
+    let triv = tsSkipTrivia(text, idx0)
+    if len(triv.err) > 0:
+        return (value: nil, next: triv.next, err: triv.err)
+    var idx = triv.next
+    if idx >= len(text):
+        return (value: nil, next: idx, err: "eof")
+    let ch = text[idx]
+    if cEq(ch, '['):
+        return parseArrayAt(text, idx)
+    if cEq(ch, '{'):
+        return parseObjectAt(text, idx)
+    if cEq(ch, '\'') || cEq(ch, '"'):
+        let sRes = tsParseStringLiteral(text, idx)
+        if len(sRes.err) > 0:
+            return (value: nil, next: sRes.next, err: sRes.err)
+        let v = newValue(tvString)
+        v.stringValue = sRes.value
+        return (value: v, next: sRes.next, err: "")
+    if cEq(ch, '-') || tsIsDigit(ch):
+        let nRes = tsParseNumberLiteral(text, idx)
+        if len(nRes.err) > 0:
+            return (value: nil, next: nRes.next, err: nRes.err)
+        let v = newValue(tvNumber)
+        v.numberValue = nRes.value
+        return (value: v, next: nRes.next, err: "")
+    if tsIsIdentStart(ch):
+        let idRes = tsParseIdentifier(text, idx)
+        if len(idRes.err) > 0:
+            return (value: nil, next: idRes.next, err: idRes.err)
+        if strEq(idRes.value, "true"):
+            let v = newValue(tvBool)
+            v.boolValue = true
+            return (value: v, next: idRes.next, err: "")
+        if strEq(idRes.value, "false"):
+            let v = newValue(tvBool)
+            v.boolValue = false
+            return (value: v, next: idRes.next, err: "")
+        if strEq(idRes.value, "null"):
+            let v = newValue(tvNull)
+            return (value: v, next: idRes.next, err: "")
+        let v = newValue(tvIdent)
+        v.stringValue = idRes.value
+        return (value: v, next: idRes.next, err: "")
+    return (value: nil, next: idx, err: "unexpected-char")
+
+fn parseValue(text: str, idx0: int): tuple[value: TsValue, next: int, err: str] =
+    return parseValueAt(text, idx0)
+
+fn objectGet(obj: TsValue, key: str): TsValue =
+    if obj == nil || obj.kind != tvObject:
+        return nil
+    var idx = 0
+    while idx < len(obj.keys) && idx < len(obj.values):
+        if strEq(obj.keys[idx], key):
+            return obj.values[idx]
+        idx = idx + 1
+    return nil
+
+fn objectGetString(obj: TsValue, key: str): str =
+    let v = objectGet(obj, key)
+    if v == nil || v.kind != tvString:
+        return ""
+    return v.stringValue

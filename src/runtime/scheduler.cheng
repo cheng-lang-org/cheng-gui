@@ -1,0 +1,73 @@
+import cheng/gui/core/component
+
+type
+    FrameStage = enum
+        fsInput
+        fsUpdate
+        fsLayout
+        fsDiff
+        fsRender
+        fsPresent
+
+    RuntimeTask = fn (ctx: component.UiContext)
+
+    UiScheduler = ref
+        stage: FrameStage
+        pending: RuntimeTask[]
+        completedFrames: int64
+
+fn appendTask(tasks: var RuntimeTask[], task: RuntimeTask) =
+    let idx = len(tasks)
+    setLen(tasks, idx + 1)
+    tasks[idx] = task
+
+fn newScheduler(): UiScheduler =
+    var scheduler: UiScheduler
+    new(scheduler)
+    scheduler.stage = fsInput
+    scheduler.completedFrames = 0
+    return scheduler
+
+fn setStage(scheduler: UiScheduler, stage: FrameStage) =
+    if scheduler == nil:
+        return
+    scheduler.stage = stage
+
+fn enqueue(scheduler: UiScheduler, task: RuntimeTask) =
+    if scheduler == nil || task == nil:
+        return
+    appendTask(scheduler.pending, task)
+
+fn drain(scheduler: UiScheduler, ctx: component.UiContext) =
+    if scheduler == nil:
+        return
+    for idx in 0..<len(scheduler.pending):
+        let task = scheduler.pending[idx]
+        if task != nil:
+            task(ctx)
+    setLen[RuntimeTask](&scheduler.pending, 0)
+
+fn completeFrame(scheduler: UiScheduler) =
+    if scheduler == nil:
+        return
+    scheduler.completedFrames = scheduler.completedFrames + 1
+    scheduler.stage = fsInput
+
+fn pipelineLabel(stage: FrameStage): str =
+    case stage
+    of fsInput:
+        return "Input"
+    of fsUpdate:
+        return "Update"
+    of fsLayout:
+        return "Layout"
+    of fsDiff:
+        return "Diff"
+    of fsRender:
+        return "Render"
+    of fsPresent:
+        return "Present"
+    return ""
+
+fn pipelineOrder(): str =
+    return "Input -> Update -> Layout -> Diff -> Render -> Present"

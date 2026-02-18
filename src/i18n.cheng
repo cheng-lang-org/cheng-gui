@@ -1,0 +1,162 @@
+import std/tables
+import std/times
+import std/streams
+import std/os
+import cheng/runtime/json_ast
+import cheng/runtime/json_runtime as runtimeJson
+import ide/textutils
+type
+    LocaleMessages = Table[str, str]
+    LocaleEntry =
+        id: str
+        name: str
+        messages: LocaleMessages
+    I18nState =
+        generatedAt: str
+        configPath: str
+        defaultLocale: str
+        currentLocale: str
+        locales: Table[str, LocaleEntry]
+const
+    DefaultLocaleConfig = "config/ide/locales.json"
+    I18nTimestampFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+fn nowStamp(): str =
+    format(getTime(), I18nTimestampFormat)
+    var currentState: I18nState
+    i18nInitialized = false
+fn emptyEntry(id: str): LocaleEntry =
+    var entry: LocaleEntry
+    entry.id = id
+    entry.name = id
+    entry.messages = initTable[str, str]() entry
+fn parseMessages(node: JsonNode): LocaleMessages =
+    var messages = initTable[str, str]()
+    if node.kind != JObject:
+        return messages
+        var idx = 0
+        while idx < len(node.okeys):
+            let key = node.okeys[idx]
+            let value = node.ovalues[idx]
+            if value.kind == JString:
+                messages[textutils.strip(key)] = value.getStr()
+                idx = idx + 1 messages
+fn parseLocale(id: str, node: JsonNode): LocaleEntry =
+    var entry = emptyEntry(id)
+    if node.kind != JObject:
+        return entry
+        entry.name = if node.hasKey("name") && node["name"].kind == JString: node["name"].getStr()
+    else:
+        id
+        if node.hasKey("messages"):
+            entry.messages = parseMessages(node["messages"]) entry
+fn defaultLocales(): Table[str, LocaleEntry] =
+    var locales = initTable[str, LocaleEntry]()
+    var zh = emptyEntry("zh-CN")
+    zh.name = "简体中文"
+    zh.messages["language.clean"] = "无诊断问题"
+    zh.messages["language.default"] = "语言服务事件"
+    locales["zh-CN"] = zh
+    var en = emptyEntry("en-US")
+    en.name = "English"
+    en.messages["language.clean"] = "No diagnostics issues"
+    en.messages["language.default"] = "language events"
+    locales["en-US"] = en locales
+fn loadLocales(configPath: str): I18nState =
+    var state: I18nState
+    state.generatedAt = nowStamp()
+    state.configPath = configPath
+    state.defaultLocale = "zh-CN"
+    state.currentLocale = "zh-CN"
+    state.locales = defaultLocales()
+    if len(configPath) == 0 || ! os.fileExists(configPath):
+        return state
+        try:
+            var stream = newFileStream(configPath, fmRead)
+            if stream == nil:
+                return state defer: stream.close()
+                let root = runtimeJson.parseJson(stream.readAll())
+                if root.kind != JObject:
+                    return state
+                    if root.hasKey("default") && root["default"].kind == JString:
+                        let defLocale = textutils.strip(root["default"].getStr())
+                        if len(defLocale) > 0:
+                            state.defaultLocale = defLocale
+                            state.currentLocale = defLocale
+                            if root.hasKey("locales") && root["locales"].kind == JObject:
+                                state.locales = initTable[str, LocaleEntry]()
+                                let locales = root["locales"]
+                                for idx in 0..<len(locales.okeys):
+                                    let key = locales.okeys[idx]
+                                    let value = locales.ovalues[idx]
+                                    let id = textutils.strip(key)
+                                    if len(id) == 0:
+                                        continue state.locales[id] = parseLocale(id, value)
+                                        if len(state.locales) == 0:
+                                            state.locales = defaultLocales()
+                                            if state.locales.hasKey(state.defaultLocale) == false:
+                                                state.locales[state.defaultLocale] = emptyEntry(state.defaultLocale)
+        except CatchableError:
+            state
+fn ensureLocale(locale: str) =
+    if currentState.locales.hasKey(locale) == false:
+        currentState.locales[locale] = emptyEntry(locale)
+fn ensureI18n() =
+    ensureI18n("", DefaultLocaleConfig)
+fn ensureI18n(repoRoot: str) =
+    ensureI18n(repoRoot, DefaultLocaleConfig)
+fn ensureI18n(repoRoot: str, configPath: str) =
+    var resolved = configPath
+    if len(resolved) > 0 && ! os.fileExists(resolved) && len(repoRoot) > 0:
+        let alt = os.joinPath(repoRoot, resolved)
+        if os.fileExists(alt):
+            resolved = alt
+            if i18nInitialized && currentState.configPath == resolved:
+                return currentState = loadLocales(resolved)
+                ensureLocale(currentState.defaultLocale)
+                if currentState.locales.hasKey(currentState.currentLocale) == false:
+                    currentState.currentLocale = currentState.defaultLocale
+                    i18nInitialized = true
+fn setPreferredLocale(locale: str) =
+    if ! i18nInitialized:
+        ensureI18n()
+        if len(locale) == 0:
+            return
+            let trimmed = textutils.strip(locale)
+            if len(trimmed) == 0:
+                return if currentState.locales.hasKey(trimmed): currentState.currentLocale = trimmed
+            else:
+                currentState.currentLocale = currentState.defaultLocale
+fn currentLocale(): str =
+    if ! i18nInitialized:
+        ensureI18n() currentState.currentLocale
+fn availableLocales(): str[] =
+    if ! i18nInitialized:
+        ensureI18n()
+        result = default[str[]]
+        for key in currentState.locales.keys:
+            result.add(key)
+fn lookupMessage(locale: str, key: str): str =
+    if currentState.locales.hasKey(locale) == false:
+        return ""
+        let entry = currentState.locales.getOrDefault(locale, emptyEntry(locale))
+        if entry.messages.hasKey(key):
+            return entry.messages.getOrDefault(key, "") ""
+fn translate(key: str): str =
+    translate(key, "")
+fn translate(key: str, fallback: str): str =
+    if ! i18nInitialized:
+        ensureI18n()
+        if len(key) == 0:
+            return fallback
+            let current = lookupMessage(currentState.currentLocale, key)
+            if len(current) > 0:
+                return current
+                let defaultMsg = lookupMessage(currentState.defaultLocale, key)
+                if len(defaultMsg) > 0:
+                    return defaultMsg fallback
+fn defaultLocale(): str =
+    if ! i18nInitialized:
+        ensureI18n() currentState.defaultLocale
+fn hasLocale(locale: str): bool =
+    if ! i18nInitialized:
+        ensureI18n() currentState.locales.hasKey(locale)

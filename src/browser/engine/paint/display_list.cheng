@@ -1,0 +1,104 @@
+import cheng/gui/browser/engine/dom/model
+import cheng/gui/platform/types_v1
+import cheng/gui/render/drawlist_ir as drawir
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cGt(a: char, b: char): bool =
+    return int32(a) > int32(b)
+
+fn cNe(a: char, b: char): bool =
+    return cLt(a, b) || cGt(a, b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn strEq(a: str, b: str): bool =
+    let aLen = safeLen(a)
+    let bLen = safeLen(b)
+    if aLen < bLen:
+        return false
+    if aLen > bLen:
+        return false
+    if aLen <= int32(0):
+        return true
+    var idx: int32 = int32(0)
+    while idx < aLen:
+        if cNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
+
+fn plainAppend(out: var str[], text: str) =
+    if len(text) == 0:
+        return
+    let idx = len(out)
+    setLen(out, idx + 1)
+    out[idx] = text
+
+fn findBodyNode(node: model.DomNode): model.DomNode =
+    if node == nil:
+        return nil
+    if node.kind == model.dnElement && strEq(node.tag, "body"):
+        return node
+    for idx in 0..<len(node.children):
+        let child = node.children[idx]
+        let found = findBodyNode(child)
+        if found != nil:
+            return found
+    return nil
+
+fn emitWebNode(list: drawir.DrawList, node: model.DomNode) =
+    if list == nil || node == nil:
+        return
+    if node.displayNone:
+        return
+    if node.kind == model.dnText:
+        drawir.pushText(list, node.layout, node.text, node.fgColor, node.fontSize)
+        return
+    if node.bgColor != uint32(0):
+        drawir.pushRect(list, node.layout, node.bgColor)
+    for idx in 0..<len(node.children):
+        emitWebNode(list, node.children[idx])
+
+fn buildWebDrawList(doc: model.DomDocument, viewport: GuiRect): drawir.DrawList =
+    let list = drawir.newDrawList()
+    if doc == nil:
+        drawir.pushRect(list, viewport, uint32(0xFFFFFFFF))
+        return list
+
+    var bg = uint32(0xFFFFFFFF)
+    let body = findBodyNode(doc.root)
+    if body != nil && body.bgColor != uint32(0):
+        bg = body.bgColor
+    drawir.pushRect(list, viewport, bg)
+
+    emitWebNode(list, doc.root)
+    return list
+
+fn collectPlainTextPieces(node: model.DomNode, out: var str[]) =
+    if node == nil:
+        return
+    if node.displayNone:
+        return
+    if node.kind == model.dnText:
+        if len(node.text) > 0:
+            plainAppend(out, node.text)
+            plainAppend(out, "\n")
+        return
+    for idx in 0..<len(node.children):
+        collectPlainTextPieces(node.children[idx], out)
+
+fn buildPlainText(doc: model.DomDocument): str =
+    if doc == nil || doc.root == nil:
+        return ""
+    var pieces: str[]
+    collectPlainTextPieces(doc.root, pieces)
+    var out: str = ""
+    for idx in 0..<len(pieces):
+        out = out + pieces[idx]
+    doc.plainText = out
+    return out

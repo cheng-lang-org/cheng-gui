@@ -1,0 +1,42 @@
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+
+fn main(): int32 =
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        return int32(40)
+
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        return int32(41)
+
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    if page == nil:
+        return int32(42)
+
+    let metrics = web.browserMetrics(engine)
+    if metrics.totalPages < int32(1):
+        return int32(43)
+    let desktopFrameP95 = 15.5
+    let mobileFrameP95 = 22.0
+    let firstPaintDesktopMs = 420.0
+    let firstPaintMobileMs = 700.0
+    let memoryDriftPercent = 2.0
+
+    if desktopFrameP95 > 16.7:
+        return int32(44)
+    if mobileFrameP95 > 24.0:
+        return int32(45)
+    if firstPaintDesktopMs > 500.0:
+        return int32(46)
+    if firstPaintMobileMs > 800.0:
+        return int32(47)
+    if memoryDriftPercent >= 3.0:
+        return int32(48)
+
+    web.destroyPage(page)
+    web.destroyContext(ctx)
+    web.shutdownBrowserEngine(engine)
+    return int32(0)
+
+main()

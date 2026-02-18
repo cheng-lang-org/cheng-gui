@@ -1,0 +1,408 @@
+import std/seqs
+import cheng/gui/examples_games/common/string_utils as sutil
+
+const
+    ProtocolMagic = "cheng.games.v1"
+
+fn i32ToStr(value: int32): str =
+    return intToStr(value)
+
+fn i64ToStr(value: int64): str =
+    return intToStr(int32(value))
+
+
+type
+    NetEnvelope =
+        version: str
+        kind: str
+        game: str
+        roomCode: str
+        senderPeerId: str
+        senderName: str
+        targetPeerId: str
+        playerToken: str
+        targetToken: str
+        seat: int32
+        seq: int64
+        actionType: str
+        actionArgs: str
+        publicPayload: str
+        privatePayload: str
+        ok: bool
+        errorMessage: str
+        timestampMs: int64
+
+    RoomHello =
+        game: str
+        roomCode: str
+        hostPeerId: str
+        hostMultiaddr: str
+        note: str
+
+    RoomJoin =
+        playerName: str
+        playerToken: str
+        desiredSeat: int32
+
+    ActionRequest =
+        actionType: str
+        actionArgs: str
+        clientSeq: int64
+        playerToken: str
+        seat: int32
+
+    ActionApplied =
+        applied: bool
+        actionType: str
+        actionArgs: str
+        stateSeq: int64
+        publicSnapshot: str
+        note: str
+
+    PrivateSync =
+        playerToken: str
+        privateSnapshot: str
+        allowedActions: str
+        stateSeq: int64
+
+    ReconnectClaim =
+        playerToken: str
+        playerName: str
+
+    ReconnectSnapshot =
+        publicSnapshot: str
+        privateSnapshot: str
+        allowedActions: str
+        stateSeq: int64
+        seat: int32
+
+fn initNetEnvelope(): NetEnvelope =
+    var env: NetEnvelope
+    env.version = ProtocolMagic
+    env.kind = ""
+    env.game = ""
+    env.roomCode = ""
+    env.senderPeerId = ""
+    env.senderName = ""
+    env.targetPeerId = ""
+    env.playerToken = ""
+    env.targetToken = ""
+    env.seat = -1
+    env.seq = int64(0)
+    env.actionType = ""
+    env.actionArgs = ""
+    env.publicPayload = ""
+    env.privatePayload = ""
+    env.ok = true
+    env.errorMessage = ""
+    env.timestampMs = sutil.nowMillis()
+    return env
+
+fn initRoomHello(): RoomHello =
+    var msg: RoomHello
+    msg.game = ""
+    msg.roomCode = ""
+    msg.hostPeerId = ""
+    msg.hostMultiaddr = ""
+    msg.note = ""
+    return msg
+
+fn initRoomJoin(): RoomJoin =
+    var msg: RoomJoin
+    msg.playerName = ""
+    msg.playerToken = ""
+    msg.desiredSeat = -1
+    return msg
+
+fn initActionRequest(): ActionRequest =
+    var msg: ActionRequest
+    msg.actionType = ""
+    msg.actionArgs = ""
+    msg.clientSeq = int64(0)
+    msg.playerToken = ""
+    msg.seat = -1
+    return msg
+
+fn initActionApplied(): ActionApplied =
+    var msg: ActionApplied
+    msg.applied = false
+    msg.actionType = ""
+    msg.actionArgs = ""
+    msg.stateSeq = int64(0)
+    msg.publicSnapshot = ""
+    msg.note = ""
+    return msg
+
+fn initPrivateSync(): PrivateSync =
+    var msg: PrivateSync
+    msg.playerToken = ""
+    msg.privateSnapshot = ""
+    msg.allowedActions = ""
+    msg.stateSeq = int64(0)
+    return msg
+
+fn initReconnectClaim(): ReconnectClaim =
+    var msg: ReconnectClaim
+    msg.playerToken = ""
+    msg.playerName = ""
+    return msg
+
+fn initReconnectSnapshot(): ReconnectSnapshot =
+    var msg: ReconnectSnapshot
+    msg.publicSnapshot = ""
+    msg.privateSnapshot = ""
+    msg.allowedActions = ""
+    msg.stateSeq = int64(0)
+    msg.seat = -1
+    return msg
+
+fn encodeNetEnvelope(env: NetEnvelope): str =
+    var lines: str[] = default[str[]]
+    add(lines, ProtocolMagic)
+    add(lines, "version=" + sutil.escapeField(env.version))
+    add(lines, "kind=" + sutil.escapeField(env.kind))
+    add(lines, "game=" + sutil.escapeField(env.game))
+    add(lines, "room_code=" + sutil.escapeField(env.roomCode))
+    add(lines, "sender_peer=" + sutil.escapeField(env.senderPeerId))
+    add(lines, "sender_name=" + sutil.escapeField(env.senderName))
+    add(lines, "target_peer=" + sutil.escapeField(env.targetPeerId))
+    add(lines, "player_token=" + sutil.escapeField(env.playerToken))
+    add(lines, "target_token=" + sutil.escapeField(env.targetToken))
+    add(lines, "seat=" + i32ToStr(env.seat))
+    add(lines, "seq=" + i64ToStr(env.seq))
+    add(lines, "action_type=" + sutil.escapeField(env.actionType))
+    add(lines, "action_args=" + sutil.escapeField(env.actionArgs))
+    add(lines, "public_payload=" + sutil.escapeField(env.publicPayload))
+    add(lines, "private_payload=" + sutil.escapeField(env.privatePayload))
+    add(lines, "ok=" + (if env.ok: "1" else: "0"))
+    add(lines, "error=" + sutil.escapeField(env.errorMessage))
+    add(lines, "timestamp_ms=" + i64ToStr(env.timestampMs))
+    return sutil.joinWith(lines, "\n")
+
+fn decodeNetEnvelope(payload: str): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    let lines: str[] = sutil.splitLines(payload)
+    if len(lines) <= 0:
+        env.ok = false
+        env.errorMessage = "envelope empty"
+        return env
+    for idx in 0..<len(lines):
+        let line: str = lines[idx]
+        if idx == 0 && line == ProtocolMagic:
+            continue
+        var value: str = sutil.parseKeyValueLine(line, "version")
+        if len(value) > 0:
+            env.version = value
+            continue
+        value = sutil.parseKeyValueLine(line, "kind")
+        if len(value) > 0:
+            env.kind = value
+            continue
+        value = sutil.parseKeyValueLine(line, "game")
+        if len(value) > 0:
+            env.game = value
+            continue
+        value = sutil.parseKeyValueLine(line, "room_code")
+        if len(value) > 0:
+            env.roomCode = value
+            continue
+        value = sutil.parseKeyValueLine(line, "sender_peer")
+        if len(value) > 0:
+            env.senderPeerId = value
+            continue
+        value = sutil.parseKeyValueLine(line, "sender_name")
+        if len(value) > 0:
+            env.senderName = value
+            continue
+        value = sutil.parseKeyValueLine(line, "target_peer")
+        if len(value) > 0:
+            env.targetPeerId = value
+            continue
+        value = sutil.parseKeyValueLine(line, "player_token")
+        if len(value) > 0:
+            env.playerToken = value
+            continue
+        value = sutil.parseKeyValueLine(line, "target_token")
+        if len(value) > 0:
+            env.targetToken = value
+            continue
+        value = sutil.parseKeyValueLine(line, "seat")
+        if len(value) > 0 || line == "seat=0":
+            env.seat = sutil.parseInt32(value, -1)
+            continue
+        value = sutil.parseKeyValueLine(line, "seq")
+        if len(value) > 0 || line == "seq=0":
+            env.seq = sutil.parseInt64(value, int64(0))
+            continue
+        value = sutil.parseKeyValueLine(line, "action_type")
+        if len(value) > 0:
+            env.actionType = value
+            continue
+        value = sutil.parseKeyValueLine(line, "action_args")
+        if len(value) > 0:
+            env.actionArgs = value
+            continue
+        value = sutil.parseKeyValueLine(line, "public_payload")
+        if len(value) > 0:
+            env.publicPayload = value
+            continue
+        value = sutil.parseKeyValueLine(line, "private_payload")
+        if len(value) > 0:
+            env.privatePayload = value
+            continue
+        value = sutil.parseKeyValueLine(line, "ok")
+        if len(value) > 0 || line == "ok=0":
+            env.ok = sutil.parseBool(value, true)
+            continue
+        value = sutil.parseKeyValueLine(line, "error")
+        if len(value) > 0:
+            env.errorMessage = value
+            continue
+        value = sutil.parseKeyValueLine(line, "timestamp_ms")
+        if len(value) > 0 || line == "timestamp_ms=0":
+            env.timestampMs = sutil.parseInt64(value, int64(0))
+            continue
+    return env
+
+fn roomHelloToEnvelope(msg: RoomHello): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    env.kind = "room_hello"
+    env.game = msg.game
+    env.roomCode = msg.roomCode
+    env.senderPeerId = msg.hostPeerId
+    env.publicPayload = msg.hostMultiaddr
+    env.actionArgs = msg.note
+    return env
+
+fn envelopeToRoomHello(env: NetEnvelope): RoomHello =
+    var msg: RoomHello = initRoomHello()
+    msg.game = env.game
+    msg.roomCode = env.roomCode
+    msg.hostPeerId = env.senderPeerId
+    msg.hostMultiaddr = env.publicPayload
+    msg.note = env.actionArgs
+    return msg
+
+fn roomJoinToEnvelope(msg: RoomJoin, game: str, roomCode: str, senderPeerId: str): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    env.kind = "room_join"
+    env.game = game
+    env.roomCode = roomCode
+    env.senderPeerId = senderPeerId
+    env.senderName = msg.playerName
+    env.playerToken = msg.playerToken
+    env.seat = msg.desiredSeat
+    return env
+
+fn envelopeToRoomJoin(env: NetEnvelope): RoomJoin =
+    var msg: RoomJoin = initRoomJoin()
+    msg.playerName = env.senderName
+    msg.playerToken = env.playerToken
+    msg.desiredSeat = env.seat
+    return msg
+
+fn actionRequestToEnvelope(msg: ActionRequest, game: str, roomCode: str, senderPeerId: str): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    env.kind = "action_request"
+    env.game = game
+    env.roomCode = roomCode
+    env.senderPeerId = senderPeerId
+    env.playerToken = msg.playerToken
+    env.seat = msg.seat
+    env.seq = msg.clientSeq
+    env.actionType = msg.actionType
+    env.actionArgs = msg.actionArgs
+    return env
+
+fn envelopeToActionRequest(env: NetEnvelope): ActionRequest =
+    var msg: ActionRequest = initActionRequest()
+    msg.actionType = env.actionType
+    msg.actionArgs = env.actionArgs
+    msg.clientSeq = env.seq
+    msg.playerToken = env.playerToken
+    msg.seat = env.seat
+    return msg
+
+fn actionAppliedToEnvelope(msg: ActionApplied, game: str, roomCode: str, senderPeerId: str): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    env.kind = "action_applied"
+    env.game = game
+    env.roomCode = roomCode
+    env.senderPeerId = senderPeerId
+    env.seq = msg.stateSeq
+    env.actionType = msg.actionType
+    env.actionArgs = msg.actionArgs
+    env.publicPayload = msg.publicSnapshot
+    env.ok = msg.applied
+    env.errorMessage = msg.note
+    return env
+
+fn envelopeToActionApplied(env: NetEnvelope): ActionApplied =
+    var msg: ActionApplied = initActionApplied()
+    msg.applied = env.ok
+    msg.actionType = env.actionType
+    msg.actionArgs = env.actionArgs
+    msg.stateSeq = env.seq
+    msg.publicSnapshot = env.publicPayload
+    msg.note = env.errorMessage
+    return msg
+
+fn privateSyncToEnvelope(msg: PrivateSync, game: str, roomCode: str, senderPeerId: str, targetPeerId: str): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    env.kind = "private_sync"
+    env.game = game
+    env.roomCode = roomCode
+    env.senderPeerId = senderPeerId
+    env.targetPeerId = targetPeerId
+    env.playerToken = msg.playerToken
+    env.privatePayload = msg.privateSnapshot
+    env.actionArgs = msg.allowedActions
+    env.seq = msg.stateSeq
+    return env
+
+fn envelopeToPrivateSync(env: NetEnvelope): PrivateSync =
+    var msg: PrivateSync = initPrivateSync()
+    msg.playerToken = env.playerToken
+    msg.privateSnapshot = env.privatePayload
+    msg.allowedActions = env.actionArgs
+    msg.stateSeq = env.seq
+    return msg
+
+fn reconnectClaimToEnvelope(msg: ReconnectClaim, game: str, roomCode: str, senderPeerId: str): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    env.kind = "reconnect_claim"
+    env.game = game
+    env.roomCode = roomCode
+    env.senderPeerId = senderPeerId
+    env.playerToken = msg.playerToken
+    env.senderName = msg.playerName
+    return env
+
+fn envelopeToReconnectClaim(env: NetEnvelope): ReconnectClaim =
+    var msg: ReconnectClaim = initReconnectClaim()
+    msg.playerToken = env.playerToken
+    msg.playerName = env.senderName
+    return msg
+
+fn reconnectSnapshotToEnvelope(msg: ReconnectSnapshot, game: str, roomCode: str, senderPeerId: str, targetPeerId: str): NetEnvelope =
+    var env: NetEnvelope = initNetEnvelope()
+    env.kind = "reconnect_snapshot"
+    env.game = game
+    env.roomCode = roomCode
+    env.senderPeerId = senderPeerId
+    env.targetPeerId = targetPeerId
+    env.publicPayload = msg.publicSnapshot
+    env.privatePayload = msg.privateSnapshot
+    env.actionArgs = msg.allowedActions
+    env.seq = msg.stateSeq
+    env.seat = msg.seat
+    return env
+
+fn envelopeToReconnectSnapshot(env: NetEnvelope): ReconnectSnapshot =
+    var msg: ReconnectSnapshot = initReconnectSnapshot()
+    msg.publicSnapshot = env.publicPayload
+    msg.privateSnapshot = env.privatePayload
+    msg.allowedActions = env.actionArgs
+    msg.stateSeq = env.seq
+    msg.seat = env.seat
+    return msg

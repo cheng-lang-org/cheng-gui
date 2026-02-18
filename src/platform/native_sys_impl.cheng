@@ -1,0 +1,1222 @@
+# Pure-Cheng fallback host implementation used when `cheng_sys_gui` is enabled.
+# Toolchain builtin integration (`std/sys/gui`) is expected to replace this shim.
+import cheng/gui/platform/types_v1
+import std/os
+
+fn envValue(name: str): str =
+    return getEnv(name)
+
+fn fileExistsPath(path: str): bool =
+    return fileExists(path)
+
+fn writeTextFile(path: str, text: str): bool =
+    if len(path) == 0:
+        return false
+    writeFile(path, text)
+    return fileExistsPath(path)
+
+type
+    WebHostSession = ref
+        id: int64
+        currentUrl: str
+        html: str
+        title: str
+        snapshotText: str
+        stateCode: int32
+        errorText: str
+
+    PdfHostDocument = ref
+        id: int64
+        title: str
+        stateCode: int32
+        errorText: str
+        pageCount: int32
+        sourcePath: str
+        sourceBytes: str
+
+    MediaHostPlayer = ref
+        id: int64
+        kindCode: int32
+        uri: str
+        bytesData: str
+        mime: str
+        stateCode: int32
+        durationSec: float
+        positionSec: float
+        muted: bool
+        volume: float
+        rate: float
+        loopEnabled: bool
+        errorText: str
+
+var sysInitialized = false
+var sysWindow: WindowHandle = nil
+var sysSurface: SurfaceHandle = nil
+var sysLogicalW: float = 960.0
+var sysLogicalH: float = 540.0
+var sysPixelW: float = 960.0
+var sysPixelH: float = 540.0
+var sysDpiScale: float = 1.0
+var sysColorSpace = "sRGB"
+var sysLastFrameHash: uint64 = uint64(0)
+var sysLastFrameWidth: int = 0
+var sysLastFrameHeight: int = 0
+var sysLastFrameStride: int = 0
+var webHostSessionSlot: WebHostSession = nil
+var pdfHostDocumentSlot: PdfHostDocument = nil
+var mediaHostPlayerSlotA: MediaHostPlayer = nil
+var mediaHostPlayerSlotB: MediaHostPlayer = nil
+var nextWebHostId: int64 = int64(1)
+var nextPdfHostId: int64 = int64(1)
+var nextMediaHostId: int64 = int64(1)
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+type
+    RealMacCInt = int32
+    RealMacCUInt = uint32
+    RealMacCDouble = float64
+
+    RealMacEvent =
+        kind: RealMacCInt
+        x: RealMacCDouble
+        y: RealMacCDouble
+        width: RealMacCDouble
+        height: RealMacCDouble
+        deltaX: RealMacCDouble
+        deltaY: RealMacCDouble
+        window: void*
+        button: RealMacCInt
+        modifiers: RealMacCUInt
+        keyCode: RealMacCUInt
+        repeatFlag: bool
+        text: char[256]
+
+    RealMacSurfaceInfo =
+        logicalWidth: RealMacCDouble
+        logicalHeight: RealMacCDouble
+        pixelWidth: RealMacCDouble
+        pixelHeight: RealMacCDouble
+        scale: RealMacCDouble
+        colorSpace: cstring
+
+
+const
+    realMacEventClose = 1
+    realMacEventResized = 2
+    realMacEventMoved = 3
+    realMacEventKeyDown = 4
+    realMacEventKeyUp = 5
+    realMacEventTextInput = 6
+    realMacEventPointerDown = 7
+    realMacEventPointerUp = 8
+    realMacEventPointerMove = 9
+    realMacEventPointerScroll = 10
+    realMacEventPointerLeave = 11
+    realMacEventImeStart = 12
+    realMacEventImeUpdate = 13
+    realMacEventImeEnd = 14
+
+fn chengGuiMacInitialize() @ importc("chengGuiMacInitialize")
+fn chengGuiMacShutdown() @ importc("chengGuiMacShutdown")
+fn chengGuiMacCreateDefaultWindow(title: cstring): void* @ importc("chengGuiMacCreateDefaultWindow")
+fn chengGuiMacCreateWindow(title: cstring; x, y, width, height: RealMacCDouble; resizable: bool; highDpi: bool): void* @ importc("chengGuiMacCreateWindow")
+fn chengGuiMacDestroyWindow(handle: void*) @ importc("chengGuiMacDestroyWindow")
+fn chengGuiMacPollEvents(events: RealMacEvent*; maxEvents: RealMacCInt; timeoutMs: RealMacCInt): RealMacCInt @ importc("chengGuiMacPollEvents")
+fn chengGuiMacPollEventsRaw(events: void*; maxEvents: RealMacCInt; timeoutMs: RealMacCInt): RealMacCInt @ importc("chengGuiMacPollEvents")
+fn chengGuiMacCreateSurface(window: void*): void* @ importc("chengGuiMacCreateSurface")
+fn chengGuiMacDestroySurface(surface: void*) @ importc("chengGuiMacDestroySurface")
+fn chengGuiMacBeginFrame(surface: void*): RealMacCInt @ importc("chengGuiMacBeginFrame")
+fn chengGuiMacEndFrame(surface: void*): RealMacCInt @ importc("chengGuiMacEndFrame")
+fn chengGuiMacGetSurfaceInfo(surface: void*; info: RealMacSurfaceInfo*): RealMacCInt @ importc("chengGuiMacGetSurfaceInfo")
+fn chengGuiMacGetSurfaceInfoRaw(surface: void*; info: void*): RealMacCInt @ importc("chengGuiMacGetSurfaceInfo")
+fn chengGuiMacPresentPixels(surface: void*; pixels: void*; width: RealMacCInt; height: RealMacCInt; strideBytes: RealMacCInt): RealMacCInt @ importc("chengGuiMacPresentPixels")
+fn chengGuiMacEventStructSize(): uint @ importc("chengGuiMacEventStructSize")
+fn chengGuiMacSurfaceInfoStructSize(): uint @ importc("chengGuiMacSurfaceInfoStructSize")
+fn chengGuiMacSurfaceReadbackRgba(surface: void*; outPath: cstring): RealMacCInt @ importc("chengGuiMacSurfaceReadbackRgba")
+
+var realMacStructsChecked = false
+var realMacStructsValid = false
+
+fn guiRealEnabled(): bool =
+    return envValue("CHENG_GUI_USE_REAL_MAC") != "0"
+
+fn realMacAbiCompatible(): bool =
+    if envValue("CHENG_GUI_REAL_MAC_SKIP_ABI_CHECK") == "1":
+        realMacStructsChecked = true
+        realMacStructsValid = true
+        return true
+    if realMacStructsChecked:
+        return realMacStructsValid
+    realMacStructsChecked = true
+    let hostEventSize = int(chengGuiMacEventStructSize())
+    let hostInfoSize = int(chengGuiMacSurfaceInfoStructSize())
+    let localEventSize = int(sizeof(RealMacEvent))
+    let localInfoSize = int(sizeof(RealMacSurfaceInfo))
+    realMacStructsValid = hostEventSize == localEventSize && hostInfoSize == localInfoSize
+    return realMacStructsValid
+
+fn realBackendReady(): bool =
+    return guiRealEnabled()
+
+fn realBackendInitialize() =
+    if realBackendReady():
+        chengGuiMacInitialize()
+
+fn realBackendShutdown() =
+    if realBackendReady():
+        chengGuiMacShutdown()
+
+fn realBackendCreateWindow(config: GuiWindowConfig): WindowHandle =
+    if realBackendReady():
+        # Keep a stable cstring title for host bridge calls.
+        var safeTitle: cstring = cstring("Cheng GUI")
+        if len(config.title) > 0:
+            safeTitle = cstring(config.title)
+        # Use the host-side default constructor to avoid mixed float/bool ABI drift in stage0 runtime.
+        return WindowHandle(chengGuiMacCreateDefaultWindow(safeTitle))
+    config
+    return nil
+
+fn realBackendDestroyWindow(handle: WindowHandle) =
+    if realBackendReady() && handle != nil:
+        chengGuiMacDestroyWindow(void*(handle))
+
+fn realBackendPumpEvents(timeoutMs: int): GuiEvent[] =
+    if ! realBackendReady():
+        timeoutMs
+        var passthrough: GuiEvent[]
+        return passthrough
+
+    let maxEvents: int32 = 32
+    var eventStride: int32 = int32(chengGuiMacEventStructSize())
+    if eventStride < 96:
+        eventStride = 336
+
+    var raw: uint8[]
+    setLen[uint8](&raw, eventStride * maxEvents)
+    if len(raw) <= 0:
+        var emptyOut: GuiEvent[]
+        return emptyOut
+
+    let emittedRaw: int32 = chengGuiMacPollEventsRaw(rawBasePtr(raw), maxEvents, RealMacCInt(timeoutMs))
+    if emittedRaw <= 0:
+        var emptyOut: GuiEvent[]
+        return emptyOut
+
+    var count: int32 = emittedRaw
+    if count > maxEvents:
+        count = maxEvents
+
+    var out: GuiEvent[]
+    for idx in 0..<count:
+        let base: int32 = idx * eventStride
+        let kindVal: int32 = readRawI32(raw, base + 0)
+        var ev: GuiEvent
+        ev.kind = geNone
+        ev.modifiers = int32(readRawU32(raw, base + 68))
+        ev.repeat = readRawBool(raw, base + 76)
+        ev.keyCode = int32(readRawU32(raw, base + 72))
+        ev.button = readRawI32(raw, base + 64)
+        ev.x = readRawF64(raw, base + 8)
+        ev.y = readRawF64(raw, base + 16)
+        ev.dx = readRawF64(raw, base + 40)
+        ev.dy = readRawF64(raw, base + 48)
+        ev.text = ""
+        ev.touchId = int32(0)
+        ev.touchCount = int32(0)
+        ev.pressure = 0.0
+        ev.gestureDelta = 0.0
+        ev.gestureVelocity = 0.0
+        ev.nodeId = int64(0)
+        ev.a11yAction = int32(0)
+        ev.resourceId = int64(0)
+        ev.uri = ""
+        ev.duration = 0.0
+        ev.position = 0.0
+
+        if kindVal == realMacEventClose:
+            ev.kind = geClose
+        elif kindVal == realMacEventResized:
+            ev.kind = geResized
+            ev.x = readRawF64(raw, base + 24)
+            ev.y = readRawF64(raw, base + 32)
+        elif kindVal == realMacEventMoved:
+            ev.kind = geMoved
+        elif kindVal == realMacEventKeyDown:
+            ev.kind = geKeyDown
+        elif kindVal == realMacEventKeyUp:
+            ev.kind = geKeyUp
+        elif kindVal == realMacEventTextInput:
+            ev.kind = geTextInput
+            ev.text = readRawText(raw, base + 77, 256)
+        elif kindVal == realMacEventPointerDown:
+            ev.kind = gePointerDown
+        elif kindVal == realMacEventPointerUp:
+            ev.kind = gePointerUp
+        elif kindVal == realMacEventPointerMove:
+            ev.kind = gePointerMove
+        elif kindVal == realMacEventPointerScroll:
+            ev.kind = gePointerScroll
+        elif kindVal == realMacEventPointerLeave:
+            ev.kind = gePointerLeave
+        elif kindVal == realMacEventImeStart:
+            ev.kind = geTextCompositionStart
+            ev.text = readRawText(raw, base + 77, 256)
+        elif kindVal == realMacEventImeUpdate:
+            ev.kind = geTextCompositionUpdate
+            ev.text = readRawText(raw, base + 77, 256)
+        elif kindVal == realMacEventImeEnd:
+            ev.kind = geTextCompositionEnd
+            ev.text = readRawText(raw, base + 77, 256)
+        else:
+            ev.kind = geNone
+
+        let pos = len(out)
+        setLen[GuiEvent](&out, pos + 1)
+        out[pos] = ev
+    return out
+
+fn realBackendCreateSurface(window: WindowHandle): SurfaceHandle =
+    if ! realBackendReady():
+        window
+        return nil
+    if window == nil:
+        return nil
+    return SurfaceHandle(chengGuiMacCreateSurface(void*(window)))
+
+fn realBackendDestroySurface(surface: SurfaceHandle) =
+    if realBackendReady() && surface != nil:
+        chengGuiMacDestroySurface(void*(surface))
+
+fn realBackendBeginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    if ! realBackendReady():
+        surface
+        var info: SurfaceFrameInfo
+        info.logicalSize = makeSize(sysLogicalW, sysLogicalH)
+        info.pixelSize = makeSize(sysPixelW, sysPixelH)
+        info.dpiScale = sysDpiScale
+        info.colorSpace = sysColorSpace
+        return info
+    var info: SurfaceFrameInfo
+    if surface == nil:
+        info.logicalSize = makeSize(0.0, 0.0)
+        info.pixelSize = makeSize(0.0, 0.0)
+        info.dpiScale = 1.0
+        info.colorSpace = "sRGB"
+        return info
+    chengGuiMacBeginFrame(void*(surface))
+
+    var rawBytes: uint8[]
+    var infoStride: int32 = int32(chengGuiMacSurfaceInfoStructSize())
+    if infoStride < 40:
+        infoStride = 48
+    setLen[uint8](&rawBytes, infoStride)
+    if len(rawBytes) > 0:
+        chengGuiMacGetSurfaceInfoRaw(void*(surface), rawBasePtr(rawBytes))
+        info.logicalSize = makeSize(readRawF64(rawBytes, 0), readRawF64(rawBytes, 8))
+        info.pixelSize = makeSize(readRawF64(rawBytes, 16), readRawF64(rawBytes, 24))
+        info.dpiScale = readRawF64(rawBytes, 32)
+    else:
+        info.logicalSize = makeSize(sysLogicalW, sysLogicalH)
+        info.pixelSize = makeSize(sysPixelW, sysPixelH)
+        info.dpiScale = sysDpiScale
+    if info.dpiScale != info.dpiScale || info.dpiScale <= 0.0 || info.dpiScale > 8.0:
+        info.dpiScale = if sysDpiScale > 0.0: sysDpiScale else: 1.0
+    if ! (info.logicalSize.width >= 320.0):
+        info.logicalSize.width = if sysLogicalW >= 320.0: sysLogicalW else: 960.0
+    if ! (info.logicalSize.height >= 240.0):
+        info.logicalSize.height = if sysLogicalH >= 240.0: sysLogicalH else: 540.0
+    if ! (info.pixelSize.width >= 320.0):
+        info.pixelSize.width = info.logicalSize.width * info.dpiScale
+    if ! (info.pixelSize.height >= 240.0):
+        info.pixelSize.height = info.logicalSize.height * info.dpiScale
+    info.colorSpace = "sRGB"
+    return info
+
+fn realBackendEndFrame(surface: SurfaceHandle) =
+    if realBackendReady() && surface != nil:
+        chengGuiMacEndFrame(void*(surface))
+
+fn realBackendPresentPixels(surface: SurfaceHandle, pixels: uint32*, width, height: int, strideBytes: int) =
+    if realBackendReady() && surface != nil:
+        chengGuiMacPresentPixels(void*(surface), void*(pixels), RealMacCInt(width), RealMacCInt(height), RealMacCInt(strideBytes))
+
+fn computeFrameHash(pixels: uint32*, width, height: int, strideBytes: int): uint64 =
+    if pixels == nil || width <= 0 || height <= 0:
+        return uint64(0)
+    var rowBytes = strideBytes
+    if rowBytes <= 0:
+        rowBytes = width * 4
+    let total = rowBytes * height
+    if total <= 0:
+        return uint64(0)
+    var hash: uint64 = uint64(1469598103934665603)
+    for idx in 0..<total:
+        let p: uint8* = uint8*(ptr_add(void*(pixels), idx))
+        hash = (hash ^ uint64(*p)) * uint64(1099511628211)
+    hash = (hash ^ uint64(width)) * uint64(1099511628211)
+    hash = (hash ^ uint64(height)) * uint64(1099511628211)
+    return hash
+
+fn hexDigit(value: int32): char =
+    if value >= int32(0) && value <= int32(9):
+        return char(int32('0') + value)
+    return char(int32('a') + (value - int32(10)))
+
+fn u64ToHex(value: uint64): str =
+    var out: str = ""
+    var remain: uint64 = value
+    var idx: int32 = int32(0)
+    while idx < int32(16):
+        let digit = int32(remain % uint64(16))
+        out = charToStr(hexDigit(digit)) + out
+        remain = remain / uint64(16)
+        idx = idx + int32(1)
+    return out
+
+fn useFallbackBackend(): bool =
+    return envValue("CHENG_GUI_FORCE_FALLBACK") == "1"
+
+fn decodeMacText(raw: char[256]): str =
+    var out: str = ""
+    for idx in 0..<256:
+        let ch = raw[idx]
+        if int32(ch) == int32('\0'):
+            break
+        out = out + charToStr(ch)
+    return out
+
+fn rawBasePtr(raw: uint8[]): void* =
+    if len(raw) <= 0:
+        return nil
+    return raw.buffer
+
+fn readRawI32(raw: uint8[], offset: int32): int32 =
+    let base: void* = rawBasePtr(raw)
+    if base == nil || offset < 0 || offset + 4 > len(raw):
+        return int32(0)
+    let p: int32* = int32*(ptr_add(base, offset))
+    return *p
+
+fn readRawU32(raw: uint8[], offset: int32): uint32 =
+    let base: void* = rawBasePtr(raw)
+    if base == nil || offset < 0 || offset + 4 > len(raw):
+        return uint32(0)
+    let p: uint32* = uint32*(ptr_add(base, offset))
+    return *p
+
+fn readRawF64(raw: uint8[], offset: int32): float64 =
+    let base: void* = rawBasePtr(raw)
+    if base == nil || offset < 0 || offset + 8 > len(raw):
+        return 0.0
+    let p: float64* = float64*(ptr_add(base, offset))
+    return *p
+
+fn readRawBool(raw: uint8[], offset: int32): bool =
+    let base: void* = rawBasePtr(raw)
+    if base == nil || offset < 0 || offset + 1 > len(raw):
+        return false
+    let p: uint8* = uint8*(ptr_add(base, offset))
+    return *p != uint8(0)
+
+fn readRawText(raw: uint8[], offset: int32, maxBytes: int32): str =
+    let base: void* = rawBasePtr(raw)
+    if base == nil || offset < 0 || maxBytes <= 0 || offset >= len(raw):
+        return ""
+    var out: str = ""
+    var idx: int32 = 0
+    while idx < maxBytes && offset + idx < len(raw):
+        let p: uint8* = uint8*(ptr_add(base, offset + idx))
+        let b: uint8 = *p
+        if b == uint8(0):
+            break
+        out = out + charToStr(char(int32(b)))
+        idx = idx + 1
+    return out
+
+fn clampFloat(value, lower, upper: float): float =
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+fn appendWebHostSession(item: WebHostSession): bool =
+    webHostSessionSlot = item
+    return true
+
+fn appendPdfHostDocument(item: PdfHostDocument): bool =
+    pdfHostDocumentSlot = item
+    return true
+
+fn appendMediaHostPlayer(item: MediaHostPlayer): bool =
+    if mediaHostPlayerSlotA == nil:
+        mediaHostPlayerSlotA = item
+        return true
+    if mediaHostPlayerSlotB == nil:
+        mediaHostPlayerSlotB = item
+        return true
+    mediaHostPlayerSlotA = item
+    return true
+
+fn removeWebHostSessionAt(index: int) =
+    if index != 0:
+        return
+    webHostSessionSlot = nil
+
+fn removePdfHostDocumentAt(index: int) =
+    if index != 0:
+        return
+    pdfHostDocumentSlot = nil
+
+fn removeMediaHostPlayerAt(index: int) =
+    if index < 0 || index > 1:
+        return
+    if index == 0:
+        mediaHostPlayerSlotA = mediaHostPlayerSlotB
+        mediaHostPlayerSlotB = nil
+    else:
+        mediaHostPlayerSlotB = nil
+
+fn findWebHostSessionIndex(id: int64): int =
+    let slot: WebHostSession = webHostSessionSlot
+    if slot != nil && slot.id == id:
+        return 0
+    return -1
+
+fn findPdfHostDocumentIndex(id: int64): int =
+    let slot: PdfHostDocument = pdfHostDocumentSlot
+    if slot != nil && slot.id == id:
+        return 0
+    return -1
+
+fn findMediaHostPlayerIndex(id: int64): int =
+    let slotA: MediaHostPlayer = mediaHostPlayerSlotA
+    if slotA != nil && slotA.id == id:
+        return 0
+    let slotB: MediaHostPlayer = mediaHostPlayerSlotB
+    if slotB != nil && slotB.id == id:
+        return 1
+    return -1
+
+fn webHostSessionAt(index: int): WebHostSession =
+    if index == 0:
+        return webHostSessionSlot
+    return nil
+
+fn pdfHostDocumentAt(index: int): PdfHostDocument =
+    if index == 0:
+        return pdfHostDocumentSlot
+    return nil
+
+fn mediaHostPlayerAt(index: int): MediaHostPlayer =
+    if index == 0:
+        return mediaHostPlayerSlotA
+    if index == 1:
+        return mediaHostPlayerSlotB
+    return nil
+
+fn deriveWebTitle(url, html: str): str =
+    if len(url) > 0:
+        return "Web: " + url
+    if len(html) > 0:
+        return "Web: inline-html"
+    return "Web: blank"
+
+fn hasPdfMarkerAt(text: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if offset + 11 > len(text):
+        return false
+    return cEq(text[offset], '/') &&
+        cEq(text[offset + 1], 'T') &&
+        cEq(text[offset + 2], 'y') &&
+        cEq(text[offset + 3], 'p') &&
+        cEq(text[offset + 4], 'e') &&
+        cEq(text[offset + 5], ' ') &&
+        cEq(text[offset + 6], '/') &&
+        cEq(text[offset + 7], 'P') &&
+        cEq(text[offset + 8], 'a') &&
+        cEq(text[offset + 9], 'g') &&
+        cEq(text[offset + 10], 'e')
+
+fn countPdfMarkers(text: str): int32 =
+    var count: int32 = int32(0)
+    var idx = 0
+    while idx < len(text):
+        if hasPdfMarkerAt(text, idx):
+            count = count + int32(1)
+            idx = idx + 11
+        else:
+            idx = idx + 1
+    return count
+
+fn initializePlat() =
+    if ! useFallbackBackend():
+        if ! sysInitialized:
+            sysInitialized = true
+            webHostSessionSlot = nil
+            pdfHostDocumentSlot = nil
+            mediaHostPlayerSlotA = nil
+            mediaHostPlayerSlotB = nil
+            sysLastFrameHash = uint64(0)
+            sysLastFrameWidth = 0
+            sysLastFrameHeight = 0
+            sysLastFrameStride = 0
+            nextWebHostId = int64(1)
+            nextPdfHostId = int64(1)
+            nextMediaHostId = int64(1)
+            if realBackendReady():
+                realBackendInitialize()
+        return
+    if sysInitialized:
+        return
+    sysInitialized = true
+    webHostSessionSlot = nil
+    pdfHostDocumentSlot = nil
+    mediaHostPlayerSlotA = nil
+    mediaHostPlayerSlotB = nil
+    sysLastFrameHash = uint64(0)
+    nextWebHostId = int64(1)
+    nextPdfHostId = int64(1)
+    nextMediaHostId = int64(1)
+
+fn shutdownPlat() =
+    if ! useFallbackBackend():
+        webHostSessionSlot = nil
+        pdfHostDocumentSlot = nil
+        mediaHostPlayerSlotA = nil
+        mediaHostPlayerSlotB = nil
+        sysLastFrameHash = uint64(0)
+        sysLastFrameWidth = 0
+        sysLastFrameHeight = 0
+        sysLastFrameStride = 0
+        sysInitialized = false
+        if realBackendReady():
+            realBackendShutdown()
+        return
+    if sysWindow != nil:
+        dealloc(sysWindow)
+        sysWindow = nil
+    if sysSurface != nil:
+        dealloc(sysSurface)
+        sysSurface = nil
+    webHostSessionSlot = nil
+    pdfHostDocumentSlot = nil
+    mediaHostPlayerSlotA = nil
+    mediaHostPlayerSlotB = nil
+    sysLastFrameHash = uint64(0)
+    sysLastFrameWidth = 0
+    sysLastFrameHeight = 0
+    sysLastFrameStride = 0
+    sysInitialized = false
+
+fn createWindow(config: GuiWindowConfig): WindowHandle =
+    if ! useFallbackBackend():
+        if ! sysInitialized:
+            initializePlat()
+        if config.initialRect.size.width > 0.0:
+            sysLogicalW = config.initialRect.size.width
+        if config.initialRect.size.height > 0.0:
+            sysLogicalH = config.initialRect.size.height
+        if config.highDpi:
+            sysDpiScale = 2.0
+        else:
+            sysDpiScale = 1.0
+        if sysDpiScale <= 0.0:
+            sysDpiScale = 1.0
+        sysPixelW = sysLogicalW * sysDpiScale
+        sysPixelH = sysLogicalH * sysDpiScale
+        if realBackendReady():
+            let handle = realBackendCreateWindow(config)
+            if handle != nil:
+                return handle
+        if sysWindow == nil:
+            sysWindow = alloc(8)
+        return sysWindow
+    if ! sysInitialized:
+        initializePlat()
+    if config.initialRect.size.width > 0.0:
+        sysLogicalW = config.initialRect.size.width
+    if config.initialRect.size.height > 0.0:
+        sysLogicalH = config.initialRect.size.height
+    if config.highDpi:
+        sysDpiScale = 2.0
+    else:
+        sysDpiScale = 1.0
+    if sysDpiScale <= 0.0:
+        sysDpiScale = 1.0
+    sysPixelW = sysLogicalW * sysDpiScale
+    sysPixelH = sysLogicalH * sysDpiScale
+    if sysWindow == nil:
+        sysWindow = alloc(8)
+    return sysWindow
+
+fn destroyWindow(handle: WindowHandle) =
+    if ! useFallbackBackend():
+        if realBackendReady():
+            realBackendDestroyWindow(handle)
+            return
+        if handle != nil && handle == sysWindow:
+            dealloc(sysWindow)
+            sysWindow = nil
+        return
+    if handle != nil && handle == sysWindow:
+        dealloc(sysWindow)
+        sysWindow = nil
+
+fn pumpEvents(timeoutMs: int): GuiEvent[] =
+    if ! useFallbackBackend():
+        if realBackendReady():
+            return realBackendPumpEvents(timeoutMs)
+        timeoutMs
+        var passthrough: GuiEvent[]
+        return passthrough
+    timeoutMs
+    var events: GuiEvent[]
+    return events
+
+fn pumpEvents(): GuiEvent[] =
+    if ! useFallbackBackend():
+        return pumpEvents(0)
+    var events: GuiEvent[]
+    return events
+
+fn createRenderSurface(window: WindowHandle): SurfaceHandle =
+    if ! useFallbackBackend():
+        if realBackendReady():
+            return realBackendCreateSurface(window)
+        if window == nil:
+            return nil
+        if sysSurface == nil:
+            sysSurface = alloc(8)
+        return sysSurface
+    if window == nil:
+        return nil
+    if sysSurface == nil:
+        sysSurface = alloc(8)
+    return sysSurface
+
+fn destroyRenderSurface(surface: SurfaceHandle) =
+    if ! useFallbackBackend():
+        if realBackendReady():
+            realBackendDestroySurface(surface)
+            return
+        if surface != nil && surface == sysSurface:
+            dealloc(sysSurface)
+            sysSurface = nil
+        return
+    if surface != nil && surface == sysSurface:
+        dealloc(sysSurface)
+        sysSurface = nil
+
+fn beginFrame(surface: SurfaceHandle): SurfaceFrameInfo =
+    if ! useFallbackBackend():
+        if realBackendReady():
+            let info = realBackendBeginFrame(surface)
+            sysLogicalW = info.logicalSize.width
+            sysLogicalH = info.logicalSize.height
+            sysPixelW = info.pixelSize.width
+            sysPixelH = info.pixelSize.height
+            sysDpiScale = info.dpiScale
+            return info
+        var realInfo: SurfaceFrameInfo
+        if surface == nil:
+            realInfo.logicalSize = makeSize(0.0, 0.0)
+            realInfo.pixelSize = makeSize(0.0, 0.0)
+            realInfo.dpiScale = 1.0
+            realInfo.colorSpace = "sRGB"
+            return realInfo
+        realInfo.logicalSize = makeSize(sysLogicalW, sysLogicalH)
+        realInfo.pixelSize = makeSize(sysPixelW, sysPixelH)
+        realInfo.dpiScale = sysDpiScale
+        realInfo.colorSpace = sysColorSpace
+        return realInfo
+    var info: SurfaceFrameInfo
+    if surface == nil:
+        info.logicalSize = makeSize(0.0, 0.0)
+        info.pixelSize = makeSize(0.0, 0.0)
+        info.dpiScale = 1.0
+        info.colorSpace = "sRGB"
+        return info
+    info.logicalSize = makeSize(sysLogicalW, sysLogicalH)
+    info.pixelSize = makeSize(sysPixelW, sysPixelH)
+    info.dpiScale = sysDpiScale
+    info.colorSpace = sysColorSpace
+    return info
+
+fn endFrame(surface: SurfaceHandle) =
+    if ! useFallbackBackend():
+        if realBackendReady():
+            realBackendEndFrame(surface)
+        return
+    surface
+
+fn presentPixels(surface: SurfaceHandle, pixels: uint32*, width, height: int, strideBytes: int) =
+    if ! useFallbackBackend():
+        if realBackendReady():
+            realBackendPresentPixels(surface, pixels, width, height, strideBytes)
+        sysLastFrameHash = computeFrameHash(pixels, width, height, strideBytes)
+        sysLastFrameWidth = width
+        sysLastFrameHeight = height
+        if strideBytes <= 0:
+            sysLastFrameStride = width * 4
+        else:
+            sysLastFrameStride = strideBytes
+        if width > 0 && height > 0:
+            sysPixelW = float(width)
+            sysPixelH = float(height)
+            sysLogicalW = float(width) / sysDpiScale
+            sysLogicalH = float(height) / sysDpiScale
+        return
+    surface
+    pixels
+    sysLastFrameHash = computeFrameHash(pixels, width, height, strideBytes)
+    sysLastFrameWidth = width
+    sysLastFrameHeight = height
+    if strideBytes <= 0:
+        sysLastFrameStride = width * 4
+    else:
+        sysLastFrameStride = strideBytes
+    if width > 0 && height > 0:
+        sysPixelW = float(width)
+        sysPixelH = float(height)
+        sysLogicalW = float(width) / sysDpiScale
+        sysLogicalH = float(height) / sysDpiScale
+    strideBytes
+
+fn surfaceFrameHash(surface: SurfaceHandle): uint64 =
+    if surface == nil:
+        return uint64(0)
+    return sysLastFrameHash
+
+fn surfaceReadbackRgba(surface: SurfaceHandle, outPath: str): bool =
+    if surface == nil || len(outPath) == 0:
+        return false
+    if ! useFallbackBackend() && realBackendReady():
+        let rc = chengGuiMacSurfaceReadbackRgba(void*(surface), cstring(outPath))
+        if rc == RealMacCInt(0):
+            return fileExistsPath(outPath)
+        return false
+    if sysLastFrameWidth <= 0 || sysLastFrameHeight <= 0:
+        return false
+    var text: str = ""
+    text = text + "w=" + $sysLastFrameWidth + "\n"
+    text = text + "h=" + $sysLastFrameHeight + "\n"
+    text = text + "stride=" + $sysLastFrameStride + "\n"
+    text = text + "hash=" + u64ToHex(sysLastFrameHash) + "\n"
+    return writeTextFile(outPath, text)
+
+fn macHalUsesFfi(): bool =
+    false
+
+fn winHalUsesFfi(): bool =
+    false
+
+fn linuxHalUsesFfi(): bool =
+    false
+
+fn webHostCreate(url, html: str): int64 =
+    if ! sysInitialized:
+        initializePlat()
+    var session: WebHostSession
+    new(session)
+    session.id = nextWebHostId
+    nextWebHostId = nextWebHostId + int64(1)
+    session.currentUrl = url
+    session.html = html
+    session.title = deriveWebTitle(url, html)
+    session.snapshotText = html
+    session.stateCode = int32(1)
+    session.errorText = ""
+    if ! appendWebHostSession(session):
+        return int64(0)
+    return session.id
+
+fn webHostDestroy(handle: int64) =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return
+    removeWebHostSessionAt(idx)
+
+fn webHostNavigate(handle: int64, url: str): bool =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0 || len(url) == 0:
+        return false
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return false
+    session.currentUrl = url
+    session.html = ""
+    session.snapshotText = ""
+    session.title = deriveWebTitle(url, "")
+    session.errorText = ""
+    session.stateCode = int32(1)
+    return true
+
+fn webHostSetHtml(handle: int64, html: str, baseUrl: str): bool =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return false
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return false
+    session.html = html
+    session.snapshotText = html
+    if len(baseUrl) > 0:
+        session.currentUrl = baseUrl
+    elif len(session.currentUrl) == 0:
+        session.currentUrl = "about:blank"
+    session.title = deriveWebTitle(session.currentUrl, html)
+    session.errorText = ""
+    session.stateCode = int32(1)
+    return true
+
+fn webHostReload(handle: int64): bool =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return false
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return false
+    session.stateCode = int32(1)
+    session.errorText = ""
+    return true
+
+fn webHostTick(handle: int64): int32 =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return int32(3)
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return int32(3)
+    if session.stateCode == int32(1):
+        if len(session.currentUrl) == 0 && len(session.html) == 0:
+            session.stateCode = int32(3)
+            session.errorText = "missing web source"
+        else:
+            session.stateCode = int32(2)
+            session.errorText = ""
+            if len(session.snapshotText) == 0:
+                if len(session.html) > 0:
+                    session.snapshotText = session.html
+                elif len(session.currentUrl) > 0:
+                    session.snapshotText = "Rendered " + session.currentUrl
+                else:
+                    session.snapshotText = "Rendered web document"
+    return session.stateCode
+
+fn webHostCurrentUrl(handle: int64): str =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return ""
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return ""
+    return session.currentUrl
+
+fn webHostTitle(handle: int64): str =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return ""
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return ""
+    return session.title
+
+fn webHostSnapshotText(handle: int64): str =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return ""
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return ""
+    return session.snapshotText
+
+fn webHostError(handle: int64): str =
+    let idx = findWebHostSessionIndex(handle)
+    if idx < 0:
+        return "session-not-found"
+    let session: WebHostSession = webHostSessionAt(idx)
+    if session == nil:
+        return "session-nil"
+    return session.errorText
+
+fn pdfHostOpen(path, bytes, password: str): int64 =
+    password
+    if ! sysInitialized:
+        initializePlat()
+    var doc: PdfHostDocument
+    new(doc)
+    doc.id = nextPdfHostId
+    nextPdfHostId = nextPdfHostId + int64(1)
+    doc.sourcePath = path
+    doc.sourceBytes = bytes
+    doc.errorText = ""
+    if len(path) == 0 && len(bytes) == 0:
+        doc.stateCode = int32(2)
+        doc.errorText = "missing pdf source"
+    else:
+        doc.stateCode = int32(0)
+    if len(path) > 0:
+        doc.title = path
+    else:
+        doc.title = "memory.pdf"
+    if len(bytes) > 0:
+        doc.pageCount = countPdfMarkers(bytes)
+    else:
+        doc.pageCount = int32(3)
+    if doc.pageCount <= int32(0):
+        doc.pageCount = int32(1)
+    if ! appendPdfHostDocument(doc):
+        return int64(0)
+    return doc.id
+
+fn pdfHostClose(handle: int64) =
+    let idx = findPdfHostDocumentIndex(handle)
+    if idx < 0:
+        return
+    removePdfHostDocumentAt(idx)
+
+fn pdfHostTick(handle: int64): int32 =
+    let idx = findPdfHostDocumentIndex(handle)
+    if idx < 0:
+        return int32(2)
+    let doc: PdfHostDocument = pdfHostDocumentAt(idx)
+    if doc == nil:
+        return int32(2)
+    if doc.stateCode == int32(0):
+        if len(doc.errorText) > 0:
+            doc.stateCode = int32(2)
+        else:
+            doc.stateCode = int32(1)
+    return doc.stateCode
+
+fn pdfHostPageCount(handle: int64): int32 =
+    let idx = findPdfHostDocumentIndex(handle)
+    if idx < 0:
+        return int32(0)
+    let doc: PdfHostDocument = pdfHostDocumentAt(idx)
+    if doc == nil:
+        return int32(0)
+    return doc.pageCount
+
+fn pdfHostTitle(handle: int64): str =
+    let idx = findPdfHostDocumentIndex(handle)
+    if idx < 0:
+        return ""
+    let doc: PdfHostDocument = pdfHostDocumentAt(idx)
+    if doc == nil:
+        return ""
+    return doc.title
+
+fn pdfHostError(handle: int64): str =
+    let idx = findPdfHostDocumentIndex(handle)
+    if idx < 0:
+        return "doc-not-found"
+    let doc: PdfHostDocument = pdfHostDocumentAt(idx)
+    if doc == nil:
+        return "doc-nil"
+    return doc.errorText
+
+fn pdfHostRenderLabel(handle: int64, pageIndex: int32, zoom: float): str =
+    let idx = findPdfHostDocumentIndex(handle)
+    if idx < 0:
+        return "pdf-missing"
+    let doc: PdfHostDocument = pdfHostDocumentAt(idx)
+    if doc == nil:
+        return "pdf-missing"
+    let count = if doc.pageCount > int32(0): doc.pageCount else: int32(1)
+    var safePage = pageIndex
+    if safePage < int32(0):
+        safePage = int32(0)
+    if safePage >= count:
+        safePage = count - int32(1)
+    handle
+    pageIndex
+    zoom
+    return "page"
+
+fn mediaHostCreate(kindCode: int32, uri, bytesData, mime: str): int64 =
+    if ! sysInitialized:
+        initializePlat()
+    var player: MediaHostPlayer
+    new(player)
+    player.id = nextMediaHostId
+    nextMediaHostId = nextMediaHostId + int64(1)
+    player.kindCode = kindCode
+    player.uri = uri
+    player.bytesData = bytesData
+    player.mime = mime
+    player.stateCode = int32(1)
+    player.durationSec = if kindCode == int32(1): 180.0 else: 600.0
+    player.positionSec = 0.0
+    player.muted = false
+    player.volume = 1.0
+    player.rate = 1.0
+    player.loopEnabled = false
+    player.errorText = ""
+    if ! appendMediaHostPlayer(player):
+        return int64(0)
+    return player.id
+
+fn mediaHostDestroy(handle: int64) =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return
+    removeMediaHostPlayerAt(idx)
+
+fn mediaHostPlay(handle: int64): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    if len(player.uri) == 0 && len(player.bytesData) == 0:
+        player.stateCode = int32(5)
+        player.errorText = "missing media source"
+        return false
+    if player.positionSec >= player.durationSec:
+        player.positionSec = 0.0
+    player.stateCode = int32(2)
+    return true
+
+fn mediaHostPause(handle: int64): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    if player.stateCode == int32(2):
+        player.stateCode = int32(3)
+    return true
+
+fn mediaHostStop(handle: int64): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    player.positionSec = 0.0
+    player.stateCode = int32(0)
+    return true
+
+fn mediaHostSeek(handle: int64, positionSec: float): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    player.positionSec = clampFloat(positionSec, 0.0, player.durationSec)
+    if player.stateCode == int32(4) && player.positionSec < player.durationSec:
+        player.stateCode = int32(3)
+    return true
+
+fn mediaHostSetVolume(handle: int64, volume: float): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    player.volume = clampFloat(volume, 0.0, 1.0)
+    return true
+
+fn mediaHostSetMuted(handle: int64, muted: bool): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    player.muted = muted
+    return true
+
+fn mediaHostSetRate(handle: int64, rate: float): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    player.rate = clampFloat(rate, 0.25, 4.0)
+    return true
+
+fn mediaHostSetLoop(handle: int64, loopEnabled: bool): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    player.loopEnabled = loopEnabled
+    return true
+
+fn mediaHostTick(handle: int64): bool =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return false
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return false
+    if player.stateCode == int32(1):
+        if len(player.uri) == 0 && len(player.bytesData) == 0:
+            player.stateCode = int32(5)
+            player.errorText = "missing media source"
+        else:
+            player.stateCode = int32(3)
+            player.errorText = ""
+        return true
+    if player.stateCode == int32(2):
+        player.positionSec = player.positionSec + 0.25 * player.rate
+        if player.positionSec >= player.durationSec:
+            if player.loopEnabled:
+                player.positionSec = 0.0
+                player.stateCode = int32(2)
+            else:
+                player.positionSec = player.durationSec
+                player.stateCode = int32(4)
+        return true
+    return true
+
+fn mediaHostState(handle: int64): int32 =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return int32(5)
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return int32(5)
+    return player.stateCode
+
+fn mediaHostDuration(handle: int64): float =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return 0.0
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return 0.0
+    return player.durationSec
+
+fn mediaHostPosition(handle: int64): float =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return 0.0
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return 0.0
+    return player.positionSec
+
+fn mediaHostError(handle: int64): str =
+    let idx = findMediaHostPlayerIndex(handle)
+    if idx < 0:
+        return "player-not-found"
+    let player: MediaHostPlayer = mediaHostPlayerAt(idx)
+    if player == nil:
+        return "player-nil"
+    return player.errorText

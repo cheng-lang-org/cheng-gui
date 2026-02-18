@@ -1,0 +1,49 @@
+import cheng/gui/platform/ipc/messages_v2
+
+type
+    SharedRing = ref
+        capacity: int32
+        head: int32
+        tail: int32
+        size: int32
+        buffer: messages_v2.IpcMessage[]
+
+fn newSharedRing(capacityInput: int32): SharedRing =
+    var ring: SharedRing
+    new(ring)
+    ring.capacity = capacityInput
+    if ring.capacity <= int32(0):
+        ring.capacity = int32(64)
+    ring.head = int32(0)
+    ring.tail = int32(0)
+    ring.size = int32(0)
+    setLen[messages_v2.IpcMessage](&ring.buffer, ring.capacity)
+    return ring
+
+fn enqueue(ring: SharedRing, msg: messages_v2.IpcMessage): bool =
+    if ring == nil || ring.capacity <= int32(0):
+        return false
+    if ring.size >= ring.capacity:
+        return false
+    ring.buffer[ring.tail] = msg
+    ring.tail = ring.tail + int32(1)
+    if ring.tail >= ring.capacity:
+        ring.tail = int32(0)
+    ring.size = ring.size + int32(1)
+    return true
+
+fn dequeue(ring: SharedRing): tuple[ok: bool, message: messages_v2.IpcMessage] =
+    var empty = messages_v2.defaultMessage()
+    if ring == nil || ring.size <= int32(0):
+        return (ok: false, message: empty)
+    let msg = ring.buffer[ring.head]
+    ring.head = ring.head + int32(1)
+    if ring.head >= ring.capacity:
+        ring.head = int32(0)
+    ring.size = ring.size - int32(1)
+    return (ok: true, message: msg)
+
+fn pending(ring: SharedRing): int32 =
+    if ring == nil:
+        return int32(0)
+    return ring.size

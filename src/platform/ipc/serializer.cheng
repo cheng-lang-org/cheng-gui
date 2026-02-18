@@ -1,0 +1,43 @@
+import cheng/gui/platform/ipc/messages_v2
+
+fn encodeMessage(msg: messages_v2.IpcMessage): str =
+    if len(msg.payload) > 0:
+        return msg.payload
+    case msg.domain
+    of messages_v2.idControl:
+        return "control"
+    of messages_v2.idNavigation:
+        return "navigation"
+    of messages_v2.idDom:
+        return "dom"
+    of messages_v2.idJs:
+        return "js"
+    of messages_v2.idCompositor:
+        return "compositor"
+    of messages_v2.idMedia:
+        return "media"
+    of messages_v2.idPdf:
+        return "pdf"
+    else:
+        return "crash"
+
+fn decodeMessage(payload: str): messages_v2.IpcMessage =
+    var msg = messages_v2.defaultMessage()
+    msg.payload = payload
+    if payload == "navigation":
+        msg.domain = messages_v2.idNavigation
+    elif payload == "dom":
+        msg.domain = messages_v2.idDom
+    elif payload == "js":
+        msg.domain = messages_v2.idJs
+    elif payload == "compositor":
+        msg.domain = messages_v2.idCompositor
+    elif payload == "media":
+        msg.domain = messages_v2.idMedia
+    elif payload == "pdf":
+        msg.domain = messages_v2.idPdf
+    elif payload == "crash":
+        msg.domain = messages_v2.idCrash
+    else:
+        msg.domain = messages_v2.idControl
+    return msg

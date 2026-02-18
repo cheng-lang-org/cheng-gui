@@ -1,0 +1,9 @@
+package_id = "pkg://cheng/gui"
+
+[[dependencies]]
+package_id = "pkg://cheng/libp2p"
+channel = "edge"
+
+[[dependencies]]
+package_id = "pkg://cheng/ide"
+channel = "edge"

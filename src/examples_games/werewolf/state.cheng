@@ -1,0 +1,723 @@
+import std/seqs
+import cheng/gui/examples_games/common/protocol
+import cheng/gui/examples_games/common/string_utils as sutil
+
+const
+    WolfPlayerCount = 12
+
+
+type
+    WolfPlayer =
+        seat: int32
+        name: str
+        token: str
+        role: str
+        alive: bool
+        online: bool
+        ready: bool
+        isBot: bool
+
+    WerewolfState = ref
+        stage: str
+        dayIndex: int32
+        nightIndex: int32
+        players: WolfPlayer[]
+        sheriffSeat: int32
+        sheriffCandidates: bool[]
+        sheriffVoted: bool[]
+        sheriffVotes: int32[]
+        dayVoted: bool[]
+        dayVoteTarget: int32[]
+        guardTarget: int32
+        guardLastTarget: int32
+        wolfKillTarget: int32
+        seerCheckTarget: int32
+        seerNotes: str[]
+        witchSaveUsed: bool
+        witchPoisonUsed: bool
+        witchWantsSave: bool
+        witchPoisonTarget: int32
+        pendingDead: int32[]
+        winnerCamp: str
+        seq: int64
+        logs: str[]
+
+fn i32ToStr(value: int32): str =
+    return intToStr(value)
+
+fn newState(): WerewolfState =
+    var state: WerewolfState
+    new(state)
+    state.stage = "lobby"
+    state.dayIndex = 0
+    state.nightIndex = 0
+    state.sheriffSeat = -1
+    state.guardTarget = -1
+    state.guardLastTarget = -1
+    state.wolfKillTarget = -1
+    state.seerCheckTarget = -1
+    state.witchSaveUsed = false
+    state.witchPoisonUsed = false
+    state.witchWantsSave = false
+    state.witchPoisonTarget = -1
+    state.winnerCamp = ""
+    state.seq = int64(0)
+    setLen(state.players, WolfPlayerCount)
+    setLen(state.sheriffCandidates, WolfPlayerCount)
+    setLen(state.sheriffVoted, WolfPlayerCount)
+    setLen(state.sheriffVotes, WolfPlayerCount)
+    setLen(state.dayVoted, WolfPlayerCount)
+    setLen(state.dayVoteTarget, WolfPlayerCount)
+
+    for i in 0..<WolfPlayerCount:
+        var p: WolfPlayer
+        p.seat = i
+        p.name = "Seat" + i32ToStr(i + 1)
+        p.token = ""
+        p.role = ""
+        p.alive = true
+        p.online = false
+        p.ready = false
+        p.isBot = false
+        state.players[i] = p
+
+        state.sheriffCandidates[i] = false
+        state.sheriffVoted[i] = false
+        state.sheriffVotes[i] = 0
+        state.dayVoted[i] = false
+        state.dayVoteTarget[i] = -1
+    return state
+
+fn addLog(state: WerewolfState, text: str) =
+    if len(text) == 0:
+        return
+    add(state.logs, text)
+    if len(state.logs) > 160:
+        var clipped: str[] = default[str[]]
+        for idx in len(state.logs) - 160..<len(state.logs):
+            add(clipped, state.logs[idx])
+        state.logs = clipped
+
+fn setPlayer(state: WerewolfState, seat: int32, name: str, token: str, online: bool, isBot: bool) =
+    if state == nil || seat < 0 || seat >= WolfPlayerCount:
+        return
+    var p: WolfPlayer = state.players[seat]
+    if len(name) > 0:
+        p.name = name
+    if len(token) > 0:
+        p.token = token
+    p.online = online
+    p.isBot = isBot
+    state.players[seat] = p
+
+fn setReady(state: WerewolfState, seat: int32, ready: bool) =
+    if state == nil || seat < 0 || seat >= WolfPlayerCount:
+        return
+    var p: WolfPlayer = state.players[seat]
+    p.ready = ready
+    state.players[seat] = p
+
+fn allReady(state: WerewolfState): bool =
+    for idx in 0..<WolfPlayerCount:
+        if ! state.players[idx].ready:
+            return false
+    return true
+
+fn clearRoundVote(state: WerewolfState) =
+    for idx in 0..<WolfPlayerCount:
+        state.dayVoted[idx] = false
+        state.dayVoteTarget[idx] = -1
+
+fn clearSheriffVote(state: WerewolfState) =
+    for idx in 0..<WolfPlayerCount:
+        state.sheriffVoted[idx] = false
+        state.sheriffVotes[idx] = 0
+
+fn rolePool(): str[] =
+    return [
+        "seer",
+        "witch",
+        "hunter",
+        "guard",
+        "villager",
+        "villager",
+        "villager",
+        "villager",
+        "wolf",
+        "wolf",
+        "wolf",
+        "wolf"
+    ]
+
+fn lcgNext(seed: int64): int64 =
+    let mul: int64 = int64(1103515245)
+    let add: int64 = int64(12345)
+    let modv: int64 = int64(2147483647)
+    return (seed * mul + add) % modv
+
+fn shuffledRoles(seedBase: int64): str[] =
+    var roles: str[] = rolePool()
+    var seed: int64 = seedBase
+    let iBase = len(roles) - 1
+    if iBase > 0:
+        for iRev in 0..<iBase:
+            let i = iBase - iRev
+            seed = lcgNext(seed)
+            let j: int32 = int32(seed % int64(i + 1))
+            let tmp: str = roles[i]
+            roles[i] = roles[j]
+            roles[j] = tmp
+    return roles
+
+fn startGame(state: WerewolfState) =
+    let roles: str[] = shuffledRoles(state.seq + sutil.nowMillis())
+    for idx in 0..<WolfPlayerCount:
+        var p: WolfPlayer = state.players[idx]
+        p.role = roles[idx]
+        p.alive = true
+        p.ready = false
+        state.players[idx] = p
+
+    state.stage = "sheriff_nominate"
+    state.dayIndex = 1
+    state.nightIndex = 0
+    state.sheriffSeat = -1
+    clearSheriffVote(state)
+    clearRoundVote(state)
+    state.guardTarget = -1
+    state.guardLastTarget = -1
+    state.wolfKillTarget = -1
+    state.seerCheckTarget = -1
+    state.seerNotes = default[str[]]
+    state.witchSaveUsed = false
+    state.witchPoisonUsed = false
+    state.witchWantsSave = false
+    state.witchPoisonTarget = -1
+    state.pendingDead = default[int32[]]
+    state.winnerCamp = ""
+    state.seq = state.seq + int64(1)
+    addLog(state, "游戏开始，进入警长竞选阶段")
+
+fn isRole(p: WolfPlayer, role: str): bool =
+    return p.role == role
+
+fn isGodRole(role: str): bool =
+    return role == "seer" || role == "witch" || role == "hunter" || role == "guard"
+
+fn aliveCountByRole(state: WerewolfState, roleName: str): int32 =
+    var cnt: int32 = 0
+    for idx in 0..<WolfPlayerCount:
+        let p: WolfPlayer = state.players[idx]
+        if p.alive && p.role == roleName:
+            cnt = cnt + 1
+    return cnt
+
+fn aliveCampCounts(state: WerewolfState): tuple[wolves: int32, villagers: int32, gods: int32] =
+    var wolves: int32 = 0
+    var villagers: int32 = 0
+    var gods: int32 = 0
+    for idx in 0..<WolfPlayerCount:
+        let p: WolfPlayer = state.players[idx]
+        if p.alive:
+            if p.role == "wolf":
+                wolves = wolves + 1
+            elif p.role == "villager":
+                villagers = villagers + 1
+            elif isGodRole(p.role):
+                gods = gods + 1
+    return (wolves: wolves, villagers: villagers, gods: gods)
+
+fn evaluateWinner(state: WerewolfState) =
+    let camps = aliveCampCounts(state)
+    if camps.wolves <= 0:
+        state.winnerCamp = "good"
+        state.stage = "finished"
+        addLog(state, "好人阵营胜利：狼人全部出局")
+        return
+    if camps.villagers <= 0 || camps.gods <= 0:
+        state.winnerCamp = "wolf"
+        state.stage = "finished"
+        addLog(state, "狼人阵营胜利：达成屠边")
+
+fn killSeat(state: WerewolfState, seat: int32, reason: str) =
+    if seat < 0 || seat >= WolfPlayerCount:
+        return
+    var p: WolfPlayer = state.players[seat]
+    if ! p.alive:
+        return
+    p.alive = false
+    state.players[seat] = p
+    if state.sheriffSeat == seat:
+        state.sheriffSeat = -1
+        addLog(state, p.name + "(警长) 出局，可用 sheriff_assign 指定继任")
+    addLog(state, p.name + " 出局(" + reason + ")")
+
+fn hasAliveRole(state: WerewolfState, role: str): bool =
+    return aliveCountByRole(state, role) > 0
+
+fn firstAliveSeatByRole(state: WerewolfState, role: str): int32 =
+    for idx in 0..<WolfPlayerCount:
+        if state.players[idx].alive && state.players[idx].role == role:
+            return idx
+    return -1
+
+fn resolveSheriffVote(state: WerewolfState) =
+    var bestSeat: int32 = -1
+    var bestVotes: int32 = 0
+    for idx in 0..<WolfPlayerCount:
+        if state.sheriffVotes[idx] > bestVotes:
+            bestVotes = state.sheriffVotes[idx]
+            bestSeat = idx
+    if bestSeat >= 0:
+        state.sheriffSeat = bestSeat
+        addLog(state, state.players[bestSeat].name + " 当选警长")
+    else:
+        addLog(state, "本局无警长")
+
+fn addPendingDead(state: WerewolfState, seat: int32) =
+    if seat < 0 || seat >= WolfPlayerCount:
+        return
+    for idx in 0..<len(state.pendingDead):
+        if state.pendingDead[idx] == seat:
+            return
+    add(state.pendingDead, seat)
+
+fn resolveNight(state: WerewolfState) =
+    state.pendingDead = default[int32[]]
+    let killTarget: int32 = state.wolfKillTarget
+    if killTarget >= 0:
+        var saved = false
+        if state.guardTarget == killTarget:
+            saved = true
+        if state.witchWantsSave && ! state.witchSaveUsed:
+            saved = true
+            state.witchSaveUsed = true
+            addLog(state, "女巫使用了解药")
+        if ! saved:
+            addPendingDead(state, killTarget)
+    if state.witchPoisonTarget >= 0 && ! state.witchPoisonUsed:
+        addPendingDead(state, state.witchPoisonTarget)
+        state.witchPoisonUsed = true
+        addLog(state, "女巫使用了毒药")
+
+    for idx in 0..<len(state.pendingDead):
+        killSeat(state, state.pendingDead[idx], "夜晚")
+
+    state.guardLastTarget = state.guardTarget
+    state.guardTarget = -1
+    state.wolfKillTarget = -1
+    state.seerCheckTarget = -1
+    state.witchWantsSave = false
+    state.witchPoisonTarget = -1
+
+    evaluateWinner(state)
+
+fn resolveDayVote(state: WerewolfState) =
+    var count: int32[WolfPlayerCount]
+    for voter in 0..<WolfPlayerCount:
+        if state.players[voter].alive && state.dayVoted[voter]:
+            let dst: int32 = state.dayVoteTarget[voter]
+            if dst >= 0 && dst < WolfPlayerCount && state.players[dst].alive:
+                let weight: int32 = if voter == state.sheriffSeat: 2 else: 1
+                count[dst] = count[dst] + weight
+
+    var bestSeat: int32 = -1
+    var bestVotes: int32 = 0
+    for idx in 0..<WolfPlayerCount:
+        if count[idx] > bestVotes:
+            bestVotes = count[idx]
+            bestSeat = idx
+
+    if bestSeat >= 0:
+        killSeat(state, bestSeat, "放逐")
+    else:
+        addLog(state, "白天投票平票，无人出局")
+    clearRoundVote(state)
+    evaluateWinner(state)
+
+fn advanceStage(state: WerewolfState) =
+    if state.stage == "lobby" || state.stage == "finished":
+        return
+
+    if state.stage == "sheriff_nominate":
+        state.stage = "sheriff_vote"
+        clearSheriffVote(state)
+        addLog(state, "进入警长投票阶段")
+        return
+
+    if state.stage == "sheriff_vote":
+        resolveSheriffVote(state)
+        state.stage = "night_guard"
+        state.nightIndex = 1
+        addLog(state, "进入第一夜(守卫)")
+        return
+
+    if state.stage == "night_guard":
+        state.stage = "night_wolf"
+        addLog(state, "狼人请行动")
+        return
+
+    if state.stage == "night_wolf":
+        state.stage = "night_seer"
+        addLog(state, "预言家请查验")
+        return
+
+    if state.stage == "night_seer":
+        state.stage = "night_witch"
+        addLog(state, "女巫请行动")
+        return
+
+    if state.stage == "night_witch":
+        resolveNight(state)
+        if state.stage != "finished":
+            state.stage = "day_discuss"
+            addLog(state, "天亮了，进入白天发言")
+        return
+
+    if state.stage == "day_discuss":
+        state.stage = "day_vote"
+        clearRoundVote(state)
+        addLog(state, "进入白天投票")
+        return
+
+    if state.stage == "day_vote":
+        resolveDayVote(state)
+        if state.stage != "finished":
+            state.dayIndex = state.dayIndex + 1
+            state.nightIndex = state.nightIndex + 1
+            state.stage = "night_guard"
+            addLog(state, "进入下一夜")
+        return
+
+fn buildPublicSnapshot(state: WerewolfState): str =
+    var lines: str[] = default[str[]]
+    add(lines, "stage=" + state.stage)
+    add(lines, "day=" + i32ToStr(state.dayIndex))
+    add(lines, "night=" + i32ToStr(state.nightIndex))
+    add(lines, "seq=" + intToStr(int32(state.seq)))
+    add(lines, "sheriff=" + i32ToStr(state.sheriffSeat))
+    add(lines, "winner=" + state.winnerCamp)
+
+    var seats: str[] = default[str[]]
+    for idx in 0..<WolfPlayerCount:
+        let p: WolfPlayer = state.players[idx]
+        let aliveText: str = if p.alive: "alive" else: "dead"
+        add(seats, p.name + ":" + aliveText)
+    add(lines, "seats=" + sutil.joinWith(seats, "|"))
+
+    var tail: str[] = default[str[]]
+    let tailStart: int32 = sutil.maxInt(0, len(state.logs) - 6)
+    for idx in tailStart..<len(state.logs):
+        add(tail, state.logs[idx])
+    add(lines, "logs=" + sutil.joinWith(tail, " | "))
+    return sutil.joinWith(lines, "\n")
+
+fn buildPrivateSnapshot(state: WerewolfState, seat: int32): str =
+    if seat < 0 || seat >= WolfPlayerCount:
+        return ""
+    let p: WolfPlayer = state.players[seat]
+    var lines: str[] = default[str[]]
+    add(lines, "seat=" + i32ToStr(seat))
+    add(lines, "name=" + p.name)
+    add(lines, "role=" + p.role)
+    add(lines, "alive=" + (if p.alive: "1" else: "0"))
+
+    if p.role == "wolf":
+        var mates: str[] = default[str[]]
+        for idx in 0..<WolfPlayerCount:
+            if state.players[idx].role == "wolf":
+                add(mates, i32ToStr(idx))
+        add(lines, "wolves=" + sutil.joinWith(mates, ","))
+
+    if p.role == "seer":
+        add(lines, "seer_notes=" + sutil.joinWith(state.seerNotes, " | "))
+
+    add(lines, "witch_save_used=" + (if state.witchSaveUsed: "1" else: "0"))
+    add(lines, "witch_poison_used=" + (if state.witchPoisonUsed: "1" else: "0"))
+    return sutil.joinWith(lines, "\n")
+
+fn recoverPlayerSession(state: WerewolfState, token: str): int32 =
+    if len(token) == 0:
+        return -1
+    for idx in 0..<WolfPlayerCount:
+        if state.players[idx].token == token:
+            return idx
+    return -1
+
+fn parseSeatArg(args: str): int32 =
+    return sutil.parseInt32(sutil.strip(args), -1)
+
+fn applyAction(state: WerewolfState, seat: int32, action: ActionRequest): ActionApplied =
+    var applied: ActionApplied = initActionApplied()
+    applied.actionType = action.actionType
+    applied.actionArgs = action.actionArgs
+    applied.stateSeq = state.seq
+
+    if state == nil:
+        applied.note = "state nil"
+        return applied
+
+    let kind: str = sutil.toLowerAscii(sutil.strip(action.actionType))
+
+    if kind == "ready":
+        setReady(state, seat, true)
+        addLog(state, state.players[seat].name + " 已准备")
+        applied.applied = true
+        state.seq = state.seq + int64(1)
+
+    elif kind == "start":
+        if state.stage != "lobby":
+            applied.note = "当前不在大厅"
+        elif ! allReady(state):
+            applied.note = "存在未准备玩家"
+        else:
+            startGame(state)
+            applied.applied = true
+
+    elif kind == "advance":
+        if state.stage == "finished":
+            applied.note = "游戏已结束"
+        else:
+            advanceStage(state)
+            state.seq = state.seq + int64(1)
+            applied.applied = true
+
+    elif kind == "sheriff_run":
+        if state.stage != "sheriff_nominate":
+            applied.note = "当前不是警长竞选"
+        elif ! state.players[seat].alive:
+            applied.note = "已出局玩家不能竞选"
+        else:
+            state.sheriffCandidates[seat] = true
+            addLog(state, state.players[seat].name + " 参与警长竞选")
+            state.seq = state.seq + int64(1)
+            applied.applied = true
+
+    elif kind == "sheriff_vote":
+        if state.stage != "sheriff_vote":
+            applied.note = "当前不是警长投票"
+        elif ! state.players[seat].alive:
+            applied.note = "出局玩家不能投票"
+        elif state.sheriffVoted[seat]:
+            applied.note = "本轮已投票"
+        else:
+            let dst: int32 = parseSeatArg(action.actionArgs)
+            if dst < 0 || dst >= WolfPlayerCount || ! state.sheriffCandidates[dst]:
+                applied.note = "非法投票目标"
+            else:
+                state.sheriffVoted[seat] = true
+                state.sheriffVotes[dst] = state.sheriffVotes[dst] + 1
+                addLog(state, state.players[seat].name + " 投票给 " + state.players[dst].name)
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+
+    elif kind == "sheriff_assign":
+        if state.sheriffSeat >= 0:
+            applied.note = "当前已有警长"
+        else:
+            let dst: int32 = parseSeatArg(action.actionArgs)
+            if dst < 0 || dst >= WolfPlayerCount || ! state.players[dst].alive:
+                applied.note = "非法继任目标"
+            else:
+                state.sheriffSeat = dst
+                addLog(state, state.players[dst].name + " 继任警长")
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+
+    elif kind == "guard_protect":
+        if state.stage != "night_guard":
+            applied.note = "当前不是守卫阶段"
+        elif ! isRole(state.players[seat], "guard") || ! state.players[seat].alive:
+            applied.note = "只有存活守卫可行动"
+        else:
+            let dst: int32 = parseSeatArg(action.actionArgs)
+            if dst < 0 || dst >= WolfPlayerCount || ! state.players[dst].alive:
+                applied.note = "非法守护目标"
+            elif dst == state.guardLastTarget:
+                applied.note = "守卫不能连续两晚守同一人"
+            else:
+                state.guardTarget = dst
+                addLog(state, "守卫已选择目标")
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+
+    elif kind == "wolf_kill":
+        if state.stage != "night_wolf":
+            applied.note = "当前不是狼人阶段"
+        elif ! isRole(state.players[seat], "wolf") || ! state.players[seat].alive:
+            applied.note = "只有存活狼人可行动"
+        else:
+            let dst: int32 = parseSeatArg(action.actionArgs)
+            if dst < 0 || dst >= WolfPlayerCount || ! state.players[dst].alive:
+                applied.note = "非法刀人目标"
+            elif isRole(state.players[dst], "wolf"):
+                applied.note = "狼人不能刀狼人"
+            else:
+                state.wolfKillTarget = dst
+                addLog(state, "狼人已选择目标")
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+
+    elif kind == "seer_check":
+        if state.stage != "night_seer":
+            applied.note = "当前不是预言家阶段"
+        elif ! isRole(state.players[seat], "seer") || ! state.players[seat].alive:
+            applied.note = "只有存活预言家可行动"
+        else:
+            let dst: int32 = parseSeatArg(action.actionArgs)
+            if dst < 0 || dst >= WolfPlayerCount || ! state.players[dst].alive:
+                applied.note = "非法查验目标"
+            else:
+                let note: str = "N" + i32ToStr(state.nightIndex) + ": seat " + i32ToStr(dst) + " => " + (if state.players[dst].role == "wolf": "wolf" else: "good")
+                add(state.seerNotes, note)
+                addLog(state, "预言家完成查验")
+                state.seerCheckTarget = dst
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+
+    elif kind == "witch_save":
+        if state.stage != "night_witch":
+            applied.note = "当前不是女巫阶段"
+        elif ! isRole(state.players[seat], "witch") || ! state.players[seat].alive:
+            applied.note = "只有存活女巫可行动"
+        elif state.witchSaveUsed:
+            applied.note = "解药已使用"
+        else:
+            let flag: bool = sutil.parseBool(action.actionArgs, true)
+            state.witchWantsSave = flag
+            addLog(state, "女巫提交了解药选择")
+            state.seq = state.seq + int64(1)
+            applied.applied = true
+
+    elif kind == "witch_poison":
+        if state.stage != "night_witch":
+            applied.note = "当前不是女巫阶段"
+        elif ! isRole(state.players[seat], "witch") || ! state.players[seat].alive:
+            applied.note = "只有存活女巫可行动"
+        elif state.witchPoisonUsed:
+            applied.note = "毒药已使用"
+        else:
+            let dst: int32 = parseSeatArg(action.actionArgs)
+            if dst < 0:
+                state.witchPoisonTarget = -1
+                applied.applied = true
+            elif dst >= WolfPlayerCount || ! state.players[dst].alive:
+                applied.note = "非法毒药目标"
+            else:
+                state.witchPoisonTarget = dst
+                addLog(state, "女巫提交了毒药目标")
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+
+    elif kind == "vote":
+        if state.stage != "day_vote":
+            applied.note = "当前不是白天投票"
+        elif ! state.players[seat].alive:
+            applied.note = "出局玩家不能投票"
+        elif state.dayVoted[seat]:
+            applied.note = "本轮已投票"
+        else:
+            let dst: int32 = parseSeatArg(action.actionArgs)
+            if dst < 0 || dst >= WolfPlayerCount || ! state.players[dst].alive:
+                applied.note = "非法投票目标"
+            else:
+                state.dayVoted[seat] = true
+                state.dayVoteTarget[seat] = dst
+                addLog(state, state.players[seat].name + " 投票给 " + state.players[dst].name)
+                state.seq = state.seq + int64(1)
+                applied.applied = true
+
+    elif kind == "speak":
+        addLog(state, state.players[seat].name + ": " + action.actionArgs)
+        state.seq = state.seq + int64(1)
+        applied.applied = true
+
+    else:
+        applied.note = "未知动作: " + action.actionType
+
+    applied.stateSeq = state.seq
+    applied.publicSnapshot = buildPublicSnapshot(state)
+    if ! applied.applied && len(applied.note) == 0:
+        applied.note = "动作未生效"
+    return applied
+
+fn firstAliveSeat(state: WerewolfState, excludeSeat: int32): int32 =
+    for idx in 0..<WolfPlayerCount:
+        if idx != excludeSeat && state.players[idx].alive:
+            return idx
+    return -1
+
+fn firstAliveNonWolf(state: WerewolfState): int32 =
+    for idx in 0..<WolfPlayerCount:
+        if state.players[idx].alive && state.players[idx].role != "wolf":
+            return idx
+    return firstAliveSeat(state, -1)
+
+fn makeBotAction(state: WerewolfState, seat: int32): ActionRequest =
+    var action: ActionRequest = initActionRequest()
+    action.playerToken = state.players[seat].token
+    action.seat = seat
+    action.clientSeq = state.seq + int64(1)
+
+    if ! state.players[seat].alive:
+        action.actionType = "speak"
+        action.actionArgs = "(dead)"
+        return action
+
+    if state.stage == "sheriff_nominate":
+        action.actionType = "sheriff_run"
+        action.actionArgs = ""
+        return action
+
+    if state.stage == "sheriff_vote":
+        var dst: int32 = firstAliveSeat(state, -1)
+        if dst >= 0 && ! state.sheriffCandidates[dst]:
+            for idx in 0..<WolfPlayerCount:
+                if state.sheriffCandidates[idx]:
+                    dst = idx
+                    break
+        action.actionType = "sheriff_vote"
+        action.actionArgs = i32ToStr(dst)
+        return action
+
+    if state.stage == "night_guard" && state.players[seat].role == "guard":
+        var dst: int32 = firstAliveSeat(state, -1)
+        if dst == state.guardLastTarget:
+            dst = firstAliveSeat(state, dst)
+        action.actionType = "guard_protect"
+        action.actionArgs = i32ToStr(dst)
+        return action
+
+    if state.stage == "night_wolf" && state.players[seat].role == "wolf":
+        action.actionType = "wolf_kill"
+        action.actionArgs = i32ToStr(firstAliveNonWolf(state))
+        return action
+
+    if state.stage == "night_seer" && state.players[seat].role == "seer":
+        action.actionType = "seer_check"
+        action.actionArgs = i32ToStr(firstAliveSeat(state, seat))
+        return action
+
+    if state.stage == "night_witch" && state.players[seat].role == "witch":
+        if ! state.witchSaveUsed && state.wolfKillTarget >= 0:
+            action.actionType = "witch_save"
+            action.actionArgs = "1"
+        elif ! state.witchPoisonUsed:
+            action.actionType = "witch_poison"
+            action.actionArgs = i32ToStr(firstAliveNonWolf(state))
+        else:
+            action.actionType = "witch_poison"
+            action.actionArgs = "-1"
+        return action
+
+    if state.stage == "day_vote":
+        action.actionType = "vote"
+        if state.players[seat].role == "wolf":
+            action.actionArgs = i32ToStr(firstAliveSeat(state, seat))
+        else:
+            action.actionArgs = i32ToStr(firstAliveNonWolf(state))
+        return action
+
+    action.actionType = "speak"
+    action.actionArgs = "继续观察"
+    return action

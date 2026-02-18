@@ -1,0 +1,42 @@
+import cheng/gui/browser/types
+
+type
+    RendererProcess = ref
+        pid: int64
+        alive: bool
+        restartCount: int32
+
+var nextRendererPid: int64 = int64(2000)
+
+fn spawnRendererProcess(): RendererProcess =
+    var proc: RendererProcess
+    new(proc)
+    proc.pid = nextRendererPid
+    nextRendererPid = nextRendererPid + int64(1)
+    proc.alive = true
+    proc.restartCount = int32(0)
+    return proc
+
+fn shutdownRendererProcess(proc: RendererProcess) =
+    if proc == nil:
+        return
+    proc.alive = false
+
+fn crashRendererProcess(proc: RendererProcess, reason: str): types.CrashReport =
+    var report = types.defaultCrashReport()
+    report.processRole = types.prRenderer
+    if proc != nil:
+        report.processId = proc.pid
+        proc.alive = false
+    report.reason = reason
+    report.fatal = true
+    report.recovered = false
+    report.timestampMs = report.processId
+    return report
+
+fn recoverRendererProcess(proc: RendererProcess): bool =
+    if proc == nil:
+        return false
+    proc.alive = true
+    proc.restartCount = proc.restartCount + int32(1)
+    return true

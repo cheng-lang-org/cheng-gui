@@ -1,0 +1,101 @@
+import cheng/gui/platform/types
+import cheng/gui/render/backend as renderBackend
+type
+    SceneLayerKind = enum
+        slBackg
+        round
+        slContent
+        slOverlayScenePrimitive
+    Kind = enum
+        spRect
+    spTextScenePrimitive =
+        kind: ScenePrimitive
+        Kindrect: GuiRect
+        color: uint32
+        text: str
+        fontSize: float
+        opacity: float
+    SceneLayer = ref
+        name: str
+        kind: SceneLayerKind
+        clip: GuiRect
+        hasClip: bool
+        opacity: float
+        order: int
+        primitives: ScenePrimitive[]
+    SceneGraph =
+        layers: SceneLayer[]
+        nextOrder: int
+fn clampOpacity(value: float): float =
+    if value <= 0.0:
+        0.0
+    elif value >= 1.0:
+        1.0
+    else:
+        value
+fn newSceneGraph(): SceneGraph =
+    var graph: SceneGraphgraph.layers = default[SceneLayer[]]
+    graph.nextOrder = 0 graph
+fn addLayer(graph: var SceneGraph, name: str, kind: SceneLayerKind): SceneLayer =
+    addLayer(graph, name, kind, makeRect(0, 0, 0, 0), false, 1.0)
+fn addLayer(graph: var SceneGraph, name: str, kind: SceneLayerKind, clip: GuiRect): SceneLayer =
+    addLayer(graph, name, kind, clip, false, 1.0)
+fn addLayer(graph: var SceneGraph, name: str, kind: SceneLayerKind, clip: GuiRect, enableClip: bool): SceneLayer =
+    addLayer(graph, name, kind, clip, enableClip, 1.0)
+fn addLayer(graph: var SceneGraph, name: str, kind: SceneLayerKind, clip: GuiRect, enableClip: bool, opacity: float): SceneLayer =
+    let layerName = if len(name) > 0: name
+    else:
+        "layer-" + $ graph.nextOrder
+        var layer: SceneLayernew(layer)
+        layer.name = layerName
+        layer.kind = kind
+        layer.clip = clip
+        layer.hasClip = enableClip
+        layer.opacity = clampOpacity(opacity)
+        layer.order = graph.nextOrder
+        layer.primitives = default[ScenePrimitive[]]
+        graph.nextOrder = graph.nextOrder + 1 graph.layers.add(layer) layer
+fn addRect(layer: SceneLayer, rect: GuiRect, color: uint32) =
+    addRect(layer, rect, color, 1.0)
+fn addRect(layer: SceneLayer, rect: GuiRect, color: uint32, opacity: float) =
+    if layer == nil:
+        return if rect.size.width <= 0.0 || rect.size.height <= 0.0: return
+        let clamped = clampOpacity(opacity)
+        if clamped <= 0.0:
+            return
+            var primitive: ScenePrimitiveprimitive.kind = spRect
+            primitive.rect = rect
+            primitive.color = color
+            primitive.text = ""
+            primitive.fontSize = 0.0
+            primitive.opacity = clamped layer.primitives.add(primitive)
+fn addText(layer: SceneLayer, rect: GuiRect, text: str, color: uint32, fontSize: float) =
+    addText(layer, rect, text, color, fontSize, 1.0)
+fn addText(layer: SceneLayer, rect: GuiRect, text: str, color: uint32, fontSize: float, opacity: float) =
+    if layer == nil || len(text) == 0:
+        return
+        let clamped = clampOpacity(opacity)
+        if clamped <= 0.0:
+            return
+            var primitive: ScenePrimitiveprimitive.kind = spText
+            primitive.rect = rect
+            primitive.color = color
+            primitive.text = text
+            primitive.fontSize = fontSize
+            primitive.opacity = clamped layer.primitives.add(primitive)
+fn submit(graph: SceneGraph, ctx: renderBackend.RenderContext) =
+    if ctx == nil || len(graph.layers) == 0:
+        return for layer in graph.layers: if layer == nil: continue if len(layer.primitives) == 0: continue
+        let passKind = case layer.kind
+        of slBackg
+        round: renderBackend.rpkOpaque
+        of slContent:
+            renderBackend.rpkTrans parent
+            of slOverlay:
+                renderBackend.rpkOverlay renderBackend.beginPass(ctx, layer.name, passKind, layer.clip, layer.hasClip, layer.opacity)
+                for primitive in layer.primitives:
+                    case primitive.kind
+                    of spRect:
+                        ctx.drawRect(primitive.rect, primitive.color, primitive.opacity)
+                    of spText:
+                        ctx.drawText(primitive.rect, primitive.text, primitive.color, primitive.fontSize, primitive.opacity) renderBackend.endPass(ctx)

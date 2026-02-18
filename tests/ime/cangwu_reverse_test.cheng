@@ -1,0 +1,64 @@
+import cheng/gui/ime/cangwu_engine
+import cheng/gui/ime/cangwu_reverse
+import cheng/gui/ime/cangwu_types
+
+fn miniAssets(): CwAssets =
+    var assets: CwAssets
+    assets.dict.chars = []
+    assets.dict.codepoints = []
+    assets.dict.cpToIndex = []
+    assets.dict.bmpIndex = []
+    assets.dict.nonBmpCp = []
+    assets.dict.nonBmpIdx = []
+    assets.singles = []
+    assets.phrases = []
+    assets.reverse = []
+
+    var r1: CwReverseEntry
+    r1.mode = "char"
+    r1.key = "A"
+    r1.text = "A"
+    r1.code = "ABCD"
+    r1.canonical = "ABCD"
+    r1.structKind = csUD
+    r1.freq = 100
+    r1.pinyin = "aa"
+    add(assets.reverse, r1)
+
+    var r2: CwReverseEntry
+    r2.mode = "py"
+    r2.key = "aa"
+    r2.text = "A"
+    r2.code = "ABCD"
+    r2.canonical = "ABCD"
+    r2.structKind = csUD
+    r2.freq = 100
+    r2.pinyin = "aa"
+    add(assets.reverse, r2)
+
+    return assets
+
+fn testReverseByChar(): int32 =
+    let engine = cwCreateEngine(miniAssets())
+    let r = cwReverse(engine, "zA", 0, 12)
+    if len(r.items) <= 0:
+        return 101
+    return 0
+
+fn testReverseByPinyin(): int32 =
+    let engine = cwCreateEngine(miniAssets())
+    let r = cwReverse(engine, "zaa", 0, 12)
+    if len(r.items) <= 0:
+        return 201
+    return 0
+
+fn main(): int32 =
+    var rc = testReverseByChar()
+    if rc != 0:
+        return rc
+    rc = testReverseByPinyin()
+    if rc != 0:
+        return rc
+    return 0
+
+main()

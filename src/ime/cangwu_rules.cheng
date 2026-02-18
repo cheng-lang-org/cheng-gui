@@ -1,0 +1,273 @@
+import cheng/gui/ime/cangwu_types
+
+fn cwEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn cwByte(ch: char): int32 =
+    var code: int32 = int32(ch)
+    if code < 0:
+        code = code + 256
+    return code
+
+fn cwIsAsciiLetter(ch: char): bool =
+    let code = cwByte(ch)
+    if code >= int32('A') && code <= int32('Z'):
+        return true
+    if code >= int32('a') && code <= int32('z'):
+        return true
+    return false
+
+fn cwToUpperChar(ch: char): char =
+    let code = cwByte(ch)
+    if code >= int32('a') && code <= int32('z'):
+        return char(code - int32('a') + int32('A'))
+    return ch
+
+fn cwToLowerChar(ch: char): char =
+    let code = cwByte(ch)
+    if code >= int32('A') && code <= int32('Z'):
+        return char(code - int32('A') + int32('a'))
+    return ch
+
+fn cwNormalizeCodeInput(text: str): str =
+    var out: str = ""
+    for idx in 0..<len(text):
+        let ch = text[idx]
+        if cwIsAsciiLetter(ch):
+            out = out + charToStr(cwToUpperChar(ch))
+    return out
+
+fn cwNormalizeReverseInput(text: str): str =
+    var out: str = ""
+    for idx in 0..<len(text):
+        let ch = text[idx]
+        if cwByte(ch) <= 0x20:
+            continue
+        out = out + charToStr(cwToLowerChar(ch))
+    return out
+
+fn cwSliceRange(text: str, start: int32, stopExclusive: int32): str =
+    if len(text) == 0:
+        return ""
+    var lo = start
+    var hi = stopExclusive
+    if lo < 0:
+        lo = 0
+    if hi < lo:
+        hi = lo
+    if lo > len(text):
+        lo = len(text)
+    if hi > len(text):
+        hi = len(text)
+    var out = ""
+    var idx = lo
+    while idx < hi:
+        out = out + charToStr(text[idx])
+        idx = idx + 1
+    return out
+
+fn cwSlicePrefix(text: str, count: int32): str =
+    if count <= 0:
+        return ""
+    return cwSliceRange(text, 0, count)
+
+fn cwSliceFrom(text: str, start: int32): str =
+    return cwSliceRange(text, start, len(text))
+
+fn cwMapCangjieLetter(ch: char): char =
+    let up = cwToUpperChar(ch)
+    if cwEq(up, 'A'):
+        return 'J'
+    if cwEq(up, 'B'):
+        return 'T'
+    if cwEq(up, 'C'):
+        return 'R'
+    if cwEq(up, 'D'):
+        return 'D'
+    if cwEq(up, 'E'):
+        return 'Y'
+    if cwEq(up, 'F'):
+        return 'U'
+    if cwEq(up, 'G'):
+        return 'F'
+    if cwEq(up, 'H'):
+        return 'E'
+    if cwEq(up, 'I'):
+        return 'N'
+    if cwEq(up, 'J'):
+        return 'S'
+    if cwEq(up, 'K'):
+        return 'Q'
+    if cwEq(up, 'L'):
+        return 'M'
+    if cwEq(up, 'M'):
+        return 'A'
+    if cwEq(up, 'N'):
+        return 'X'
+    if cwEq(up, 'O'):
+        return 'Q'
+    if cwEq(up, 'P'):
+        return 'I'
+    if cwEq(up, 'Q'):
+        return 'W'
+    if cwEq(up, 'R'):
+        return 'H'
+    if cwEq(up, 'S'):
+        return 'C'
+    if cwEq(up, 'T'):
+        return 'G'
+    if cwEq(up, 'U'):
+        return 'L'
+    if cwEq(up, 'V'):
+        return 'V'
+    if cwEq(up, 'W'):
+        return 'K'
+    if cwEq(up, 'X'):
+        return 'P'
+    if cwEq(up, 'Y'):
+        return 'O'
+    return '\0'
+
+fn cwMapCangjieToCode(cangjie: str): str =
+    var out: str = ""
+    for idx in 0..<len(cangjie):
+        let mapped = cwMapCangjieLetter(cangjie[idx])
+        if mapped != '\0':
+            out = out + charToStr(mapped)
+    return out
+
+fn cwClassifyStruct(code: str): CwStruct =
+    let roots = cwNormalizeCodeInput(code)
+    if len(roots) <= 1:
+        return csMIX
+    for idx in 0..<len(roots):
+        if roots[idx] == 'X':
+            return csMIX
+    let head = roots[0]
+    if (head == 'R' || head == 'H' || head == 'C' || head == 'S' || head == 'M' || head == 'U') && len(roots) >= 2:
+        return csENC
+    if len(roots) >= 2:
+        let a = roots[0]
+        let b = roots[1]
+        let inSetA = (a == 'A' || a == 'B' || a == 'D' || a == 'E' || a == 'F' || a == 'G' || a == 'T' || a == 'Y')
+        let inSetB = (b == 'A' || b == 'B' || b == 'D' || b == 'E' || b == 'F' || b == 'G' || b == 'T' || b == 'Y')
+        if inSetA && inSetB:
+            return csUD
+    return csLR
+
+fn cwStructToken(kind: CwStruct): char =
+    if kind == csLR:
+        return 'L'
+    if kind == csUD:
+        return 'U'
+    if kind == csENC:
+        return 'E'
+    return 'M'
+
+fn cwFirstRoot(code: str): char =
+    let normalized = cwNormalizeCodeInput(code)
+    if len(normalized) <= 0:
+        return 'X'
+    return normalized[0]
+
+fn cwRootAtOrLast(code: str, idx: int32): char =
+    let normalized = cwNormalizeCodeInput(code)
+    if len(normalized) <= 0:
+        return 'X'
+    if idx < 0:
+        return normalized[0]
+    if idx >= len(normalized):
+        return normalized[len(normalized) - 1]
+    return normalized[idx]
+
+fn cwFirstNRoots(code: str, n: int32): str =
+    if n <= 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = 0
+    while idx < n:
+        out = out + charToStr(cwRootAtOrLast(code, idx))
+        idx = idx + 1
+    return out
+
+fn cwCanonicalFromRoots(code: str, kind: CwStruct): str =
+    let roots = cwNormalizeCodeInput(code)
+    let s = cwStructToken(kind)
+    if len(roots) >= 4:
+        return charToStr(roots[0]) + charToStr(roots[1]) + charToStr(roots[2]) + charToStr(roots[len(roots) - 1])
+    if len(roots) == 3:
+        return roots + charToStr(s)
+    if len(roots) == 2:
+        return charToStr(roots[0]) + charToStr(roots[1]) + charToStr(s) + charToStr(roots[1])
+    if len(roots) == 1:
+        return charToStr(roots[0]) + charToStr(s) + charToStr(roots[0]) + charToStr(roots[0])
+    return "X" + charToStr(s) + "XX"
+
+fn cwStructMatches(filter: CwStructFilter, kind: CwStruct): bool =
+    if filter == cfAny:
+        return true
+    if filter == cfLR:
+        return kind == csLR
+    if filter == cfUD:
+        return kind == csUD
+    if filter == cfENC:
+        return kind == csENC
+    return kind == csMIX
+
+fn cwCodeStartsWith(code: str, query: str): bool =
+    if len(query) == 0:
+        return true
+    if len(code) < len(query):
+        return false
+    for idx in 0..<len(query):
+        if code[idx] != query[idx]:
+            return false
+    return true
+
+fn cwCodeEquals(a: str, b: str): bool =
+    if len(a) != len(b):
+        return false
+    for idx in 0..<len(a):
+        if a[idx] != b[idx]:
+            return false
+    return true
+
+fn cwVariantReplacePrefix(src: str, fromCh: char, toCh: char): str =
+    if len(src) == 0:
+        return ""
+    var out: str = ""
+    var changed = false
+    var idx: int32 = 0
+    while idx < len(src):
+        let ch = src[idx]
+        if idx < 3 && ch == fromCh:
+            out = out + charToStr(toCh)
+            changed = true
+        else:
+            out = out + charToStr(ch)
+        idx = idx + 1
+    if changed:
+        return out
+    return ""
+
+fn cwPushUnique(items: var str[], value: str) =
+    if len(value) == 0:
+        return
+    for idx in 0..<len(items):
+        if items[idx] == value:
+            return
+    add(items, value)
+
+fn cwFuzzyVariants(query: str): str[] =
+    var out: str[]
+    let q = cwNormalizeCodeInput(query)
+    if len(q) == 0:
+        return out
+    add(out, q)
+    cwPushUnique(out, cwVariantReplacePrefix(q, 'P', 'C'))
+    cwPushUnique(out, cwVariantReplacePrefix(q, 'C', 'P'))
+    cwPushUnique(out, cwVariantReplacePrefix(q, 'C', 'H'))
+    cwPushUnique(out, cwVariantReplacePrefix(q, 'H', 'C'))
+    cwPushUnique(out, cwVariantReplacePrefix(q, 'L', 'M'))
+    cwPushUnique(out, cwVariantReplacePrefix(q, 'M', 'L'))
+    return out

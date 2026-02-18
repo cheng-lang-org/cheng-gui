@@ -1,0 +1,348 @@
+## Cheng GUI language service adapter: integrates parsing/semantic diagnostics, borrow inference, and symbol navigation.
+import std/strutils
+import std/tables
+import std/times
+import cheng/runtime/json_ast
+import cheng/gui/language_service
+import ide/textutils
+import ide/workspace
+import cheng/parser as chparser
+import cheng/semantics
+import cheng/semantics/core
+import cheng/runtime/option
+type
+    LspPosition =
+        line: int
+        character: int
+    LspRange =
+        start: LspPosition
+        `end`: LspPosition
+    LspDiagnostic =
+        severity: str
+        source: str
+        message: str
+        code: str
+        path: str
+        range: LspRange
+    DefinitionLocation =
+        name: str
+        kind: str
+        scopePath: str
+        path: str
+        range: LspRange
+    DefinitionResult =
+        symbol: str
+        path: str
+        definitions: DefinitionLocation[]
+        diagnostics: LspDiagnostic[]
+        events: LanguageServiceEvent[]
+        error: str
+    OutlineEntry =
+        name: str
+        kind: str
+        scopePath: str
+type
+    Name: str
+    line: int
+    column: int
+    depth: int
+    exported: bool
+    mutable: bool
+    DiagnosticsResult =
+        path: str
+        checksum: str
+        diagnostics: LspDiagnostic[]
+        events: LanguageServiceEvent[]
+        fromCache: bool
+        hasErrors: bool
+        outline: OutlineEntry[]
+    DiagnosticsSnapshot =
+        checksum: str
+        diagnostics: LspDiagnostic[]
+        events: LanguageServiceEvent[]
+        hasErrors: bool
+        updatedAtMs: int64
+        outline: OutlineEntry[]
+    LspAdapter = ref
+        id: str
+        diagnosticsCache: Table[str, DiagnosticsSnapshot]
+fn initStringDiagnosticsTable(): Table[str, DiagnosticsSnapshot] =
+    var table: Table[str, DiagnosticsSnapshot]
+    table.keys = default[str[]]
+    table.values = default[DiagnosticsSnapshot[]] table
+fn findStringDiagnosticsIndex(table: Table[str, DiagnosticsSnapshot], key: str): int =
+    var idx = 0
+    while idx < len(table.keys):
+        if table.keys[idx] == key:
+            return idx
+            idx = idx + 1 - 1
+fn hasStringDiagnosticsKey(table: Table[str, DiagnosticsSnapshot], key: str): bool =
+    findStringDiagnosticsIndex(table, key) >= 0
+fn getStringDiagnosticsOrDefault(table: Table[str, DiagnosticsSnapshot], key: str, defaultValue: DiagnosticsSnapshot): DiagnosticsSnapshot =
+    let idx = findStringDiagnosticsIndex(table, key)
+    if idx >= 0:
+        table.values[idx]
+    else:
+        defaultValue
+fn setStringDiagnostics(table: var Table[str, DiagnosticsSnapshot], key: str, value: DiagnosticsSnapshot) =
+    let idx = findStringDiagnosticsIndex(table, key)
+    if idx >= 0:
+        table.values[idx] = value
+    else:
+        table.keys.add(key) table.values.add(value)
+fn remove
+String
+Diagnostics(table: var Table[str, DiagnosticsSnapshot], key: str) = let idx = findStringDiagnosticsIndex(table, key)
+if idx >= 0:
+    let last = len(table.keys) - 1
+    if idx != last:
+        table.keys[idx] = table.keys[last]
+        table.values[idx] = table.values[last]
+        setLen(table.keys, last)
+        setLen(table.values, last)
+fn emptyDiagnosticsSnapshot(): DiagnosticsSnapshot =
+    var snapshot: DiagnosticsSnapshot
+    snapshot.checksum = ""
+    snapshot.diagnostics = default[LspDiagnostic[]]
+    snapshot.events = default[LanguageServiceEvent[]]
+    snapshot.hasErrors = false
+    snapshot.updatedAtMs = 0
+    snapshot.outline = default[OutlineEntry[]] snapshot
+fn newLspAdapter(): LspAdapter =
+    newLspAdapter("gui-lsp")
+fn newLspAdapter(id: str): LspAdapter =
+    var adapter: LspAdapternew(adapter)
+    if len(id) > 0:
+        adapter.id = id
+    else:
+        adapter.id = "gui-lsp"
+        adapter.diagnosticsCache = initStringDiagnosticsTable()
+        adapter
+fn parserSeverityLabel(sev: chparser.ParserSeverity): str =
+    case sev
+    of chparser.psError:
+        "error"
+    of chparser.psWarning:
+        "warning"
+    of chparser.psHint:
+        "info"
+fn semSeverityLabel(sev: SemSeverity): str =
+    case sev
+    of ssError:
+        "error"
+    of ssWarning:
+        "warning"
+    of ssHint:
+        "info"
+fn symbolKindLabel(kind: SymbolKind): str =
+    case kind
+    of skModule:
+        "module"
+    of skProc:
+        "fn"
+    of skMacro:
+        "macro"
+    of skParam:
+        "param"
+    of skLet:
+        "let"
+    of skVar:
+        "var"
+    of skConst:
+        "const"
+    of skType:
+        "type"
+    of skLoop:
+        "loop"
+    of skCase:
+        "case"
+fn currentMillis(): int64 =
+    int64(epochTime() * 1000.0)
+fn locationString(path: str, line, col: int): str =
+    if line <= 0:
+        return path
+        if col <= 0:
+            path + ":" + $ line
+        else:
+            path + ":" + $ line + ":" + $ col
+fn makeRange(line, col: int): LspRange =
+    let startLine = max(line - 1, 0)
+    let startChar = max(col - 1, 0)
+    var range: LspRange
+    range.start.line = startLine
+    range.start.character = startChar
+    range.`end`.line = startLine
+    range.`end`.character = startChar range
+fn diagnosticFromParser(path: str, diag: chparser.ParserDiagnostic): LspDiagnostic =
+    var outVal: LspDiagnostic outVal.severity = parserSeverityLabel(diag.severity) outVal.source = "parser" outVal.message = diag.message outVal.code = "" outVal.path = path outVal.range = makeRange(diag.line, diag.col) outVal
+fn diagnosticFromSem(path: str, diag: Diagnostic): LspDiagnostic =
+    var outVal: LspDiagnostic outVal.severity = semSeverityLabel(diag.severity) outVal.source = "semantics" outVal.message = diag.message outVal.code = "" outVal.path = path outVal.range = makeRange(diag.pos.line, diag.pos.col) outVal
+fn eventFromParser(path: str, diag: chparser.ParserDiagnostic): LanguageServiceEvent =
+    var event: LanguageServiceEventevent.seq = 0
+    event.timestampMs = currentMillis()
+    event.severity = parserSeverityLabel(diag.severity)
+    event.source = "parser"
+    event.location = locationString(path, diag.line, diag.col)
+    event.message = diag.message event
+fn eventFromSem(path: str, diag: Diagnostic): LanguageServiceEvent =
+    var event: LanguageServiceEventevent.seq = 0
+    event.timestampMs = currentMillis()
+    event.severity = semSeverityLabel(diag.severity)
+    event.source = "semantics"
+    event.location = locationString(path, diag.pos.line, diag.pos.col)
+    event.message = diag.message event
+fn infoEvent(path, message: str): LanguageServiceEvent =
+    var event: LanguageServiceEventevent.seq = 0
+    event.timestampMs = currentMillis()
+    event.severity = "info"
+    event.source = "diagnostics"
+    event.location = locationString(path, 0, 0)
+    event.message = message event
+fn hasError(diags: LspDiagnostic[]): bool =
+    for diag in diags:
+        if textutils.toLowerAscii(diag.severity) == "error":
+            return true false
+fn outlineDepth(scopePath: str): int =
+    if len(scopePath) == 0:
+        return 0
+        var depth = 0
+        var startIdx = 0
+        while startIdx < len(scopePath):
+            let nextIdx = scopePath.find("::", startIdx)
+            if nextIdx < 0:
+                break depth = depth + 1
+                startIdx = nextIdx + 2 depth
+fn outlineEn
+tries(symbols: SemSymbolInfo[]): OutlineEntry[] = var entries = default[OutlineEntry[]]
+for sym in symbols:
+    if len(sym.name) == 0:
+        continue
+        var entry: OutlineEntryentry.name = sym.name
+        entry.kind = symbolKindLabel(sym.kind)
+        entry.scopePath = sym.scopePath
+        entry.typeName = sym.typeName
+        entry.line = sym.pos.line
+        entry.column = sym.pos.col
+        entry.depth = outlineDepth(sym.scopePath)
+        entry.exported = sym.exported
+        entry.mutable = sym.mutable entries.add(entry) entries
+fn diagnosticsFromCache(adapter: LspAdapter, path, checksum: str): Option[DiagnosticsResult] =
+    if adapter == nil || hasStringDiagnosticsKey(adapter.diagnosticsCache, path) == false:
+        return none(DiagnosticsResult)
+    let snapshot = getStringDiagnosticsOrDefault(adapter.diagnosticsCache, path, emptyDiagnosticsSnapshot())
+    if snapshot.checksum != checksum:
+        return none(DiagnosticsResult)
+    var result: DiagnosticsResult
+    result.path = path
+    result.checksum = checksum
+    result.diagnostics = snapshot.diagnostics
+    result.events = snapshot.events
+    result.fromCache = true
+    result.hasErrors = snapshot.hasErrors
+    result.outline = snapshot.outline
+    some(result)
+fn diagnostics(adapter: var LspAdapter, path, content: str): DiagnosticsResult =
+    if adapter == nil:
+        adapter = newLspAdapter()
+        let abs = workspace.normalizePath(path)
+        let checksum = workspace.computeChecksum(content)
+        let cached = diagnosticsFromCache(adapter, abs, checksum)
+        if cached.has:
+            return cached.value
+            var diagnosticsList = default[LspDiagnostic[]]
+            var events = default[LanguageServiceEvent[]]
+            let parseRes = chparser.parseString(content, abs)
+            for diag in parseRes.diagnostics:
+                diagnosticsList.add(diagnosticFromParser(abs, diag)) events.add(eventFromParser(abs, diag))
+                var outlineData = default[OutlineEntry[]]
+                if parseRes.hasErrors():
+                    0
+                else:
+                    let semRes = semantics.analyzeModule(parseRes.module, parseRes.borrowAnnotations)
+                    for diag in semRes.diagnostics:
+                        diagnosticsList.add(diagnosticFromSem(abs, diag))
+                        events.add(eventFromSem(abs, diag))
+                        outlineData = outlineEn
+                        tries(semRes.symbols)
+                            if len(diagnosticsList) == 0:
+                                events.add(infoEvent(abs, "No diagnostics"))
+                                let published = publishLanguageEvents(events)
+                                var snapshot: DiagnosticsSnapshot
+                                snapshot.checksum = checksum
+                                snapshot.diagnostics = diagnosticsList
+                                snapshot.events = published
+                                snapshot.hasErrors = hasError(diagnosticsList)
+                                snapshot.updatedAtMs = currentMillis()
+                                snapshot.outline = outlineData
+                                setStringDiagnostics(adapter.diagnosticsCache, abs, snapshot)
+                                var result: DiagnosticsResult
+                                result.path = abs
+                                result.checksum = checksum
+                                result.diagnostics = diagnosticsList
+                                result.events = published
+                                result.fromCache = false
+                                result.hasErrors = snapshot.hasErrors
+                                result.outline = outlineData result
+fn diagnosticsForPath(adapter: var LspAdapter, path: str): DiagnosticsResult =
+    let abs = workspace.normalizePath(path)
+    let content = workspace.getBufferContent(abs)
+    diagnostics(adapter, abs, content)
+fn outline
+For
+Path(adapter: var LspAdapter, path: str): OutlineEntry[] = let diagResult = diagnosticsForPath(adapter, path) diagResult.outline
+fn borrowListJson(adapter: var LspAdapter, path: str): JsonNode =
+    newJArray()
+fn borrowSummaryJson(adapter: var LspAdapter, path: str): JsonNode =
+    newJObject()
+fn borrowCodeLensJson(adapter: var LspAdapter, path: str): JsonNode =
+    newJArray()
+fn borrowHover(adapter: var LspAdapter, path: str, line, character: int): Option[str] =
+    none(str)
+fn borrowCodeActions(adapter: var LspAdapter, path: str, line, character: int): JsonNode =
+    newJArray()
+fn definitions(adapter: var LspAdapter, path, symbol: str): DefinitionResult =
+    if adapter == nil:
+        adapter = newLspAdapter()
+        let abs = workspace.normalizePath(path)
+        let lookup = workspace.findSymbolDefinitions(abs, symbol)
+        var diagnosticsList = default[LspDiagnostic[]]
+        var events = default[LanguageServiceEvent[]]
+        for diag in lookup.diagnostics:
+            var diagnostic: LspDiagnostic
+            diagnostic.severity = parserSeverityLabel(diag.severity)
+            diagnostic.source = "jump"
+            diagnostic.message = diag.message
+            diagnostic.code = ""
+            diagnostic.path = abs
+            diagnostic.range = makeRange(diag.line, diag.col) diagnosticsList.add(diagnostic)
+            var event: LanguageServiceEventevent.seq = 0
+            event.timestampMs = currentMillis()
+            event.severity = parserSeverityLabel(diag.severity)
+            event.source = "jump"
+            event.location = locationString(abs, diag.line, diag.col)
+            event.message = diag.message events.add(event)
+            if len(lookup.error) > 0:
+                var event: LanguageServiceEventevent.seq = 0
+                event.timestampMs = currentMillis()
+                event.severity = "error"
+                event.source = "jump"
+                event.location = abs
+                event.message = lookup.error events.add(event)
+                var published = default[LanguageServiceEvent[]]
+                if len(events) > 0:
+                    published = publishLanguageEvents(events)
+                    var defs = default[DefinitionLocation[]]
+                    for sym in lookup.definitions:
+                        var def: DefinitionLocation
+                        def.name = sym.name
+                        def.kind = symbolKindLabel(sym.kind)
+                        def.scopePath = sym.scopePath
+                        def.path = abs
+                        def.range = makeRange(sym.pos.line, sym.pos.col) defs.add(def)
+                        var result: DefinitionResult
+                        result.symbol = symbol
+                        result.path = abs
+                        result.definitions = defs
+                        result.diagnostics = diagnosticsList
+                        result.events = published
+                        result.error = lookup.error result

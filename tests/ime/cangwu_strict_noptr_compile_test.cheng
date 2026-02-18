@@ -1,0 +1,42 @@
+import std/os
+import cheng/gui/ime/cangwu_rules
+
+fn contains(text: str, needle: str): bool =
+    if len(needle) == 0:
+        return true
+    if len(text) < len(needle):
+        return false
+    var i: int32 = 0
+    while i + len(needle) <= len(text):
+        var ok = true
+        var j: int32 = 0
+        while j < len(needle):
+            if text[i + j] != needle[j]:
+                ok = false
+                break
+            j = j + 1
+        if ok:
+            return true
+        i = i + 1
+    return false
+
+fn checkNoPtr(path: str): bool =
+    if ! fileExists(path):
+        return false
+    let text = readFile(path)
+    let blocked: str[] = ["void*", "ptr_add", "alloc(", "dealloc(", "->", " ref\n", " ref\r", "ref\n", "ref\r"]
+    for idx in 0..<len(blocked):
+        if contains(text, blocked[idx]):
+            return false
+    return true
+
+fn main(): int32 =
+    if ! checkNoPtr("src/ime/panel_render.cheng"):
+        return 101
+    if ! checkNoPtr("src/ime/panel_runtime.cheng"):
+        return 102
+    if ! checkNoPtr("src/ime/cangwu_engine.cheng"):
+        return 103
+    return 0
+
+main()

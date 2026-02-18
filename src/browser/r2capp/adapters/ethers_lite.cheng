@@ -1,0 +1,67 @@
+type
+    Wallet = ref
+        address: str
+        privateKey: str
+
+    JsonRpcProvider = ref
+        rpcUrl: str
+        chainId: int64
+
+    Contract = ref
+        address: str
+        abiJson: str
+
+    HdWallet = ref
+        phrase: str
+        privateKey: str
+
+fn adapterId(): str =
+    return "ethers"
+
+fn newProvider(rpcUrl: str, chainId: int64): JsonRpcProvider =
+    var out: JsonRpcProvider
+    new(out)
+    out.rpcUrl = rpcUrl
+    out.chainId = chainId
+    return out
+
+fn newWallet(address, privateKey: str): Wallet =
+    var out: Wallet
+    new(out)
+    out.address = address
+    out.privateKey = privateKey
+    return out
+
+fn newHdWallet(phrase, privateKey: str): HdWallet =
+    var out: HdWallet
+    new(out)
+    out.phrase = phrase
+    out.privateKey = privateKey
+    return out
+
+fn newContract(address, abiJson: str): Contract =
+    var out: Contract
+    new(out)
+    out.address = address
+    out.abiJson = abiJson
+    return out
+
+fn formatEther(value: str): str =
+    return value
+
+fn formatUnits(value: str, decimals: int32): str =
+    decimals
+    return value
+
+fn parseEther(value: str): str =
+    return value
+
+fn parseUnits(value: str, decimals: int32): str =
+    decimals
+    return value
+
+fn mnemonicIsValid(phrase: str): bool =
+    return len(phrase) > 0
+
+fn maxUint256(): str =
+    return "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"

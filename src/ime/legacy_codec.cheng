@@ -1,0 +1,270 @@
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/cangwu_rules
+import cheng/gui/ime/utfzh_codec
+import cheng/gui/ime/legacy_types
+
+const LegacyReplacement = int32(0xFFFD)
+
+fn legacyByte(ch: char): int32 =
+    var b: int32 = int32(ch)
+    if b < 0:
+        b = b + 256
+    return b
+
+fn legacyAppendDecodeError(errors: var LegacyDecodeError[], offset: int32, message: str) =
+    var e: LegacyDecodeError
+    e.offset = offset
+    e.message = message
+    add(errors, e)
+
+fn legacyHexDigit(v: int32): char =
+    if v < 10:
+        return char(int32('0') + v)
+    return char(int32('A') + (v - 10))
+
+fn legacyHexByte(v: int32): str =
+    let hi = (v / 16) & 0xF
+    let lo = v & 0xF
+    return charToStr(legacyHexDigit(hi)) + charToStr(legacyHexDigit(lo))
+
+fn legacyDecodeAsUtf8(inputBytes: str): LegacyDecodeResult =
+    var result: LegacyDecodeResult
+    result.ok = true
+    result.textUtf8 = ""
+    result.detected = leUtf8
+    result.errorCount = 0
+    result.errors = []
+
+    var idx: int32 = 0
+    if len(inputBytes) >= 3:
+        let b0 = legacyByte(inputBytes[0])
+        let b1 = legacyByte(inputBytes[1])
+        let b2 = legacyByte(inputBytes[2])
+        if b0 == 0xEF && b1 == 0xBB && b2 == 0xBF:
+            idx = 3
+    while idx < len(inputBytes):
+        let dec = utfzhDecodeUtf8At(inputBytes, idx)
+        var step = dec.step
+        if step <= 0:
+            step = 1
+        if dec.ok:
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(dec.cp)
+        else:
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            legacyAppendDecodeError(result.errors, idx, "invalid utf-8")
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(LegacyReplacement)
+        idx = idx + step
+    return result
+
+fn legacyDecodeAsUtf16(inputBytes: str, littleEndian: bool): LegacyDecodeResult =
+    var result: LegacyDecodeResult
+    result.ok = true
+    result.textUtf8 = ""
+    result.detected = if littleEndian: leUtf16Le else: leUtf16Be
+    result.errorCount = 0
+    result.errors = []
+
+    var idx: int32 = 0
+    if len(inputBytes) >= 2:
+        let b0 = legacyByte(inputBytes[0])
+        let b1 = legacyByte(inputBytes[1])
+        if littleEndian && b0 == 0xFF && b1 == 0xFE:
+            idx = 2
+        elif ! littleEndian && b0 == 0xFE && b1 == 0xFF:
+            idx = 2
+
+    while idx < len(inputBytes):
+        if idx + 1 >= len(inputBytes):
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            legacyAppendDecodeError(result.errors, idx, "truncated utf-16")
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(LegacyReplacement)
+            break
+
+        let b0 = legacyByte(inputBytes[idx])
+        let b1 = legacyByte(inputBytes[idx + 1])
+        let u = if littleEndian: b0 + (b1 * 256) else: (b0 * 256) + b1
+        idx = idx + 2
+
+        if u >= 0xD800 && u <= 0xDBFF:
+            if idx + 1 >= len(inputBytes):
+                result.ok = false
+                result.errorCount = result.errorCount + 1
+                legacyAppendDecodeError(result.errors, idx - 2, "truncated utf-16 surrogate")
+                result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(LegacyReplacement)
+                break
+            let b2 = legacyByte(inputBytes[idx])
+            let b3 = legacyByte(inputBytes[idx + 1])
+            let v = if littleEndian: b2 + (b3 * 256) else: (b2 * 256) + b3
+            if v < 0xDC00 || v > 0xDFFF:
+                result.ok = false
+                result.errorCount = result.errorCount + 1
+                legacyAppendDecodeError(result.errors, idx, "invalid utf-16 low surrogate")
+                result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(LegacyReplacement)
+                continue
+            idx = idx + 2
+            let high = u - 0xD800
+            let low = v - 0xDC00
+            let cp = 0x10000 + (high * 1024) + low
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(cp)
+            continue
+
+        if u >= 0xDC00 && u <= 0xDFFF:
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            legacyAppendDecodeError(result.errors, idx - 2, "unexpected utf-16 low surrogate")
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(LegacyReplacement)
+            continue
+
+        if u == 0xFEFF && len(result.textUtf8) == 0:
+            continue
+        result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(u)
+    return result
+
+fn legacyLookupMap(map: CwIntMapEntry[], key: str, found: var bool): int32 =
+    var m = map
+    return cwIntMapGet(m, key, found)
+
+fn legacyDecodeAsDbcs(inputBytes: str, map: CwIntMapEntry[], detected: LegacyEncoding, label: str): LegacyDecodeResult =
+    var result: LegacyDecodeResult
+    result.ok = true
+    result.textUtf8 = ""
+    result.detected = detected
+    result.errorCount = 0
+    result.errors = []
+
+    var idx: int32 = 0
+    while idx < len(inputBytes):
+        let b1 = legacyByte(inputBytes[idx])
+        if b1 < 0x80:
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(b1)
+            idx = idx + 1
+            continue
+        if idx + 1 >= len(inputBytes):
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            legacyAppendDecodeError(result.errors, idx, "truncated " + label)
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(LegacyReplacement)
+            break
+
+        let b2 = legacyByte(inputBytes[idx + 1])
+        let key = legacyHexByte(b1) + legacyHexByte(b2)
+        var found = false
+        let cp = legacyLookupMap(map, key, found)
+        if found && cp >= 0 && cp <= 0x10FFFF:
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(cp)
+            idx = idx + 2
+        else:
+            result.ok = false
+            result.errorCount = result.errorCount + 1
+            legacyAppendDecodeError(result.errors, idx, "invalid " + label + " pair")
+            result.textUtf8 = result.textUtf8 + utfzhEncodeUtf8Codepoint(LegacyReplacement)
+            idx = idx + 1
+    return result
+
+fn legacyDecodeSpecific(inputBytes: str, source: LegacyEncoding, legacy: LegacyAssets): LegacyDecodeResult =
+    if source == leUtf8:
+        return legacyDecodeAsUtf8(inputBytes)
+    if source == leUtf16Le:
+        return legacyDecodeAsUtf16(inputBytes, true)
+    if source == leUtf16Be:
+        return legacyDecodeAsUtf16(inputBytes, false)
+    if source == leGbk:
+        return legacyDecodeAsDbcs(inputBytes, legacy.gbkToUnicode, leGbk, "gbk")
+    if source == leGb2312:
+        return legacyDecodeAsDbcs(inputBytes, legacy.gb2312ToUnicode, leGb2312, "gb2312")
+    var empty = legacyDecodeAsUtf8(inputBytes)
+    empty.detected = leUtf8
+    return empty
+
+fn legacyCountScalars(textUtf8: str): int32 =
+    var count: int32 = 0
+    var idx: int32 = 0
+    while idx < len(textUtf8):
+        let dec = utfzhDecodeUtf8At(textUtf8, idx)
+        var step = dec.step
+        if step <= 0:
+            step = 1
+        count = count + 1
+        idx = idx + step
+    return count
+
+fn legacyDetectEncoding(inputBytes: str, legacy: LegacyAssets): LegacyEncoding =
+    if len(inputBytes) >= 3:
+        let b0 = legacyByte(inputBytes[0])
+        let b1 = legacyByte(inputBytes[1])
+        let b2 = legacyByte(inputBytes[2])
+        if b0 == 0xEF && b1 == 0xBB && b2 == 0xBF:
+            return leUtf8
+    if len(inputBytes) >= 2:
+        let b0 = legacyByte(inputBytes[0])
+        let b1 = legacyByte(inputBytes[1])
+        if b0 == 0xFF && b1 == 0xFE:
+            return leUtf16Le
+        if b0 == 0xFE && b1 == 0xFF:
+            return leUtf16Be
+
+    var best = leUtf8
+    var bestErr = int32(1000000000)
+    var bestScalar = int32(-1)
+
+    let c1 = legacyDecodeSpecific(inputBytes, leUtf8, legacy)
+    best = leUtf8
+    bestErr = c1.errorCount
+    bestScalar = legacyCountScalars(c1.textUtf8)
+
+    let c2 = legacyDecodeSpecific(inputBytes, leUtf16Le, legacy)
+    let c2Scalar = legacyCountScalars(c2.textUtf8)
+    if c2.errorCount < bestErr || (c2.errorCount == bestErr && c2Scalar > bestScalar):
+        best = leUtf16Le
+        bestErr = c2.errorCount
+        bestScalar = c2Scalar
+
+    let c3 = legacyDecodeSpecific(inputBytes, leUtf16Be, legacy)
+    let c3Scalar = legacyCountScalars(c3.textUtf8)
+    if c3.errorCount < bestErr || (c3.errorCount == bestErr && c3Scalar > bestScalar):
+        best = leUtf16Be
+        bestErr = c3.errorCount
+        bestScalar = c3Scalar
+
+    let c4 = legacyDecodeSpecific(inputBytes, leGbk, legacy)
+    let c4Scalar = legacyCountScalars(c4.textUtf8)
+    if c4.errorCount < bestErr || (c4.errorCount == bestErr && c4Scalar > bestScalar):
+        best = leGbk
+        bestErr = c4.errorCount
+        bestScalar = c4Scalar
+
+    let c5 = legacyDecodeSpecific(inputBytes, leGb2312, legacy)
+    let c5Scalar = legacyCountScalars(c5.textUtf8)
+    if c5.errorCount < bestErr || (c5.errorCount == bestErr && c5Scalar > bestScalar):
+        best = leGb2312
+    return best
+
+fn legacyDecodeStrict(inputBytes: str, source: LegacyEncoding, legacy: LegacyAssets): LegacyDecodeResult =
+    var detected = source
+    if source == leAuto:
+        detected = legacyDetectEncoding(inputBytes, legacy)
+    var result = legacyDecodeSpecific(inputBytes, detected, legacy)
+    result.detected = detected
+    return result
+
+fn utfZhTranscodeStrict(inputBytes: str, source: LegacyEncoding, dict: UtfZhDict, legacy: LegacyAssets): UtfZhTranscodeResult =
+    let decoded = legacyDecodeStrict(inputBytes, source, legacy)
+    let encoded = utfZhEncodeStrict(decoded.textUtf8, dict)
+
+    var result: UtfZhTranscodeResult
+    result.ok = decoded.ok && encoded.ok
+    result.bytes = encoded.bytes
+    result.detected = decoded.detected
+    result.errorCount = decoded.errorCount + encoded.errorCount
+    result.errors = []
+
+    for idx in 0..<len(decoded.errors):
+        var e: UtfZhError
+        e.offset = decoded.errors[idx].offset
+        e.message = "legacy: " + decoded.errors[idx].message
+        add(result.errors, e)
+    for idx in 0..<len(encoded.errors):
+        add(result.errors, encoded.errors[idx])
+    return result

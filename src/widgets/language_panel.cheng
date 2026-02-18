@@ -1,0 +1,209 @@
+import std/strutils
+import cheng/gui/platform
+import cheng/gui/render/Backend
+import cheng/gui/widgets/base
+const
+    DefaultLineHeight = 17.0
+    DefaultHeaderHeight = 19.0
+    SectionSpacing = 8.0
+    OutlineIndent = 14.0
+    IndicatorWidth = 3.0
+    ContentPadding = 10.0
+    MaxDisplayDiagnostics = 12
+    MaxDisplayOutline = 18
+    MaxDisplayFiles = 18
+type
+    LanguageSeverity = enum
+        lsInfo
+        lsWarning
+    lsErrorLanguageDiagnosticEntry =
+        severity: LanguageSeverity
+        location: str
+        message: str
+    LanguageOutlineEntry =
+        label: str
+        detail: str
+        depth: int
+    LanguageFileEntry =
+        path: str
+        label: str
+        selected: bool
+    LanguagePanelTheme =
+        background: uint32
+        divider: uint32
+        header: uint32
+        headerValue: uint32
+        info: uint32
+        warning: uint32
+        error: uint32
+        outline: uint32
+        outlineDe
+        tail: uint32
+        navigation: uint32
+        navigationSelected: uint32
+    LanguagePanelMetrics =
+        diagnostics: int
+        warnings: int
+        errors: int
+        outline: int
+        files: int
+    LanguagePanelModel = ref
+        of WidgetPayload
+        diagnostics: LanguageDiagnosticEntry[]
+        outline: LanguageOutlineEntry[]
+        navigation: LanguageFileEntry[]
+        metrics: LanguagePanelMetricstheme: LanguagePanelThemelineHeight: float
+        headerHeight: float
+        maxDiagnostics: int maxOut
+        line: int
+        maxFiles: int
+fn defaultLanguagePanelTheme(): LanguagePanelTheme =
+    var theme: LanguagePanelThemetheme.background = uint32(0xFF1B1B1D)
+    theme.divider = uint32(0xFF2A2A2C)
+    theme.header = uint32(0xFFE0E0E0)
+    theme.headerValue = uint32(0xFF9CDCFE)
+    theme.info = uint32(0xFF9CDCFE)
+    theme.warning = uint32(0xFFD7BA7D)
+    theme.error = uint32(0xFFF44747)
+    theme.outline = uint32(0xFFE4E4E4)
+    theme.outlineDe
+    tail = uint32(0xFFA0A0A0)
+    theme.navigation = uint32(0xFFE4E4E4)
+    theme.navigationSelected = uint32(0xFF4FC1FF) theme
+fn newLanguagePanelModel(): LanguagePanelModel =
+    var model: LanguagePanelModel
+    new(model)
+    model.diagnostics = default[LanguageDiagnosticEntry[]]
+    model.outline = default[LanguageOutlineEntry[]]
+    model.navigation = default[LanguageFileEntry[]]
+    var metrics: LanguagePanelMetricsmetrics.diagnostics = 0
+    metrics.warnings = 0
+    metrics.errors = 0
+    metrics.outline = 0
+    metrics.files = 0
+    model.metrics = metrics
+    model.theme = defaultLanguagePanelTheme()
+    model.lineHeight = DefaultLineHeight
+    model.headerHeight = DefaultHeaderHeight
+    model.maxDiagnostics = MaxDisplayDiagnostics
+    model.maxOut
+    line = MaxDisplayOutline
+    model.maxFiles = MaxDisplayFiles model
+fn severityColor(theme: LanguagePanelTheme, severity: LanguageSeverity): uint32 =
+    case severity
+    of lsError:
+        theme.error
+    of lsWarning:
+        theme.warning
+    of lsInfo:
+        theme.info
+fn setDiagnostics(model: LanguagePanelModel, entries: LanguageDiagnosticEntry[]) =
+    if model == nil:
+        return model.diagnostics = entries
+        model.metrics.diagnostics = len(entries)
+        model.metrics.warnings = 0
+        model.metrics.errors = 0
+        for entry in entries:
+            case entry.severity
+            of lsError:
+                model.metrics.errors = model.metrics.errors + 1
+            of lsWarning:
+                model.metrics.warnings = model.metrics.warnings + 1
+            else:
+                0
+fn setOutline(model: LanguagePanelModel, entries: LanguageOutlineEntry[]) =
+    if model == nil:
+        return
+    model.outline = entries
+    model.metrics.outline = len(entries)
+fn setNavigation(model: LanguagePanelModel, entries: LanguageFileEntry[]) =
+    if model == nil:
+        return model.navigation = entries
+        model.metrics.files = len(entries)
+fn languagePanelSummary(model: LanguagePanelModel): str =
+    if model == nil:
+        return "[language-panel]\n  status=uninitialized\n"
+        var lines = default[str[]] lines.add "[language-panel]\n" lines.add "  diagnostics=" + intToStr(int32(model.metrics.diagnostics)) + " (errors=" + intToStr(int32(model.metrics.errors)) + ", warnings=" + intToStr(int32(model.metrics.warnings)) + ")\n" lines.add "  outline=" + intToStr(int32(model.metrics.outline)) + "\n" lines.add "  project-files=" + intToStr(int32(model.metrics.files)) + "\n" lines.join("")
+fn drawSectionHeader(ctx: RenderContext, rect: GuiRect, theme: LanguagePanelTheme, title, value: str, fontSize: float) =
+    if ctx == nil:
+        return
+        let headerRect = makeRect(rect.origin.x, rect.origin.y, rect.size.width, DefaultHeaderHeight) ctx.drawText(headerRect, title, theme.header, fontSize)
+        if len(value) > 0:
+            let valueRect = makeRect(rect.origin.x + rect.size.width - 120.0, rect.origin.y, 120.0, DefaultHeaderHeight) ctx.drawText(valueRect, value, theme.headerValue, fontSize)
+fn sectionLimit(model: LanguagePanelModel, total, limit: int): int =
+    if total <= limit:
+        total
+    else:
+        limit
+fn renderDiagnostics(model: LanguagePanelModel, ctx: RenderContext, rect: GuiRect, startY: var float) =
+    if len(model.diagnostics) == 0:
+        return
+        let display = sectionLimit(model, len(model.diagnostics), model.maxDiagnostics)
+        var y: float = startY
+        for idx in 0..< display:
+            if y + model.lineHeight > rect.origin.y + rect.size.height:
+                break
+                let entry = model.diagnostics[idx]
+                let indicatorRect = makeRect(rect.origin.x, y, IndicatorWidth, model.lineHeight) ctx.drawRect(indicatorRect, severityColor(model.theme, entry.severity))
+                let textRect = makeRect(rect.origin.x + IndicatorWidth + 6.0, y, rect.size.width - IndicatorWidth - 10.0, model.lineHeight)
+                var line = entry.location
+                if len(entry.message) > 0:
+                    if len(line) > 0:
+                        line = line + " " + entry.message
+                    else:
+                        line = entry.message
+                        ctx.drawText(textRect, line, model.theme.info, model.lineHeight - 2.0)
+                        y = y + model.lineHeight
+                        startY = y
+fn renderOut
+line(model: LanguagePanelModel, ctx: RenderContext, rect: GuiRect, startY: var float) = if len(model.outline) == 0: return
+let display = sectionLimit(model, len(model.outline), model.maxOut line)
+var y: float = startY
+for idx in 0..< display:
+    if y + model.lineHeight > rect.origin.y + rect.size.height:
+        break
+        let entry = model.outline[idx]
+        let indent = float(max(0, entry.depth)) * OutlineIndent
+        let labelRect = makeRect(rect.origin.x + indent, y, rect.size.width - indent, model.lineHeight) ctx.drawText(labelRect, entry.label, model.theme.outline, model.lineHeight - 2.0)
+        if len(entry.detail) > 0:
+            let detailRect = makeRect(rect.origin.x + indent + 8.0, y + model.lineHeight - 12.0, rect.size.width - indent - 8.0, model.lineHeight)
+            ctx.drawText(detailRect, entry.detail, model.theme.outlineDe tail, model.lineHeight - 4.0)
+            y = y + model.lineHeight
+            startY = y
+fn renderNavigation(model: LanguagePanelModel, ctx: RenderContext, rect: GuiRect, startY: var float) =
+    if len(model.navigation) == 0:
+        return
+        let display = sectionLimit(model, len(model.navigation), model.maxFiles)
+        var y: float = startY
+        for idx in 0..< display:
+            if y + model.lineHeight > rect.origin.y + rect.size.height:
+                break
+                let entry = model.navigation[idx]
+                let color: uint32 = if entry.selected: model.theme.navigationSelected
+            else:
+                model.theme.navigation
+                let textRect = makeRect(rect.origin.x, y, rect.size.width, model.lineHeight)
+                ctx.drawText(textRect, entry.label, color, model.lineHeight - 2.0)
+                y = y + model.lineHeight
+                startY = y
+fn renderLanguagePanel(model: LanguagePanelModel, ctx: RenderContext, rect: GuiRect) =
+    if model == nil || ctx == nil:
+        return ctx.drawRect(rect, model.theme.background)
+        var cursorY = rect.origin.y + ContentPadding
+        let sectionWidth = rect.size.width - ContentPadding * 2.0
+        let sectionX = rect.origin.x + ContentPadding
+        let diagnosticsRect = makeRect(sectionX, cursorY, sectionWidth, model.headerHeight)
+        drawSectionHeader(ctx, diagnosticsRect, model.theme, "Diagnostics", "errors=" + intToStr(int32(model.metrics.errors)) + " warn=" + intToStr(int32(model.metrics.warnings)), model.headerHeight - 2.0)
+        cursorY = cursorY + model.headerHeight
+        renderDiagnostics(model, ctx, makeRect(sectionX, cursorY, sectionWidth, rect.origin.y + rect.size.height - cursorY - SectionSpacing), cursorY)
+        cursorY = min(rect.origin.y + rect.size.height - SectionSpacing, cursorY + SectionSpacing)
+        let outlineHeaderRect = makeRect(sectionX, cursorY, sectionWidth, model.headerHeight)
+        drawSectionHeader(ctx, outlineHeaderRect, model.theme, "Outline", "symbols=" + intToStr(int32(model.metrics.outline)), model.headerHeight - 2.0)
+        cursorY = cursorY + model.headerHeight
+        renderOut
+        line(model, ctx, makeRect(sectionX, cursorY, sectionWidth, rect.origin.y + rect.size.height - cursorY - SectionSpacing), cursorY)
+        cursorY = min(rect.origin.y + rect.size.height - SectionSpacing, cursorY + SectionSpacing)
+        let filesHeaderRect = makeRect(sectionX, cursorY, sectionWidth, model.headerHeight)
+        drawSectionHeader(ctx, filesHeaderRect, model.theme, "Navigation", "files=" + intToStr(int32(model.metrics.files)), model.headerHeight - 2.0)
+        cursorY = cursorY + model.headerHeight
+        renderNavigation(model, ctx, makeRect(sectionX, cursorY, sectionWidth, rect.origin.y + rect.size.height - cursorY - ContentPadding), cursorY)

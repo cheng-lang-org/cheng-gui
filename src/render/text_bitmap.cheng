@@ -1,0 +1,351 @@
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn safeLen(text: str): int32 =
+    return len(text)
+
+fn byteValue(ch: char): int32 =
+    var code = int32(ch)
+    if code < int32(0):
+        code = code + int32(256)
+    return code
+
+fn utf8DecodeAt(text: str, start: int32, cp: var int32, step: var int32): bool =
+    cp = int32(0)
+    step = int32(1)
+    if start < int32(0) || start >= safeLen(text):
+        return false
+    let b0 = byteValue(text[start])
+    if b0 < int32(0x80):
+        cp = b0
+        step = int32(1)
+        return true
+    if b0 >= int32(0xC2) && b0 <= int32(0xDF):
+        if start + int32(1) >= safeLen(text):
+            cp = int32('?')
+            step = int32(1)
+            return true
+        let b1 = byteValue(text[start + int32(1)])
+        if b1 < int32(0x80) || b1 > int32(0xBF):
+            cp = int32('?')
+            step = int32(1)
+            return true
+        cp = (b0 - int32(0xC0)) * int32(64) + (b1 - int32(0x80))
+        step = int32(2)
+        return true
+    if b0 >= int32(0xE0) && b0 <= int32(0xEF):
+        if start + int32(2) >= safeLen(text):
+            cp = int32('?')
+            step = int32(1)
+            return true
+        let b1 = byteValue(text[start + int32(1)])
+        let b2 = byteValue(text[start + int32(2)])
+        if b1 < int32(0x80) || b1 > int32(0xBF) || b2 < int32(0x80) || b2 > int32(0xBF):
+            cp = int32('?')
+            step = int32(1)
+            return true
+        cp = (b0 - int32(0xE0)) * int32(4096) + (b1 - int32(0x80)) * int32(64) + (b2 - int32(0x80))
+        step = int32(3)
+        return true
+    if b0 >= int32(0xF0) && b0 <= int32(0xF4):
+        if start + int32(3) >= safeLen(text):
+            cp = int32('?')
+            step = int32(1)
+            return true
+        let b1 = byteValue(text[start + int32(1)])
+        let b2 = byteValue(text[start + int32(2)])
+        let b3 = byteValue(text[start + int32(3)])
+        if b1 < int32(0x80) || b1 > int32(0xBF) || b2 < int32(0x80) || b2 > int32(0xBF) || b3 < int32(0x80) || b3 > int32(0xBF):
+            cp = int32('?')
+            step = int32(1)
+            return true
+        cp = (b0 - int32(0xF0)) * int32(262144) + (b1 - int32(0x80)) * int32(4096) + (b2 - int32(0x80)) * int32(64) + (b3 - int32(0x80))
+        step = int32(4)
+        return true
+    cp = int32('?')
+    step = int32(1)
+    return true
+
+fn isLikelyCjk(cp: int32): bool =
+    if cp >= int32(0x4E00) && cp <= int32(0x9FFF):
+        return true
+    if cp >= int32(0x3400) && cp <= int32(0x4DBF):
+        return true
+    if cp >= int32(0x3000) && cp <= int32(0x303F):
+        return true
+    if cp >= int32(0xFF00) && cp <= int32(0xFFEF):
+        return true
+    return false
+
+fn toUpperAscii(ch: char): char =
+    if cGe(ch, 'a') && cLe(ch, 'z'):
+        return char(int32(ch) - int32('a') + int32('A'))
+    return ch
+
+fn rowPattern(row: int32, r0, r1, r2, r3, r4, r5, r6: str): str =
+    if row == int32(0):
+        return r0
+    if row == int32(1):
+        return r1
+    if row == int32(2):
+        return r2
+    if row == int32(3):
+        return r3
+    if row == int32(4):
+        return r4
+    if row == int32(5):
+        return r5
+    if row == int32(6):
+        return r6
+    return "....."
+
+fn glyphPattern(chInput: char, row: int32): str =
+    if row < int32(0) || row > int32(6):
+        return "....."
+    let ch = toUpperAscii(chInput)
+    if cEq(ch, ' '):
+        return "....."
+    if cEq(ch, 'A'):
+        return rowPattern(row, ".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#")
+    if cEq(ch, 'B'):
+        return rowPattern(row, "####.", "#...#", "#...#", "####.", "#...#", "#...#", "####.")
+    if cEq(ch, 'C'):
+        return rowPattern(row, ".###.", "#...#", "#....", "#....", "#....", "#...#", ".###.")
+    if cEq(ch, 'D'):
+        return rowPattern(row, "####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####.")
+    if cEq(ch, 'E'):
+        return rowPattern(row, "#####", "#....", "#....", "####.", "#....", "#....", "#####")
+    if cEq(ch, 'F'):
+        return rowPattern(row, "#####", "#....", "#....", "####.", "#....", "#....", "#....")
+    if cEq(ch, 'G'):
+        return rowPattern(row, ".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###.")
+    if cEq(ch, 'H'):
+        return rowPattern(row, "#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#")
+    if cEq(ch, 'I'):
+        return rowPattern(row, "#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####")
+    if cEq(ch, 'J'):
+        return rowPattern(row, "..###", "...#.", "...#.", "...#.", "#..#.", "#..#.", ".##..")
+    if cEq(ch, 'K'):
+        return rowPattern(row, "#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#")
+    if cEq(ch, 'L'):
+        return rowPattern(row, "#....", "#....", "#....", "#....", "#....", "#....", "#####")
+    if cEq(ch, 'M'):
+        return rowPattern(row, "#...#", "##.##", "#.#.#", "#...#", "#...#", "#...#", "#...#")
+    if cEq(ch, 'N'):
+        return rowPattern(row, "#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#")
+    if cEq(ch, 'O'):
+        return rowPattern(row, ".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###.")
+    if cEq(ch, 'P'):
+        return rowPattern(row, "####.", "#...#", "#...#", "####.", "#....", "#....", "#....")
+    if cEq(ch, 'Q'):
+        return rowPattern(row, ".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#")
+    if cEq(ch, 'R'):
+        return rowPattern(row, "####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#")
+    if cEq(ch, 'S'):
+        return rowPattern(row, ".####", "#....", "#....", ".###.", "....#", "....#", "####.")
+    if cEq(ch, 'T'):
+        return rowPattern(row, "#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#..")
+    if cEq(ch, 'U'):
+        return rowPattern(row, "#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###.")
+    if cEq(ch, 'V'):
+        return rowPattern(row, "#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#..")
+    if cEq(ch, 'W'):
+        return rowPattern(row, "#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#")
+    if cEq(ch, 'X'):
+        return rowPattern(row, "#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#")
+    if cEq(ch, 'Y'):
+        return rowPattern(row, "#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#..")
+    if cEq(ch, 'Z'):
+        return rowPattern(row, "#####", "....#", "...#.", "..#..", ".#...", "#....", "#####")
+    if cEq(ch, '0'):
+        return rowPattern(row, ".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###.")
+    if cEq(ch, '1'):
+        return rowPattern(row, "..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###.")
+    if cEq(ch, '2'):
+        return rowPattern(row, ".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####")
+    if cEq(ch, '3'):
+        return rowPattern(row, ".###.", "#...#", "....#", "..##.", "....#", "#...#", ".###.")
+    if cEq(ch, '4'):
+        return rowPattern(row, "...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#.")
+    if cEq(ch, '5'):
+        return rowPattern(row, "#####", "#....", "#....", "####.", "....#", "#...#", ".###.")
+    if cEq(ch, '6'):
+        return rowPattern(row, ".###.", "#...#", "#....", "####.", "#...#", "#...#", ".###.")
+    if cEq(ch, '7'):
+        return rowPattern(row, "#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#...")
+    if cEq(ch, '8'):
+        return rowPattern(row, ".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###.")
+    if cEq(ch, '9'):
+        return rowPattern(row, ".###.", "#...#", "#...#", ".####", "....#", "#...#", ".###.")
+    if cEq(ch, '-'):
+        return rowPattern(row, ".....", ".....", ".....", "#####", ".....", ".....", ".....")
+    if cEq(ch, '_'):
+        return rowPattern(row, ".....", ".....", ".....", ".....", ".....", ".....", "#####")
+    if cEq(ch, ':'):
+        return rowPattern(row, ".....", "..##.", "..##.", ".....", "..##.", "..##.", ".....")
+    if cEq(ch, '.'):
+        return rowPattern(row, ".....", ".....", ".....", ".....", ".....", "..##.", "..##.")
+    if cEq(ch, ','):
+        return rowPattern(row, ".....", ".....", ".....", ".....", "..##.", "..##.", ".##..")
+    if cEq(ch, '/'):
+        return rowPattern(row, "....#", "...#.", "...#.", "..#..", ".#...", ".#...", "#....")
+    if cEq(ch, '#'):
+        return rowPattern(row, ".#.#.", "#####", ".#.#.", ".#.#.", "#####", ".#.#.", ".#.#.")
+    if cEq(ch, '+'):
+        return rowPattern(row, ".....", "..#..", "..#..", "#####", "..#..", "..#..", ".....")
+    if cEq(ch, '='):
+        return rowPattern(row, ".....", "#####", ".....", "#####", ".....", ".....", ".....")
+    if cEq(ch, '('):
+        return rowPattern(row, "...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#.")
+    if cEq(ch, ')'):
+        return rowPattern(row, ".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#...")
+    if cEq(ch, '!'):
+        return rowPattern(row, "..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#..")
+    if cEq(ch, '?'):
+        return rowPattern(row, ".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#..")
+    return rowPattern(row, "#####", "....#", "...#.", "..#..", ".#...", ".....", ".#...")
+
+fn scaleFromFont(fontSize: float): int32 =
+    if fontSize >= 22.0:
+        return int32(3)
+    if fontSize >= 14.0:
+        return int32(2)
+    return int32(1)
+
+fn writePixel(pixels: uint32*, width, height, strideBytes, x, y: int32, color: uint32) =
+    if pixels == nil:
+        return
+    if x < int32(0) || y < int32(0) || x >= width || y >= height:
+        return
+    let rowBase: void* = ptr_add(void*(pixels), int(y * strideBytes))
+    let p: uint32* = uint32*(ptr_add(rowBase, int(x * int32(4))))
+    *p = color
+
+fn fillBlock(pixels: uint32*, width, height, strideBytes, x, y, size: int32, color: uint32) =
+    if size <= int32(0):
+        return
+    var py: int32 = int32(0)
+    while py < size:
+        var px: int32 = int32(0)
+        while px < size:
+            writePixel(pixels, width, height, strideBytes, x + px, y + py, color)
+            px = px + int32(1)
+        py = py + int32(1)
+
+fn drawGlyph(pixels: uint32*, width, height, strideBytes, x, y, scale: int32, ch: char, color: uint32): bool =
+    var drew = false
+    var row: int32 = int32(0)
+    while row < int32(7):
+        let pattern = glyphPattern(ch, row)
+        var col: int32 = int32(0)
+        while col < int32(5):
+            if cEq(pattern[col], '#'):
+                drew = true
+                fillBlock(
+                    pixels,
+                    width,
+                    height,
+                    strideBytes,
+                    x + col * scale,
+                    y + row * scale,
+                    scale,
+                    color
+                )
+            col = col + int32(1)
+        row = row + int32(1)
+    return drew
+
+fn drawWideGlyph(pixels: uint32*, width, height, strideBytes, x, y, scale, codepoint: int32, color: uint32): bool =
+    var drew = false
+    var row: int32 = int32(0)
+    while row < int32(7):
+        var col: int32 = int32(0)
+        while col < int32(9):
+            var on = false
+            if row == int32(0) || row == int32(6) || col == int32(0) || col == int32(8):
+                on = true
+            elif row == int32(3) || col == int32(4):
+                on = true
+            else:
+                let bitIdx = (row * int32(9) + col) % int32(20)
+                on = ((codepoint >> bitIdx) & int32(1)) == int32(1)
+            if on:
+                drew = true
+                fillBlock(
+                    pixels,
+                    width,
+                    height,
+                    strideBytes,
+                    x + col * scale,
+                    y + row * scale,
+                    scale,
+                    color
+                )
+            col = col + int32(1)
+        row = row + int32(1)
+    return drew
+
+fn drawTextBitmap(
+    pixels: uint32*,
+    width, height, strideBytes, x, y, w, h: int32,
+    color: uint32,
+    fontSize: float,
+    text: str
+): bool =
+    if pixels == nil || safeLen(text) == int32(0):
+        return false
+    if width <= int32(0) || height <= int32(0):
+        return false
+    if w <= int32(0) || h <= int32(0):
+        return false
+    let scale = scaleFromFont(fontSize)
+    let glyphW = int32(5) * scale
+    let wideGlyphW = int32(9) * scale
+    let glyphH = int32(7) * scale
+    let advance = glyphW + scale
+    let wideAdvance = wideGlyphW + scale
+    if glyphW <= int32(0) || glyphH <= int32(0):
+        return false
+    var cursorX = x
+    var cursorY = y
+    var drew = false
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        var cp: int32 = int32(0)
+        var step: int32 = int32(1)
+        if ! utf8DecodeAt(text, idx, cp, step):
+            break
+        if cp == int32('\r'):
+            idx = idx + step
+            continue
+        if cp == int32('\n'):
+            cursorX = x
+            cursorY = cursorY + glyphH + scale
+            if cursorY + glyphH > y + h:
+                break
+            idx = idx + step
+            continue
+        let useWide = isLikelyCjk(cp)
+        let cellW = if useWide: wideGlyphW else: glyphW
+        let cellAdvance = if useWide: wideAdvance else: advance
+        if cursorX + cellW > x + w:
+            cursorX = x
+            cursorY = cursorY + glyphH + scale
+        if cursorY + glyphH > y + h:
+            break
+        if useWide:
+            if drawWideGlyph(pixels, width, height, strideBytes, cursorX, cursorY, scale, cp, color):
+                drew = true
+        else:
+            let ascii = if cp >= int32(0) && cp <= int32(127): char(cp) else: '?'
+            if drawGlyph(pixels, width, height, strideBytes, cursorX, cursorY, scale, ascii, color):
+                drew = true
+        cursorX = cursorX + cellAdvance
+        idx = idx + step
+    return drew

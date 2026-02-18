@@ -1,0 +1,11 @@
+type
+    R2cIrModule = ref
+        moduleId: str
+        sourcePath: str
+        strippedSource: str
+        jsxLowering: str
+        kind: str
+
+    R2cIrBundle = ref
+        entryModuleId: str
+        modules: R2cIrModule[]

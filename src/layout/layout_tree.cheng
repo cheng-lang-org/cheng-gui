@@ -1,0 +1,122 @@
+import cheng/gui/core/component
+import cheng/gui/platform/types_v1
+
+type
+    LayoutDirection = enum
+        ldVertical
+        ldHorizontal
+
+    LayoutConstraint =
+        minWidth: float
+        maxWidth: float
+        minHeight: float
+        maxHeight: float
+
+    LayoutTree = ref
+        root: component.Node
+        direction: LayoutDirection
+        dirtyCount: int
+
+fn defaultConstraint(): LayoutConstraint =
+    var constraint: LayoutConstraint
+    constraint.minWidth = 0.0
+    constraint.maxWidth = 1000000.0
+    constraint.minHeight = 0.0
+    constraint.maxHeight = 1000000.0
+    return constraint
+
+fn newLayoutTree(root: component.Node): LayoutTree =
+    var tree: LayoutTree
+    new(tree)
+    tree.root = root
+    tree.direction = ldVertical
+    tree.dirtyCount = 1
+    return tree
+
+fn markDirty(tree: LayoutTree) =
+    if tree == nil:
+        return
+    tree.dirtyCount = tree.dirtyCount + 1
+
+fn resolveWidth(rect: GuiRect, constraint: LayoutConstraint): float =
+    var width = rect.size.width
+    if width < constraint.minWidth:
+        width = constraint.minWidth
+    if width > constraint.maxWidth:
+        width = constraint.maxWidth
+    return width
+
+fn resolveHeight(rect: GuiRect, constraint: LayoutConstraint): float =
+    var height = rect.size.height
+    if height < constraint.minHeight:
+        height = constraint.minHeight
+    if height > constraint.maxHeight:
+        height = constraint.maxHeight
+    return height
+
+fn applyLeafDefaults(node: component.Node, width, height: float) =
+    if node == nil:
+        return
+    if node.frame.size.width <= 0.0:
+        node.frame.size.width = width
+    if node.frame.size.height <= 0.0:
+        if node.kind == component.nkText || node.kind == component.nkButton || node.kind == component.nkTextField:
+            node.frame.size.height = 32.0
+        elif node.kind == component.nkSpacer:
+            node.frame.size.height = 8.0
+        elif node.kind == component.nkAudioPlayer:
+            node.frame.size.height = 56.0
+        elif node.kind == component.nkVideoPlayer || node.kind == component.nkWebView || node.kind == component.nkPdfView:
+            node.frame.size.height = 260.0
+        else:
+            node.frame.size.height = height
+
+fn layoutChildrenVertical(node: component.Node, bounds: GuiRect, constraint: LayoutConstraint) =
+    if node == nil:
+        return
+    if len(node.children) == 0:
+        applyLeafDefaults(node, resolveWidth(bounds, constraint), resolveHeight(bounds, constraint))
+        return
+    let childCount = len(node.children)
+    let width = resolveWidth(bounds, constraint)
+    let totalHeight = resolveHeight(bounds, constraint)
+    let slotHeight = if childCount > 0: totalHeight / float(childCount) else: totalHeight
+    var cursorY = bounds.origin.y
+    for idx in 0..<childCount:
+        let child = node.children[idx]
+        if child != nil:
+            child.frame = makeRect(bounds.origin.x, cursorY, width, slotHeight)
+            layoutChildrenVertical(child, child.frame, constraint)
+        cursorY = cursorY + slotHeight
+
+fn layoutChildrenHorizontal(node: component.Node, bounds: GuiRect, constraint: LayoutConstraint) =
+    if node == nil:
+        return
+    if len(node.children) == 0:
+        applyLeafDefaults(node, resolveWidth(bounds, constraint), resolveHeight(bounds, constraint))
+        return
+    let childCount = len(node.children)
+    let height = resolveHeight(bounds, constraint)
+    let totalWidth = resolveWidth(bounds, constraint)
+    let slotWidth = if childCount > 0: totalWidth / float(childCount) else: totalWidth
+    var cursorX = bounds.origin.x
+    for idx in 0..<childCount:
+        let child = node.children[idx]
+        if child != nil:
+            child.frame = makeRect(cursorX, bounds.origin.y, slotWidth, height)
+            layoutChildrenHorizontal(child, child.frame, constraint)
+        cursorX = cursorX + slotWidth
+
+fn applyLayout(tree: LayoutTree, bounds: GuiRect) =
+    applyLayout(tree, bounds, defaultConstraint())
+
+fn applyLayout(tree: LayoutTree, bounds: GuiRect, constraint: LayoutConstraint) =
+    if tree == nil || tree.root == nil:
+        return
+    let rootNode = tree.root
+    rootNode.frame = bounds
+    if tree.direction == ldHorizontal:
+        layoutChildrenHorizontal(rootNode, bounds, constraint)
+    else:
+        layoutChildrenVertical(rootNode, bounds, constraint)
+    tree.dirtyCount = 0

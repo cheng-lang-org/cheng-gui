@@ -1,0 +1,266 @@
+import cheng/gui/core/component
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+
+type
+    PdfDocument = ref
+        engine: web.BrowserEngine
+        context: web.BrowserContext
+        page: web.BrowserPage
+        request: types.PdfOpenRequest
+        state: types.PdfSessionState
+        title: str
+        pageCount: int32
+        currentPage: int32
+        zoom: float
+        fitWidth: bool
+        lastRenderLabel: str
+        lastError: str
+
+fn appendPdfNode(items: var component.Node[], item: component.Node) =
+    let idx = len(items)
+    setLen(items, idx + 1)
+    items[idx] = item
+
+fn hasPageMarkerAt(text: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if offset + 11 > len(text):
+        return false
+    return text[offset] == '/' &&
+        text[offset + 1] == 'T' &&
+        text[offset + 2] == 'y' &&
+        text[offset + 3] == 'p' &&
+        text[offset + 4] == 'e' &&
+        text[offset + 5] == ' ' &&
+        text[offset + 6] == '/' &&
+        text[offset + 7] == 'P' &&
+        text[offset + 8] == 'a' &&
+        text[offset + 9] == 'g' &&
+        text[offset + 10] == 'e'
+
+fn countPages(bytes: str): int32 =
+    if len(bytes) == 0:
+        return int32(3)
+    var count: int32 = int32(0)
+    var idx = 0
+    while idx < len(bytes):
+        if hasPageMarkerAt(bytes, idx):
+            count = count + int32(1)
+            idx = idx + 11
+        else:
+            idx = idx + 1
+    if count <= int32(0):
+        count = int32(1)
+    return count
+
+fn clampPage(pageIndex: int32, pageCount: int32): int32 =
+    if pageCount <= int32(0):
+        return int32(0)
+    if pageIndex < int32(0):
+        return int32(0)
+    if pageIndex >= pageCount:
+        return pageCount - int32(1)
+    return pageIndex
+
+fn clampPdfFloat(value, lower, upper: float): float =
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+fn pdfHasPrefix(text, prefix: str): bool =
+    if len(prefix) == 0:
+        return true
+    if len(text) < len(prefix):
+        return false
+    return text[0..<len(prefix)] == prefix
+
+fn pdfIsNetworkPath(path: str): bool =
+    if pdfHasPrefix(path, "http://"):
+        return true
+    if pdfHasPrefix(path, "https://"):
+        return true
+    if pdfHasPrefix(path, "http3://"):
+        return true
+    if pdfHasPrefix(path, "h3://"):
+        return true
+    return false
+
+fn pdfMatchAt(text, pattern: str, offset: int): bool =
+    if offset < 0:
+        return false
+    if offset + len(pattern) > len(text):
+        return false
+    for idx in 0..<len(pattern):
+        if text[offset + idx] != pattern[idx]:
+            return false
+    return true
+
+fn pdfFindFrom(text, pattern: str, start: int): int =
+    if len(pattern) == 0:
+        return start
+    var startIdx = start
+    if startIdx < 0:
+        startIdx = 0
+    let stopExclusive = len(text) - len(pattern) + 1
+    if stopExclusive <= startIdx:
+        return -1
+    for idx in startIdx..<stopExclusive:
+        if pdfMatchAt(text, pattern, idx):
+            return idx
+    return -1
+
+fn openPdfInPage(page: web.BrowserPage, request: types.PdfOpenRequest): PdfDocument =
+    let normalized = types.normalizePdfOpenRequest(request)
+    var doc: PdfDocument
+    new(doc)
+    doc.engine = nil
+    doc.context = nil
+    doc.page = page
+    doc.request = normalized
+    doc.state = types.pssLoading
+    if len(normalized.path) > 0:
+        doc.title = normalized.path
+    else:
+        doc.title = "memory.pdf"
+    doc.pageCount = countPages(normalized.bytes)
+    doc.currentPage = int32(0)
+    doc.zoom = 1.0
+    doc.fitWidth = true
+    doc.lastRenderLabel = ""
+    doc.lastError = ""
+
+    if len(normalized.path) == 0 && len(normalized.bytes) == 0:
+        doc.state = types.pssError
+        doc.lastError = "missing-pdf-source"
+        return doc
+
+    if normalized.sourceKind == types.psPath && pdfIsNetworkPath(normalized.path):
+        if page != nil:
+            if ! web.navigate(page, normalized.path):
+                doc.state = types.pssError
+                doc.lastError = "network-pdf-open-failed"
+                return doc
+        doc.pageCount = int32(1)
+        doc.lastRenderLabel = "pdf-network-page-1"
+        doc.state = types.pssReady
+        return doc
+
+    doc.state = types.pssReady
+    renderPdfPage(doc, int32(0), 1.0)
+    if page != nil:
+        web.dispatchDomEvent(page, "set-title", "pdf", doc.title)
+    return doc
+
+fn openPdfDocument(request: types.PdfOpenRequest): PdfDocument =
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    let doc = openPdfInPage(page, request)
+    doc.engine = engine
+    doc.context = ctx
+    return doc
+
+fn closePdfDocument(doc: PdfDocument) =
+    if doc == nil:
+        return
+    if doc.engine != nil:
+        web.destroyPage(doc.page)
+        web.destroyContext(doc.context)
+        web.shutdownBrowserEngine(doc.engine)
+    doc.page = nil
+    doc.context = nil
+    doc.engine = nil
+    doc.state = types.pssClosed
+
+fn renderPdfPage(doc: PdfDocument, pageIndex: int32, zoom: float): bool =
+    if doc == nil || doc.state != types.pssReady:
+        return false
+    doc.currentPage = clampPage(pageIndex, doc.pageCount)
+    doc.zoom = clampPdfFloat(zoom, 0.25, 4.0)
+    if doc.currentPage == int32(0):
+        doc.lastRenderLabel = "pdf-page-1"
+    else:
+        doc.lastRenderLabel = "pdf-page"
+    if doc.page != nil:
+        web.dispatchDomEvent(doc.page, "append-html", "pdf", "<div>pdf</div>")
+    return true
+
+fn searchPdfText(doc: PdfDocument, query: str): int32 =
+    if doc == nil || len(query) == 0:
+        return int32(0)
+    var source = doc.request.bytes
+    if len(source) == 0:
+        source = doc.request.path
+    var count: int32 = int32(0)
+    var start = 0
+    while start < len(source):
+        let idx = pdfFindFrom(source, query, start)
+        if idx < 0:
+            break
+        count = count + int32(1)
+        start = idx + len(query)
+    return count
+
+fn extractPdfMetadata(doc: PdfDocument): str =
+    if doc == nil:
+        return ""
+    if len(doc.title) == 0:
+        return "pdf"
+    return "pdf:" + doc.title
+
+fn printPdf(doc: PdfDocument, outputPath: str): bool =
+    if doc == nil || doc.state != types.pssReady:
+        return false
+    return len(outputPath) > 0
+
+fn pollPdfDocument(doc: PdfDocument) =
+    if doc == nil:
+        return
+    if doc.state == types.pssLoading:
+        doc.state = types.pssReady
+    if doc.state == types.pssReady:
+        if len(doc.lastRenderLabel) == 0:
+            renderPdfPage(doc, doc.currentPage, doc.zoom)
+
+fn setPdfRenderOptions(doc: PdfDocument, optionsInput: types.PdfRenderOptions) =
+    if doc == nil:
+        return
+    let options = types.normalizePdfRenderOptions(optionsInput)
+    doc.fitWidth = options.fitWidth
+    renderPdfPage(doc, options.pageIndex, options.zoom)
+
+fn isPdfReady(doc: PdfDocument): bool =
+    if doc == nil:
+        return false
+    return doc.state == types.pssReady
+
+fn buildPdfLabel(doc: PdfDocument): str =
+    if doc == nil:
+        return "PDF"
+    if doc.state == types.pssLoading:
+        return "Loading PDF"
+    if doc.state == types.pssError:
+        return "PDF error"
+    if len(doc.title) > 0:
+        return doc.title
+    return "PDF Document"
+
+fn pdfViewNode(ctx: component.UiContext, key: str, doc: PdfDocument): component.Node =
+    let node = component.newNode(ctx, component.nkPdfView, key)
+    node.focusable = true
+    node.text = buildPdfLabel(doc)
+    if doc == nil:
+        return node
+
+    var children: component.Node[]
+    if len(doc.lastRenderLabel) > 0:
+        let summary = component.newNode(ctx, component.nkText, key + ":page")
+        summary.text = doc.lastRenderLabel
+        summary.name = "page"
+        summary.focusable = false
+        appendPdfNode(children, summary)
+    component.setChildren(node, children)
+    return node

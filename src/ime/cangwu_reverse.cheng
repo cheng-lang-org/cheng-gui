@@ -1,0 +1,126 @@
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/cangwu_rules
+
+fn cwReverseCandidatesByKey(engine: CwEngine, mode: str, key: str): CwCandidate[] =
+    var out: CwCandidate[]
+    if ! engine.ready || len(key) == 0:
+        return out
+    let mapKey = mode + ":" + key
+    var reverseIndex = engine.reverseIndex
+    var found = false
+    let ids = cwIntSeqMapGet(reverseIndex, mapKey, found)
+    if ! found:
+        return out
+    for idx in 0..<len(ids):
+        let id = ids[idx]
+        if id < 0 || id >= len(engine.assets.reverse):
+            continue
+        let item = engine.assets.reverse[id]
+        var cand: CwCandidate
+        cand.text = item.text
+        cand.code = item.code
+        cand.canonical = item.canonical
+        cand.structKind = item.structKind
+        cand.freq = item.freq
+        cand.userFreq = 0
+        cand.source = csrcSingle
+        cand.matchKind = 2
+        cand.score = item.freq
+        cand.pinyin = item.pinyin
+        add(out, cand)
+    return out
+
+fn cwSortReverse(items: var CwCandidate[]) =
+    if len(items) <= 1:
+        return
+    var i: int32 = 1
+    while i < len(items):
+        let pivot = items[i]
+        var j = i - 1
+        while j >= 0 && (items[j].freq < pivot.freq || (items[j].freq == pivot.freq && items[j].text > pivot.text)):
+            items[j + 1] = items[j]
+            j = j - 1
+        items[j + 1] = pivot
+        i = i + 1
+
+fn cwDedup(items: CwCandidate[]): CwCandidate[] =
+    var out: CwCandidate[]
+    var seen = cwIntMapInit(len(items) * 2 + 8)
+    for idx in 0..<len(items):
+        let key = items[idx].text + "|" + items[idx].code
+        if ! cwIntMapHas(seen, key):
+            cwIntMapPut(seen, key, 1)
+            add(out, items[idx])
+    return out
+
+fn cwReversePaginate(items: CwCandidate[], page: int32, pageSize: int32): CwReverseResult =
+    let safePage = if page < 0: int32(0) else: page
+    let safePageSize = if pageSize <= 0: int32(9) else: pageSize
+    var result = cwDefaultReverseResult(safePage, safePageSize)
+    result.total = len(items)
+    let start = safePage * safePageSize
+    var stop = start + safePageSize
+    if stop > len(items):
+        stop = len(items)
+    if start < len(items):
+        for idx in start..<stop:
+            add(result.items, items[idx])
+    result.hasMore = stop < len(items)
+    return result
+
+fn cwReverse(engine: CwEngine, payload: str, page: int32, pageSize: int32): CwReverseResult =
+    if ! engine.ready:
+        return cwDefaultReverseResult(page, pageSize)
+    let clean = cwNormalizeReverseInput(payload)
+    if len(clean) == 0:
+        return cwDefaultReverseResult(page, pageSize)
+    var query = clean
+    if query[0] == 'z' || query[0] == 'Z':
+        if len(query) == 1:
+            return cwDefaultReverseResult(page, pageSize)
+        query = cwSliceFrom(query, 1)
+    if len(query) == 0:
+        return cwDefaultReverseResult(page, pageSize)
+
+    var items: CwCandidate[]
+    var hasHan = false
+    for idx in 0..<len(query):
+        let b = int32(query[idx])
+        if b < 0 || b > 127:
+            hasHan = true
+            break
+    if hasHan:
+        let direct = cwReverseCandidatesByKey(engine, "char", query)
+        for idx in 0..<len(direct):
+            add(items, direct[idx])
+    else:
+        let direct = cwReverseCandidatesByKey(engine, "py", query)
+        for idx in 0..<len(direct):
+            add(items, direct[idx])
+        if len(query) > 1:
+            # 同时支持 lü -> lv 的等价别名
+            var alt = ""
+            for idx in 0..<len(query):
+                let ch = query[idx]
+                if ch == 'u':
+                    alt = alt + "v"
+                else:
+                    alt = alt + charToStr(ch)
+            if alt != query:
+                let alias = cwReverseCandidatesByKey(engine, "py", alt)
+                for idx in 0..<len(alias):
+                    add(items, alias[idx])
+            alt = ""
+            for idx in 0..<len(query):
+                let ch = query[idx]
+                if ch == 'v':
+                    alt = alt + "u"
+                else:
+                    alt = alt + charToStr(ch)
+            if alt != query:
+                let alias2 = cwReverseCandidatesByKey(engine, "py", alt)
+                for idx in 0..<len(alias2):
+                    add(items, alias2[idx])
+    items = cwDedup(items)
+    cwSortReverse(items)
+    return cwReversePaginate(items, page, pageSize)

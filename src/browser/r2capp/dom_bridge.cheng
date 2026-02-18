@@ -1,0 +1,23 @@
+import cheng/gui/browser/engine/dom/model as domModel
+import cheng/gui/browser/r2capp/react_compat
+
+fn appendDomChildren(parent: domModel.DomNode, nodes: react_compat.ReactNode[]) =
+    if parent == nil:
+        return
+    for idx in 0..<len(nodes):
+        let node = nodes[idx]
+        if node == nil:
+            continue
+        if node.kind == "text":
+            domModel.appendChild(parent, domModel.newTextNode(node.text))
+            continue
+        let tag = if len(node.tag) > 0: node.tag else: "div"
+        let child = domModel.appendChild(parent, domModel.newElementNode(tag))
+        appendDomChildren(child, node.children)
+
+fn toDocument(url, title: str, roots: react_compat.ReactNode[]): domModel.DomDocument =
+    let doc = domModel.newDocument(url, title)
+    let html = domModel.appendChild(doc.root, domModel.newElementNode("html"))
+    let body = domModel.appendChild(html, domModel.newElementNode("body"))
+    appendDomChildren(body, roots)
+    return doc
