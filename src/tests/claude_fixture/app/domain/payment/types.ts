@@ -1,4 +1,4 @@
-export type TradeScene = 'CONTENT_PAYWALL' | 'ECOM_PRODUCT' | 'C2C_FIAT' | 'APP_ITEM';
+export type TradeScene = 'CONTENT_PAYWALL' | 'ECOM_PRODUCT' | 'C2C_FIAT' | 'APP_ITEM' | 'AD_ITEM';
 
 export type PaymentRail =
   | 'BYOP_WECHAT'

@@ -1,8 +1,8 @@
-import { FileText, ShoppingBag, Radio, AppWindow, UtensilsCrossed, Car, Briefcase, UserPlus, Home, Tag, Recycle, Rocket } from 'lucide-react';
+import { FileText, ShoppingBag, Radio, AppWindow, UtensilsCrossed, Car, Briefcase, UserPlus, Home, Tag, Recycle, Rocket, Megaphone } from 'lucide-react';
 import { useLocale } from '../i18n/LocaleContext';
 import type { Translations } from '../i18n/translations';
 
-export type PublishType = 'content' | 'product' | 'live' | 'app' | 'food' | 'ride' | 'job' | 'hire' | 'rent' | 'sell' | 'secondhand' | 'crowdfunding';
+export type PublishType = 'content' | 'product' | 'live' | 'app' | 'food' | 'ride' | 'job' | 'hire' | 'rent' | 'sell' | 'secondhand' | 'crowdfunding' | 'ad';
 
 interface PublishTypeSelectorProps {
     onSelect: (type: PublishType) => void;
@@ -22,6 +22,7 @@ export const publishTypes: { type: PublishType; labelKey: keyof Translations; fa
     { type: 'sell', labelKey: 'publish_sell', fallbackLabel: '出售', icon: Tag, from: 'from-rose-500', to: 'to-rose-600', border: 'hover:border-rose-300' },
     { type: 'secondhand', labelKey: 'publish_secondhand', fallbackLabel: '二手', icon: Recycle, from: 'from-lime-500', to: 'to-lime-600', border: 'hover:border-lime-300' },
     { type: 'crowdfunding', labelKey: 'publish_crowdfunding', fallbackLabel: '众筹', icon: Rocket, from: 'from-cyan-500', to: 'to-cyan-600', border: 'hover:border-cyan-300' },
+    { type: 'ad', labelKey: 'publish_ad', fallbackLabel: '广告', icon: Megaphone, from: 'from-yellow-400', to: 'to-yellow-500', border: 'hover:border-yellow-300' },
 ];
 
 

@@ -8,10 +8,17 @@ interface GroupConsumedState {
   [assetCode: string]: number;
 }
 
+interface SessionConsumedState {
+  [id: string]: number;
+}
+
 interface DailyLimitState {
-  version: 1;
+  version: 1 | 2;
   dayKeyByGroup: Record<PolicyGroupId, string>;
   consumedByGroup: Record<PolicyGroupId, GroupConsumedState>;
+  sessionDayKey: string;
+  sessionConsumedById: SessionConsumedState;
+  walletConsumedById: SessionConsumedState;
 }
 
 export interface DailyLimitCheckInput {
@@ -29,13 +36,45 @@ export interface DailyLimitCheckResult {
   reason?: 'maker_daily_limit_exceeded';
 }
 
+export interface SessionExposureInput {
+  sessionId: string;
+  walletId: string;
+  amountRWAD: number;
+  maxAmountRWAD?: number;
+  nowMs?: number;
+}
+
+export interface SessionExposureResult {
+  ok: boolean;
+  consumed: number;
+  remaining: number;
+  reason?: 'session_daily_limit_exceeded';
+}
+
 function nowMs(): number {
   return Date.now();
 }
 
+function getLocalStorageSafe(): { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void } | null {
+  if (typeof localStorage === 'undefined' || !localStorage) {
+    return null;
+  }
+  const storage = localStorage as unknown as {
+    getItem?: (key: string) => string | null;
+    setItem?: (key: string, value: string) => void;
+  };
+  if (typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function') {
+    return null;
+  }
+  return {
+    getItem: storage.getItem.bind(localStorage),
+    setItem: storage.setItem.bind(localStorage),
+  };
+}
+
 function emptyState(): DailyLimitState {
   return {
-    version: 1,
+    version: 2,
     dayKeyByGroup: {
       CN: '',
       INTL: '',
@@ -44,6 +83,9 @@ function emptyState(): DailyLimitState {
       CN: {},
       INTL: {},
     },
+    sessionDayKey: '',
+    sessionConsumedById: {},
+    walletConsumedById: {},
   };
 }
 
@@ -70,8 +112,8 @@ function sanitizeState(raw: unknown): DailyLimitState {
   }
   const input = raw as Record<string, unknown>;
   const state = emptyState();
-  if (input.version === 1) {
-    state.version = 1;
+  if (input.version === 1 || input.version === 2) {
+    state.version = input.version;
   }
   const dayKeyByGroup = input.dayKeyByGroup as Record<string, unknown> | undefined;
   if (dayKeyByGroup) {
@@ -100,14 +142,40 @@ function sanitizeState(raw: unknown): DailyLimitState {
       state.consumedByGroup[groupId] = next;
     }
   }
+  if (typeof input.sessionDayKey === 'string') {
+    state.sessionDayKey = input.sessionDayKey;
+  }
+  const sessionConsumedById = input.sessionConsumedById as Record<string, unknown> | undefined;
+  if (sessionConsumedById) {
+    const next: SessionConsumedState = {};
+    for (const [id, consumed] of Object.entries(sessionConsumedById)) {
+      const parsed = typeof consumed === 'number' ? consumed : Number(consumed);
+      if (id.trim().length > 0 && Number.isFinite(parsed) && parsed >= 0) {
+        next[id.trim()] = Number(parsed.toFixed(8));
+      }
+    }
+    state.sessionConsumedById = next;
+  }
+  const walletConsumedById = input.walletConsumedById as Record<string, unknown> | undefined;
+  if (walletConsumedById) {
+    const next: SessionConsumedState = {};
+    for (const [id, consumed] of Object.entries(walletConsumedById)) {
+      const parsed = typeof consumed === 'number' ? consumed : Number(consumed);
+      if (id.trim().length > 0 && Number.isFinite(parsed) && parsed >= 0) {
+        next[id.trim()] = Number(parsed.toFixed(8));
+      }
+    }
+    state.walletConsumedById = next;
+  }
   return state;
 }
 
 function readState(): DailyLimitState {
-  if (typeof localStorage === 'undefined') {
+  const storage = getLocalStorageSafe();
+  if (!storage) {
     return emptyState();
   }
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = storage.getItem(STORAGE_KEY);
   if (!raw) {
     return emptyState();
   }
@@ -119,10 +187,11 @@ function readState(): DailyLimitState {
 }
 
 function writeState(state: DailyLimitState): void {
-  if (typeof localStorage === 'undefined') {
+  const storage = getLocalStorageSafe();
+  if (!storage) {
     return;
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  storage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 function ensureGroupDay(state: DailyLimitState, policyGroupId: PolicyGroupId, tsMs: number): DailyLimitState {
@@ -134,6 +203,23 @@ function ensureGroupDay(state: DailyLimitState, policyGroupId: PolicyGroupId, ts
   const next = sanitizeState(state);
   next.dayKeyByGroup[policyGroupId] = dayKey;
   next.consumedByGroup[policyGroupId] = {};
+  return next;
+}
+
+function resolveSessionDayKey(tsMs: number): string {
+  return formatDayKey(tsMs, 'UTC');
+}
+
+function ensureSessionDay(state: DailyLimitState, tsMs: number): DailyLimitState {
+  const dayKey = resolveSessionDayKey(tsMs);
+  if (state.sessionDayKey === dayKey) {
+    return state;
+  }
+  const next = sanitizeState(state);
+  next.version = 2;
+  next.sessionDayKey = dayKey;
+  next.sessionConsumedById = {};
+  next.walletConsumedById = {};
   return next;
 }
 
@@ -214,3 +300,91 @@ export function clearDailyLimitState(): void {
   localStorage.removeItem(STORAGE_KEY);
 }
 
+function normalizeId(value: string): string {
+  return value.trim();
+}
+
+function normalizeAmount(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Number(value.toFixed(8));
+}
+
+function readConsumed(state: DailyLimitState, key: string, type: 'session' | 'wallet'): number {
+  if (!key) {
+    return 0;
+  }
+  if (type === 'session') {
+    return state.sessionConsumedById[key] ?? 0;
+  }
+  return state.walletConsumedById[key] ?? 0;
+}
+
+export function checkSessionExposureLimit(input: SessionExposureInput): SessionExposureResult {
+  const sessionId = normalizeId(input.sessionId);
+  const walletId = normalizeId(input.walletId);
+  const amountRWAD = normalizeAmount(input.amountRWAD);
+  const maxAmountRWAD = normalizeAmount(input.maxAmountRWAD ?? 500);
+  if (!sessionId || !walletId || amountRWAD <= 0 || maxAmountRWAD <= 0) {
+    return {
+      ok: false,
+      consumed: 0,
+      remaining: 0,
+      reason: 'session_daily_limit_exceeded',
+    };
+  }
+  const ts = input.nowMs ?? nowMs();
+  const state = ensureSessionDay(readState(), ts);
+  const consumedSession = readConsumed(state, sessionId, 'session');
+  const consumedWallet = readConsumed(state, walletId, 'wallet');
+  const consumed = Math.max(consumedSession, consumedWallet);
+  const remaining = Math.max(0, Number((maxAmountRWAD - consumed).toFixed(8)));
+  if (remaining + 1e-12 < amountRWAD) {
+    return {
+      ok: false,
+      consumed,
+      remaining,
+      reason: 'session_daily_limit_exceeded',
+    };
+  }
+  return { ok: true, consumed, remaining };
+}
+
+export function consumeSessionExposureLimit(input: SessionExposureInput): SessionExposureResult {
+  const check = checkSessionExposureLimit(input);
+  if (!check.ok) {
+    return check;
+  }
+  const sessionId = normalizeId(input.sessionId);
+  const walletId = normalizeId(input.walletId);
+  const amountRWAD = normalizeAmount(input.amountRWAD);
+  const maxAmountRWAD = normalizeAmount(input.maxAmountRWAD ?? 500);
+  const ts = input.nowMs ?? nowMs();
+  const state = ensureSessionDay(readState(), ts);
+  const nextSession = normalizeAmount(readConsumed(state, sessionId, 'session') + amountRWAD);
+  const nextWallet = normalizeAmount(readConsumed(state, walletId, 'wallet') + amountRWAD);
+  state.version = 2;
+  state.sessionConsumedById[sessionId] = nextSession;
+  state.walletConsumedById[walletId] = nextWallet;
+  writeState(state);
+  const consumed = Math.max(nextSession, nextWallet);
+  return {
+    ok: true,
+    consumed,
+    remaining: Math.max(0, Number((maxAmountRWAD - consumed).toFixed(8))),
+  };
+}
+
+export function getSessionExposureConsumed(sessionId: string, walletId: string, nowOverrideMs?: number): number {
+  const normalizedSessionId = normalizeId(sessionId);
+  const normalizedWalletId = normalizeId(walletId);
+  if (!normalizedSessionId || !normalizedWalletId) {
+    return 0;
+  }
+  const state = ensureSessionDay(readState(), nowOverrideMs ?? nowMs());
+  return Math.max(
+    readConsumed(state, normalizedSessionId, 'session'),
+    readConsumed(state, normalizedWalletId, 'wallet'),
+  );
+}

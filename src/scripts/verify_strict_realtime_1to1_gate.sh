@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$ROOT/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
 marker_dir="$ROOT/build/strict_realtime_gate"
 marker_path="$marker_dir/claude_strict_gate.ok.json"
@@ -20,45 +20,49 @@ strict_export() {
   export "$name=$required"
 }
 
-strict_export CHENG_R2C_LEGACY_UNIMAKER 0
-strict_export CHENG_R2C_SKIP_COMPILER_RUN 0
-strict_export CHENG_R2C_TRY_COMPILER_FIRST 1
-strict_export CHENG_R2C_REUSE_COMPILER_BIN 0
-strict_export CHENG_R2C_REUSE_RUNTIME_BINS 0
-strict_export CHENG_R2C_REBUILD_DESKTOP 1
-strict_export CHENG_R2C_USE_PRECOMPUTED_BATCH 0
-strict_export CHENG_R2C_BATCH_SINGLE_RUN 1
-strict_export CHENG_R2C_FULLROUTE_CONSISTENCY_RUNS 3
-strict_export CHENG_R2C_FULLROUTE_BLESS 0
-strict_export CHENG_R2C_TARGET_MATRIX macos
-strict_export CHENG_R2C_MAX_SEMANTIC_NODES 1600
-strict_export CHENG_R2C_REAL_PROJECT /Users/lbcheng/UniMaker/ClaudeDesign
-strict_export CHENG_R2C_REAL_ENTRY /app/main.tsx
-strict_export CHENG_R2C_REAL_SKIP_DESKTOP_SMOKE 1
-strict_export CHENG_R2C_REAL_SKIP_RUNNER_SMOKE 1
-strict_export CHENG_R2C_RUNTIME_FRONTEND stage1
-strict_export CHENG_R2C_DESKTOP_FRONTEND auto
-strict_export CHENG_R2C_RUNTIME_TEXT_SOURCE project
-strict_export CHENG_R2C_RUNTIME_ROUTE_TITLE_SOURCE project
+strict_export R2C_LEGACY_UNIMAKER 0
+strict_export R2C_SKIP_COMPILER_RUN 0
+strict_export R2C_TRY_COMPILER_FIRST 1
+strict_export R2C_REUSE_COMPILER_BIN 0
+strict_export R2C_REUSE_RUNTIME_BINS 1
+strict_export R2C_REBUILD_DESKTOP 0
+strict_export R2C_FORCE_DESKTOP_REBUILD 0
+strict_export R2C_STRICT_ALLOW_RUNTIME_BIN_REUSE 1
+strict_export R2C_USE_PRECOMPUTED_BATCH 0
+strict_export R2C_BATCH_SINGLE_RUN 1
+strict_export R2C_FULLROUTE_CONSISTENCY_RUNS 3
+strict_export R2C_FULLROUTE_BLESS 0
+strict_export R2C_TARGET_MATRIX macos
+strict_export R2C_MAX_SEMANTIC_NODES 4000
+strict_export R2C_REAL_PROJECT /Users/lbcheng/UniMaker/ClaudeDesign
+strict_export R2C_REAL_ENTRY /app/main.tsx
+strict_export R2C_REAL_SKIP_DESKTOP_SMOKE 1
+strict_export R2C_REAL_SKIP_RUNNER_SMOKE 1
+strict_export R2C_RUNTIME_FRONTEND stage1
+strict_export R2C_DESKTOP_FRONTEND auto
+strict_export R2C_RUNTIME_TEXT_SOURCE project
+strict_export R2C_RUNTIME_ROUTE_TITLE_SOURCE project
 
-if [ -z "${CHENG_R2C_DESKTOP_DRIVER:-}" ]; then
-  if [ -x "/Users/lbcheng/cheng-lang/dist/releases/2026-02-06T16_08_31Z_a4d11ef/cheng" ]; then
-    export CHENG_R2C_DESKTOP_DRIVER="/Users/lbcheng/cheng-lang/dist/releases/2026-02-06T16_08_31Z_a4d11ef/cheng"
+if [ -z "${R2C_DESKTOP_DRIVER:-}" ]; then
+  if [ -n "${BACKEND_DRIVER:-}" ] && [ -x "${BACKEND_DRIVER}" ]; then
+    export R2C_DESKTOP_DRIVER="${BACKEND_DRIVER}"
   elif [ -x "/Users/lbcheng/cheng-lang/dist/releases/current/cheng" ]; then
-    export CHENG_R2C_DESKTOP_DRIVER="/Users/lbcheng/cheng-lang/dist/releases/current/cheng"
+    export R2C_DESKTOP_DRIVER="/Users/lbcheng/cheng-lang/dist/releases/current/cheng"
   elif [ -x "/Users/lbcheng/cheng-lang/dist/releases/2026-02-12T11_25_54Z_2e8781b/cheng" ]; then
-    export CHENG_R2C_DESKTOP_DRIVER="/Users/lbcheng/cheng-lang/dist/releases/2026-02-12T11_25_54Z_2e8781b/cheng"
+    export R2C_DESKTOP_DRIVER="/Users/lbcheng/cheng-lang/dist/releases/2026-02-12T11_25_54Z_2e8781b/cheng"
+  elif [ -x "/Users/lbcheng/cheng-lang/dist/releases/2026-02-06T16_08_31Z_a4d11ef/cheng" ]; then
+    export R2C_DESKTOP_DRIVER="/Users/lbcheng/cheng-lang/dist/releases/2026-02-06T16_08_31Z_a4d11ef/cheng"
   fi
 fi
 
-real_project="${CHENG_R2C_REAL_PROJECT}"
-real_entry="${CHENG_R2C_REAL_ENTRY}"
+real_project="${R2C_REAL_PROJECT}"
+real_entry="${R2C_REAL_ENTRY}"
 if [ ! -d "$real_project" ]; then
   echo "[verify-strict-realtime-1to1-gate] missing project: $real_project" >&2
   exit 1
 fi
 
-export CHENG_STRICT_GATE_CONTEXT=1
+export STRICT_GATE_CONTEXT=1
 
 status=1
 trap 'if [ "$status" != "0" ]; then rm -f "'"$marker_path"'"; fi' EXIT
@@ -194,18 +198,18 @@ if not golden_items:
     raise SystemExit("missing visual golden files")
 golden_hash_manifest = hashlib.sha256("\n".join(golden_items).encode("utf-8")).hexdigest()
 strict_flags = {
-    "CHENG_R2C_LEGACY_UNIMAKER": os.environ.get("CHENG_R2C_LEGACY_UNIMAKER", ""),
-    "CHENG_R2C_SKIP_COMPILER_RUN": os.environ.get("CHENG_R2C_SKIP_COMPILER_RUN", ""),
-    "CHENG_R2C_TRY_COMPILER_FIRST": os.environ.get("CHENG_R2C_TRY_COMPILER_FIRST", ""),
-    "CHENG_R2C_REUSE_COMPILER_BIN": os.environ.get("CHENG_R2C_REUSE_COMPILER_BIN", ""),
-    "CHENG_R2C_REUSE_RUNTIME_BINS": os.environ.get("CHENG_R2C_REUSE_RUNTIME_BINS", ""),
-    "CHENG_R2C_REBUILD_DESKTOP": os.environ.get("CHENG_R2C_REBUILD_DESKTOP", ""),
-    "CHENG_R2C_USE_PRECOMPUTED_BATCH": os.environ.get("CHENG_R2C_USE_PRECOMPUTED_BATCH", ""),
-    "CHENG_R2C_BATCH_SINGLE_RUN": os.environ.get("CHENG_R2C_BATCH_SINGLE_RUN", ""),
-    "CHENG_R2C_FULLROUTE_CONSISTENCY_RUNS": os.environ.get("CHENG_R2C_FULLROUTE_CONSISTENCY_RUNS", ""),
-    "CHENG_R2C_FULLROUTE_BLESS": os.environ.get("CHENG_R2C_FULLROUTE_BLESS", ""),
-    "CHENG_R2C_RUNTIME_TEXT_SOURCE": os.environ.get("CHENG_R2C_RUNTIME_TEXT_SOURCE", ""),
-    "CHENG_R2C_RUNTIME_ROUTE_TITLE_SOURCE": os.environ.get("CHENG_R2C_RUNTIME_ROUTE_TITLE_SOURCE", ""),
+    "R2C_LEGACY_UNIMAKER": os.environ.get("R2C_LEGACY_UNIMAKER", ""),
+    "R2C_SKIP_COMPILER_RUN": os.environ.get("R2C_SKIP_COMPILER_RUN", ""),
+    "R2C_TRY_COMPILER_FIRST": os.environ.get("R2C_TRY_COMPILER_FIRST", ""),
+    "R2C_REUSE_COMPILER_BIN": os.environ.get("R2C_REUSE_COMPILER_BIN", ""),
+    "R2C_REUSE_RUNTIME_BINS": os.environ.get("R2C_REUSE_RUNTIME_BINS", ""),
+    "R2C_REBUILD_DESKTOP": os.environ.get("R2C_REBUILD_DESKTOP", ""),
+    "R2C_USE_PRECOMPUTED_BATCH": os.environ.get("R2C_USE_PRECOMPUTED_BATCH", ""),
+    "R2C_BATCH_SINGLE_RUN": os.environ.get("R2C_BATCH_SINGLE_RUN", ""),
+    "R2C_FULLROUTE_CONSISTENCY_RUNS": os.environ.get("R2C_FULLROUTE_CONSISTENCY_RUNS", ""),
+    "R2C_FULLROUTE_BLESS": os.environ.get("R2C_FULLROUTE_BLESS", ""),
+    "R2C_RUNTIME_TEXT_SOURCE": os.environ.get("R2C_RUNTIME_TEXT_SOURCE", ""),
+    "R2C_RUNTIME_ROUTE_TITLE_SOURCE": os.environ.get("R2C_RUNTIME_ROUTE_TITLE_SOURCE", ""),
 }
 payload = {
     "git_head": git_head,

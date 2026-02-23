@@ -9,9 +9,13 @@ fn envIs(name: str, expected: str): bool =
     return os.getEnv(name) == expected
 
 fn strictRuntimeEnabled(): bool =
+    if envIs("R2C_STRICT_RUNTIME", "1"):
+        return true
     return envIs("CHENG_R2C_STRICT_RUNTIME", "1")
 
 fn nativeCjkDisabled(): bool =
+    if envIs("R2C_DISABLE_NATIVE_CJK_TEXT", "1"):
+        return true
     return envIs("CHENG_R2C_DISABLE_NATIVE_CJK_TEXT", "1")
 
 type
@@ -158,10 +162,83 @@ fn drawRect(buffer: PixelBuffer, rect: GuiRect, color: uint32) =
                 writePixel(buffer, x, y, color)
 
 fn drawTextFallback(buffer: PixelBuffer, rect: GuiRect, color: uint32) =
-    # Pure-Cheng fallback: text is represented as a thin accent band.
-    var band = rect
-    band.size.height = minFloat(rect.size.height, 4.0)
-    drawRect(buffer, band, color)
+    # Pure-Cheng fallback: paint a deterministic text band directly with int
+    # raster writes so it still appears when native text drawing is unavailable.
+    let x = floatToPositiveInt(rect.origin.x, 0)
+    let y = floatToPositiveInt(rect.origin.y, 0)
+    var w = floatToPositiveInt(rect.size.width, 0)
+    var h = floatToPositiveInt(rect.size.height, 0)
+    if h <= 0:
+        h = 16
+    if w <= 0:
+        w = 160
+    var bandH = h
+    if bandH > 4:
+        bandH = 4
+    if bandH < 1:
+        bandH = 1
+    fillRectI(buffer, x, y, w, bandH, color)
+
+fn drawTextFallbackI(buffer: PixelBuffer, x, y, w, h: int32, color: uint32) =
+    var bx = int(x)
+    var by = int(y)
+    var bw = int(w)
+    var bh = int(h)
+    if bx < 0:
+        bx = 0
+    if by < 0:
+        by = 0
+    if bw <= 0:
+        bw = 160
+    if bh <= 0:
+        bh = 16
+    var bandH = bh
+    if bandH > 4:
+        bandH = 4
+    if bandH < 1:
+        bandH = 1
+    fillRectI(buffer, bx, by, bw, bandH, color)
+
+fn drawBitmapTextChecked(buffer: PixelBuffer, x, y, w, h: int32, color: uint32, fontSize: float, text: str): bool =
+    let xi = int(x)
+    let yi = int(y)
+    var sx = xi
+    var sy = yi
+    if sx < 0:
+        sx = 0
+    if sy < 0:
+        sy = 0
+    if sx >= buffer.width:
+        sx = buffer.width - 1
+    if sy >= buffer.height:
+        sy = buffer.height - 1
+    var sx2 = sx + 1
+    if sx2 >= buffer.width:
+        sx2 = sx
+    var sy2 = sy + 1
+    if sy2 >= buffer.height:
+        sy2 = sy
+    let beforeA = readPixel(buffer, sx, sy)
+    let beforeB = readPixel(buffer, sx2, sy2)
+    if ! text_bitmap.drawTextBitmap(
+        buffer.ptr,
+        int32(buffer.width),
+        int32(buffer.height),
+        int32(buffer.strideBytes),
+        x,
+        y,
+        w,
+        h,
+        color,
+        fontSize,
+        text
+    ):
+        return false
+    let afterA = readPixel(buffer, sx, sy)
+    let afterB = readPixel(buffer, sx2, sy2)
+    if beforeA != afterA || beforeB != afterB:
+        return true
+    return false
 
 fn utf8Byte(ch: char): int32 =
     var code = int32(ch)
@@ -265,6 +342,29 @@ fn textHasCjk(text: str): bool =
         idx = idx + step
     return false
 
+fn textHasNonAscii(text: str): bool =
+    var idx = int32(0)
+    while idx < len(text):
+        if utf8Byte(text[idx]) >= int32(0x80):
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn strictBitmapText(text: str): str =
+    return text
+
+fn fontSizeToX100(fontSize: float): int32 =
+    if ! (fontSize >= 1.0):
+        return int32(1400)
+    var whole: int32 = int32(0)
+    var remain = fontSize
+    while remain >= 1.0 && whole < int32(200):
+        remain = remain - 1.0
+        whole = whole + int32(1)
+    if whole <= int32(0):
+        return int32(1400)
+    return whole * int32(100)
+
 fn drawLine(buffer: PixelBuffer, x0, y0, x1, y1: float, color: uint32, strokeWidth: float) =
     if buffer.ptr == nil:
         return
@@ -310,65 +410,109 @@ fn drawCommandRectI(buffer: PixelBuffer, cmd: drawir.DrawCommand, color: uint32)
 fn drawCommandLineI(buffer: PixelBuffer, cmd: drawir.DrawCommand) =
     drawLine(buffer, float(cmd.p0x), float(cmd.p0y), float(cmd.p1x), float(cmd.p1y), cmd.color, cmd.strokeWidth)
 
-fn drawCommandText(buffer: PixelBuffer, cmd: drawir.DrawCommand, color: uint32): bool =
-    var x = int(cmd.rectX)
-    var y = int(cmd.rectY)
-    var w = int(cmd.rectW)
-    var h = int(cmd.rectH)
-    if w <= 0 || h <= 0:
-        x = floatToPositiveInt(cmd.rect.origin.x, 0)
-        y = floatToPositiveInt(cmd.rect.origin.y, 0)
-        w = floatToPositiveInt(cmd.rect.size.width, 0)
-        h = floatToPositiveInt(cmd.rect.size.height, 0)
+fn drawTextFields(buffer: PixelBuffer,
+    rectX, rectY, rectW, rectH: int32,
+    p0x, p0y, p1x, p1y: int32,
+    rect: GuiRect,
+    text: str,
+    color: uint32,
+    fontSize: float): bool =
+    var x = int(rectX)
+    var y = int(rectY)
+    var w = int(rectW)
+    var h = int(rectH)
+    # Text commands may carry safer geometry in cmd.rect even when mirrored int
+    # fields degrade (backend regression path). Prefer rect geometry when present.
+    let rectXv = floatToPositiveInt(rect.origin.x, x)
+    let rectYv = floatToPositiveInt(rect.origin.y, y)
+    let rectWv = floatToPositiveInt(rect.size.width, w)
+    let rectHv = floatToPositiveInt(rect.size.height, h)
+    if rect.size.width >= 1.0 && rect.size.height >= 1.0:
+        x = rectXv
+        y = rectYv
+        w = rectWv
+        h = rectHv
+    elif w <= 0 || h <= 0:
+        x = rectXv
+        y = rectYv
+        w = rectWv
+        h = rectHv
+    # Secondary recovery path: text commands also mirror geometry to p0/p1.
+    if ((w <= 0 || h <= 0) || (x == 0 && y == 0)) && p1x > p0x && p1y > p0y:
+        x = int(p0x)
+        y = int(p0y)
+        w = int(p1x - p0x)
+        h = int(p1y - p0y)
     if h <= 0:
         h = 18
     if w <= 0:
         w = 160
-    let rect = makeRect(float(x), float(y), float(w), float(h))
-    let hasCjk = textHasCjk(cmd.text)
-    if hasCjk && nativeCjkDisabled():
-        if ! envIs("CHENG_GUI_DISABLE_BITMAP_TEXT", "1"):
-            if text_bitmap.drawTextBitmap(
+    let textRect = makeRect(float(x), float(y), float(w), float(h))
+    let needsNativeText = textHasCjk(text) || textHasNonAscii(text)
+    # Strict runtime: prefer deterministic bitmap glyphs and avoid unstable
+    # native text calls in batch/fullroute validation.
+    if strictRuntimeEnabled():
+        # CJK/non-ASCII must prefer native text in strict mode; bitmap path is
+        # ASCII-oriented and can degrade into '?' placeholders.
+        let strictNativeFirst = envIs("GUI_DISABLE_BITMAP_TEXT", "1") || needsNativeText
+        let strictFontX100 = fontSizeToX100(fontSize)
+        let strictRequireNative = needsNativeText
+        if strictNativeFirst:
+            if ! nativeCjkDisabled():
+                if text_native.DrawTextBgraI(
+                    buffer.ptr,
+                    buffer.width,
+                    buffer.height,
+                    buffer.strideBytes,
+                    int32(x),
+                    int32(y),
+                    int32(w),
+                    int32(h),
+                    color,
+                    strictFontX100,
+                    text
+                ):
+                    return true
+            if strictRequireNative:
+                return false
+            return false
+        if ! strictRequireNative:
+            if drawBitmapTextChecked(buffer, int32(x), int32(y), int32(w), int32(h), color, fontSize, strictBitmapText(text)):
+                return true
+        if ! nativeCjkDisabled():
+            if text_native.DrawTextBgraI(
                 buffer.ptr,
-                int32(buffer.width),
-                int32(buffer.height),
-                int32(buffer.strideBytes),
+                buffer.width,
+                buffer.height,
+                buffer.strideBytes,
                 int32(x),
                 int32(y),
                 int32(w),
                 int32(h),
                 color,
-                cmd.fontSize,
-                cmd.text
+                strictFontX100,
+                text
             ):
                 return true
-        drawTextFallback(buffer, rect, color)
-        return true
-    if hasCjk:
-        if text_native.DrawTextBgra(buffer.ptr, buffer.width, buffer.height, buffer.strideBytes, rect, color, cmd.fontSize, cmd.text):
-            return true
-        if strictRuntimeEnabled():
-            # Strict mode forbids CJK fallback-to-'?': keep a visible failure marker.
-            drawRect(buffer, rect, uint32(0xFFFFE4E6))
+        if strictRequireNative:
             return false
-    if ! envIs("CHENG_GUI_DISABLE_BITMAP_TEXT", "1"):
-        if text_bitmap.drawTextBitmap(
-            buffer.ptr,
-            int32(buffer.width),
-            int32(buffer.height),
-            int32(buffer.strideBytes),
-            int32(x),
-            int32(y),
-            int32(w),
-            int32(h),
-            color,
-            cmd.fontSize,
-            cmd.text
-        ):
-            return true
-    if text_native.DrawTextBgra(buffer.ptr, buffer.width, buffer.height, buffer.strideBytes, rect, color, cmd.fontSize, cmd.text):
+        drawTextFallbackI(buffer, int32(x), int32(y), int32(w), int32(h), color)
+        return false
+    if needsNativeText:
+        # Native CJK text path is currently unstable on strict fullroute runs.
+        # Keep strict execution deterministic and crash-free by forcing software
+        # fallback for non-ASCII labels.
+        if ! nativeCjkDisabled():
+            if text_native.DrawTextBgra(buffer.ptr, buffer.width, buffer.height, buffer.strideBytes, textRect, color, fontSize, text):
+                return true
+        drawTextFallback(buffer, textRect, color)
         return true
-    drawTextFallback(buffer, rect, color)
+    if ! envIs("GUI_DISABLE_BITMAP_TEXT", "1"):
+        if drawBitmapTextChecked(buffer, int32(x), int32(y), int32(w), int32(h), color, fontSize, text):
+            return true
+    if text_native.DrawTextBgra(buffer.ptr, buffer.width, buffer.height, buffer.strideBytes, textRect, color, fontSize, text):
+        return true
+    drawTextFallback(buffer, textRect, color)
     return true
 
 fn submitDrawList(buffer: PixelBuffer, list: drawir.DrawList): bool =
@@ -382,21 +526,127 @@ fn submitDrawList(buffer: PixelBuffer, list: drawir.DrawList): bool =
         elif cmd.kind == drawir.dcLine:
             drawCommandLineI(buffer, cmd)
         elif cmd.kind == drawir.dcText:
-            if ! drawCommandText(buffer, cmd, cmd.color):
-                ok = false
+            if strictRuntimeEnabled():
+                var tx = int(cmd.rectX)
+                var ty = int(cmd.rectY)
+                var tw = int(cmd.rectW)
+                var th = int(cmd.rectH)
+                if tw <= 0 || th <= 0:
+                    tx = floatToPositiveInt(cmd.rect.origin.x, tx)
+                    ty = floatToPositiveInt(cmd.rect.origin.y, ty)
+                    tw = floatToPositiveInt(cmd.rect.size.width, tw)
+                    th = floatToPositiveInt(cmd.rect.size.height, th)
+                if ((tw <= 0 || th <= 0) || (tx == 0 && ty == 0)) && cmd.p1x > cmd.p0x && cmd.p1y > cmd.p0y:
+                    tx = int(cmd.p0x)
+                    ty = int(cmd.p0y)
+                    tw = int(cmd.p1x - cmd.p0x)
+                    th = int(cmd.p1y - cmd.p0y)
+                if th <= 0:
+                    th = 16
+                if tw <= 0:
+                    tw = 160
+                let strictNativeFirst = envIs("GUI_DISABLE_BITMAP_TEXT", "1")
+                let strictFontX100 = fontSizeToX100(cmd.fontSize)
+                let strictNeedsNative = textHasCjk(cmd.text) || textHasNonAscii(cmd.text)
+                let strictNativeFirstEffective = strictNativeFirst || strictNeedsNative
+                var drew = false
+                if strictNativeFirstEffective:
+                    if ! nativeCjkDisabled():
+                        drew = text_native.DrawTextBgraI(
+                            buffer.ptr,
+                            buffer.width,
+                            buffer.height,
+                            buffer.strideBytes,
+                            int32(tx),
+                            int32(ty),
+                            int32(tw),
+                            int32(th),
+                            cmd.color,
+                            strictFontX100,
+                            cmd.text
+                        )
+                    if ! drew && strictNeedsNative:
+                        ok = false
+                else:
+                    drew = text_bitmap.drawTextBitmap(
+                        buffer.ptr,
+                        int32(buffer.width),
+                        int32(buffer.height),
+                        int32(buffer.strideBytes),
+                        int32(tx),
+                        int32(ty),
+                        int32(tw),
+                        int32(th),
+                        cmd.color,
+                        cmd.fontSize,
+                        strictBitmapText(cmd.text)
+                    )
+                    if ! drew && ! nativeCjkDisabled():
+                        drew = text_native.DrawTextBgraI(
+                            buffer.ptr,
+                            buffer.width,
+                            buffer.height,
+                            buffer.strideBytes,
+                            int32(tx),
+                            int32(ty),
+                            int32(tw),
+                            int32(th),
+                            cmd.color,
+                            strictFontX100,
+                            cmd.text
+                        )
+                if ! drew:
+                    if ! strictNeedsNative:
+                        drawTextFallbackI(buffer, int32(tx), int32(ty), int32(tw), int32(th), cmd.color)
+                    ok = false
+            else:
+                if ! drawTextFields(
+                    buffer,
+                    cmd.rectX, cmd.rectY, cmd.rectW, cmd.rectH,
+                    cmd.p0x, cmd.p0y, cmd.p1x, cmd.p1y,
+                    cmd.rect,
+                    cmd.text,
+                    cmd.color,
+                    cmd.fontSize
+                ):
+                    ok = false
         elif cmd.kind == drawir.dcImage:
             drawCommandRectI(buffer, cmd, uint32(0xFF2B303B))
         elif cmd.kind == drawir.dcWebSurface:
             drawCommandRectI(buffer, cmd, uint32(0xFF1D2733))
-            if ! drawCommandText(buffer, cmd, uint32(0xFFEAF0F6)):
+            if ! drawTextFields(
+                buffer,
+                cmd.rectX, cmd.rectY, cmd.rectW, cmd.rectH,
+                cmd.p0x, cmd.p0y, cmd.p1x, cmd.p1y,
+                cmd.rect,
+                cmd.text,
+                uint32(0xFFEAF0F6),
+                cmd.fontSize
+            ):
                 ok = false
         elif cmd.kind == drawir.dcPdfPage:
             drawCommandRectI(buffer, cmd, uint32(0xFF2A2430))
-            if ! drawCommandText(buffer, cmd, uint32(0xFFEADFFC)):
+            if ! drawTextFields(
+                buffer,
+                cmd.rectX, cmd.rectY, cmd.rectW, cmd.rectH,
+                cmd.p0x, cmd.p0y, cmd.p1x, cmd.p1y,
+                cmd.rect,
+                cmd.text,
+                uint32(0xFFEADFFC),
+                cmd.fontSize
+            ):
                 ok = false
         elif cmd.kind == drawir.dcMediaFrame:
             drawCommandRectI(buffer, cmd, uint32(0xFF1A2D24))
-            if ! drawCommandText(buffer, cmd, uint32(0xFFD5FFE9)):
+            if ! drawTextFields(
+                buffer,
+                cmd.rectX, cmd.rectY, cmd.rectW, cmd.rectH,
+                cmd.p0x, cmd.p0y, cmd.p1x, cmd.p1y,
+                cmd.rect,
+                cmd.text,
+                uint32(0xFFD5FFE9),
+                cmd.fontSize
+            ):
                 ok = false
     return ok
 
@@ -469,15 +719,15 @@ fn renderDrawList(surface: SurfaceHandle, info: SurfaceFrameInfo, list: drawir.D
     if buffer.ptr == nil:
         return
     clearBuffer(buffer, uint32(0xFF101216))
-    let beforeP0 = readPixel(buffer, 0, 0)
     let submitOk = submitDrawList(buffer, list)
-    let afterP0 = readPixel(buffer, 0, 0)
-    if submitOk && list != nil && len(list.commands) > 0 && afterP0 == beforeP0:
-        drawFallbackFromList(buffer, list)
     if strictRuntimeEnabled() && ! submitOk:
         sysplat.presentPixels(surface, buffer.ptr, buffer.width, buffer.height, buffer.strideBytes)
         freeBuffer(buffer)
         return
+    # Non-strict compatibility path: only synthesize fallback bands when
+    # command submission itself failed.
+    if ! strictRuntimeEnabled() && ! submitOk && list != nil && len(list.commands) > 0:
+        drawFallbackFromList(buffer, list)
     sysplat.presentPixels(surface, buffer.ptr, buffer.width, buffer.height, buffer.strideBytes)
     freeBuffer(buffer)
 

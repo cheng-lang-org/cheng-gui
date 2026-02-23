@@ -189,7 +189,7 @@ fn fetch(url: str): FetchResult =
     # Real network fetch via curl (pure Cheng through std/os.execCmdEx).
     # CI/runtime gates use a local fixture server; external sites are best-effort.
     var insecureFlag = ""
-    let allowInsecure = fetcherStrEq(fetcherEnv("CHENG_GUI_TEST_INSECURE_TLS"), "1")
+    let allowInsecure = fetcherStrEq(fetcherEnv("GUI_TEST_INSECURE_TLS"), "1")
     if allowInsecure && isLocalHttps(url):
         insecureFlag = " -k"
 
@@ -228,7 +228,7 @@ fn fetch(url: str): FetchResult =
         result.statusCode = fetcherParseInt32(rest)
         rest = ""
 
-    let urlMarker = "CHENG_EFFECTIVE_URL:"
+    let urlMarker = "EFFECTIVE_URL:"
     if fetcherHasPrefix(rest, urlMarker):
         var urlLine: str = rest[len(urlMarker)..<len(rest)]
         let idxEnd = fetcherFindFrom(urlLine, "\n", 0)

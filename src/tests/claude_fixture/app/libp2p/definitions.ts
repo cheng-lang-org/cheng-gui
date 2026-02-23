@@ -337,6 +337,24 @@ export interface Libp2pBridgePlugin {
     partyAddress?: string;
     party_address?: string;
   }): Promise<Record<string, JsonValue>>;
+  rwadSessionBiometricReady?(): Promise<Record<string, JsonValue>>;
+  rwadSessionCreate?(options: {
+    walletId: string;
+    expiresAt: number;
+  }): Promise<Record<string, JsonValue>>;
+  rwadSessionSignChallenge?(options: {
+    challenge: string;
+    walletId?: string;
+    policyHash?: string;
+    nonce?: string;
+    expiresAt?: number;
+  }): Promise<Record<string, JsonValue>>;
+  rwadSessionSignWithSession?(options: {
+    sessionId: string;
+    payloadBase64: string;
+    policyRef?: string;
+  }): Promise<Record<string, JsonValue>>;
+  rwadSessionDestroy?(options: { sessionId: string }): Promise<OkResult>;
 
   socialListDiscoveredPeers(options?: { sourceFilter?: string; limit?: number }): Promise<{ peers: DiscoveredPeer[]; totalCount?: number }>;
   socialConnectPeer(options: { peerId: string; multiaddr?: string }): Promise<OkResult>;

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
 host="$(uname -s)"
 if [ "$host" != "Darwin" ]; then
@@ -34,13 +34,13 @@ run_one() {
 
   local out_dir="$out_root/$name"
   mkdir -p "$out_dir"
-  export CHENG_R2C_PROFILE="$name"
-  export CHENG_R2C_PROJECT_NAME="$name"
-  export CHENG_R2C_TARGET_MATRIX="macos,windows,linux,android,ios,web"
-  export CHENG_R2C_NO_JS_RUNTIME="1"
-  export CHENG_R2C_WPT_PROFILE="core"
-  export CHENG_R2C_EQUIVALENCE_MODE="wpt+e2e"
-  export CHENG_STRICT_GATE_CONTEXT=1
+  export R2C_PROFILE="$name"
+  export R2C_PROJECT_NAME="$name"
+  export R2C_TARGET_MATRIX="macos,windows,linux,android,ios,web"
+  export R2C_NO_JS_RUNTIME="1"
+  export R2C_WPT_PROFILE="core"
+  export R2C_EQUIVALENCE_MODE="wpt+e2e"
+  export STRICT_GATE_CONTEXT=1
 
   bash "$ROOT/scripts/r2c_compile_react_project.sh" --project "$fixture" --entry "$entry" --out "$out_dir" --strict
 

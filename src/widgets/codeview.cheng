@@ -15,7 +15,7 @@ const
     ContentPadding = 8.0
 
 fn todoLensEnabled(): bool =
-    let raw = os.getEnv("CHENG_CODEX_TODO_LENS", "1")
+    let raw = os.getEnv("CODEX_TODO_LENS", "1")
     let lowered = toLowerAscii(strip(raw))
     if lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no":
         return false

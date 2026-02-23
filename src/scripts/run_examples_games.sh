@@ -80,8 +80,8 @@ if [ ! -x "$bin" ]; then
 fi
 
 echo "[run-examples-games] launch: $bin"
-export CHENG_GUI_FORCE_FALLBACK=0
-export CHENG_GUI_USE_REAL_MAC=1
-export CHENG_GUI_REAL_MAC_SKIP_ABI_CHECK=1
+export GUI_FORCE_FALLBACK=0
+export GUI_USE_REAL_MAC=1
+export GUI_REAL_MAC_SKIP_ABI_CHECK=1
 echo "[run-examples-games] window should appear in foreground; close it to exit"
 exec "$bin"

@@ -9,11 +9,11 @@ Usage:
 Notes:
   - Verifies examples_games layout and compiles 3 example entries + 3 test entries.
   - Example entries are compiled with frontend=stage1 by default.
-  - doudizhu-only path defaults to frontend=stage1 (override CHENG_EXAMPLES_DDZ_FRONTEND).
+  - doudizhu-only path defaults to frontend=stage1 (override EXAMPLES_DDZ_FRONTEND).
   - Tests are compiled with the same frontend as their example path.
   - By default this script validates compile closure only.
   - --link-native enables optional macOS desktop linking.
-  - Runtime smoke is disabled by default; set CHENG_EXAMPLES_ENABLE_RUNTIME_SMOKE=1 to enable.
+  - Runtime smoke is disabled by default; set EXAMPLES_ENABLE_RUNTIME_SMOKE=1 to enable.
   - --doudizhu-only compiles/links only doudizhu + doudizhu_rules_test.
   - --run-doudizhu launches linked doudizhu binary after link.
 EOF
@@ -62,72 +62,72 @@ BIN_ROOT="$BUILD_ROOT/bin"
 
 mkdir -p "$OBJ_ROOT" "$BIN_ROOT"
 
-CHENG_ROOT="${CHENG_ROOT:-}"
-if [ -z "$CHENG_ROOT" ]; then
+ROOT="${ROOT:-}"
+if [ -z "$ROOT" ]; then
   if [ -d "$HOME/.cheng/toolchain/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/.cheng/toolchain/cheng-lang"
+    ROOT="$HOME/.cheng/toolchain/cheng-lang"
   elif [ -d "$HOME/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/cheng-lang"
+    ROOT="$HOME/cheng-lang"
   elif [ -d "/Users/lbcheng/cheng-lang" ]; then
-    CHENG_ROOT="/Users/lbcheng/cheng-lang"
+    ROOT="/Users/lbcheng/cheng-lang"
   fi
 fi
-if [ -z "$CHENG_ROOT" ]; then
-  echo "[verify-examples-games] missing CHENG_ROOT" >&2
+if [ -z "$ROOT" ]; then
+  echo "[verify-examples-games] missing ROOT" >&2
   exit 2
 fi
 
-CHENGC="${CHENGC:-$CHENG_ROOT/src/tooling/chengc.sh}"
+CHENGC="${CHENGC:-$ROOT/src/tooling/chengc.sh}"
 if [ ! -x "$CHENGC" ]; then
   echo "[verify-examples-games] missing chengc: $CHENGC" >&2
   exit 2
 fi
 
-selected_driver="${CHENG_EXAMPLES_DRIVER:-${CHENG_BACKEND_DRIVER:-}}"
+selected_driver="${EXAMPLES_DRIVER:-${BACKEND_DRIVER:-}}"
 if [ -n "$selected_driver" ] && [ ! -x "$selected_driver" ]; then
   echo "[verify-examples-games] selected driver is not executable: $selected_driver" >&2
   exit 2
 fi
-if [ -z "$selected_driver" ] && [ -x "$CHENG_ROOT/dist/releases/current/cheng" ]; then
-  selected_driver="$CHENG_ROOT/dist/releases/current/cheng"
+if [ -z "$selected_driver" ] && [ -x "$ROOT/dist/releases/current/cheng" ]; then
+  selected_driver="$ROOT/dist/releases/current/cheng"
 fi
-if [ -z "$selected_driver" ] && [ -x "$CHENG_ROOT/cheng_libp2p_tests" ]; then
-  selected_driver="$CHENG_ROOT/cheng_libp2p_tests"
+if [ -z "$selected_driver" ] && [ -x "$ROOT/cheng_libp2p_tests" ]; then
+  selected_driver="$ROOT/cheng_libp2p_tests"
 fi
-if [ -z "$selected_driver" ] && [ -d "$CHENG_ROOT/dist/releases" ]; then
+if [ -z "$selected_driver" ] && [ -d "$ROOT/dist/releases" ]; then
   while IFS= read -r candidate; do
     if [ -x "$candidate/cheng" ]; then
       selected_driver="$candidate/cheng"
       break
     fi
-  done < <(ls -1dt "$CHENG_ROOT"/dist/releases/* 2>/dev/null || true)
+  done < <(ls -1dt "$ROOT"/dist/releases/* 2>/dev/null || true)
 fi
 if [ -z "$selected_driver" ]; then
-  if [ -x "$CHENG_ROOT/cheng_stable" ]; then
-    selected_driver="$CHENG_ROOT/cheng_stable"
-  elif [ -x "$CHENG_ROOT/cheng" ]; then
-    selected_driver="$CHENG_ROOT/cheng"
+  if [ -x "$ROOT/cheng_stable" ]; then
+    selected_driver="$ROOT/cheng_stable"
+  elif [ -x "$ROOT/cheng" ]; then
+    selected_driver="$ROOT/cheng"
   fi
 fi
 if [ -z "$selected_driver" ]; then
-  for cand in "$CHENG_ROOT"/driver_*; do
+  for cand in "$ROOT"/driver_*; do
     if [ -f "$cand" ] && [ -x "$cand" ]; then
       selected_driver="$cand"
       break
     fi
   done
 fi
-if [ -z "$selected_driver" ] && [ -x "$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
-  selected_driver="$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
+if [ -z "$selected_driver" ] && [ -x "$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
+  selected_driver="$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
 fi
 if [ -z "$selected_driver" ]; then
-  echo "[verify-examples-games] no runnable backend driver found under CHENG_ROOT=$CHENG_ROOT" >&2
+  echo "[verify-examples-games] no runnable backend driver found under ROOT=$ROOT" >&2
   exit 2
 fi
-export CHENG_BACKEND_DRIVER="$selected_driver"
-export CHENG_BACKEND_DRIVER_DIRECT="${CHENG_BACKEND_DRIVER_DIRECT:-0}"
+export BACKEND_DRIVER="$selected_driver"
+export BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}"
 
-pkg_roots="${CHENG_PKG_ROOTS:-}"
+pkg_roots="${PKG_ROOTS:-}"
 default_pkg_root="$HOME/.cheng-packages"
 if [ -d "$default_pkg_root" ]; then
   if [ -z "$pkg_roots" ]; then
@@ -147,11 +147,11 @@ else
     *) pkg_roots="$pkg_roots,$PKG_ROOT" ;;
   esac
 fi
-export CHENG_PKG_ROOTS="$pkg_roots"
+export PKG_ROOTS="$pkg_roots"
 
-target="${CHENG_EXAMPLES_TARGET:-}"
+target="${EXAMPLES_TARGET:-}"
 if [ -z "$target" ]; then
-  target="$(sh "$CHENG_ROOT/src/tooling/detect_host_target.sh")"
+  target="$(sh "$ROOT/src/tooling/detect_host_target.sh")"
 fi
 if [ -z "$target" ]; then
   echo "[verify-examples-games] failed to detect host target" >&2
@@ -192,13 +192,13 @@ compile_obj() {
   local frontend="$3"
   echo "== compile: $input"
   (
-    cd "$CHENG_ROOT"
-    CHENG_BACKEND_FRONTEND="$frontend" "$CHENGC" "$input" --emit-obj --obj-out:"$output" --target:"$target"
+    cd "$ROOT"
+    BACKEND_FRONTEND="$frontend" "$CHENGC" "$input" --emit-obj --obj-out:"$output" --target:"$target"
   )
 }
 
-doudizhu_frontend="${CHENG_EXAMPLES_DDZ_FRONTEND:-stage1}"
-doudizhu_test_frontend="${CHENG_EXAMPLES_DDZ_TEST_FRONTEND:-stage1}"
+doudizhu_frontend="${EXAMPLES_DDZ_FRONTEND:-stage1}"
+doudizhu_test_frontend="${EXAMPLES_DDZ_TEST_FRONTEND:-stage1}"
 
 doudizhu_main="$EXAMPLES_ROOT/doudizhu_main.cheng"
 mahjong_main="$EXAMPLES_ROOT/mahjong4_main.cheng"
@@ -251,11 +251,11 @@ obj_plat="$OBJ_ROOT/examples_games.macos_app.runtime.o"
 obj_text="$OBJ_ROOT/examples_games.text_macos.runtime.o"
 obj_link_shim="$OBJ_ROOT/examples_games.link_shim.runtime.o"
 compat_shim_src="$SRC_ROOT/runtime/cheng_compat_shim.c"
-use_compat_shim="${CHENG_EXAMPLES_USE_COMPAT_SHIM:-0}"
+use_compat_shim="${EXAMPLES_USE_COMPAT_SHIM:-0}"
 
-clang -I"$CHENG_ROOT/runtime/include" -I"$CHENG_ROOT/src/runtime/native" \
+clang -I"$ROOT/runtime/include" -I"$ROOT/src/runtime/native" \
   -Dalloc=cheng_runtime_alloc -DcopyMem=cheng_runtime_copyMem -DsetMem=cheng_runtime_setMem \
-  -c "$CHENG_ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
+  -c "$ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
 if [ "$use_compat_shim" = "1" ] && [ -f "$compat_shim_src" ]; then
   clang -c "$compat_shim_src" -o "$obj_compat"
 else
@@ -277,11 +277,11 @@ link_desktop() {
 
 smoke_bin() {
   local output_bin="$1"
-  if [ "${CHENG_EXAMPLES_ENABLE_RUNTIME_SMOKE:-0}" != "1" ]; then
+  if [ "${EXAMPLES_ENABLE_RUNTIME_SMOKE:-0}" != "1" ]; then
     return 0
   fi
   set +e
-  CHENG_GUI_FORCE_FALLBACK=0 CHENG_GUI_USE_REAL_MAC=1 CHENG_GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$output_bin" >/dev/null 2>&1 &
+  GUI_FORCE_FALLBACK=0 GUI_USE_REAL_MAC=1 GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$output_bin" >/dev/null 2>&1 &
   local pid=$!
   sleep 2
   local rc=0
@@ -315,7 +315,7 @@ fi
 
 if [ "$run_doudizhu" = "1" ]; then
   echo "[verify-examples-games] launch doudizhu binary"
-  CHENG_GUI_FORCE_FALLBACK=0 CHENG_GUI_USE_REAL_MAC=1 CHENG_GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$BIN_ROOT/doudizhu_macos"
+  GUI_FORCE_FALLBACK=0 GUI_USE_REAL_MAC=1 GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$BIN_ROOT/doudizhu_macos"
 fi
 
 echo "[verify-examples-games] ok"

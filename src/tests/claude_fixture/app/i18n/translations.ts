@@ -538,6 +538,18 @@ export interface Translations {
     pubContent_contentRating: string;
     pubContent_riskStatement: string;
 
+    // VPN Node
+    profile_vpnNode: string;
+    profile_vpnFee: string;
+
+    // Publish Ad
+    publish_ad: string;
+    pubAd_title: string;
+    pubAd_attachContract: string;
+    pubAd_preciseDelivery: string;
+    pubAd_rewardDesc: string;
+
+
     // Publish Product
     pubProduct_title: string;
     pubProduct_csvMode: string;
@@ -1638,6 +1650,13 @@ const zhCN: Translations = {
     pubContent_publishContent: '发布内容',
     pubContent_contentRating: '内容分级',
     pubContent_riskStatement: '风险声明',
+    profile_vpnNode: '作为VPN代理节点',
+    profile_vpnFee: '按流量收费 (费用/GB)',
+    publish_ad: '广告',
+    pubAd_title: '发布广告',
+    pubAd_attachContract: '附加 RWAD 智能合约',
+    pubAd_preciseDelivery: '端侧数据精准投递',
+    pubAd_rewardDesc: '证明用户看完广告后合约自动向用户支付RWAD',
 
     // Publish Product
     pubProduct_title: '发布商品',
@@ -3117,6 +3136,13 @@ const en: Translations = {
     pubContent_publishContent: 'Publish Content',
     pubContent_contentRating: 'Content Rating',
     pubContent_riskStatement: 'Risk Statement',
+    profile_vpnNode: 'Serve as VPN proxy node',
+    profile_vpnFee: 'Charge by traffic (Fee/GB)',
+    publish_ad: 'Ads',
+    pubAd_title: 'Publish Ad',
+    pubAd_attachContract: 'Attach RWAD Contract',
+    pubAd_preciseDelivery: 'Precise delivery based on edge-side data',
+    pubAd_rewardDesc: 'Smart contract automatically pays RWAD to user upon viewing proof',
 
     // Publish Product
     pubProduct_title: 'Publish Product',
@@ -3156,13 +3182,6 @@ const en: Translations = {
     pub_uploadImage: 'Upload Image',
     pub_delete: 'Delete',
     pub_addReward: 'Add',
-    publish_location_collecting: 'Collecting GPS...',
-    publish_location_required_hint: 'Publishing requires real-time high-accuracy GPS (<=50m). Publish will be blocked otherwise.',
-    publish_location_error_permissionDenied: 'Location permission denied. Unable to publish.',
-    publish_location_error_accuracyTooLow: 'Location accuracy is too low (requires <= 50m). Please retry in an open area.',
-    publish_location_error_timeout: 'Location request timed out. Please retry.',
-    publish_location_error_unavailable: 'Location service unavailable. Check your GPS settings.',
-    publish_location_error_unknown: 'Location failed. Publish not completed.',
 
     // Publish App
     pubApp_title: 'Publish App',
@@ -3222,35 +3241,6 @@ const en: Translations = {
     pubRide_notePlaceholder: 'e.g. can detour, no pets...',
     pubRide_offerLabel: 'Offering ride',
     pubRide_lookForLabel: 'Looking for ride',
-
-    // Publish Job
-    pubJob_title: 'Post Resume',
-    pubJob_yourName: 'Your Name',
-    pubJob_desiredPosition: 'Desired Position',
-    pubJob_positionPh: 'e.g. Frontend Engineer',
-    pubJob_jobType: 'Job Type',
-    pubJob_fullTime: 'Full-time',
-    pubJob_partTime: 'Part-time',
-    pubJob_intern: 'Intern',
-    pubJob_remote: 'Remote',
-    pubJob_experience: 'Experience',
-    pubJob_experiencePh: 'e.g. 3 years',
-    pubJob_education: 'Education',
-    pubJob_selectEducation: 'Select education',
-    pubJob_highSchool: 'High School',
-    pubJob_associate: 'Associate',
-    pubJob_bachelor: 'Bachelor\'s',
-    pubJob_master: 'Master\'s',
-    pubJob_phd: 'PhD',
-    pubJob_expectedSalary: 'Expected Salary',
-    pubJob_salaryPh: 'e.g. 15-20K',
-    pubJob_expectedCity: 'Preferred City',
-    pubJob_cityPh: 'e.g. Beijing',
-    pubJob_skills: 'Skills',
-    pubJob_addSkill: 'Add skill',
-    pubJob_add: 'Add',
-    pubJob_intro: 'Introduction',
-    pubJob_introPh: 'Brief intro about your experience and strengths...',
 
     // Publish Hire
     pubHire_title: 'Post Job',
@@ -4371,4 +4361,5 @@ export const publishTypeKeys: Record<string, keyof Translations> = {
     sell: 'publish_sell',
     secondhand: 'publish_secondhand',
     crowdfunding: 'publish_crowdfunding',
+    ad: 'publish_ad',
 };

@@ -1,0 +1,687 @@
+import std/os
+import cheng/gui/ime/cangwu_assets_loader
+import cheng/gui/ime/cangwu_types
+import cheng/gui/ime/legacy_assets_loader
+import cheng/gui/ime/legacy_codec
+import cheng/gui/ime/legacy_types
+import cheng/gui/ime/utfzh_codec
+
+fn utfzhByte(ch: char): int32 =
+    var b: int32 = int32(ch)
+    if b < 0:
+        b = b + 256
+    return b
+
+fn utfzhIsTrail(b: int32): bool =
+    return b >= 0x80 && b <= 0xBF
+
+fn utfzhCountBuckets(bytes: str, outAscii: var int32, outDict1: var int32, outDict2: var int32,
+                     outDict3: var int32, outFallback4: var int32) =
+    outAscii = 0
+    outDict1 = 0
+    outDict2 = 0
+    outDict3 = 0
+    outFallback4 = 0
+    let total = len(bytes)
+    var idx: int32 = 0
+    while idx < total:
+        let b1 = utfzhByte(bytes[idx])
+        if b1 < 0x80:
+            outAscii = outAscii + 1
+            idx = idx + 1
+            continue
+        if b1 >= 0xC0 && b1 <= 0xE1:
+            outDict1 = outDict1 + 1
+            idx = idx + 1
+            continue
+        if b1 >= 0xE2 && b1 <= 0xF8:
+            if idx + 1 < total:
+                let b2 = utfzhByte(bytes[idx + 1])
+                if utfzhIsTrail(b2):
+                    outDict2 = outDict2 + 1
+                    idx = idx + 2
+                    continue
+            outFallback4 = outFallback4 + 1
+            idx = idx + 1
+            continue
+        if b1 >= 0xF9 && b1 <= 0xFA:
+            if idx + 2 < total:
+                let b2 = utfzhByte(bytes[idx + 1])
+                let b3 = utfzhByte(bytes[idx + 2])
+                if utfzhIsTrail(b2) && utfzhIsTrail(b3):
+                    outDict3 = outDict3 + 1
+                    idx = idx + 3
+                    continue
+            outFallback4 = outFallback4 + 1
+            idx = idx + 1
+            continue
+        if idx + 3 < total:
+            let b2 = utfzhByte(bytes[idx + 1])
+            let b3 = utfzhByte(bytes[idx + 2])
+            let b4 = utfzhByte(bytes[idx + 3])
+            if utfzhIsTrail(b2) && utfzhIsTrail(b3) && utfzhIsTrail(b4):
+                outFallback4 = outFallback4 + 1
+                idx = idx + 4
+                continue
+        outFallback4 = outFallback4 + 1
+        idx = idx + 1
+
+fn utfzhScaledRatioText(num: int32, den: int32): str =
+    if den <= 0:
+        return "0.000000"
+    let scaled = (int64(num) * int64(1000000)) / int64(den)
+    let whole = scaled / int64(1000000)
+    let frac = scaled % int64(1000000)
+    var fracText = intToStr(int32(frac))
+    while len(fracText) < 6:
+        fracText = "0" + fracText
+    return intToStr(int32(whole)) + "." + fracText
+
+fn utfzhCollectUtf8DictHits(textUtf8: str, dict: UtfZhDict): int32[] =
+    var hits: int32[] = []
+    setLen(hits, len(dict.codepoints))
+    if len(dict.codepoints) == 0 || len(textUtf8) == 0:
+        return hits
+    var idx: int32 = 0
+    while idx < len(textUtf8):
+        let packed = utfzhDecodeUtf8At(textUtf8, idx)
+        var step = utfzhPackUtf8Step(packed)
+        if step <= 0:
+            step = 1
+        if packed > 0:
+            let cp = utfzhPackUtf8Cp(packed)
+            let dIdx = utfzhDictIndex(dict, cp)
+            if dIdx >= 0 && dIdx < len(hits):
+                hits[dIdx] = hits[dIdx] + 1
+        idx = idx + step
+    return hits
+
+fn utfzhOrderKeepLeft(left, right: int32, hits: int32[]): bool =
+    let leftHit = if left >= 0 && left < len(hits): hits[left] else: int32(0)
+    let rightHit = if right >= 0 && right < len(hits): hits[right] else: int32(0)
+    if leftHit != rightHit:
+        return leftHit > rightHit
+    return left < right
+
+fn utfzhOrderCmp(left, right: int32, hits: int32[]): int32 =
+    let leftHit = if left >= 0 && left < len(hits): hits[left] else: int32(0)
+    let rightHit = if right >= 0 && right < len(hits): hits[right] else: int32(0)
+    if leftHit > rightHit:
+        return -1
+    if leftHit < rightHit:
+        return 1
+    if left < right:
+        return -1
+    if left > right:
+        return 1
+    return 0
+
+fn utfzhSwap(order: var int32[], i: int32, j: int32) =
+    if i == j:
+        return
+    let t = order[i]
+    order[i] = order[j]
+    order[j] = t
+
+fn utfzhSortOrder(order: var int32[], hits: int32[]) =
+    if len(order) <= 1:
+        return
+    var stackLo: int32[] = []
+    var stackHi: int32[] = []
+    add(stackLo, 0)
+    add(stackHi, len(order) - 1)
+    while len(stackLo) > 0:
+        let hi = stackHi[len(stackHi) - 1]
+        setLen(stackHi, len(stackHi) - 1)
+        let lo = stackLo[len(stackLo) - 1]
+        setLen(stackLo, len(stackLo) - 1)
+        if lo >= hi:
+            continue
+        let pivot = order[(lo + hi) / 2]
+        var left = lo
+        var right = hi
+        while left <= right:
+            while left <= hi && utfzhOrderCmp(order[left], pivot, hits) < 0:
+                left = left + 1
+            while right >= lo && utfzhOrderCmp(order[right], pivot, hits) > 0:
+                right = right - 1
+            if left <= right:
+                utfzhSwap(order, left, right)
+                left = left + 1
+                right = right - 1
+        if lo < right:
+            add(stackLo, lo)
+            add(stackHi, right)
+        if left < hi:
+            add(stackLo, left)
+            add(stackHi, hi)
+
+fn utfzhBuildOptimizedDict(base: UtfZhDict, textUtf8: str): UtfZhDict =
+    if len(base.codepoints) == 0:
+        return base
+    let hits = utfzhCollectUtf8DictHits(textUtf8, base)
+    var order: int32[] = []
+    setLen(order, len(base.codepoints))
+    for i in 0..<len(order):
+        order[i] = i
+    utfzhSortOrder(order, hits)
+
+    var out: UtfZhDict
+    for j in 0..<len(order):
+        let src = order[j]
+        if src >= 0 && src < len(base.codepoints):
+            if src < len(base.chars):
+                add(out.chars, base.chars[src])
+            else:
+                add(out.chars, utfzhEncodeUtf8Codepoint(base.codepoints[src]))
+            add(out.codepoints, base.codepoints[src])
+    out.cpToIndex = []
+    cwBuildUtfZhIndex(out)
+    return out
+
+fn utfzhWriteDict(path: str, dict: UtfZhDict): bool =
+    if len(path) == 0:
+        return true
+    let f = os.open(path, os.fmWrite)
+    if f == nil:
+        return false
+    for i in 0..<len(dict.codepoints):
+        let ch = utfzhEncodeUtf8Codepoint(dict.codepoints[i])
+        os.write(f, intToStr(i))
+        os.write(f, "\t")
+        os.write(f, ch)
+        os.write(f, "\t")
+        os.write(f, intToStr(dict.codepoints[i]))
+        os.write(f, "\t1\n")
+    os.close(f)
+    return os.fileExists(path)
+
+fn utfzhWriteReport(path: str, inPath: str, outPath: str, result: UtfZhTranscodeResult,
+                    inputBytesLen: int32, outputBytesLen: int32, scalarCount: int32,
+                    ascii: int32, dict1: int32, dict2: int32, dict3: int32, fallback4: int32,
+                    dictOptimized: bool, dictPath: str): bool =
+    if len(path) == 0:
+        return true
+
+    var report = ""
+    report = report + "ok=" + if result.ok: "true" else: "false"
+    report = report + "\n"
+    report = report + "input=" + inPath + "\n"
+    report = report + "output=" + outPath + "\n"
+    report = report + "detected=" + legacyEncodingLabel(result.detected) + "\n"
+    report = report + "error_count=" + intToStr(result.errorCount) + "\n"
+    report = report + "input_bytes=" + intToStr(inputBytesLen) + "\n"
+    report = report + "output_bytes=" + intToStr(outputBytesLen) + "\n"
+    if inputBytesLen > 0:
+        report = report + "output_over_input_ratio=" + utfzhScaledRatioText(outputBytesLen, inputBytesLen) + "\n"
+        let ratioPpm = (int64(outputBytesLen) * int64(1000000)) / int64(inputBytesLen)
+        report = report + "output_over_input_ratio_ppm=" + intToStr(int32(ratioPpm)) + "\n"
+    report = report + "utfzh_ascii=" + intToStr(ascii) + "\n"
+    report = report + "utfzh_dict_1b=" + intToStr(dict1) + "\n"
+    report = report + "utfzh_dict_2b=" + intToStr(dict2) + "\n"
+    report = report + "utfzh_dict_3b=" + intToStr(dict3) + "\n"
+    report = report + "utfzh_fallback_4b=" + intToStr(fallback4) + "\n"
+    if scalarCount > 0:
+        report = report + "utfzh_avg_bytes_per_scalar=" + utfzhScaledRatioText(outputBytesLen, scalarCount) + "\n"
+        let avgPpm = (int64(outputBytesLen) * int64(1000000)) / int64(scalarCount)
+        report = report + "utfzh_avg_bytes_per_scalar_ppm=" + intToStr(int32(avgPpm)) + "\n"
+    report = report + "dict_optimized=" + if dictOptimized: "true" else: "false"
+    report = report + "\n"
+    if dictOptimized && len(dictPath) > 0:
+        report = report + "dict_path=" + dictPath + "\n"
+    for idx in 0..<len(result.errors):
+        let err = result.errors[idx]
+        report = report + "error[" + intToStr(idx) + "]=" + intToStr(err.offset) + ":" + err.message + "\n"
+    os.writeFile(path, report)
+    return os.fileExists(path)
+
+fn utfzhTryParseEncoding(text: str, outEncoding: var LegacyEncoding): bool =
+    let norm = legacyNormalizeText(text)
+    if len(norm) == 0 || norm == "auto":
+        outEncoding = leAuto
+        return true
+    if norm == "utf8" || norm == "utf":
+        outEncoding = leUtf8
+        return true
+    if norm == "utf16" || norm == "utf16le":
+        outEncoding = leUtf16Le
+        return true
+    if norm == "utf16be":
+        outEncoding = leUtf16Be
+        return true
+    if norm == "gbk" || norm == "cp936":
+        outEncoding = leGbk
+        return true
+    if norm == "gb2312":
+        outEncoding = leGb2312
+        return true
+    return false
+
+fn utfzhParseBool(text: str): bool =
+    if len(text) == 0:
+        return false
+    let norm = legacyNormalizeText(text)
+    return norm == "1" || norm == "true" || norm == "yes" || norm == "on"
+
+fn utfzhParsePositiveInt(text: str, fallback: int32): int32 =
+    if len(text) == 0:
+        return fallback
+    var idx: int32 = 0
+    var value: int32 = 0
+    var saw = false
+    while idx < len(text):
+        let ch = text[idx]
+        if ch < '0' || ch > '9':
+            break
+        value = value * 10 + int32(ch) - int32('0')
+        saw = true
+        idx = idx + 1
+    if ! saw || value <= 0:
+        return fallback
+    return value
+
+fn utfzhErrorSampleLimit(): int32 =
+    let limit = utfzhParsePositiveInt(os.getEnv("UTFZH_ERROR_SAMPLE_LIMIT"), 256)
+    if limit < 0:
+        return 0
+    return limit
+
+fn utfzhAppendErrorCapped(errors: var UtfZhError[], offset: int32, message: str, sampleLimit: int32) =
+    if sampleLimit <= 0:
+        return
+    if len(errors) >= sampleLimit:
+        return
+    utfzhAppendError(errors, offset, message)
+
+fn utfzhLooksLikeValidUtf8(text: str): bool =
+    let total = len(text)
+    var idx: int32 = 0
+    while idx < total:
+        let packed = utfzhDecodeUtf8At(text, idx)
+        if packed <= 0:
+            return false
+        var step = utfzhPackUtf8Step(packed)
+        if step <= 0:
+            return false
+        idx = idx + step
+    return true
+
+fn utfzhLooksLikeUtf8Prefix(text: str, maxBytes: int32): bool =
+    let total = len(text)
+    if total <= 0:
+        return true
+    var limit = maxBytes
+    if limit <= 0 || limit > total:
+        limit = total
+    var idx: int32 = 0
+    while idx < limit:
+        let packed = utfzhDecodeUtf8At(text, idx)
+        if packed <= 0:
+            return false
+        var step = utfzhPackUtf8Step(packed)
+        if step <= 0:
+            return false
+        if idx + step > limit:
+            return true
+        idx = idx + step
+    return true
+
+fn utfzhUtf8PrefixByScalars(text: str, maxScalars: int32): str =
+    if maxScalars <= 0 || len(text) <= 0:
+        return text
+    let total = len(text)
+    var idx: int32 = 0
+    var scalars: int32 = 0
+    while idx < total && scalars < maxScalars:
+        let packed = utfzhDecodeUtf8At(text, idx)
+        var step = utfzhPackUtf8Step(packed)
+        if step <= 0:
+            step = 1
+        idx = idx + step
+        scalars = scalars + 1
+    if idx <= 0:
+        return ""
+    if idx >= total:
+        return text
+    return text[0..<idx]
+
+fn utfzhEncodeToFile(textUtf8: str, dict: UtfZhDict, outPath: str, chunkScalars: int32,
+                     collectStats: bool, errorSampleLimit: int32,
+                     outEncode: var UtfZhEncodeResult, outBytesLen: var int32,
+                     outAscii: var int32, outDict1: var int32, outDict2: var int32,
+                     outDict3: var int32, outFallback4: var int32): bool =
+    outEncode.ok = true
+    outEncode.bytes = ""
+    outEncode.errorCount = 0
+    outEncode.errors = []
+    outBytesLen = 0
+    outAscii = 0
+    outDict1 = 0
+    outDict2 = 0
+    outDict3 = 0
+    outFallback4 = 0
+
+    let total = len(textUtf8)
+    var outRaw: uint8[] = []
+    if total <= 0:
+        os.writeFileBytes(outPath, outRaw)
+        return os.fileExists(outPath)
+
+    var idx: int32 = 0
+    while idx < total:
+        let b0 = utfzhByte(textUtf8[idx])
+        var cp: int32 = UtfZhReplacement
+        var step: int32 = 1
+        var valid = true
+        if b0 < 0x80:
+            cp = b0
+        elif b0 >= 0xC2 && b0 <= 0xDF:
+            if idx + 1 < total:
+                let b1 = utfzhByte(textUtf8[idx + 1])
+                if utfzhIsTrail(b1):
+                    cp = ((b0 & 0x1F) * 64) + (b1 & 0x3F)
+                    step = 2
+                else:
+                    valid = false
+            else:
+                valid = false
+        elif b0 >= 0xE0 && b0 <= 0xEF:
+            if idx + 2 < total:
+                let b1 = utfzhByte(textUtf8[idx + 1])
+                let b2 = utfzhByte(textUtf8[idx + 2])
+                if utfzhIsTrail(b1) && utfzhIsTrail(b2):
+                    cp = ((b0 & 0x0F) * 4096) + ((b1 & 0x3F) * 64) + (b2 & 0x3F)
+                    if cp < 0x800 || ! utfzhIsScalar(cp):
+                        valid = false
+                    else:
+                        step = 3
+                else:
+                    valid = false
+            else:
+                valid = false
+        elif b0 >= 0xF0 && b0 <= 0xF4:
+            if idx + 3 < total:
+                let b1 = utfzhByte(textUtf8[idx + 1])
+                let b2 = utfzhByte(textUtf8[idx + 2])
+                let b3 = utfzhByte(textUtf8[idx + 3])
+                if utfzhIsTrail(b1) && utfzhIsTrail(b2) && utfzhIsTrail(b3):
+                    cp = ((b0 & 0x07) * 262144) + ((b1 & 0x3F) * 4096) + ((b2 & 0x3F) * 64) + (b3 & 0x3F)
+                    if cp < 0x10000 || cp > 0x10FFFF:
+                        valid = false
+                    else:
+                        step = 4
+                else:
+                    valid = false
+            else:
+                valid = false
+        else:
+            valid = false
+        if ! valid:
+            cp = UtfZhReplacement
+            outEncode.ok = false
+            outEncode.errorCount = outEncode.errorCount + 1
+            utfzhAppendErrorCapped(outEncode.errors, idx, "invalid utf-8", errorSampleLimit)
+
+        var bytesOut: int32 = 0
+        var bucket: int32 = 0
+        if cp < 0x80:
+            add(outRaw, uint8(cp))
+            bytesOut = 1
+            bucket = 1
+        else:
+            var dIdx: int32 = -1
+            if cp >= 0 && cp < 65536 && len(dict.bmpIndex) == 65536:
+                let idx1 = dict.bmpIndex[cp]
+                if idx1 > 0:
+                    dIdx = idx1 - 1
+            else:
+                dIdx = utfzhDictIndex(dict, cp)
+            if dIdx >= 0:
+                if dIdx <= 33:
+                    add(outRaw, uint8(0xC0 + dIdx))
+                    bytesOut = 1
+                    bucket = 2
+                elif dIdx <= 1505:
+                    let n = dIdx - 34
+                    let b1 = 0xE2 + (n / 64)
+                    let b2 = 0x80 + (n % 64)
+                    add(outRaw, uint8(b1))
+                    add(outRaw, uint8(b2))
+                    bytesOut = 2
+                    bucket = 3
+                else:
+                    let n = dIdx - 1506
+                    let b1 = 0xF9 + (n / 4096)
+                    let remain = n % 4096
+                    let b2 = 0x80 + (remain / 64)
+                    let b3 = 0x80 + (remain % 64)
+                    add(outRaw, uint8(b1))
+                    add(outRaw, uint8(b2))
+                    add(outRaw, uint8(b3))
+                    bytesOut = 3
+                    bucket = 4
+            elif ! utfzhIsScalar(cp):
+                outEncode.ok = false
+                outEncode.errorCount = outEncode.errorCount + 1
+                utfzhAppendErrorCapped(outEncode.errors, idx, "non-scalar", errorSampleLimit)
+                var fbIdx: int32 = -1
+                if len(dict.bmpIndex) == 65536:
+                    let idx1 = dict.bmpIndex[UtfZhReplacement]
+                    if idx1 > 0:
+                        fbIdx = idx1 - 1
+                else:
+                    fbIdx = utfzhDictIndex(dict, UtfZhReplacement)
+                if fbIdx >= 0 && fbIdx <= 33:
+                    add(outRaw, uint8(0xC0 + fbIdx))
+                    bytesOut = 1
+                    bucket = 2
+                elif fbIdx >= 34 && fbIdx <= 1505:
+                    let n = fbIdx - 34
+                    add(outRaw, uint8(0xE2 + (n / 64)))
+                    add(outRaw, uint8(0x80 + (n % 64)))
+                    bytesOut = 2
+                    bucket = 3
+                elif fbIdx >= 1506:
+                    let n = fbIdx - 1506
+                    let b1 = 0xF9 + (n / 4096)
+                    let rem = n % 4096
+                    add(outRaw, uint8(b1))
+                    add(outRaw, uint8(0x80 + (rem / 64)))
+                    add(outRaw, uint8(0x80 + (rem % 64)))
+                    bytesOut = 3
+                    bucket = 4
+                else:
+                    add(outRaw, uint8(0xFB))
+                    add(outRaw, uint8(0x8F))
+                    add(outRaw, uint8(0xBF))
+                    add(outRaw, uint8(0xBD))
+                    bytesOut = 4
+                    bucket = 5
+            else:
+                let b1 = 0xFB + (cp / 262144)
+                let remainA = cp % 262144
+                let b2 = 0x80 + (remainA / 4096)
+                let remainB = remainA % 4096
+                let b3 = 0x80 + (remainB / 64)
+                let b4 = 0x80 + (remainB % 64)
+                add(outRaw, uint8(b1))
+                add(outRaw, uint8(b2))
+                add(outRaw, uint8(b3))
+                add(outRaw, uint8(b4))
+                bytesOut = 4
+                bucket = 5
+
+        outBytesLen = outBytesLen + bytesOut
+        if collectStats:
+            if bucket == 1:
+                outAscii = outAscii + 1
+            elif bucket == 2:
+                outDict1 = outDict1 + 1
+            elif bucket == 3:
+                outDict2 = outDict2 + 1
+            elif bucket == 4:
+                outDict3 = outDict3 + 1
+            elif bucket == 5:
+                outFallback4 = outFallback4 + 1
+        idx = idx + step
+
+    os.writeFileBytes(outPath, outRaw)
+    return os.fileExists(outPath)
+
+fn utfzhTranscodeRunWithOptions(inPath: str, outPath: str, source: LegacyEncoding, reportPath: str,
+                                dataRoot: str, optimizeDict: bool, dictOutPath: str): int32 =
+    if len(inPath) == 0 || len(outPath) == 0:
+        return 31
+    if ! os.fileExists(inPath):
+        return 32
+
+    let raw = os.readFile(inPath)
+    var effectiveSource = source
+    if effectiveSource == leAuto:
+        if utfzhLooksLikeUtf8Prefix(raw, 65536):
+            effectiveSource = leUtf8
+        elif utfzhLooksLikeValidUtf8(raw):
+            effectiveSource = leUtf8
+
+    var decoded: LegacyDecodeResult
+    if effectiveSource == leUtf8:
+        decoded.ok = true
+        decoded.textUtf8 = raw
+        decoded.detected = leUtf8
+        decoded.errorCount = 0
+        decoded.errors = []
+    else:
+        let legacyAssets = legacyLoadAssetsFor(effectiveSource, dataRoot)
+        decoded = legacyDecodeStrict(raw, effectiveSource, legacyAssets)
+    var baseDict = cwLoadUtfZhDict(dataRoot)
+    if len(baseDict.bmpIndex) != 65536:
+        cwBuildUtfZhIndex(baseDict)
+    var encodeDict = baseDict
+    var effectiveDictPath = dictOutPath
+    if optimizeDict:
+        let optimizeSampleScalars = utfzhParsePositiveInt(os.getEnv("UTFZH_OPTIMIZE_SAMPLE_SCALARS"), 8000)
+        let optimizeText = utfzhUtf8PrefixByScalars(decoded.textUtf8, optimizeSampleScalars)
+        encodeDict = utfzhBuildOptimizedDict(baseDict, optimizeText)
+        if len(effectiveDictPath) == 0:
+            effectiveDictPath = outPath + ".dict.tsv"
+        if ! utfzhWriteDict(effectiveDictPath, encodeDict):
+            return 33
+
+    let chunkScalars = utfzhParsePositiveInt(os.getEnv("UTFZH_ENCODE_CHUNK_SCALARS"), 256)
+    let errorSampleLimit = utfzhErrorSampleLimit()
+    var encoded: UtfZhEncodeResult
+    var outputBytesLen: int32 = 0
+    var ascii: int32 = 0
+    var dict1: int32 = 0
+    var dict2: int32 = 0
+    var dict3: int32 = 0
+    var fallback4: int32 = 0
+    let needReport = len(reportPath) > 0
+    if ! utfzhEncodeToFile(decoded.textUtf8, encodeDict, outPath, chunkScalars, false, errorSampleLimit, encoded, outputBytesLen, ascii,
+                           dict1, dict2, dict3, fallback4):
+        return 33
+
+    var result: UtfZhTranscodeResult
+    result.ok = decoded.ok && encoded.ok
+    result.bytes = ""
+    result.detected = decoded.detected
+    result.errorCount = decoded.errorCount + encoded.errorCount
+    result.errors = []
+    for idx in 0..<len(decoded.errors):
+        var e: UtfZhError
+        e.offset = decoded.errors[idx].offset
+        e.message = "legacy: " + decoded.errors[idx].message
+        utfzhAppendErrorCapped(result.errors, e.offset, e.message, errorSampleLimit)
+    for idx in 0..<len(encoded.errors):
+        let e = encoded.errors[idx]
+        utfzhAppendErrorCapped(result.errors, e.offset, e.message, errorSampleLimit)
+
+    if needReport:
+        var scalarCount: int32 = 0
+        let fullReport = utfzhParseBool(os.getEnv("UTFZH_REPORT_FULL"))
+        if fullReport:
+            let encodedBytes = os.readFile(outPath)
+            outputBytesLen = len(encodedBytes)
+            utfzhCountBuckets(encodedBytes, ascii, dict1, dict2, dict3, fallback4)
+            scalarCount = legacyCountScalars(decoded.textUtf8)
+        if ! utfzhWriteReport(reportPath, inPath, outPath, result, len(raw), outputBytesLen, scalarCount,
+                              ascii, dict1, dict2, dict3, fallback4, optimizeDict, effectiveDictPath):
+            return 34
+    if ! result.ok:
+        return 35
+    return 0
+
+fn utfzhTranscodeRun(inPath: str, outPath: str, fromText: str, reportPath: str, dataRoot: str): int32 =
+    var source = leAuto
+    if ! utfzhTryParseEncoding(fromText, source):
+        return 2
+    return utfzhTranscodeRunWithOptions(inPath, outPath, source, reportPath, dataRoot, false, "")
+
+fn utfzhDictRootFromEnv(): str =
+    let dataRootEnv = os.getEnv("UTFZH_DATA_ROOT")
+    if len(dataRootEnv) > 0:
+        return dataRootEnv
+    return "src/ime/data"
+
+fn utfzhDictPathFromEnv(): str =
+    return utfzhDictRootFromEnv() + "/utfzh_dict_v1.tsv"
+
+fn utfzhTranscodeEnvRun(): int32 =
+    let inPath = os.getEnv("UTFZH_IN")
+    let outPath = os.getEnv("UTFZH_OUT")
+    let fromText = os.getEnv("UTFZH_FROM")
+    let reportPath = os.getEnv("UTFZH_REPORT")
+    let dataRoot = utfzhDictRootFromEnv()
+    let optimizeDict = utfzhParseBool(os.getEnv("UTFZH_OPTIMIZE_DICT"))
+    let dictOutPath = os.getEnv("UTFZH_DICT_OUT")
+    var source = leAuto
+    if ! utfzhTryParseEncoding(fromText, source):
+        return 2
+    return utfzhTranscodeRunWithOptions(inPath, outPath, source, reportPath, dataRoot, optimizeDict, dictOutPath)
+
+@ exportc("cwUtfzhTranscodeEnvRun")
+fn cwUtfzhTranscodeEnvRun(): int32 =
+    return utfzhTranscodeEnvRun()
+
+@ exportc("cwUtfzhPing")
+fn cwUtfzhPing(): int32 =
+    return 7
+
+@ exportc("cwUtfzhProbeEnvLen")
+fn cwUtfzhProbeEnvLen(): int32 =
+    return len(os.getEnv("UTFZH_IN"))
+
+@ exportc("cwUtfzhProbeFileExists")
+fn cwUtfzhProbeFileExists(): int32 =
+    let inPath = os.getEnv("UTFZH_IN")
+    if os.fileExists(inPath):
+        return 1
+    return 0
+
+@ exportc("cwUtfzhProbeReadLen")
+fn cwUtfzhProbeReadLen(): int32 =
+    let inPath = os.getEnv("UTFZH_IN")
+    let raw = os.readFile(inPath)
+    return len(raw)
+
+@ exportc("cwUtfzhProbeDictLen")
+fn cwUtfzhProbeDictLen(): int32 =
+    let dataRoot = utfzhDictRootFromEnv()
+    let dict = cwLoadUtfZhDict(dataRoot)
+    return len(dict.codepoints)
+
+@ exportc("cwUtfzhProbeDictFileExists")
+fn cwUtfzhProbeDictFileExists(): int32 =
+    if os.fileExists(utfzhDictPathFromEnv()):
+        return 1
+    return 0
+
+@ exportc("cwUtfzhProbeDictReadLen")
+fn cwUtfzhProbeDictReadLen(): int32 =
+    let raw = os.readFile(utfzhDictPathFromEnv())
+    return len(raw)
+
+@ exportc("cwUtfzhProbeDictNoMapLen")
+fn cwUtfzhProbeDictNoMapLen(): int32 =
+    let dict = cwParseUtfZhDictNoMap(utfzhDictPathFromEnv())
+    return len(dict.codepoints)

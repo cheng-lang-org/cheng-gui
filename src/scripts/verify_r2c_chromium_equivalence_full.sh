@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
 report_wpt="$ROOT/build/chromium_wpt/wpt_core_report.txt"
 runtime_bin="$ROOT/build/chromium_runtime_matrix/chromium_engine_smoke_macos"
@@ -18,9 +18,9 @@ for f in "$report_wpt" "$runtime_bin" "$network_bin" "$security_bin" "$perf_bin"
   fi
 done
 
-project_name="$(basename "${CHENG_R2C_REAL_PROJECT:-/Users/lbcheng/UniMaker/ClaudeDesign}")"
+project_name="$(basename "${R2C_REAL_PROJECT:-/Users/lbcheng/UniMaker/ClaudeDesign}")"
 project_slug="$(printf '%s' "$project_name" | sed 's/[^A-Za-z0-9._-]/_/g')"
-real_out="${CHENG_R2C_REAL_OUT:-$ROOT/build/r2c_real_project_closed_loop/$project_slug}"
+real_out="${R2C_REAL_OUT:-$ROOT/build/r2c_real_project_closed_loop/$project_slug}"
 real_report="$real_out/r2capp/r2capp_compile_report.json"
 real_wpt="$real_out/r2capp/r2capp_wpt_core_report.json"
 real_states="$real_out/r2capp/r2c_fullroute_states.json"

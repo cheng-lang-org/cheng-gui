@@ -701,12 +701,7 @@ export class UpdateTransport {
     if (!runtimeReady) {
       return;
     }
-    const warmups: Promise<unknown>[] = [
-      libp2pService.mdnsSetEnabled(true).catch(() => false),
-      libp2pService.mdnsSetInterval(2).catch(() => false),
-      libp2pService.mdnsProbe().catch(() => false),
-    ];
-    await Promise.allSettled(warmups);
+    await libp2pService.setDiscoveryActive(true, 'update-transport');
     let connected = await libp2pService.getConnectedPeers().catch(() => [] as string[]);
     if (connected.length === 0 && options?.ensureBootstrap) {
       await libp2pService.joinViaRandomBootstrap(3).catch(() => ({} as Record<string, unknown>));

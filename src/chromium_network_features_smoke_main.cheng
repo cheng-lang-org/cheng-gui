@@ -45,8 +45,8 @@ fn smokeContains(text, pattern: str): bool =
     return false
 
 fn main(): int32 =
-    let httpUrl = os.getEnv("CHENG_NET_HTTP_URL")
-    let httpsUrl = os.getEnv("CHENG_NET_HTTPS_URL")
+    let httpUrl = os.getEnv("NET_HTTP_URL")
+    let httpsUrl = os.getEnv("NET_HTTPS_URL")
     if len(httpUrl) == 0 || len(httpsUrl) == 0:
         return int32(2)
 

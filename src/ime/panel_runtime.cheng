@@ -103,13 +103,13 @@ fn cwHandleKey(state: var CwPanelState, keyText: str) =
             state.status = "save utf-zh failed"
         return
     if key == "ctrlo":
-        let path = getEnv("CHENG_CW_IME_IMPORT_PATH")
+        let path = getEnv("CW_IME_IMPORT_PATH")
         if ! cwPanelImportLegacyFile(state, path, leAuto):
             state.status = "import failed"
         return
     if key == "ctrlshifto":
-        let path = getEnv("CHENG_CW_IME_IMPORT_PATH")
-        let fromText = getEnv("CHENG_CW_IME_IMPORT_ENCODING")
+        let path = getEnv("CW_IME_IMPORT_PATH")
+        let fromText = getEnv("CW_IME_IMPORT_ENCODING")
         let source = legacyEncodingFromText(fromText, leUtf8)
         if ! cwPanelImportLegacyFile(state, path, source):
             state.status = "import failed"
@@ -127,7 +127,7 @@ fn cwApplyScriptLine(state: var CwPanelState, line: str) =
         cwHandleKey(state, kv.value)
         return
     if kv.key == "import":
-        let source = legacyEncodingFromText(getEnv("CHENG_CW_IME_IMPORT_ENCODING"), leAuto)
+        let source = legacyEncodingFromText(getEnv("CW_IME_IMPORT_ENCODING"), leAuto)
         if ! cwPanelImportLegacyFile(state, kv.value, source):
             state.status = "import failed"
         return
@@ -156,22 +156,22 @@ fn cwRunPanel(dataRoot: str, frameLimit: int32): int32 =
     var state = cwPanelDefault(engine)
     cwPanelRefresh(state)
 
-    if getEnv("CHENG_CW_IME_IMPORT_ON_START") == "1":
-        let importPath = getEnv("CHENG_CW_IME_IMPORT_PATH")
+    if getEnv("CW_IME_IMPORT_ON_START") == "1":
+        let importPath = getEnv("CW_IME_IMPORT_PATH")
         if len(importPath) > 0:
-            let source = legacyEncodingFromText(getEnv("CHENG_CW_IME_IMPORT_ENCODING"), leAuto)
+            let source = legacyEncodingFromText(getEnv("CW_IME_IMPORT_ENCODING"), leAuto)
             let _ = cwPanelImportLegacyFile(state, importPath, source)
 
-    cwRunEventScript(state, getEnv("CHENG_CW_IME_EVENT_SCRIPT"))
+    cwRunEventScript(state, getEnv("CW_IME_EVENT_SCRIPT"))
 
-    let maxFrames = cwParseIntEnv(getEnv("CHENG_CW_IME_FRAMES"), frameLimit)
+    let maxFrames = cwParseIntEnv(getEnv("CW_IME_FRAMES"), frameLimit)
     var frames = int32(0)
     while maxFrames > 0 && frames < maxFrames:
         let snapshot = cwRenderSnapshot(1280, 760, state)
         let _ = cwPanelBridgeRenderSnapshot(snapshot)
         frames = frames + 1
 
-    let snapshotOut = getEnv("CHENG_CW_IME_SNAPSHOT_OUT")
+    let snapshotOut = getEnv("CW_IME_SNAPSHOT_OUT")
     if len(snapshotOut) > 0:
         writeFile(snapshotOut, cwRenderSnapshot(1280, 760, state))
 

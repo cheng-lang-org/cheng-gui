@@ -20,7 +20,7 @@ fn i32Text(value: int32): str =
     return out
 
 fn tracePhase(phase: str) =
-    let traceFile = os.getEnv("CHENG_R2C_TRACE_FILE")
+    let traceFile = os.getEnv("R2C_TRACE_FILE")
     if len(traceFile) <= int32(0):
         return
     os.writeFile(traceFile, phase + "\n")
@@ -74,6 +74,13 @@ fn mountCompiledApp(page: web.BrowserPage, manifestPath: str): bool =
     page.r2cImePreedit = ""
     setLen[str](&page.r2cImeCandidates, 0)
     page.r2cImeCommitted = ""
+    page.r2cEditorBooted = false
+    page.r2cEditorEnabled = true
+    page.r2cEditorFocused = true
+    page.r2cEditorText = ""
+    page.r2cEditorCursor = int32(0)
+    page.r2cEditorLastBytes = int32(0)
+    page.r2cEditorStatus = ""
     tracePhase("runtime-mount-call-generated")
     let ok = generated.mountGenerated(page)
     tracePhase("runtime-mount-after-generated")

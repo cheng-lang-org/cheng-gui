@@ -44,23 +44,23 @@ while [ "${1:-}" != "" ]; do
 done
 
 GUI_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-CHENG_ROOT="${CHENG_ROOT:-}"
-if [ -z "$CHENG_ROOT" ]; then
+ROOT="${ROOT:-}"
+if [ -z "$ROOT" ]; then
   if [ -d "$HOME/.cheng/toolchain/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/.cheng/toolchain/cheng-lang"
+    ROOT="$HOME/.cheng/toolchain/cheng-lang"
   elif [ -d "$HOME/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/cheng-lang"
+    ROOT="$HOME/cheng-lang"
   elif [ -d "/Users/lbcheng/cheng-lang" ]; then
-    CHENG_ROOT="/Users/lbcheng/cheng-lang"
+    ROOT="/Users/lbcheng/cheng-lang"
   fi
 fi
-if [ -z "$CHENG_ROOT" ] || [ ! -x "$CHENG_ROOT/src/tooling/chengc.sh" ]; then
-  echo "[Error] missing Cheng toolchain root (set CHENG_ROOT to /path/to/cheng-lang)" 1>&2
+if [ -z "$ROOT" ] || [ ! -x "$ROOT/src/tooling/chengc.sh" ]; then
+  echo "[Error] missing Cheng toolchain root (set ROOT to /path/to/cheng-lang)" 1>&2
   exit 2
 fi
 
-export CHENG_GUI_ROOT="$GUI_ROOT"
-pkg_roots="${CHENG_PKG_ROOTS:-}"
+export GUI_ROOT="$GUI_ROOT"
+pkg_roots="${PKG_ROOTS:-}"
 default_pkg_root="$HOME/.cheng-packages"
 if [ -d "$default_pkg_root" ]; then
   if [ -z "$pkg_roots" ]; then
@@ -80,7 +80,7 @@ else
     *) pkg_roots="$pkg_roots,$GUI_ROOT" ;;
   esac
 fi
-export CHENG_PKG_ROOTS="$pkg_roots"
+export PKG_ROOTS="$pkg_roots"
 
 entry="$GUI_ROOT/gui_smoke_main.cheng"
 if [ ! -f "$entry" ]; then
@@ -149,10 +149,10 @@ chmod +x "$shim"
 
 real_cc="${CC:-cc}"
 
-cd "$CHENG_ROOT"
+cd "$ROOT"
 
-CC_REAL="$real_cc" CC="$shim" CHENG_ASM_CC="$real_cc" \
-  "$CHENG_ROOT/src/tooling/chengc.sh" "$entry" --name:"$prog" --backend:hybrid \
+CC_REAL="$real_cc" CC="$shim" ASM_CC="$real_cc" \
+  "$ROOT/src/tooling/chengc.sh" "$entry" --name:"$prog" --backend:hybrid \
   --hybrid-map:"$hybrid_map" --hybrid-default:"$hybrid_default" --modules-out:"$modules_out"
 
 modules_map="$modules_out/modules.map"

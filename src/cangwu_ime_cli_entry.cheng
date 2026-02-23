@@ -1,0 +1,6 @@
+@importc("cw_native_cli_exec")
+fn cw_native_cli_exec(): int32
+
+@exportc("cw_cli_entry")
+fn cwCliEntry(): int32 =
+    return cw_native_cli_exec()

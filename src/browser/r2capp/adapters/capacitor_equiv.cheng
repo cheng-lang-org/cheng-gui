@@ -1,0 +1,14 @@
+import cheng/gui/browser/r2capp/adapters/capacitor_core
+import cheng/gui/browser/r2capp/adapters/capacitor_geo
+
+fn adapterId(): str =
+    return "@capacitor/equivalent-native"
+
+fn platformName(): str =
+    return "native"
+
+fn httpGet(url: str): capacitor_core.CapacitorHttpResponse =
+    return capacitor_core.capacitorHttpGet(url)
+
+fn currentPosition(): capacitor_geo.GeoPosition =
+    return capacitor_geo.getCurrentPosition()

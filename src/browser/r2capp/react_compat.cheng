@@ -6,9 +6,31 @@ type
         propsJson: str
         children: ReactNode[]
 
+    ReactContext = ref
+        key: str
+        defaultValue: str
+
+    ReactLazy = ref
+        moduleSpec: str
+        componentTag: str
+        fallbackTag: str
+        resolvedTag: str
+        errorText: str
+        state: int32
+
     ReactRenderContext = ref
         hookCursor: int32
         stateValues: str[]
+        memoKeys: str[]
+        memoValues: str[]
+        callbackKeys: str[]
+        callbackValues: str[]
+        refValues: str[]
+        contextKeys: str[]
+        contextValues: str[]
+        importKeys: str[]
+        importValues: str[]
+        effectQueue: str[]
 
 fn appendNode(items: var ReactNode[], node: ReactNode) =
     let idx = len(items)
@@ -19,6 +41,28 @@ fn appendString(items: var str[], value: str) =
     let idx = len(items)
     setLen[str](&items, idx + 1)
     items[idx] = value
+
+fn newRenderContext(): ReactRenderContext =
+    var ctx: ReactRenderContext
+    new(ctx)
+    ctx.hookCursor = int32(0)
+    setLen[str](&ctx.stateValues, 0)
+    setLen[str](&ctx.memoKeys, 0)
+    setLen[str](&ctx.memoValues, 0)
+    setLen[str](&ctx.callbackKeys, 0)
+    setLen[str](&ctx.callbackValues, 0)
+    setLen[str](&ctx.refValues, 0)
+    setLen[str](&ctx.contextKeys, 0)
+    setLen[str](&ctx.contextValues, 0)
+    setLen[str](&ctx.importKeys, 0)
+    setLen[str](&ctx.importValues, 0)
+    setLen[str](&ctx.effectQueue, 0)
+    return ctx
+
+fn resetHooks(ctx: ReactRenderContext) =
+    if ctx == nil:
+        return
+    ctx.hookCursor = int32(0)
 
 fn createText(text: str): ReactNode =
     var node: ReactNode
@@ -62,8 +106,151 @@ fn setState(ctx: ReactRenderContext, token: int32, value: str): bool =
     ctx.stateValues[token] = value
     return true
 
+fn queueEffect(ctx: ReactRenderContext, payload: str) =
+    if ctx == nil:
+        return
+    appendString(ctx.effectQueue, payload)
+
+fn pullEffect(ctx: ReactRenderContext): str =
+    if ctx == nil || len(ctx.effectQueue) == 0:
+        return ""
+    let value = ctx.effectQueue[0]
+    var next: str[]
+    setLen[str](&next, 0)
+    for idx in 1..<len(ctx.effectQueue):
+        appendString(next, ctx.effectQueue[idx])
+    ctx.effectQueue = next
+    return value
+
 fn useEffect(ctx: ReactRenderContext, key: str): bool =
-    ctx
-    key
-    # V1 shim: effect scheduling is modeled in runtime_generic dispatch loop.
+    if ctx == nil:
+        return false
+    queueEffect(ctx, "effect:" + key)
+    ctx.hookCursor = ctx.hookCursor + int32(1)
     return true
+
+fn findKey(keys: str[], key: str): int32 =
+    for idx in 0..<len(keys):
+        if keys[idx] == key:
+            return int32(idx)
+    return int32(-1)
+
+fn useMemo(ctx: ReactRenderContext, key, computedValue: str): str =
+    if ctx == nil:
+        return computedValue
+    let found = findKey(ctx.memoKeys, key)
+    if found >= int32(0):
+        return ctx.memoValues[found]
+    appendString(ctx.memoKeys, key)
+    appendString(ctx.memoValues, computedValue)
+    return computedValue
+
+fn useCallback(ctx: ReactRenderContext, key, callbackId: str): str =
+    if ctx == nil:
+        return callbackId
+    let found = findKey(ctx.callbackKeys, key)
+    if found >= int32(0):
+        return ctx.callbackValues[found]
+    appendString(ctx.callbackKeys, key)
+    appendString(ctx.callbackValues, callbackId)
+    return callbackId
+
+fn useRef(ctx: ReactRenderContext, initial: str): tuple[value: str, token: int32] =
+    if ctx == nil:
+        return (value: initial, token: int32(-1))
+    let token = int32(len(ctx.refValues))
+    appendString(ctx.refValues, initial)
+    return (value: initial, token: token)
+
+fn setRef(ctx: ReactRenderContext, token: int32, value: str): bool =
+    if ctx == nil || token < int32(0) || token >= len(ctx.refValues):
+        return false
+    ctx.refValues[token] = value
+    return true
+
+fn getRef(ctx: ReactRenderContext, token: int32): str =
+    if ctx == nil || token < int32(0) || token >= len(ctx.refValues):
+        return ""
+    return ctx.refValues[token]
+
+fn createContext(key, defaultValue: str): ReactContext =
+    var out: ReactContext
+    new(out)
+    out.key = key
+    out.defaultValue = defaultValue
+    return out
+
+fn provideContext(ctx: ReactRenderContext, context: ReactContext, value: str) =
+    if ctx == nil || context == nil:
+        return
+    let found = findKey(ctx.contextKeys, context.key)
+    if found >= int32(0):
+        ctx.contextValues[found] = value
+        return
+    appendString(ctx.contextKeys, context.key)
+    appendString(ctx.contextValues, value)
+
+fn useContext(ctx: ReactRenderContext, context: ReactContext): str =
+    if context == nil:
+        return ""
+    if ctx == nil:
+        return context.defaultValue
+    let found = findKey(ctx.contextKeys, context.key)
+    if found >= int32(0):
+        return ctx.contextValues[found]
+    return context.defaultValue
+
+fn importModule(ctx: ReactRenderContext, moduleSpec: str): str =
+    if ctx == nil:
+        return "module:" + moduleSpec
+    let found = findKey(ctx.importKeys, moduleSpec)
+    if found >= int32(0):
+        return ctx.importValues[found]
+    let resolved = "module:" + moduleSpec
+    appendString(ctx.importKeys, moduleSpec)
+    appendString(ctx.importValues, resolved)
+    queueEffect(ctx, "import:" + moduleSpec)
+    return resolved
+
+fn lazy(moduleSpec, componentTag, fallbackTag: str): ReactLazy =
+    var out: ReactLazy
+    new(out)
+    out.moduleSpec = moduleSpec
+    out.componentTag = componentTag
+    out.fallbackTag = fallbackTag
+    out.resolvedTag = ""
+    out.errorText = ""
+    out.state = int32(0)
+    return out
+
+fn lazyResolve(ctx: ReactRenderContext, node: ReactLazy, resolvedTag: str): bool =
+    if node == nil:
+        return false
+    node.resolvedTag = resolvedTag
+    node.state = int32(1)
+    queueEffect(ctx, "lazy-resolve:" + node.moduleSpec)
+    return true
+
+fn lazyReject(ctx: ReactRenderContext, node: ReactLazy, errorText: str): bool =
+    if node == nil:
+        return false
+    node.errorText = errorText
+    node.state = int32(2)
+    queueEffect(ctx, "lazy-reject:" + node.moduleSpec)
+    return true
+
+fn suspense(boundaryId: str, node: ReactLazy, fallback, child: ReactNode): ReactNode =
+    if node == nil:
+        return child
+    if node.state == int32(0):
+        var fb = fallback
+        if fb == nil:
+            fb = createElement("div", "{\"data-suspense\":\"fallback\"}", [createText("loading")])
+        return fb
+    if node.state == int32(2):
+        return createElement(
+            "div",
+            "{\"data-suspense\":\"error\",\"data-boundary\":\"" + boundaryId + "\"}",
+            [createText(node.errorText)]
+        )
+    return child

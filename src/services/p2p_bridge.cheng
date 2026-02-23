@@ -44,7 +44,7 @@ else:
         guiP2PState.started = false
 
     fn guiP2PMaybeInit() =
-        let listenAddr = getEnv("CHENG_IDE_P2P_LISTEN")
+        let listenAddr = getEnv("IDE_P2P_LISTEN")
         if len(listenAddr) == 0:
             return
         let err = guiP2PStart(listenAddr)

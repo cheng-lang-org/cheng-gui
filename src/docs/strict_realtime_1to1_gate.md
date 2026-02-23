@@ -45,4 +45,4 @@ The marker is written only when strict gate fully passes. Any failure leaves no 
 - `src/scripts/run_claude_desktop_1to1.sh`
 
 Both scripts require a valid strict marker matching current `git_head`, `project`, `entry`, `routes=30`, and `pixel_tolerance=0`.
-Only gate-internal runs may bypass this check via `CHENG_STRICT_GATE_CONTEXT=1`.
+Only gate-internal runs may bypass this check via `STRICT_GATE_CONTEXT=1`.

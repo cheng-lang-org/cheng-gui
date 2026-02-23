@@ -51,8 +51,8 @@ fn snapshotHas(page: types.BrowserPage, pattern: str): bool =
     return smokeContains(web.captureSnapshot(page), pattern)
 
 fn main(): int32 =
-    let httpUrl = os.getEnv("CHENG_UNIMAKER_HTTP_URL")
-    let httpsUrl = os.getEnv("CHENG_UNIMAKER_HTTPS_URL")
+    let httpUrl = os.getEnv("UNIMAKER_HTTP_URL")
+    let httpsUrl = os.getEnv("UNIMAKER_HTTPS_URL")
     if safeLen(httpUrl) == int32(0) || safeLen(httpsUrl) == int32(0):
         return int32(2)
 

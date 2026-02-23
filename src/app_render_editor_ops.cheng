@@ -3563,7 +3563,7 @@ fn guiProjectIndexTick(state: GuiState, maxFiles: int32, budgetMs: int32): GuiSt
 fn ensureProjectIndex(state: GuiState): GuiState =
     if state.projectIndexReady:
         return state
-    let syncFlag = envFlagEnabled(getEnv("CHENG_IDE_PROJECT_INDEX_SYNC"), false)
+    let syncFlag = envFlagEnabled(getEnv("IDE_PROJECT_INDEX_SYNC"), false)
     if syncFlag || state.projectChunkFiles <= 0:
         return guiProjectIndexScanAll(state)
     return guiProjectIndexTick(state, state.projectChunkFiles, 4)

@@ -51,6 +51,8 @@ static void chengDebugIconFontOnce(const char *kind,
 
 static size_t chengSafeTextLen(const char *text) {
   if (text == NULL) return 0;
+  uintptr_t raw = (uintptr_t)text;
+  if (raw < (uintptr_t)4096u) return 0;
   const size_t cap = 1u << 20;
   size_t n = strnlen(text, cap);
   if (n == cap) return 0;
@@ -59,6 +61,9 @@ static size_t chengSafeTextLen(const char *text) {
 
 static CFStringRef chengCreateUtf8StringLen(const char *text, size_t byteLen) {
   if (text == NULL) return NULL;
+  uintptr_t raw = (uintptr_t)text;
+  if (raw < (uintptr_t)4096u) return NULL;
+  if (byteLen > (size_t)(1u << 20)) return NULL;
   return CFStringCreateWithBytes(kCFAllocatorDefault,
                                  (const UInt8 *)text,
                                  (CFIndex)byteLen,
@@ -120,15 +125,15 @@ static int chengEnvFlagEnabled(const char *name) {
 
 static int chengResolveIconFontPath(char *buffer, size_t cap) {
   if (buffer == NULL || cap == 0) return 0;
-  const char *env = getenv("CHENG_IDE_ICON_FONT");
+  const char *env = getenv("IDE_ICON_FONT");
   if (chengCopyPathIfReadable(env, buffer, cap)) return 1;
-  const char *resourceRoot = getenv("CHENG_IDE_RESOURCE_ROOT");
+  const char *resourceRoot = getenv("IDE_RESOURCE_ROOT");
   if (chengJoinPathIfReadable(resourceRoot, "fonts/codicon.ttf", buffer, cap)) return 1;
   if (chengJoinPathIfReadable(resourceRoot, "resources/fonts/codicon.ttf", buffer, cap)) return 1;
-  const char *rootEnv = getenv("CHENG_IDE_ROOT");
+  const char *rootEnv = getenv("IDE_ROOT");
   if (chengJoinPathIfReadable(rootEnv, "resources/fonts/codicon.ttf", buffer, cap)) return 1;
   if (chengJoinPathIfReadable(rootEnv, "ide/resources/fonts/codicon.ttf", buffer, cap)) return 1;
-  const char *vscodeRoot = getenv("CHENG_IDE_VSCODE_ROOT");
+  const char *vscodeRoot = getenv("IDE_VSCODE_ROOT");
   if (chengJoinPathIfReadable(vscodeRoot, "src/vs/base/browser/ui/codicons/codicon/codicon.ttf", buffer, cap)) return 1;
   if (chengJoinPathIfReadable("/Users/lbcheng/vscode", "src/vs/base/browser/ui/codicons/codicon/codicon.ttf", buffer, cap)) return 1;
   char exeDir[PATH_MAX];
@@ -173,15 +178,15 @@ int chengGuiIconGlyphAvailable(const char *text) {
 
 static int chengResolveFileIconFontPath(char *buffer, size_t cap) {
   if (buffer == NULL || cap == 0) return 0;
-  const char *env = getenv("CHENG_IDE_FILE_ICON_FONT");
+  const char *env = getenv("IDE_FILE_ICON_FONT");
   if (chengCopyPathIfReadable(env, buffer, cap)) return 1;
-  const char *resourceRoot = getenv("CHENG_IDE_RESOURCE_ROOT");
+  const char *resourceRoot = getenv("IDE_RESOURCE_ROOT");
   if (chengJoinPathIfReadable(resourceRoot, "fonts/seti.woff", buffer, cap)) return 1;
   if (chengJoinPathIfReadable(resourceRoot, "resources/fonts/seti.woff", buffer, cap)) return 1;
-  const char *rootEnv = getenv("CHENG_IDE_ROOT");
+  const char *rootEnv = getenv("IDE_ROOT");
   if (chengJoinPathIfReadable(rootEnv, "resources/fonts/seti.woff", buffer, cap)) return 1;
   if (chengJoinPathIfReadable(rootEnv, "ide/resources/fonts/seti.woff", buffer, cap)) return 1;
-  const char *vscodeRoot = getenv("CHENG_IDE_VSCODE_ROOT");
+  const char *vscodeRoot = getenv("IDE_VSCODE_ROOT");
   if (chengJoinPathIfReadable(vscodeRoot, "extensions/theme-seti/icons/seti.woff", buffer, cap)) return 1;
   if (chengJoinPathIfReadable("/Users/lbcheng/vscode", "extensions/theme-seti/icons/seti.woff", buffer, cap)) return 1;
   char exeDir[PATH_MAX];
@@ -535,7 +540,7 @@ static void chengDebugIconFontOnce(const char *kind,
                                    CTFontRef font,
                                    uint32_t codepoint,
                                    int *printedFlag) {
-  if (!chengEnvFlagEnabled("CHENG_IDE_DEBUG_ICONS")) return;
+  if (!chengEnvFlagEnabled("IDE_DEBUG_ICONS")) return;
   if (printedFlag == NULL || *printedFlag) return;
   *printedFlag = 1;
   char nameBuf[256] = {0};
@@ -731,6 +736,8 @@ static int chengGuiDrawTextBgraLenInternal(void *pixels,
                                            const char *text,
                                            size_t textLen) {
   if (pixels == NULL || text == NULL) return -1;
+  if ((uintptr_t)text < (uintptr_t)4096u) return -12;
+  if (textLen > (size_t)(1u << 20)) return -13;
   if (width <= 0 || height <= 0) return -2;
   if (strideBytes <= 0) strideBytes = width * 4;
   if (fontSize <= 1.0) fontSize = 12.0;
@@ -884,6 +891,66 @@ int chengGuiDrawTextBgraLen(void *pixels,
   if (textLen < 0) return -11;
   return chengGuiDrawTextBgraLenInternal(
       pixels, width, height, strideBytes, x, y, w, h, color, fontSize, text, (size_t)textLen);
+}
+
+int chengGuiDrawTextBgraLenI(void *pixels,
+                             int width,
+                             int height,
+                             int strideBytes,
+                             int x,
+                             int y,
+                             int w,
+                             int h,
+                             uint32_t color,
+                             int fontSizeX100,
+                             const char *text,
+                             int textLen) {
+  if (text == NULL) return -1;
+  if (textLen < 0) return -11;
+  double fontSize = (double)fontSizeX100 / 100.0;
+  if (fontSize <= 1.0) {
+    fontSize = 14.0;
+  }
+  return chengGuiDrawTextBgraLenInternal(
+      pixels,
+      width,
+      height,
+      strideBytes,
+      (double)x,
+      (double)y,
+      (double)w,
+      (double)h,
+      color,
+      fontSize,
+      text,
+      (size_t)textLen);
+}
+
+int chengGuiMacDrawTextBgraLenI(void *pixels,
+                                int width,
+                                int height,
+                                int strideBytes,
+                                int x,
+                                int y,
+                                int w,
+                                int h,
+                                uint32_t color,
+                                int fontSizeX100,
+                                const char *text,
+                                int textLen) {
+  return chengGuiDrawTextBgraLenI(
+      pixels,
+      width,
+      height,
+      strideBytes,
+      x,
+      y,
+      w,
+      h,
+      color,
+      fontSizeX100,
+      text,
+      textLen);
 }
 
 double chengGuiTextWidth(const char *text, double fontSize) {

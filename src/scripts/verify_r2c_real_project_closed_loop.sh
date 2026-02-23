@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 STRICT_PROJECT="/Users/lbcheng/UniMaker/ClaudeDesign"
 STRICT_ENTRY="/app/main.tsx"
 
@@ -62,7 +62,7 @@ if [ "$host" != "Darwin" ]; then
 fi
 
 project="$(CDPATH= cd -- "$project" && pwd)"
-if [ "${CHENG_STRICT_GATE_CONTEXT:-0}" = "1" ]; then
+if [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
   if [ "$project" != "$STRICT_PROJECT" ]; then
     echo "[verify-r2c-real] strict mode requires --project $STRICT_PROJECT" >&2
     exit 1
@@ -87,31 +87,31 @@ if [ -n "$entry" ]; then
   compile_args+=(--entry "$entry")
 fi
 
-export CHENG_R2C_LEGACY_UNIMAKER=0
-export CHENG_R2C_SKIP_COMPILER_RUN=0
-export CHENG_R2C_TRY_COMPILER_FIRST=1
-export CHENG_STRICT_GATE_CONTEXT=1
-export CHENG_R2C_REUSE_RUNTIME_BINS="${CHENG_R2C_REUSE_RUNTIME_BINS:-0}"
-export CHENG_R2C_REBUILD_DESKTOP="${CHENG_R2C_REBUILD_DESKTOP:-1}"
-export CHENG_R2C_RUNTIME_FRONTEND="${CHENG_R2C_RUNTIME_FRONTEND:-stage1}"
-export CHENG_R2C_DESKTOP_FRONTEND="${CHENG_R2C_DESKTOP_FRONTEND:-auto}"
-export CHENG_R2C_RUNTIME_TEXT_SOURCE="${CHENG_R2C_RUNTIME_TEXT_SOURCE:-project}"
-export CHENG_R2C_RUNTIME_ROUTE_TITLE_SOURCE="${CHENG_R2C_RUNTIME_ROUTE_TITLE_SOURCE:-project}"
-export CHENG_R2C_MAX_SEMANTIC_NODES="${CHENG_R2C_MAX_SEMANTIC_NODES:-1600}"
-if [ "${CHENG_R2C_RUNTIME_TEXT_SOURCE:-project}" != "project" ]; then
-  echo "[verify-r2c-real] strict mode requires CHENG_R2C_RUNTIME_TEXT_SOURCE=project" >&2
+export R2C_LEGACY_UNIMAKER=0
+export R2C_SKIP_COMPILER_RUN=0
+export R2C_TRY_COMPILER_FIRST=1
+export STRICT_GATE_CONTEXT=1
+export R2C_REUSE_RUNTIME_BINS="${R2C_REUSE_RUNTIME_BINS:-0}"
+export R2C_REBUILD_DESKTOP="${R2C_REBUILD_DESKTOP:-1}"
+export R2C_RUNTIME_FRONTEND="${R2C_RUNTIME_FRONTEND:-stage1}"
+export R2C_DESKTOP_FRONTEND="${R2C_DESKTOP_FRONTEND:-auto}"
+export R2C_RUNTIME_TEXT_SOURCE="${R2C_RUNTIME_TEXT_SOURCE:-project}"
+export R2C_RUNTIME_ROUTE_TITLE_SOURCE="${R2C_RUNTIME_ROUTE_TITLE_SOURCE:-project}"
+export R2C_MAX_SEMANTIC_NODES="${R2C_MAX_SEMANTIC_NODES:-1600}"
+if [ "${R2C_RUNTIME_TEXT_SOURCE:-project}" != "project" ]; then
+  echo "[verify-r2c-real] strict mode requires R2C_RUNTIME_TEXT_SOURCE=project" >&2
   exit 1
 fi
-if [ "${CHENG_R2C_RUNTIME_ROUTE_TITLE_SOURCE:-project}" != "project" ]; then
-  echo "[verify-r2c-real] strict mode requires CHENG_R2C_RUNTIME_ROUTE_TITLE_SOURCE=project" >&2
+if [ "${R2C_RUNTIME_ROUTE_TITLE_SOURCE:-project}" != "project" ]; then
+  echo "[verify-r2c-real] strict mode requires R2C_RUNTIME_ROUTE_TITLE_SOURCE=project" >&2
   exit 1
 fi
-if [ "${CHENG_STRICT_GATE_CONTEXT:-0}" = "1" ] && [ "${CHENG_R2C_RUNTIME_FRONTEND:-stage1}" != "stage1" ]; then
-  echo "[verify-r2c-real] strict mode requires CHENG_R2C_RUNTIME_FRONTEND=stage1" >&2
+if [ "${STRICT_GATE_CONTEXT:-0}" = "1" ] && [ "${R2C_RUNTIME_FRONTEND:-stage1}" != "stage1" ]; then
+  echo "[verify-r2c-real] strict mode requires R2C_RUNTIME_FRONTEND=stage1" >&2
   exit 1
 fi
-if [ "${CHENG_STRICT_GATE_CONTEXT:-0}" = "1" ] && [ "${CHENG_R2C_DESKTOP_FRONTEND:-auto}" != "auto" ]; then
-  echo "[verify-r2c-real] strict mode requires CHENG_R2C_DESKTOP_FRONTEND=auto" >&2
+if [ "${STRICT_GATE_CONTEXT:-0}" = "1" ] && [ "${R2C_DESKTOP_FRONTEND:-auto}" != "auto" ]; then
+  echo "[verify-r2c-real] strict mode requires R2C_DESKTOP_FRONTEND=auto" >&2
   exit 1
 fi
 
@@ -371,19 +371,19 @@ runner_state="$out_dir/runner_state.txt"
 desktop_snapshot="$out_dir/desktop_snapshot.txt"
 desktop_state="$out_dir/desktop_state.txt"
 desktop_drawlist="$out_dir/desktop_drawlist.txt"
-skip_desktop_smoke="${CHENG_R2C_REAL_SKIP_DESKTOP_SMOKE:-0}"
-skip_runner_smoke="${CHENG_R2C_REAL_SKIP_RUNNER_SMOKE:-0}"
+skip_desktop_smoke="${R2C_REAL_SKIP_DESKTOP_SMOKE:-0}"
+skip_runner_smoke="${R2C_REAL_SKIP_RUNNER_SMOKE:-0}"
 
 if [ "$skip_runner_smoke" != "1" ]; then
   runner_env=(
-    "CHENG_R2C_APP_URL=about:blank"
-    "CHENG_R2C_RUNNER_MODE=1"
-    "CHENG_R2CAPP_MANIFEST=$out_dir/r2capp/r2capp_manifest.json"
-    "CHENG_R2C_APP_SNAPSHOT_OUT=$runner_snapshot"
-    "CHENG_R2C_APP_STATE_OUT=$runner_state"
+    "R2C_APP_URL=about:blank"
+    "R2C_RUNNER_MODE=1"
+    "R2CAPP_MANIFEST=$out_dir/r2capp/r2capp_manifest.json"
+    "R2C_APP_SNAPSHOT_OUT=$runner_snapshot"
+    "R2C_APP_STATE_OUT=$runner_state"
   )
   if [ -n "$event_script" ]; then
-    runner_env+=("CHENG_R2C_APP_EVENT_SCRIPT=$event_script")
+    runner_env+=("R2C_APP_EVENT_SCRIPT=$event_script")
   fi
   if ! perl -e 'my $t=shift @ARGV; alarm $t; exec @ARGV or die $!;' 20 env "${runner_env[@]}" "$runner_bin" >/dev/null 2>&1; then
     echo "[verify-r2c-real] runner timeout/failure: $runner_bin" >&2
@@ -392,15 +392,15 @@ if [ "$skip_runner_smoke" != "1" ]; then
 fi
 
 desktop_env=(
-  "CHENG_R2C_APP_URL=about:blank"
-  "CHENG_R2CAPP_MANIFEST=$out_dir/r2capp/r2capp_manifest.json"
-  "CHENG_R2C_APP_SNAPSHOT_OUT=$desktop_snapshot"
-  "CHENG_R2C_APP_STATE_OUT=$desktop_state"
-  "CHENG_R2C_APP_DRAWLIST_OUT=$desktop_drawlist"
-  "CHENG_R2C_DESKTOP_AUTOCLOSE_MS=180"
+  "R2C_APP_URL=about:blank"
+  "R2CAPP_MANIFEST=$out_dir/r2capp/r2capp_manifest.json"
+  "R2C_APP_SNAPSHOT_OUT=$desktop_snapshot"
+  "R2C_APP_STATE_OUT=$desktop_state"
+  "R2C_APP_DRAWLIST_OUT=$desktop_drawlist"
+  "R2C_DESKTOP_AUTOCLOSE_MS=180"
 )
 if [ -n "$event_script" ]; then
-  desktop_env+=("CHENG_R2C_APP_EVENT_SCRIPT=$event_script")
+  desktop_env+=("R2C_APP_EVENT_SCRIPT=$event_script")
 fi
 if [ "$skip_desktop_smoke" != "1" ]; then
   if ! perl -e 'my $t=shift @ARGV; alarm $t; exec @ARGV or die $!;' 20 env "${desktop_env[@]}" "$desktop_bin" >/dev/null 2>&1; then

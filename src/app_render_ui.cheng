@@ -439,11 +439,11 @@ fn drawTextLine(pixels: void*, width, height, strideBytes: int32, x, y: float64,
             let rcIcon: int32 = chengGuiNativeDrawTextBgraIcon(pixels, width, height, strideBytes, x, y, 0.0, 0.0, color, fontSize, text)
             if rcIcon == 0:
                 return true
-    let rc: int32 = chengGuiNativeDrawTextBgraLen(pixels, width, height, strideBytes, x, y, 0.0, 0.0, color, fontSize, text, int32(len(text)))
+    let rc: int32 = chengGuiNativeDrawTextBgraLen(pixels, width, height, strideBytes, x, y, 0.0, 0.0, color, fontSize, cstring(text), int32(len(text)))
     return rc == 0
 
 fn drawCodeLine(pixels: void*, width, height, strideBytes: int32, x, y: float64, color: uint32, fontSize: float64, text: str): bool =
-    let rc: int32 = chengGuiNativeDrawTextBgraCode(pixels, width, height, strideBytes, x, y, 0.0, 0.0, color, fontSize, text)
+    let rc: int32 = chengGuiNativeDrawTextBgraCode(pixels, width, height, strideBytes, x, y, 0.0, 0.0, color, fontSize, cstring(text))
     return rc == 0
 
 fn drawTextBlock(pixels: void*, width, height, strideBytes: int32, x, y: float64, color: uint32, fontSize: float64, lineHeight: float64, text: str) =
@@ -3701,20 +3701,20 @@ fn guiWindowEnvPrefix(root: str, openPath: str): str =
         return ""
     var outVal: str = ""
     if len(root) > 0:
-        outVal = outVal + "CHENG_IDE_ROOT=" + guiShellQuote(root) + " "
+        outVal = outVal + "IDE_ROOT=" + guiShellQuote(root) + " "
     if len(openPath) > 0:
-        outVal = outVal + "CHENG_IDE_OPEN=" + guiShellQuote(openPath) + " "
+        outVal = outVal + "IDE_OPEN=" + guiShellQuote(openPath) + " "
     return outVal
 
 fn guiNewWindowCommand(state: GuiState, openPath: str): str =
-    let override = getEnv("CHENG_IDE_NEW_WINDOW_CMD")
+    let override = getEnv("IDE_NEW_WINDOW_CMD")
     var baseCmd: str = override
     if len(baseCmd) == 0:
-        let binOverride = getEnv("CHENG_IDE_BIN")
+        let binOverride = getEnv("IDE_BIN")
         if len(binOverride) > 0:
             baseCmd = binOverride
         else:
-            let root = getEnv("CHENG_IDE_ROOT")
+            let root = getEnv("IDE_ROOT")
             if len(root) > 0:
                 baseCmd = joinPath(root, "build/main_local")
             else:
@@ -3843,7 +3843,7 @@ fn guiParseDiagOutput(output: str, filePath: str): diag.seq_GuiDiagnostic =
     return outVal
 
 fn guiLangDiagCommand(state: GuiState, filePath: str): str =
-    let override = getEnv("CHENG_IDE_DIAG_CMD")
+    let override = getEnv("IDE_DIAG_CMD")
     let quoted = guiShellQuote(filePath)
     if len(override) > 0:
         if indexOfSubstr(override, "{file}", 0) >= 0:
@@ -3853,10 +3853,10 @@ fn guiLangDiagCommand(state: GuiState, filePath: str): str =
     let baseRoot = if len(root) > 0: root else: guiWorkspaceActiveRoot(state)
     let localChengc = joinPath(baseRoot, "src/tooling/chengc.sh")
     let outFile = guiShellQuote(".tmp_cheng_ide_diag.o")
-    let driverEnv = "CHENG_BACKEND_DRIVER_DIRECT=0 "
+    let driverEnv = "BACKEND_DRIVER_DIRECT=0 "
     if fileExists(localChengc):
         return driverEnv + guiShellQuote("./src/tooling/chengc.sh") + " " + quoted + " --emit-obj --obj-out:" + outFile
-    let chengRoot = getEnv("CHENG_ROOT")
+    let chengRoot = getEnv("ROOT")
     if len(chengRoot) > 0:
         let rootChengc = joinPath(chengRoot, "src/tooling/chengc.sh")
         if fileExists(rootChengc):
@@ -3893,42 +3893,42 @@ fn guiRunLanguageDiagnostics(state: GuiState): GuiState =
 
 fn guiTaskCommand(kind: str): str =
     if kind == "build":
-        let cmd = getEnv("CHENG_IDE_BUILD_CMD")
+        let cmd = getEnv("IDE_BUILD_CMD")
         if len(cmd) > 0:
             return cmd
-        let chengRoot = getEnv("CHENG_ROOT")
-        let ideRoot = getEnv("CHENG_IDE_ROOT")
+        let chengRoot = getEnv("ROOT")
+        let ideRoot = getEnv("IDE_ROOT")
         if len(chengRoot) > 0 && len(ideRoot) > 0:
             let script = joinPath(chengRoot, "cheng/tooling/build_ide_gui.sh")
             let outPath = joinPath(ideRoot, "build/main_local")
             return guiShellQuote(script) + " --out:" + guiShellQuote(outPath)
         return "./cheng/tooling/build_ide_gui.sh --out:./ide/main_local"
     if kind == "run":
-        let cmd = getEnv("CHENG_IDE_RUN_CMD")
+        let cmd = getEnv("IDE_RUN_CMD")
         if len(cmd) > 0:
             return cmd
-        let binOverride = getEnv("CHENG_IDE_BIN")
+        let binOverride = getEnv("IDE_BIN")
         if len(binOverride) > 0:
             return guiShellQuote(binOverride) + " gui"
-        let ideRoot = getEnv("CHENG_IDE_ROOT")
+        let ideRoot = getEnv("IDE_ROOT")
         if len(ideRoot) > 0:
             let binPath = joinPath(ideRoot, "build/main_local")
             return guiShellQuote(binPath) + " gui"
         return "./ide/main_local gui"
     if kind == "test":
-        let cmd = getEnv("CHENG_IDE_TEST_CMD")
+        let cmd = getEnv("IDE_TEST_CMD")
         if len(cmd) > 0:
             return cmd
-        let chengRoot = getEnv("CHENG_ROOT")
+        let chengRoot = getEnv("ROOT")
         if len(chengRoot) > 0:
             let script = joinPath(chengRoot, "cheng/tooling/bootstrap_pure.sh")
             return guiShellQuote(script) + " --fullspec"
         return "./cheng/tooling/bootstrap_pure.sh --fullspec"
     if kind == "package":
-        let cmd = getEnv("CHENG_IDE_PACKAGE_CMD")
+        let cmd = getEnv("IDE_PACKAGE_CMD")
         if len(cmd) > 0:
             return cmd
-        let chengRoot = getEnv("CHENG_ROOT")
+        let chengRoot = getEnv("ROOT")
         if len(chengRoot) > 0:
             let script = joinPath(chengRoot, "cheng/tooling/package_ide.sh")
             return guiShellQuote(script)
@@ -3954,7 +3954,7 @@ fn guiTaskShowHelp(state: GuiState): GuiState =
     state.terminal = pushTerminalLine(state.terminal, "mobile: export|android|ios [file] [--name:<app>] [--out:<dir>] [--assets:<dir>] [--with-bridge] [--with-android-project] [--with-ios-project] [--with-projects]")
     state.terminal = pushTerminalLine(state.terminal, "debug: status/load/refresh/sync/clear/run/continue/step/next/pause/stop, bp add/del/clear, frames set/clear, vars set/clear, watch add/del/clear")
     state.terminal = pushTerminalLine(state.terminal, "codex: login <token>|logout|auth|approve|decline|open [path]|new [preview]|connect|interrupt|ask <text>|asksel|askfile|review <text>|reviewsel|reviewfile|todo|add <text>|addsel|addfile|exec <text>|preview <path>|previewdiff|apply <path>|applydiff|status <text>|threads|sessions|use <id>|resume <id>|stop|clear")
-    state.terminal = pushTerminalLine(state.terminal, "env: CHENG_IDE_ROOT, CHENG_IDE_ROOTS, CHENG_IDE_OPEN, CHENG_IDE_NEW_WINDOW_CMD, CHENG_IDE_BUILD_CMD, CHENG_IDE_RUN_CMD, CHENG_IDE_TEST_CMD, CHENG_IDE_PACKAGE_CMD, CHENG_IDE_DIAG_CMD, CHENG_IDE_DEBUG_CMD (uses {action}/{args}/{breakpoints}/{watches}), CHENG_IDE_DIAG_AUTO, CHENG_IDE_AUTOSAVE, CHENG_IDE_FORMAT_ON_SAVE, CHENG_IDE_RECOVERY, CHENG_IDE_RECOVERY_BYTES, CHENG_IDE_THEME, CHENG_IDE_BRIDGE, CHENG_IDE_BRIDGE_PATH, CHENG_IDE_COMMAND, CHENG_IDE_COMMAND_PATH, CHENG_IDE_COMMAND_ACK_PATH, CHENG_IDE_COMMAND_POLL_MS, CHENG_CODEX_CLI, CHENG_CODEX_TODO_LENS, CHENG_CODEX_LANGUAGE, CHENG_CODEX_START_FOCUS, CHENG_CODEX_WSL, CHENG_IDE_CLIPBOARD_SET, CHENG_IDE_CLIPBOARD_GET, CHENG_IDE_CLIPBOARD_TMP, CHENG_IDE_WORKSPACE_CONFIG")
+    state.terminal = pushTerminalLine(state.terminal, "env: IDE_ROOT, IDE_ROOTS, IDE_OPEN, IDE_NEW_WINDOW_CMD, IDE_BUILD_CMD, IDE_RUN_CMD, IDE_TEST_CMD, IDE_PACKAGE_CMD, IDE_DIAG_CMD, IDE_DEBUG_CMD (uses {action}/{args}/{breakpoints}/{watches}), IDE_DIAG_AUTO, IDE_AUTOSAVE, IDE_FORMAT_ON_SAVE, IDE_RECOVERY, IDE_RECOVERY_BYTES, IDE_THEME, IDE_BRIDGE, IDE_BRIDGE_PATH, IDE_COMMAND, IDE_COMMAND_PATH, IDE_COMMAND_ACK_PATH, IDE_COMMAND_POLL_MS, CODEX_CLI, CODEX_TODO_LENS, CODEX_LANGUAGE, CODEX_START_FOCUS, CODEX_WSL, IDE_CLIPBOARD_SET, IDE_CLIPBOARD_GET, IDE_CLIPBOARD_TMP, IDE_WORKSPACE_CONFIG")
     return state
 
 fn guiTaskHandleInput(state: GuiState, input: str): GuiState =
@@ -4869,17 +4869,17 @@ fn guiWorkspaceStateApply(state: GuiState, workspace: WorkspaceState): GuiState 
                 maxCounter = count
             next.terminalSessionCounter = maxCounter
     if len(workspace.themeName) > 0:
-        let themeEnv = getEnv("CHENG_IDE_THEME")
+        let themeEnv = getEnv("IDE_THEME")
         if len(themeEnv) == 0:
             next = guiSetThemeSilent(next, workspace.themeName)
     if workspace.autoSave >= 0:
-        let autosaveEnv = getEnv("CHENG_IDE_AUTOSAVE")
+        let autosaveEnv = getEnv("IDE_AUTOSAVE")
         if len(autosaveEnv) == 0:
             next.autoSave = workspace.autoSave > 0
             next.autoSavePending = false
             next.autoSaveCooldown = 0
     if workspace.formatOnSave >= 0:
-        let formatEnv = getEnv("CHENG_IDE_FORMAT_ON_SAVE")
+        let formatEnv = getEnv("IDE_FORMAT_ON_SAVE")
         if len(formatEnv) == 0:
             next.formatOnSave = workspace.formatOnSave > 0
     if workspace.splitActive >= 0:
@@ -6419,16 +6419,16 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
     forceNativeArg
     resourceRoot
 
-    let debugStartup: bool = envFlagEnabled(getEnv("CHENG_IDE_DEBUG_STARTUP"), false)
-    let debugInput: bool = envFlagEnabled(getEnv("CHENG_IDE_DEBUG_INPUT"), false)
-    let debugPointer: bool = debugInput || envFlagEnabled(getEnv("CHENG_IDE_DEBUG_POINTER"), false)
-    let inputScaleOverride: float64 = envFloatValue("CHENG_IDE_INPUT_SCALE", 0.0)
+    let debugStartup: bool = envFlagEnabled(getEnv("IDE_DEBUG_STARTUP"), false)
+    let debugInput: bool = envFlagEnabled(getEnv("IDE_DEBUG_INPUT"), false)
+    let debugPointer: bool = debugInput || envFlagEnabled(getEnv("IDE_DEBUG_POINTER"), false)
+    let inputScaleOverride: float64 = envFloatValue("IDE_INPUT_SCALE", 0.0)
     if debugStartup:
         textutils.print "[startup] runNativeGui enter\n"
-    if envFlagEnabled(getEnv("CHENG_IDE_DEBUG_EXPLORER_ONLY"), false):
+    if envFlagEnabled(getEnv("IDE_DEBUG_EXPLORER_ONLY"), false):
         if debugStartup:
             textutils.print "[startup] debug-only mode\n"
-        var projectRoot = getEnv("CHENG_IDE_ROOT")
+        var projectRoot = getEnv("IDE_ROOT")
         if len(projectRoot) == 0:
             projectRoot = getCurrentDir()
         if debugStartup:
@@ -6571,22 +6571,22 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
     state.diagScanVersion = 0
     state.diagScanStack = diag.guiDiagNewSeq_GuiDiagStackEntry(0, 0)
     state.diagScanDiags = diag.guiDiagNewSeq_GuiDiagnostic(0, 0)
-    state.diagChunkLines = envIntValue("CHENG_IDE_DIAG_CHUNK_LINES", 200)
+    state.diagChunkLines = envIntValue("IDE_DIAG_CHUNK_LINES", 200)
     if state.diagChunkLines < 0:
         state.diagChunkLines = 0
-    state.outlineChunkLines = envIntValue("CHENG_IDE_OUTLINE_CHUNK_LINES", 200)
+    state.outlineChunkLines = envIntValue("IDE_OUTLINE_CHUNK_LINES", 200)
     if state.outlineChunkLines < 0:
         state.outlineChunkLines = 0
-    state.semanticChunkLines = envIntValue("CHENG_IDE_SEMANTIC_CHUNK_LINES", 200)
+    state.semanticChunkLines = envIntValue("IDE_SEMANTIC_CHUNK_LINES", 200)
     if state.semanticChunkLines < 0:
         state.semanticChunkLines = 0
     state.taskLog = default[str[]]
     state.taskRunner = defaultTaskRunner()
-    state.perf.enabled = envFlagEnabled(getEnv("CHENG_IDE_PERF"), false)
-    state.perf.logEveryMs = envIntValue("CHENG_IDE_PERF_LOG_MS", 1000)
+    state.perf.enabled = envFlagEnabled(getEnv("IDE_PERF"), false)
+    state.perf.logEveryMs = envIntValue("IDE_PERF_LOG_MS", 1000)
     if state.perf.logEveryMs <= 0:
         state.perf.logEveryMs = 1000
-    state.perf.slowFrameMs = envIntValue("CHENG_IDE_PERF_SLOW_MS", 120)
+    state.perf.slowFrameMs = envIntValue("IDE_PERF_SLOW_MS", 120)
     if state.perf.slowFrameMs <= 0:
         state.perf.slowFrameMs = 120
     state.perf.lastLogMs = 0
@@ -6602,11 +6602,11 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
     state.perf.slowFrames = 0
     if state.perf.enabled:
         state.perf.lastLogMs = guiNowMs()
-    state.renderLiteForced = envFlagEnabled(getEnv("CHENG_IDE_RENDER_LITE"), false)
-    state.renderLiteThresholdMs = envIntValue("CHENG_IDE_RENDER_LITE_MS", 28)
+    state.renderLiteForced = envFlagEnabled(getEnv("IDE_RENDER_LITE"), false)
+    state.renderLiteThresholdMs = envIntValue("IDE_RENDER_LITE_MS", 28)
     if state.renderLiteThresholdMs <= 0:
         state.renderLiteThresholdMs = 28
-    state.renderLiteHoldMax = envIntValue("CHENG_IDE_RENDER_LITE_HOLD", 30)
+    state.renderLiteHoldMax = envIntValue("IDE_RENDER_LITE_HOLD", 30)
     if state.renderLiteHoldMax < 0:
         state.renderLiteHoldMax = 0
     state.renderLiteHoldFrames = 0
@@ -6614,22 +6614,22 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
     state.renderLastMs = 0
     state.renderDirty = true
     state.renderNextMs = 0
-    state.renderMinIntervalMs = envIntValue("CHENG_IDE_FRAME_MS", 16)
+    state.renderMinIntervalMs = envIntValue("IDE_FRAME_MS", 16)
     if state.renderMinIntervalMs < 0:
         state.renderMinIntervalMs = 0
-    state.renderIdlePollMs = envIntValue("CHENG_IDE_IDLE_POLL_MS", 16)
+    state.renderIdlePollMs = envIntValue("IDE_IDLE_POLL_MS", 16)
     if state.renderIdlePollMs < 0:
         state.renderIdlePollMs = 16
-    state.backgroundTickIntervalMs = envIntValue("CHENG_IDE_BG_MS", 16)
+    state.backgroundTickIntervalMs = envIntValue("IDE_BG_MS", 16)
     if state.backgroundTickIntervalMs < 0:
         state.backgroundTickIntervalMs = 16
-    state.backgroundInteractiveDelayMs = envIntValue("CHENG_IDE_BG_INTERACTIVE_MS", 120)
+    state.backgroundInteractiveDelayMs = envIntValue("IDE_BG_INTERACTIVE_MS", 120)
     if state.backgroundInteractiveDelayMs < 0:
         state.backgroundInteractiveDelayMs = 0
-    state.backgroundBudgetMs = envIntValue("CHENG_IDE_BG_BUDGET_MS", 6)
+    state.backgroundBudgetMs = envIntValue("IDE_BG_BUDGET_MS", 6)
     if state.backgroundBudgetMs < 0:
         state.backgroundBudgetMs = 0
-    state.desktopCommandPollMs = envIntValue("CHENG_IDE_COMMAND_POLL_MS", 200)
+    state.desktopCommandPollMs = envIntValue("IDE_COMMAND_POLL_MS", 200)
     if state.desktopCommandPollMs < 0:
         state.desktopCommandPollMs = 0
     state.desktopCommandNextMs = 0
@@ -6658,26 +6658,26 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
         textutils.print "[startup] state basics\n"
     state.pendingQuit = false
     state.quitRequested = false
-    let diagEnv: str = getEnv("CHENG_IDE_DIAG_AUTO")
+    let diagEnv: str = getEnv("IDE_DIAG_AUTO")
     state.diagAuto = envFlagEnabled(diagEnv, true)
     state.diagPending = false
     state.diagCooldown = 0
-    let autosaveEnv: str = getEnv("CHENG_IDE_AUTOSAVE")
+    let autosaveEnv: str = getEnv("IDE_AUTOSAVE")
     state.autoSave = envFlagEnabled(autosaveEnv, false)
     state.autoSavePending = false
     state.autoSaveCooldown = 0
-    let formatOnSaveEnv: str = getEnv("CHENG_IDE_FORMAT_ON_SAVE")
+    let formatOnSaveEnv: str = getEnv("IDE_FORMAT_ON_SAVE")
     state.formatOnSave = envFlagEnabled(formatOnSaveEnv, false)
-    let recoveryEnv: str = getEnv("CHENG_IDE_RECOVERY")
+    let recoveryEnv: str = getEnv("IDE_RECOVERY")
     state.recoveryEnabled = envFlagEnabled(recoveryEnv, true)
-    if len(getEnv("CHENG_IDE_SKIP_IO")) > 0:
+    if len(getEnv("IDE_SKIP_IO")) > 0:
         state.recoveryEnabled = false
     state.recoveryPending = false
     state.recoveryCooldown = 0
     state = guiSetDiagnosticsDirty(state)
     if debugStartup:
         textutils.print "[startup] diagnostics set\n"
-    state.projectRoot = getEnv("CHENG_IDE_ROOT")
+    state.projectRoot = getEnv("IDE_ROOT")
     if len(state.projectRoot) == 0:
         state.projectRoot = getCurrentDir()
     state.workspaceRoots = workspaceRootsFromEnv(state.projectRoot)
@@ -6699,7 +6699,7 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
     state.projectScanIndex = 0
     state.projectScanFiles = default[str[]]
     state.projectScanSymbols = default[str[]]
-    state.projectChunkFiles = envIntValue("CHENG_IDE_PROJECT_CHUNK_FILES", 16)
+    state.projectChunkFiles = envIntValue("IDE_PROJECT_CHUNK_FILES", 16)
     if state.projectChunkFiles < 0:
         state.projectChunkFiles = 0
     let workspaceConfig: WorkspaceConfig = guiWorkspaceConfigLoad(state.projectRoot)
@@ -6718,8 +6718,8 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
     if debugStartup:
         textutils.print "[startup] terminal ready\n"
     state = guiCodexApplyStartFocus(state)
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
-    let openEnv: str = getEnv("CHENG_IDE_OPEN")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
+    let openEnv: str = getEnv("IDE_OPEN")
     var workspaceState: WorkspaceState = defaultWorkspaceState()
     let useWorkspace: bool = len(skipIO) == 0 && len(openEnv) == 0
     if useWorkspace:
@@ -6770,7 +6770,7 @@ fn runNativeGui(frames: int, resourceRoot: str, metricsPath: str, commandPath: s
         state.layoutKey = calcLayoutKey(state, width, height, scale)
     if len(state.editor.filePath) > 0:
         state = guiRevealExplorerPath(state, state.editor.filePath)
-    let themeEnv: str = getEnv("CHENG_IDE_THEME")
+    let themeEnv: str = getEnv("IDE_THEME")
     if len(themeEnv) > 0:
         state = guiSetThemeSilent(state, themeEnv)
     elif len(state.themeName) == 0:

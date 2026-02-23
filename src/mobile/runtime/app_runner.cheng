@@ -1,0 +1,158 @@
+import cheng/gui/mobile/host/native_ffi
+import cheng/gui/mobile/design/tokens as design_tokens
+import cheng/gui/mobile/core/types
+import cheng/gui/mobile/layout/flex
+import cheng/gui/mobile/render/painter
+import cheng/gui/mobile/dapp/api as dapp_api
+import cheng/gui/mobile/host/api as host_api
+import cheng/gui/mobile/host/default_host
+
+const EventBudgetPerTick: int32 = 128
+
+fn splitServicePayload(payload: str, idRef: var str, okRef: var bool, bodyRef: var str, errRef: var str) =
+    idRef = ""
+    okRef = false
+    bodyRef = ""
+    errRef = ""
+    if payload == nil || len(payload) == 0:
+        return
+
+    var p0: int32 = -1
+    var p1: int32 = -1
+    var p2: int32 = -1
+    for i in 0..<len(payload):
+        if payload[i] == '|':
+            if p0 < 0:
+                p0 = i
+            elif p1 < 0:
+                p1 = i
+            elif p2 < 0:
+                p2 = i
+                break
+
+    if p0 < 0:
+        idRef = payload
+        return
+
+    idRef = payload[0..<p0]
+    if p1 < 0:
+        let okText: str = payload[p0 + 1..<len(payload)]
+        okRef = okText == "1"
+        return
+
+    let okText: str = payload[p0 + 1..<p1]
+    okRef = okText == "1"
+
+    if p2 < 0:
+        bodyRef = payload[p1 + 1..<len(payload)]
+        return
+
+    bodyRef = payload[p1 + 1..<p2]
+    errRef = payload[p2 + 1..<len(payload)]
+
+fn runDapp(dapp: dapp_api.Dapp, title: str, width, height: int32, maxFrames: int32): int32 =
+    if dapp == nil:
+        return 1
+
+    let host: host_api.HostAdapter = default_host.createDefaultHostAdapter(title, width, height)
+    if host == nil:
+        return 2
+
+    var theme: design_tokens.MobileUiTheme = design_tokens.defaultBusinessTheme(host.metrics.scale)
+
+    var ctx: dapp_api.DappContext
+    new ctx
+    ctx.services.host = host
+    ctx.scale = host.metrics.scale
+    ctx.theme = theme
+
+    if dapp.Init != nil:
+        dapp.Init(dapp, ctx)
+
+    var needRender: bool = true
+    var running: bool = true
+    var frameBudget: int32 = maxFrames
+    if frameBudget <= 0:
+        frameBudget = 2147483647
+
+    while running && frameBudget > 0:
+        frameBudget = frameBudget - 1
+        var gotAny: bool = false
+
+        var rawEv: host_api.UiEvent = host_api.uiDefaultEvent()
+        for consumed in 0..<EventBudgetPerTick:
+            if ! (default_host.pollEvent(host, rawEv)):
+                break
+            gotAny = true
+            var ev: host_api.UiEvent = host_api.hostReadLastEvent(host)
+            if ev.kind == host_api.uekNone:
+                ev = rawEv
+
+            if ev.kind == host_api.uekAppQuit:
+                running = false
+                break
+
+            if ev.kind == host_api.uekResize:
+                theme = design_tokens.defaultBusinessTheme(host.metrics.scale)
+                ctx.theme = theme
+                ctx.scale = host.metrics.scale
+                needRender = true
+
+            if dapp.Update != nil:
+                if ev.kind == host_api.uekServiceResult:
+                    var id: str = ""
+                    var ok: bool = false
+                    var body: str = ""
+                    var err: str = ""
+                    splitServicePayload(ev.payload, id, ok, body, err)
+                    var resp: host_api.UiServiceResponse
+                    resp.id = id
+                    resp.ok = ok
+                    resp.payloadCbor = body
+                    resp.error = err
+                    var msg: dapp_api.UiMsg
+                    msg.kind = dapp_api.umkServiceResponse
+                    msg.eventKind = host_api.uekNone
+                    msg.x = 0.0
+                    msg.y = 0.0
+                    msg.dx = 0.0
+                    msg.dy = 0.0
+                    msg.pointerId = -1
+                    msg.keyCode = 0
+                    msg.text = ""
+                    msg.payload = ""
+                    msg.timeMs = int64(0)
+                    msg.serviceResponse = resp
+                    if dapp.Update(dapp, msg, ctx):
+                        needRender = true
+                else:
+                    var msg: dapp_api.UiMsg
+                    msg.kind = dapp_api.umkEvent
+                    msg.eventKind = ev.kind
+                    msg.x = ev.x
+                    msg.y = ev.y
+                    msg.dx = ev.dx
+                    msg.dy = ev.dy
+                    msg.pointerId = ev.pointerId
+                    msg.keyCode = ev.keyCode
+                    msg.text = ev.text
+                    msg.payload = ev.payload
+                    msg.timeMs = ev.timeMs
+                    msg.serviceResponse = host_api.uiDefaultServiceResponse("")
+                    let changed: bool = dapp.Update(dapp, msg, ctx)
+                    if changed:
+                        needRender = true
+
+        if running && needRender:
+            let buildCtx: types.UiBuildContext = types.uiBuildContext(host.metrics.width, host.metrics.height, host.metrics.scale, ctx.theme)
+            var nextRoot: types.UiNode = dapp.Build(dapp, buildCtx)
+            flex.uiLayoutTree(nextRoot, 0.0, 0.0, float64(host.metrics.width), float64(host.metrics.height))
+            let list = painter.uiBuildDisplayList(nextRoot)
+            default_host.submitDisplayList(host, list)
+            needRender = false
+
+        if !gotAny:
+            usleep(1000)
+
+    default_host.shutdown(host)
+    return 0

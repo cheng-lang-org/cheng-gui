@@ -1,0 +1,893 @@
+# Kline chart renderer for Cheng mobile pixel apps.
+# - Pure Cheng (no std/os), draw to BGRA pixel buffer.
+# - Rounded rectangles everywhere for modern UI style.
+
+type
+    KlineSeries =
+        count: int32
+        ts: int64*
+        open: float64*
+        high: float64*
+        low: float64*
+        close: float64*
+        volume: float64*
+
+when defined(android):
+    @importc("chengGuiNativeDrawTextBgra")
+    fn chengGuiNativeDrawTextBgra(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y, w, h: float64,
+        color: uint32,
+        fontSize: float64,
+        text: str
+    ): int32
+    @importc("chengGuiNativeDrawTextBgraI32")
+    fn chengGuiNativeDrawTextBgraI32(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y: int32,
+        color: uint32,
+        fontSizePx: int32,
+        text: str
+    ): int32
+else:
+    @weak
+    fn chengGuiNativeDrawTextBgra(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y, w, h: float64,
+        color: uint32,
+        fontSize: float64,
+        text: str
+    ): int32 =
+        pixels
+        width
+        height
+        strideBytes
+        x
+        y
+        w
+        h
+        color
+        fontSize
+        text
+        return 0
+    @weak
+    fn chengGuiNativeDrawTextBgraI32(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y: int32,
+        color: uint32,
+        fontSizePx: int32,
+        text: str
+    ): int32 =
+        pixels
+        width
+        height
+        strideBytes
+        x
+        y
+        color
+        fontSizePx
+        text
+        return 0
+
+fn absF64(v: float64): float64 =
+    if v < 0.0:
+        return -v
+    return v
+
+fn clampI32(v, lo, hi: int32): int32 =
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+fn px(dp: float64, scale: float64): int32 =
+    return int32(dp * scale + 0.5)
+
+fn fillRect(pixels: void*, width, height, strideBytes: int32, x, y, w, h: int32, color: uint32) =
+    if pixels == nil || width <= 0 || height <= 0 || w <= 0 || h <= 0:
+        return
+    let x0: int32 = clampI32(x, 0, width)
+    let y0: int32 = clampI32(y, 0, height)
+    let x1: int32 = clampI32(x + w, 0, width)
+    let y1: int32 = clampI32(y + h, 0, height)
+    if x1 <= x0 || y1 <= y0:
+        return
+    for yy in y0..<y1:
+        let row: void* = ptr_add(pixels, yy * strideBytes)
+        for xx in x0..<x1:
+            let p: uint32* = uint32*(ptr_add(row, xx * 4))
+            *p = color
+
+fn fillCircleCorner(pixels: void*, width, height, strideBytes: int32, cx, cy, radius: int32, x0, y0, x1, y1: int32, color: uint32) =
+    if pixels == nil || width <= 0 || height <= 0 || radius <= 0:
+        return
+    let r2: int32 = radius * radius
+    for yy in y0..<y1:
+        if yy >= 0 && yy < height:
+            let dy: int32 = yy - cy
+            let dy2: int32 = dy * dy
+            let row: void* = ptr_add(pixels, yy * strideBytes)
+            for xx in x0..<x1:
+                if xx >= 0 && xx < width:
+                    let dx: int32 = xx - cx
+                    let d2: int32 = dx * dx + dy2
+                    if d2 <= r2:
+                        let p: uint32* = uint32*(ptr_add(row, xx * 4))
+                        *p = color
+
+fn fillRoundRect(pixels: void*, width, height, strideBytes: int32, x, y, w, h, radius: int32, color: uint32) =
+    if pixels == nil || width <= 0 || height <= 0 || w <= 0 || h <= 0:
+        return
+    let x0: int32 = clampI32(x, 0, width)
+    let y0: int32 = clampI32(y, 0, height)
+    let x1: int32 = clampI32(x + w, 0, width)
+    let y1: int32 = clampI32(y + h, 0, height)
+    if x1 <= x0 || y1 <= y0:
+        return
+    let ww: int32 = x1 - x0
+    let hh: int32 = y1 - y0
+    var r: int32 = radius
+    if r <= 0:
+        fillRect(pixels, width, height, strideBytes, x0, y0, ww, hh, color)
+        return
+    let maxR0: int32 = ww / 2
+    let maxR1: int32 = hh / 2
+    let maxR: int32 = (maxR0 < maxR1) ? maxR0 : maxR1
+    r = clampI32(r, 0, maxR)
+    if r <= 0:
+        fillRect(pixels, width, height, strideBytes, x0, y0, ww, hh, color)
+        return
+
+    fillRect(pixels, width, height, strideBytes, x0 + r, y0, ww - r * 2, hh, color)
+    let midH: int32 = hh - r * 2
+    if midH > 0:
+        fillRect(pixels, width, height, strideBytes, x0, y0 + r, r, midH, color)
+        fillRect(pixels, width, height, strideBytes, x1 - r, y0 + r, r, midH, color)
+
+    fillCircleCorner(pixels, width, height, strideBytes, x0 + r, y0 + r, r, x0, y0, x0 + r, y0 + r, color)
+    fillCircleCorner(pixels, width, height, strideBytes, x1 - r, y0 + r, r, x1 - r, y0, x1, y0 + r, color)
+    fillCircleCorner(pixels, width, height, strideBytes, x0 + r, y1 - r, r, x0, y1 - r, x0 + r, y1, color)
+    fillCircleCorner(pixels, width, height, strideBytes, x1 - r, y1 - r, r, x1 - r, y1 - r, x1, y1, color)
+
+fn fillRoundRectBorder(pixels: void*, width, height, strideBytes: int32, x, y, w, h, radius: int32, borderColor, fillColor: uint32, borderPx: int32) =
+    if borderPx <= 0:
+        fillRoundRect(pixels, width, height, strideBytes, x, y, w, h, radius, fillColor)
+        return
+    fillRoundRect(pixels, width, height, strideBytes, x, y, w, h, radius, borderColor)
+    let innerX: int32 = x + borderPx
+    let innerY: int32 = y + borderPx
+    let innerW: int32 = w - borderPx * 2
+    let innerH: int32 = h - borderPx * 2
+    let innerR: int32 = (radius > borderPx) ? (radius - borderPx) : 0
+    if innerW <= 0 || innerH <= 0:
+        return
+    fillRoundRect(pixels, width, height, strideBytes, innerX, innerY, innerW, innerH, innerR, fillColor)
+
+fn drawText(pixels: void*, width, height, strideBytes: int32, x, y: int32, color: uint32, fontSizePx: int32, text: str) =
+    if pixels == nil || width <= 0 || height <= 0 || text == nil:
+        return
+    chengGuiNativeDrawTextBgraI32(pixels, width, height, strideBytes, x, y, color, fontSizePx, text)
+
+fn textAdvance(fontSizePx: int32): int32 =
+    var scale: int32 = int32(float64(fontSizePx) / 8.0 + 0.5)
+    if scale < 1:
+        scale = 1
+    if scale > 8:
+        scale = 8
+    return 8 * scale
+
+fn utf8CodepointCount(text: str): int32 =
+    if text == nil:
+        return 0
+    for i in 0..<int32(len(text)):
+        let b: int32 = int32(text[i]) & 0xFF
+        if (b & 0xC0) != 0x80:
+            count = count + 1
+    return count
+
+fn measureTextWidth(text: str, fontSizePx: int32): int32 =
+    if text == nil:
+        return 0
+    return utf8CodepointCount(text) * textAdvance(fontSizePx)
+
+fn drawTextCentered(pixels: void*, width, height, strideBytes: int32, centerX, y: int32, color: uint32, fontSizePx: int32, text: str) =
+    let w: int32 = measureTextWidth(text, fontSizePx)
+    drawText(pixels, width, height, strideBytes, centerX - (w / 2), y, color, fontSizePx, text)
+
+fn f64Ptr(arr: float64*, idx: int32): float64* =
+    return float64*(ptr_add(arr, idx * 8))
+
+fn readF64(arr: float64*, idx: int32): float64 =
+    return *f64Ptr(arr, idx)
+
+fn i64Ptr(arr: int64*, idx: int32): int64* =
+    return int64*(ptr_add(arr, idx * 8))
+
+fn readI64(arr: int64*, idx: int32): int64 =
+    return *i64Ptr(arr, idx)
+
+fn padLeftZeros(text: str, width: int32): str =
+    if text == nil:
+        return ""
+    if width <= 0:
+        return text
+    if len(text) >= width:
+        return text
+    var out: str = ""
+    for i in 0..<width - len(text):
+        out = out + "0"
+    return out + text
+
+fn civilFromDays(days: int64, yRef: var int32, mRef: var int32, dRef: var int32) =
+    # days since 1970-01-01 (UTC)
+    var z: int64 = days + 719468
+    var era: int64 = 0
+    if z >= 0:
+        era = z / 146097
+    else:
+        era = (z - 146096) / 146097
+    let doe: int64 = z - era * 146097
+    let yoe: int64 = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    var y: int64 = yoe + era * 400
+    let doy: int64 = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp: int64 = (5 * doy + 2) / 153
+    let d: int64 = doy - (153 * mp + 2) / 5 + 1
+    var m: int64 = mp
+    if mp < 10:
+        m = mp + int64(3)
+    else:
+        m = mp + int64(-9)
+    if m <= 2:
+        y = y + int64(1)
+    *yRef = int32(y)
+    *mRef = int32(m)
+    *dRef = int32(d)
+
+fn formatTsMs(tsMs: int64): str =
+    if tsMs <= 0:
+        return "--"
+    let sec: int64 = tsMs / 1000
+    let days: int64 = sec / 86400
+    let sod: int64 = sec - days * 86400
+    let hh: int32 = int32(sod / 3600)
+    let mm: int32 = int32((sod - int64(hh) * 3600) / 60)
+    var yy: int32 = 0
+    var mo: int32 = 0
+    var dd: int32 = 0
+    civilFromDays(days, yy, mo, dd)
+    return (
+        padLeftZeros($yy, 4) + "-" +
+        padLeftZeros($mo, 2) + "-" +
+        padLeftZeros($dd, 2) + " " +
+        padLeftZeros($hh, 2) + ":" +
+        padLeftZeros($mm, 2)
+    )
+
+fn formatPriceSmart(v: float64): str =
+    # 近似整数时显示整数，否则显示 2 位小数
+    if v != v:
+        return "--"
+    var absV: float64 = v
+    var sign: str = ""
+    if absV < 0.0:
+        absV = -absV
+        sign = "-"
+    let iv: int32 = int32(absV + 0.5)
+    if absF64(absV - float64(iv)) < 0.0001:
+        return sign + $ iv
+    let scaled: int32 = int32(absV * 100.0 + 0.5)
+    let whole: int32 = scaled / 100
+    let frac: int32 = scaled - whole * 100
+    let fracText: str = (frac < 10) ? ("0" + $ frac) : ($ frac)
+    return sign + $ whole + "." + fracText
+
+fn formatIntWithCommas(v: int64): str =
+    var absV: int64 = v
+    var sign: str = ""
+    if absV < 0:
+        absV = -absV
+        sign = "-"
+    if absV < 1000:
+        return sign + $ absV
+
+    # find highest 1000^k
+    var pow: int64 = 1
+    while absV / pow >= 1000:
+        pow = pow * 1000
+
+    var out: str = ""
+    var first: bool = true
+    var p: int64 = pow
+    var rest: int64 = absV
+    while p > 0:
+        let group: int64 = rest / p
+        rest = rest - group * p
+        if first:
+            out = $ group
+            first = false
+        else:
+            out = out + "," + padLeftZeros($ group, 3)
+        p = p / 1000
+    return sign + out
+
+fn formatPriceBinance(v: float64): str =
+    # Binance 风格：千分位 + 固定 2 位小数
+    if v != v:
+        return "--"
+    var absV: float64 = v
+    var sign: str = ""
+    if absV < 0.0:
+        absV = -absV
+        sign = "-"
+    let scaled: int64 = int64(absV * 100.0 + 0.5)
+    let whole: int64 = scaled / 100
+    let frac: int32 = int32(scaled - whole * 100)
+    let fracText: str = padLeftZeros($ frac, 2)
+    return sign + formatIntWithCommas(whole) + "." + fracText
+
+fn priceToY(price, minP, maxP: float64, y0, h: int32): int32 =
+    var range: float64 = maxP - minP
+    if range <= 0.0000001:
+        range = 1.0
+    let rel: float64 = (maxP - price) / range
+    let yf: float64 = float64(y0) + rel * float64(h - 1)
+    return clampI32(int32(yf + 0.5), y0, y0 + h - 1)
+
+fn drawHLineRound(pixels: void*, width, height, strideBytes: int32, x, y, w: int32, thickness: int32, color: uint32, radius: int32) =
+    if thickness <= 0 || w <= 0:
+        return
+    fillRoundRect(pixels, width, height, strideBytes, x, y - thickness / 2, w, thickness, radius, color)
+
+fn drawHLineDashedRound(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w: int32,
+    thickness: int32,
+    color: uint32,
+    radius: int32,
+    dashLen: int32,
+    gapLen: int32
+) =
+    if thickness <= 0 || w <= 0:
+        return
+    var dash: int32 = dashLen
+    var gap: int32 = gapLen
+    if dash <= 0:
+        dash = thickness * 3
+    if gap <= 0:
+        gap = thickness * 2
+    var cx: int32 = x
+    let xEnd: int32 = x + w
+    while cx < xEnd:
+        var segW: int32 = dash
+        if cx + segW > xEnd:
+            segW = xEnd - cx
+        if segW > 0:
+            fillRoundRect(pixels, width, height, strideBytes, cx, y - thickness / 2, segW, thickness, radius, color)
+        cx = cx + dash + gap
+
+fn absI32(v: int32): int32 =
+    if v < 0:
+        return -v
+    return v
+
+fn drawLineRound(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x0, y0, x1, y1: int32,
+    thickness: int32,
+    color: uint32
+) =
+    if thickness <= 0:
+        return
+    let dx: int32 = absI32(x1 - x0)
+    let dy: int32 = absI32(y1 - y0)
+    var steps: int32 = dx
+    if dy > steps:
+        steps = dy
+    let r: int32 = thickness / 2
+    if steps <= 0:
+        fillRoundRect(pixels, width, height, strideBytes, x0 - r, y0 - r, thickness, thickness, r, color)
+        return
+    for i in 0..steps:
+        let xf: float64 = float64(x0) + float64(x1 - x0) * float64(i) / float64(steps)
+        let yf: float64 = float64(y0) + float64(y1 - y0) * float64(i) / float64(steps)
+        let pxX: int32 = int32(xf + 0.5)
+        let pxY: int32 = int32(yf + 0.5)
+        fillRoundRect(pixels, width, height, strideBytes, pxX - r, pxY - r, thickness, thickness, r, color)
+
+fn movingAverageAt(arr: float64*, idx: int32, period: int32): float64 =
+    if arr == nil || idx < 0 || period <= 0:
+        return 0.0
+    var sum: float64 = 0.0
+    var n: int32 = 0
+    var i: int32 = idx
+    while i >= 0 && n < period:
+        sum = sum + readF64(arr, i)
+        n = n + 1
+        i = i - 1
+    if n <= 0:
+        return 0.0
+    return sum / float64(n)
+
+fn formatCompact(v: float64): str =
+    if v != v:
+        return "--"
+    var absV: float64 = v
+    var sign: str = ""
+    if absV < 0.0:
+        absV = -absV
+        sign = "-"
+
+    if absV >= 1000000.0:
+        let scaled: int32 = int32(absV / 10000.0 + 0.5) # /1e6 * 100
+        let whole: int32 = scaled / 100
+        let frac: int32 = scaled - whole * 100
+        let fracText: str = (frac < 10) ? ("0" + $ frac) : ($ frac)
+        return sign + $ whole + "." + fracText + "M"
+    if absV >= 1000.0:
+        let scaled: int32 = int32(absV / 10.0 + 0.5) # /1e3 * 100
+        let whole: int32 = scaled / 100
+        let frac: int32 = scaled - whole * 100
+        let fracText: str = (frac < 10) ? ("0" + $ frac) : ($ frac)
+        return sign + $ whole + "." + fracText + "K"
+
+    # < 1000: keep 5 decimals (e.g. BTC vol)
+    let scaled: int32 = int32(absV * 100000.0 + 0.5)
+    let whole: int32 = scaled / 100000
+    let frac: int32 = scaled - whole * 100000
+    var fracText: str = $ frac
+    if frac < 10:
+        fracText = "0000" + fracText
+    elif frac < 100:
+        fracText = "000" + fracText
+    elif frac < 1000:
+        fracText = "00" + fracText
+    elif frac < 10000:
+        fracText = "0" + fracText
+    return sign + $ whole + "." + fracText
+
+fn seriesValid(series: KlineSeries): bool =
+    return series.count > 0 && series.open != nil && series.high != nil && series.low != nil && series.close != nil
+
+fn RenderKlineChart(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    scale: float64,
+    series: KlineSeries,
+    x, y, w, h: int32,
+    statusText: str,
+    style: int32
+) =
+    let divider: uint32 = 0xFFE2E8F0
+    let gray: uint32 = 0xFF64748B
+    let green: uint32 = 0xFF0ECB81
+    let red: uint32 = 0xFFF6465D
+    let white: uint32 = 0xFFFFFFFF
+    let cardBg: uint32 = 0xFFFFFFFF
+    let grid: uint32 = 0xFFF1F5F9
+    let ma7Color: uint32 = 0xFFF0B90B
+    let ma25Color: uint32 = 0xFFEC4899
+    let ma99Color: uint32 = 0xFF7C3AED
+
+    let borderPx: int32 = px(1.0, scale)
+    let outerR: int32 = px(14.0, scale)
+    var pad: int32 = px(10.0, scale)
+    if style == 0:
+        fillRoundRectBorder(pixels, width, height, strideBytes, x, y, w, h, outerR, divider, cardBg, borderPx)
+    else:
+        pad = px(6.0, scale)
+    let innerX: int32 = x + pad
+    let innerY: int32 = y + pad
+    let innerW: int32 = w - pad * 2
+    let innerH: int32 = h - pad * 2
+    if innerW <= 0 || innerH <= 0:
+        return
+
+    if !seriesValid(series):
+        let msg: str = (statusText != nil && len(statusText) > 0) ? statusText : "Loading Kline..."
+        drawTextCentered(pixels, width, height, strideBytes, x + w / 2, y + h / 2 - px(8.0, scale), gray, px(12.0, scale), msg)
+        return
+
+    # 币安风格：上半区 K线 + 下半区 VOL
+    let splitGap: int32 = px(10.0, scale)
+    var volH: int32 = (innerH * 22) / 100
+    let minVolH: int32 = px(72.0, scale)
+    if volH < minVolH:
+        volH = minVolH
+    if volH > innerH / 2:
+        volH = innerH / 2
+    var priceH: int32 = innerH - volH - splitGap
+    if priceH < px(140.0, scale):
+        volH = 0
+        priceH = innerH
+    let priceX: int32 = innerX
+    let priceY: int32 = innerY
+    let priceW: int32 = innerW
+    let volX: int32 = innerX
+    let volY: int32 = innerY + priceH + splitGap
+    let volW: int32 = innerW
+
+    let count: int32 = series.count
+    var minRaw: float64 = 1000000000000.0
+    var maxRaw: float64 = -1000000000000.0
+    var lowIdx: int32 = 0
+    var highIdx: int32 = 0
+    for i in 0..<count:
+        let low: float64 = readF64(series.low, i)
+        let high: float64 = readF64(series.high, i)
+        if low < minRaw:
+            minRaw = low
+            lowIdx = i
+        if high > maxRaw:
+            maxRaw = high
+            highIdx = i
+
+    var minP: float64 = minRaw
+    var maxP: float64 = maxRaw
+    var range: float64 = maxP - minP
+    if range <= 0.0000001:
+        range = 1.0
+    let padP: float64 = range * 0.05
+    minP = minP - padP
+    maxP = maxP + padP
+    range = maxP - minP
+
+    # 网格 + 右侧刻度
+    let gridPx: int32 = px(1.0, scale)
+    let gridR: int32 = px(1.0, scale)
+    let gridCount: int32 = 4
+    let fontSmall: int32 = px(11.0, scale)
+    for gi in 0..gridCount:
+        let yy: int32 = priceY + ((priceH - 1) * gi) / gridCount
+        drawHLineRound(pixels, width, height, strideBytes, priceX, yy, priceW, gridPx, grid, gridR)
+        let p: float64 = maxP - range * float64(gi) / float64(gridCount)
+        let label: str = formatPriceBinance(p)
+        let lw: int32 = measureTextWidth(label, fontSmall)
+        let lx: int32 = priceX + priceW - lw - px(6.0, scale)
+        let ly: int32 = clampI32(yy - fontSmall / 2, priceY + px(2.0, scale), priceY + priceH - fontSmall - px(2.0, scale))
+        drawText(pixels, width, height, strideBytes, lx, ly, gray, fontSmall, label)
+
+    # MA 指标栏（币安风格：显示当前 MA 值）
+    let maFont: int32 = px(11.0, scale)
+    let maY: int32 = priceY + px(2.0, scale)
+    let ma7: float64 = movingAverageAt(series.close, count - 1, 7)
+    let ma25: float64 = movingAverageAt(series.close, count - 1, 25)
+    let ma99: float64 = movingAverageAt(series.close, count - 1, 99)
+    var mx: int32 = priceX + px(6.0, scale)
+    let ma7Text: str = "MA(7): " + formatPriceBinance(ma7)
+    drawText(pixels, width, height, strideBytes, mx, maY, ma7Color, maFont, ma7Text)
+    mx = mx + measureTextWidth(ma7Text, maFont) + px(10.0, scale)
+    let ma25Text: str = "MA(25): " + formatPriceBinance(ma25)
+    drawText(pixels, width, height, strideBytes, mx, maY, ma25Color, maFont, ma25Text)
+    mx = mx + measureTextWidth(ma25Text, maFont) + px(10.0, scale)
+    let ma99Text: str = "MA(99): " + formatPriceBinance(ma99)
+    drawText(pixels, width, height, strideBytes, mx, maY, ma99Color, maFont, ma99Text)
+
+    # watermark（仅 Binance 样式）
+    if style != 0:
+        let wmFont: int32 = px(22.0, scale)
+        drawTextCentered(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            priceX + priceW / 2,
+            priceY + priceH / 2 - wmFont / 2,
+            0x22A3A3A3,
+            wmFont,
+            "BINANCE"
+        )
+
+    let candleSlot: float64 = float64(innerW) / float64(count)
+    var candleW: float64 = candleSlot * 0.75
+    if candleW < 2.0:
+        candleW = 2.0
+    let spacing: float64 = candleSlot - candleW
+    var wickW: int32 = px(1.0, scale)
+    if wickW < 1:
+        wickW = 1
+    let wickR: int32 = wickW / 2
+
+    for i in 0..<count:
+        let open: float64 = readF64(series.open, i)
+        let close: float64 = readF64(series.close, i)
+        let high: float64 = readF64(series.high, i)
+        let low: float64 = readF64(series.low, i)
+        let bullish: bool = close >= open
+        let color: uint32 = bullish ? green : red
+
+        let baseX: float64 = float64(innerX) + float64(i) * candleSlot + spacing / 2.0
+        let cx: int32 = int32(baseX + candleW / 2.0 + 0.5)
+        let x0: int32 = int32(baseX + 0.5)
+        let cw: int32 = int32(candleW + 0.5)
+
+        let highY: int32 = priceToY(high, minP, maxP, priceY, priceH)
+        let lowY: int32 = priceToY(low, minP, maxP, priceY, priceH)
+        let openY: int32 = priceToY(open, minP, maxP, priceY, priceH)
+        let closeY: int32 = priceToY(close, minP, maxP, priceY, priceH)
+
+        # 影线：细圆角矩形
+        let wickH: int32 = (lowY - highY + 1)
+        if wickH > 0:
+            fillRoundRect(pixels, width, height, strideBytes, cx - wickW / 2, highY, wickW, wickH, wickR, color)
+
+        var top: int32 = closeY
+        var bottom: int32 = openY
+        if top > bottom:
+            let tmp: int32 = top
+            top = bottom
+            bottom = tmp
+        var bodyH: int32 = bottom - top
+        if bodyH < 1:
+            bodyH = 1
+        var bodyR: int32 = px(2.0, scale)
+        let maxBodyR0: int32 = cw / 2
+        let maxBodyR1: int32 = bodyH / 2
+        let maxBodyR: int32 = (maxBodyR0 < maxBodyR1) ? maxBodyR0 : maxBodyR1
+        bodyR = clampI32(bodyR, 0, maxBodyR)
+        # 实心 K 线（不做空心/描边蜡烛）
+        fillRoundRect(pixels, width, height, strideBytes, x0, top, cw, bodyH, bodyR, color)
+
+
+    # 高/低点标注 + 全屏按钮（币安样式）
+    if style != 0:
+        let calloutColor: uint32 = gray
+        var calloutStroke: int32 = px(2.0, scale)
+        if calloutStroke < 1:
+            calloutStroke = 1
+        let padX0: int32 = px(8.0, scale)
+
+        # high
+        let hiX: int32 = int32(float64(priceX) + (float64(highIdx) + 0.5) * candleSlot + 0.5)
+        let hiY: int32 = priceToY(maxRaw, minP, maxP, priceY, priceH)
+        let hiText: str = formatPriceBinance(maxRaw)
+        let hiW: int32 = measureTextWidth(hiText, fontSmall)
+        let hiRight: bool = hiX < priceX + priceW / 2
+        var hiTx: int32 = hiRight ? (hiX + padX0) : (hiX - hiW - padX0)
+        hiTx = clampI32(hiTx, priceX + px(2.0, scale), priceX + priceW - hiW - px(2.0, scale))
+        var hiTy: int32 = hiY - fontSmall - px(10.0, scale)
+        let hiMinY: int32 = priceY + px(18.0, scale)
+        if hiTy < hiMinY:
+            hiTy = hiMinY
+        hiTy = clampI32(hiTy, priceY + px(2.0, scale), priceY + priceH - fontSmall - px(2.0, scale))
+        let hiMidY: int32 = hiTy + fontSmall / 2
+        drawLineRound(pixels, width, height, strideBytes, hiX, hiY, hiX, hiMidY, calloutStroke, calloutColor)
+        if hiTx > hiX:
+            drawLineRound(pixels, width, height, strideBytes, hiX, hiMidY, hiTx - px(4.0, scale), hiMidY, calloutStroke, calloutColor)
+        else:
+            drawLineRound(pixels, width, height, strideBytes, hiTx + hiW + px(4.0, scale), hiMidY, hiX, hiMidY, calloutStroke, calloutColor)
+        drawText(pixels, width, height, strideBytes, hiTx, hiTy, calloutColor, fontSmall, hiText)
+
+        # low
+        let loX: int32 = int32(float64(priceX) + (float64(lowIdx) + 0.5) * candleSlot + 0.5)
+        let loY: int32 = priceToY(minRaw, minP, maxP, priceY, priceH)
+        let loText: str = formatPriceBinance(minRaw)
+        let loW: int32 = measureTextWidth(loText, fontSmall)
+        let loRight: bool = loX < priceX + priceW / 2
+        var loTx: int32 = loRight ? (loX + padX0) : (loX - loW - padX0)
+        loTx = clampI32(loTx, priceX + px(2.0, scale), priceX + priceW - loW - px(2.0, scale))
+        var loTy: int32 = loY + px(6.0, scale)
+        if loTy + fontSmall + px(2.0, scale) > priceY + priceH:
+            loTy = loY - fontSmall - px(10.0, scale)
+        loTy = clampI32(loTy, priceY + px(2.0, scale), priceY + priceH - fontSmall - px(2.0, scale))
+        let loMidY: int32 = loTy + fontSmall / 2
+        drawLineRound(pixels, width, height, strideBytes, loX, loY, loX, loMidY, calloutStroke, calloutColor)
+        if loTx > loX:
+            drawLineRound(pixels, width, height, strideBytes, loX, loMidY, loTx - px(4.0, scale), loMidY, calloutStroke, calloutColor)
+        else:
+            drawLineRound(pixels, width, height, strideBytes, loTx + loW + px(4.0, scale), loMidY, loX, loMidY, calloutStroke, calloutColor)
+        drawText(pixels, width, height, strideBytes, loTx, loTy, calloutColor, fontSmall, loText)
+
+        # fullscreen button (bottom-left)
+        let fsSize: int32 = px(28.0, scale)
+        let fsR: int32 = px(6.0, scale)
+        let fsX: int32 = priceX + px(6.0, scale)
+        let fsY: int32 = priceY + priceH - fsSize - px(8.0, scale)
+        if fsSize > 0:
+            fillRoundRectBorder(pixels, width, height, strideBytes, fsX, fsY, fsSize, fsSize, fsR, divider, white, borderPx)
+            let t: int32 = calloutStroke
+            let inPad: int32 = px(8.0, scale)
+            let arm: int32 = px(8.0, scale)
+            let r2: int32 = t / 2
+            # top-left corner
+            fillRoundRect(pixels, width, height, strideBytes, fsX + inPad, fsY + inPad, arm, t, r2, calloutColor)
+            fillRoundRect(pixels, width, height, strideBytes, fsX + inPad, fsY + inPad, t, arm, r2, calloutColor)
+            # bottom-right corner
+            fillRoundRect(pixels, width, height, strideBytes, fsX + fsSize - inPad - arm, fsY + fsSize - inPad - t, arm, t, r2, calloutColor)
+            fillRoundRect(pixels, width, height, strideBytes, fsX + fsSize - inPad - t, fsY + fsSize - inPad - arm, t, arm, r2, calloutColor)
+
+    let lastClose: float64 = readF64(series.close, count - 1)
+    let lastOpen: float64 = readF64(series.open, count - 1)
+    let lastUp: bool = lastClose >= lastOpen
+    let lastColor: uint32 = lastUp ? green : red
+    let lastY: int32 = priceToY(lastClose, minP, maxP, priceY, priceH)
+
+    # 右侧价格标签（圆角）
+    let tagFont: int32 = px(12.0, scale)
+    let tagText: str = formatPriceBinance(lastClose)
+    let tagPadX: int32 = px(8.0, scale)
+    let tagW: int32 = measureTextWidth(tagText, tagFont) + tagPadX * 2
+    let tagH: int32 = tagFont + px(10.0, scale)
+    let tagR: int32 = tagH / 2
+    let tagX: int32 = priceX + priceW - tagW - px(6.0, scale)
+    let tagY: int32 = clampI32(lastY - tagH / 2, priceY + px(2.0, scale), priceY + priceH - tagH - px(2.0, scale))
+    let tagBorder: uint32 = 0xFF111111
+
+    # 最新价水平线（币安：虚线，避开右侧标签）
+    let lineW: int32 = tagX - priceX - px(4.0, scale)
+    if lineW > 0:
+        drawHLineDashedRound(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            priceX,
+            lastY,
+            lineW,
+            gridPx,
+            0xFFBFC6D1,
+            gridR,
+            px(6.0, scale),
+            px(4.0, scale)
+        )
+
+    fillRoundRectBorder(pixels, width, height, strideBytes, tagX, tagY, tagW, tagH, tagR, tagBorder, white, borderPx)
+    drawText(pixels, width, height, strideBytes, tagX + tagPadX, tagY + (tagH - tagFont) / 2, tagBorder, tagFont, tagText)
+
+    # MA 线（7/25/99）
+    let maLinePx: int32 = px(1.0, scale)
+    if maLinePx > 0:
+        var prevX: int32 = 0
+        var prevY: int32 = 0
+        var hasPrev: bool = false
+        for i in 0..<count:
+            if i >= 6:
+                let v: float64 = movingAverageAt(series.close, i, 7)
+                let cx: int32 = int32(float64(priceX) + (float64(i) + 0.5) * candleSlot + 0.5)
+                let cy: int32 = priceToY(v, minP, maxP, priceY, priceH)
+                if hasPrev:
+                    drawLineRound(pixels, width, height, strideBytes, prevX, prevY, cx, cy, maLinePx, ma7Color)
+                prevX = cx
+                prevY = cy
+                hasPrev = true
+
+        prevX = 0
+        prevY = 0
+        hasPrev = false
+        for i in 0..<count:
+            if i >= 24:
+                let v: float64 = movingAverageAt(series.close, i, 25)
+                let cx: int32 = int32(float64(priceX) + (float64(i) + 0.5) * candleSlot + 0.5)
+                let cy: int32 = priceToY(v, minP, maxP, priceY, priceH)
+                if hasPrev:
+                    drawLineRound(pixels, width, height, strideBytes, prevX, prevY, cx, cy, maLinePx, ma25Color)
+                prevX = cx
+                prevY = cy
+                hasPrev = true
+
+        prevX = 0
+        prevY = 0
+        hasPrev = false
+        for i in 0..<count:
+            if i >= 98:
+                let v: float64 = movingAverageAt(series.close, i, 99)
+                let cx: int32 = int32(float64(priceX) + (float64(i) + 0.5) * candleSlot + 0.5)
+                let cy: int32 = priceToY(v, minP, maxP, priceY, priceH)
+                if hasPrev:
+                    drawLineRound(pixels, width, height, strideBytes, prevX, prevY, cx, cy, maLinePx, ma99Color)
+                prevX = cx
+                prevY = cy
+                hasPrev = true
+
+    # VOL 柱 + VOL MA(5/10)
+    if volH > 0 && series.volume != nil:
+        # 分割线
+        drawHLineRound(pixels, width, height, strideBytes, volX, volY - splitGap / 2, volW, gridPx, grid, gridR)
+
+        var maxVol: float64 = 0.0
+        for i in 0..<count:
+            let v: float64 = readF64(series.volume, i)
+            if v > maxVol:
+                maxVol = v
+        if maxVol <= 0.0000001:
+            maxVol = 1.0
+
+        # 右侧刻度（max）
+        let vLabel: str = formatCompact(maxVol)
+        let vw: int32 = measureTextWidth(vLabel, fontSmall)
+        drawText(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            volX + volW - vw - px(6.0, scale),
+            volY + px(2.0, scale),
+            gray,
+            fontSmall,
+            vLabel
+        )
+
+        # 柱状图
+        for i in 0..<count:
+            let open: float64 = readF64(series.open, i)
+            let close: float64 = readF64(series.close, i)
+            let bullish: bool = close >= open
+            let color: uint32 = bullish ? 0x9910B981 : 0x99EF4444
+            let v: float64 = readF64(series.volume, i)
+            var bh: int32 = int32((v / maxVol) * float64(volH - 1) + 0.5)
+            if bh < 1:
+                bh = 1
+            if bh > volH:
+                bh = volH
+            let baseX: float64 = float64(volX) + float64(i) * candleSlot + spacing / 2.0
+            let x0: int32 = int32(baseX + 0.5)
+            let cw: int32 = int32(candleW + 0.5)
+            let barY: int32 = volY + volH - bh
+            var br: int32 = px(2.0, scale)
+            let maxBr0: int32 = cw / 2
+            let maxBr1: int32 = bh / 2
+            let maxBr: int32 = (maxBr0 < maxBr1) ? maxBr0 : maxBr1
+            br = clampI32(br, 0, maxBr)
+            fillRoundRect(pixels, width, height, strideBytes, x0, barY, cw, bh, br, color)
+
+        # VOL 指标文字（左上角）
+        let volFont: int32 = px(11.0, scale)
+        let lastVol: float64 = readF64(series.volume, count - 1)
+        let vText: str = "Vol: " + formatCompact(lastVol)
+        let vMa5: float64 = movingAverageAt(series.volume, count - 1, 5)
+        let vMa10: float64 = movingAverageAt(series.volume, count - 1, 10)
+        var vx: int32 = volX + px(6.0, scale)
+        let vy: int32 = volY + px(2.0, scale)
+        drawText(pixels, width, height, strideBytes, vx, vy, gray, volFont, vText)
+        vx = vx + measureTextWidth(vText, volFont) + px(10.0, scale)
+        let vMa5Text: str = "MA(5): " + formatCompact(vMa5)
+        drawText(pixels, width, height, strideBytes, vx, vy, ma7Color, volFont, vMa5Text)
+        vx = vx + measureTextWidth(vMa5Text, volFont) + px(10.0, scale)
+        let vMa10Text: str = "MA(10): " + formatCompact(vMa10)
+        drawText(pixels, width, height, strideBytes, vx, vy, ma99Color, volFont, vMa10Text)
+
+        # X 轴时间（底部左右）
+        if series.ts != nil:
+            let leftTs: str = formatTsMs(readI64(series.ts, 0))
+            let rightTs: str = formatTsMs(readI64(series.ts, count - 1))
+            let ty: int32 = volY + volH - fontSmall - px(2.0, scale)
+            drawText(pixels, width, height, strideBytes, volX + px(2.0, scale), ty, gray, fontSmall, leftTs)
+            let rw: int32 = measureTextWidth(rightTs, fontSmall)
+            drawText(pixels, width, height, strideBytes, volX + volW - rw - px(2.0, scale), ty, gray, fontSmall, rightTs)
+
+        # VOL 均线
+        let volLinePx: int32 = px(1.0, scale)
+        if volLinePx > 0:
+            var prevX: int32 = 0
+            var prevY: int32 = 0
+            var hasPrev: bool = false
+            for i in 0..<count:
+                if i >= 4:
+                    let v: float64 = movingAverageAt(series.volume, i, 5)
+                    let cx: int32 = int32(float64(volX) + (float64(i) + 0.5) * candleSlot + 0.5)
+                    let cy: int32 = volY + volH - 1 - int32((v / maxVol) * float64(volH - 1) + 0.5)
+                    if hasPrev:
+                        drawLineRound(pixels, width, height, strideBytes, prevX, prevY, cx, cy, volLinePx, ma7Color)
+                    prevX = cx
+                    prevY = cy
+                    hasPrev = true
+
+            prevX = 0
+            prevY = 0
+            hasPrev = false
+            for i in 0..<count:
+                if i >= 9:
+                    let v: float64 = movingAverageAt(series.volume, i, 10)
+                    let cx: int32 = int32(float64(volX) + (float64(i) + 0.5) * candleSlot + 0.5)
+                    let cy: int32 = volY + volH - 1 - int32((v / maxVol) * float64(volH - 1) + 0.5)
+                    if hasPrev:
+                        drawLineRound(pixels, width, height, strideBytes, prevX, prevY, cx, cy, volLinePx, ma99Color)
+                    prevX = cx
+                    prevY = cy
+                    hasPrev = true

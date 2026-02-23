@@ -109,7 +109,7 @@ fn HalCapabilityMatrix(platform: GuiPlatform): CapabilityEntry[] =
     return outVal
 
 fn DetectPlatform(): GuiPlatform =
-    let override = os.getEnv("CHENG_GUI_PLATFORM", "")
+    let override = os.getEnv("GUI_PLATFORM", "")
     let fromEnv = parsePlatformOverride(override)
     if fromEnv != gpUnknown:
         return fromEnv
@@ -140,12 +140,12 @@ fn DetectNativeEnvironment(): GuiNativeEnvironment =
     report.environment = default[GuiEnvPair[]]
     report.hints = default[str[]]
 
-    let disableValue = os.getEnv("CHENG_GUI_DISABLE_NATIVE", "")
+    let disableValue = os.getEnv("GUI_DISABLE_NATIVE", "")
     report.disableValue = disableValue
     report.disableNative = flagEnabled(disableValue)
     recordEnvPair(report.environment, "flag.disable_native", disableValue)
 
-    let forceValue = os.getEnv("CHENG_GUI_FORCE_NATIVE", "")
+    let forceValue = os.getEnv("GUI_FORCE_NATIVE", "")
     report.forceValue = forceValue
     report.forceNative = flagEnabled(forceValue)
     recordEnvPair(report.environment, "flag.force_native", forceValue)
@@ -195,7 +195,7 @@ fn DetectNativeEnvironment(): GuiNativeEnvironment =
         if len(report.hints) == 0:
             report.hints.add("Native HAL is not available on this platform; defaulting to headless mode")
             if report.nativeSupported && report.nativeReady && report.disableNative:
-                report.hints.add("CHENG_GUI_DISABLE_NATIVE is set; defaulting to headless mode")
+                report.hints.add("GUI_DISABLE_NATIVE is set; defaulting to headless mode")
 
     return report
 

@@ -95,7 +95,7 @@ fn buildWebApiGeneratedSource(projectName: str): str =
     return out
 
 fn runtimeTemplatePath(): str =
-    let envRoot = os.getEnv("CHENG_GUI_ROOT")
+    let envRoot = os.getEnv("GUI_ROOT")
     if len(envRoot) > 0:
         let byEnv = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
         if os.fileExists(byEnv):
@@ -215,6 +215,10 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
     let routeTitleCases = buildRouteTitleCases(states)
     let selectorRouteCases = buildSelectorRouteCases(states)
     let welcome = projectName
+    let selectLanguage = ""
+    let continueText = ""
+    let selectPrompt = ""
+    let skipText = ""
     let templatePath = runtimeTemplatePath()
     if len(templatePath) > 0:
         let template = os.readFile(templatePath)
@@ -225,14 +229,15 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
             rendered = replaceTokenAll(rendered, "__R2C_SELECTOR_ROUTE_CASES__", selectorRouteCases)
             rendered = replaceTokenAll(rendered, "__R2C_DEFAULT_ROUTE__", escapeChengString(defaultRoute))
             rendered = replaceTokenAll(rendered, "__R2C_TEXT_WELCOME__", escapeChengString(welcome))
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_LANGUAGE__", "Please select your preferred language")
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_CONTINUE__", "Continue")
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_PROMPT__", "Select a language")
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SKIP__", "Skip")
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_LANGUAGE__", escapeChengString(selectLanguage))
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_CONTINUE__", escapeChengString(continueText))
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_PROMPT__", escapeChengString(selectPrompt))
+            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SKIP__", escapeChengString(skipText))
             rendered = replaceTokenAll(rendered, "__R2C_SEMANTIC_NODE_APPENDS__", "")
             return rendered
-    if strictNoFallback:
-        return ""
+    strictNoFallback
+    # Native R2C runtime generation is strict-only: no template miss fallback.
+    return ""
     var out: str = ""
     out = out + "import cheng/gui/browser/web\n"
     out = out + "import cheng/gui/browser/r2capp/dom_generated as domGenerated\n"

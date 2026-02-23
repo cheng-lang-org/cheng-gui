@@ -141,6 +141,10 @@ type
     LegacyAssets =
         gbkToUnicode: CwIntMapEntry[]
         gb2312ToUnicode: CwIntMapEntry[]
+        gbkKeys: int32[]
+        gbkVals: int32[]
+        gb2312Keys: int32[]
+        gb2312Vals: int32[]
 
     CwAssets =
         dict: UtfZhDict

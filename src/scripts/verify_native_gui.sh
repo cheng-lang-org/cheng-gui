@@ -78,30 +78,30 @@ while [ "${1:-}" != "" ]; do
 done
 
 GUI_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-CHENG_ROOT="${CHENG_ROOT:-}"
-if [ -z "$CHENG_ROOT" ]; then
+ROOT="${ROOT:-}"
+if [ -z "$ROOT" ]; then
   if [ -d "$HOME/.cheng/toolchain/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/.cheng/toolchain/cheng-lang"
+    ROOT="$HOME/.cheng/toolchain/cheng-lang"
   elif [ -d "$HOME/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/cheng-lang"
+    ROOT="$HOME/cheng-lang"
   elif [ -d "/Users/lbcheng/cheng-lang" ]; then
-    CHENG_ROOT="/Users/lbcheng/cheng-lang"
+    ROOT="/Users/lbcheng/cheng-lang"
   fi
 fi
-CHENGC="${CHENGC:-$CHENG_ROOT/src/tooling/chengc.sh}"
-if [ -z "$CHENG_ROOT" ] || [ ! -x "$CHENGC" ]; then
-  echo "[Error] missing Cheng compiler root (set CHENG_ROOT to /path/to/cheng-lang)" 1>&2
+CHENGC="${CHENGC:-$ROOT/src/tooling/chengc.sh}"
+if [ -z "$ROOT" ] || [ ! -x "$CHENGC" ]; then
+  echo "[Error] missing Cheng compiler root (set ROOT to /path/to/cheng-lang)" 1>&2
   exit 2
 fi
 
-export CHENG_GUI_ROOT="$GUI_ROOT"
-cheng_c_inc="${CHENG_C_INC:-$CHENG_ROOT/runtime/include}"
+export GUI_ROOT="$GUI_ROOT"
+cheng_c_inc="${C_INC:-$ROOT/runtime/include}"
 if [ ! -d "$cheng_c_inc" ]; then
   echo "[Error] missing C runtime include dir: $cheng_c_inc" 1>&2
   exit 2
 fi
 
-pkg_roots="${CHENG_PKG_ROOTS:-}"
+pkg_roots="${PKG_ROOTS:-}"
 default_pkg_root="$HOME/.cheng-packages"
 if [ -d "$default_pkg_root" ]; then
   if [ -z "$pkg_roots" ]; then
@@ -121,7 +121,7 @@ else
     *) pkg_roots="$pkg_roots,$GUI_ROOT" ;;
   esac
 fi
-export CHENG_PKG_ROOTS="$pkg_roots"
+export PKG_ROOTS="$pkg_roots"
 
 entry_desktop="$GUI_ROOT/gui_smoke_main.cheng"
 entry_mobile="$GUI_ROOT/gui_smoke_mobile.cheng"
@@ -164,71 +164,71 @@ mkdir -p "$(dirname "$desktop_out")"
 mkdir -p "$android_out" "$ios_out"
 
 if [ -n "$mm" ]; then
-  export CHENG_MM="$mm"
+  export MM="$mm"
 fi
 
-if [ -z "${CHENG_DEFINES:-}" ]; then
+if [ -z "${DEFINES:-}" ]; then
   case "$platform" in
     macos)
-      export CHENG_DEFINES="macos,macosx"
+      export DEFINES="macos,macosx"
       ;;
     linux)
-      export CHENG_DEFINES="linux"
+      export DEFINES="linux"
       ;;
     windows)
-      export CHENG_DEFINES="windows,Windows"
+      export DEFINES="windows,Windows"
       ;;
   esac
 fi
 
-cd "$CHENG_ROOT"
+cd "$ROOT"
 
 probe_driver_compile() {
   driver="$1"
   target="$2"
-  probe_src="$CHENG_ROOT/chengcache/_cheng_driver_probe_main.cheng"
-  probe_obj="$CHENG_ROOT/chengcache/_cheng_driver_probe_main.o"
-  mkdir -p "$CHENG_ROOT/chengcache"
+  probe_src="$ROOT/chengcache/_cheng_driver_probe_main.cheng"
+  probe_obj="$ROOT/chengcache/_cheng_driver_probe_main.o"
+  mkdir -p "$ROOT/chengcache"
   cat > "$probe_src" <<'EOF'
 fn main(): int32 =
     return 0
 EOF
-  env CHENG_BACKEND_TARGET="$target" CHENG_BACKEND_JOBS="1" CHENG_BACKEND_MULTI="0" CHENG_BACKEND_INCREMENTAL="0" CHENG_BACKEND_WHOLE_PROGRAM="0" CHENG_BACKEND_EMIT="obj" CHENG_BACKEND_FRONTEND="stage1" CHENG_BACKEND_INPUT="$probe_src" CHENG_BACKEND_OUTPUT="$probe_obj" "$driver" >/dev/null 2>&1 || return 1
+  env BACKEND_TARGET="$target" BACKEND_JOBS="1" BACKEND_MULTI="0" BACKEND_INCREMENTAL="0" BACKEND_WHOLE_PROGRAM="0" BACKEND_EMIT="obj" BACKEND_FRONTEND="stage1" BACKEND_INPUT="$probe_src" BACKEND_OUTPUT="$probe_obj" "$driver" >/dev/null 2>&1 || return 1
   [ -s "$probe_obj" ] || return 1
   return 0
 }
 
 pick_backend_driver() {
   target="$1"
-  if [ -n "${CHENG_BACKEND_DRIVER:-}" ] && [ -x "${CHENG_BACKEND_DRIVER}" ]; then
-    if probe_driver_compile "${CHENG_BACKEND_DRIVER}" "$target"; then
-      echo "${CHENG_BACKEND_DRIVER}"
+  if [ -n "${BACKEND_DRIVER:-}" ] && [ -x "${BACKEND_DRIVER}" ]; then
+    if probe_driver_compile "${BACKEND_DRIVER}" "$target"; then
+      echo "${BACKEND_DRIVER}"
       return 0
     fi
   fi
 
   candidates=""
-  if [ -x "$CHENG_ROOT/cheng_stable" ]; then
+  if [ -x "$ROOT/cheng_stable" ]; then
     candidates="$candidates
-$CHENG_ROOT/cheng_stable"
+$ROOT/cheng_stable"
   fi
-  if [ -x "$CHENG_ROOT/cheng" ]; then
+  if [ -x "$ROOT/cheng" ]; then
     candidates="$candidates
-$CHENG_ROOT/cheng"
+$ROOT/cheng"
   fi
-  if [ -x "$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
+  if [ -x "$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
     candidates="$candidates
-$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
+$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
   fi
-  if [ -d "$CHENG_ROOT/dist/releases" ]; then
+  if [ -d "$ROOT/dist/releases" ]; then
     while IFS= read -r release_path; do
       if [ -d "$release_path" ] && [ -x "$release_path/cheng" ]; then
         candidates="$candidates
 $release_path/cheng"
       fi
-    done < <(ls -1dt "$CHENG_ROOT"/dist/releases/* 2>/dev/null || true)
+    done < <(ls -1dt "$ROOT"/dist/releases/* 2>/dev/null || true)
   fi
-  for cand in "$CHENG_ROOT"/driver_*; do
+  for cand in "$ROOT"/driver_*; do
     if [ -f "$cand" ] && [ -x "$cand" ]; then
       candidates="$candidates
 $cand"
@@ -250,12 +250,12 @@ EOF
   return 0
 }
 
-if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
+if [ -z "${BACKEND_DRIVER:-}" ]; then
   :
 fi
 
 if [ -z "$desktop_target" ]; then
-  desktop_target="$(sh "$CHENG_ROOT/src/tooling/detect_host_target.sh")"
+  desktop_target="$(sh "$ROOT/src/tooling/detect_host_target.sh")"
 fi
 if [ -z "$desktop_target" ]; then
   echo "[Error] failed to detect desktop target; use --desktop-target:<triple>" 1>&2
@@ -264,13 +264,13 @@ fi
 
 selected_driver="$(pick_backend_driver "$desktop_target" || true)"
 if [ -z "$selected_driver" ]; then
-  echo "[Error] no runnable backend driver found under CHENG_ROOT=$CHENG_ROOT" 1>&2
-  echo "  tip: set CHENG_BACKEND_DRIVER to a runnable driver binary" 1>&2
+  echo "[Error] no runnable backend driver found under ROOT=$ROOT" 1>&2
+  echo "  tip: set BACKEND_DRIVER to a runnable driver binary" 1>&2
   exit 2
 fi
-export CHENG_BACKEND_DRIVER="$selected_driver"
-if [ -z "${CHENG_BACKEND_DRIVER_DIRECT:-}" ]; then
-  export CHENG_BACKEND_DRIVER_DIRECT=0
+export BACKEND_DRIVER="$selected_driver"
+if [ -z "${BACKEND_DRIVER_DIRECT:-}" ]; then
+  export BACKEND_DRIVER_DIRECT=0
 fi
 if [ -z "$android_target" ]; then
   android_target="aarch64-linux-android"
@@ -288,15 +288,15 @@ compile_to_obj() {
   if [ -n "$jobs" ]; then
     set -- "$@" --jobs:"$jobs"
   fi
-  if [ -n "${CHENG_BUILD_VERBOSE:-}" ]; then
+  if [ -n "${BUILD_VERBOSE:-}" ]; then
     if [ -n "$defines" ]; then
-      CHENG_DEFINES="$defines" "$@" || return 1
+      DEFINES="$defines" "$@" || return 1
     else
       "$@" || return 1
     fi
   else
     if [ -n "$defines" ]; then
-      CHENG_DEFINES="$defines" "$@" >/dev/null || return 1
+      DEFINES="$defines" "$@" >/dev/null || return 1
     else
       "$@" >/dev/null || return 1
     fi
@@ -304,18 +304,18 @@ compile_to_obj() {
   [ -f "$obj" ] || return 1
 }
 
-obj_main="$CHENG_ROOT/chengcache/${prog}.o"
+obj_main="$ROOT/chengcache/${prog}.o"
 mkdir -p "$(dirname "$obj_main")"
-desktop_defines="${CHENG_DEFINES:-}"
+desktop_defines="${DEFINES:-}"
 echo "== GUI desktop: Cheng -> obj =="
 compile_to_obj "$entry_desktop" "$obj_main" "$desktop_target" "$desktop_defines"
 echo "ok: backend obj ($desktop_target)"
 
 cc="${CC:-cc}"
-obj_sys="$CHENG_ROOT/chengcache/${prog}.system_helpers.o"
-obj_compat="$CHENG_ROOT/chengcache/${prog}.compat_shim.o"
-obj_stub="$CHENG_ROOT/chengcache/${prog}.mobile_stub.o"
-obj_skia="$CHENG_ROOT/chengcache/${prog}.skia_stub.o"
+obj_sys="$ROOT/chengcache/${prog}.system_helpers.o"
+obj_compat="$ROOT/chengcache/${prog}.compat_shim.o"
+obj_stub="$ROOT/chengcache/${prog}.mobile_stub.o"
+obj_skia="$ROOT/chengcache/${prog}.skia_stub.o"
 compat_shim_src="$GUI_ROOT/runtime/cheng_compat_shim.c"
 cflags=""
 case "$platform" in
@@ -326,9 +326,9 @@ esac
 
 echo "== GUI desktop: compile runtime helpers =="
 # Always rebind helper names to avoid duplicate symbols with backend-emitted alloc/copyMem/setMem.
-"$cc" -I"$cheng_c_inc" -I"$CHENG_ROOT/src/runtime/native" \
+"$cc" -I"$cheng_c_inc" -I"$ROOT/src/runtime/native" \
   -Dalloc=cheng_runtime_alloc -DcopyMem=cheng_runtime_copyMem -DsetMem=cheng_runtime_setMem \
-  -c "$CHENG_ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
+  -c "$ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
 if [ -f "$compat_shim_src" ]; then
   "$cc" -c "$compat_shim_src" -o "$obj_compat"
 else
@@ -346,8 +346,8 @@ case "$platform" in
       echo "[Error] macOS build requires clang" 1>&2
       exit 2
     fi
-    obj_plat="$CHENG_ROOT/chengcache/${prog}.macos_app.o"
-    obj_text="$CHENG_ROOT/chengcache/${prog}.text_macos.o"
+    obj_plat="$ROOT/chengcache/${prog}.macos_app.o"
+    obj_text="$ROOT/chengcache/${prog}.text_macos.o"
     clang -fobjc-arc -c "$GUI_ROOT/platform/macos_app.m" -o "$obj_plat"
     clang -std=c11 -c "$GUI_ROOT/render/text_macos.c" -o "$obj_text"
     clang "$obj_main" "$obj_sys" ${obj_compat:+"$obj_compat"} "$obj_stub" "$obj_skia" "$obj_plat" "$obj_text" \
@@ -355,12 +355,12 @@ case "$platform" in
       -o "$desktop_out"
     ;;
   linux)
-    obj_plat="$CHENG_ROOT/chengcache/${prog}.x11_app.o"
+    obj_plat="$ROOT/chengcache/${prog}.x11_app.o"
     "$cc" -c "$GUI_ROOT/platform/x11_app.c" -o "$obj_plat"
     "$cc" "$obj_main" "$obj_sys" ${obj_compat:+"$obj_compat"} "$obj_stub" "$obj_skia" "$obj_plat" -lX11 -lXext -o "$desktop_out"
     ;;
   windows)
-    obj_plat="$CHENG_ROOT/chengcache/${prog}.win32_app.o"
+    obj_plat="$ROOT/chengcache/${prog}.win32_app.o"
     "$cc" -c "$GUI_ROOT/platform/win32_app.c" -o "$obj_plat"
     "$cc" "$obj_main" "$obj_sys" ${obj_compat:+"$obj_compat"} "$obj_stub" "$obj_skia" "$obj_plat" -luser32 -lgdi32 -limm32 -o "$desktop_out"
     ;;

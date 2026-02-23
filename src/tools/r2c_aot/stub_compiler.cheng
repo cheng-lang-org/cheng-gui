@@ -46,7 +46,7 @@ fn writeText(path: str, content: str): bool =
     return os.fileExists(path)
 
 fn debugMark(outPkgRoot: str, mark: str) =
-    if len(os.getEnv("CHENG_R2C_DEBUG")) == 0:
+    if len(os.getEnv("R2C_DEBUG")) == 0:
         return
     if len(outPkgRoot) == 0:
         return

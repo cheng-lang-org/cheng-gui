@@ -4,7 +4,7 @@ import cheng/gui/browser/web
 import cheng/gui/browser/r2capp/runtime_generic as r2cRuntime
 
 fn resolveManifestPath(): str =
-    let envPath = os.getEnv("CHENG_R2CAPP_MANIFEST")
+    let envPath = os.getEnv("R2CAPP_MANIFEST")
     if len(envPath) > 0:
         return envPath
     return "r2capp/r2capp_manifest.json"
@@ -54,8 +54,8 @@ fn claudeSmokeContainsText(text, pattern: str): bool =
     return false
 
 fn main(): int32 =
-    let httpUrl = os.getEnv("CHENG_CLAUDE_HTTP_URL")
-    let httpsUrl = os.getEnv("CHENG_CLAUDE_HTTPS_URL")
+    let httpUrl = os.getEnv("CLAUDE_HTTP_URL")
+    let httpsUrl = os.getEnv("CLAUDE_HTTPS_URL")
     if claudeSmokeSafeLen(httpUrl) == int32(0) || claudeSmokeSafeLen(httpsUrl) == int32(0):
         return int32(2)
 

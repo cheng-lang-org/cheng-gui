@@ -1,0 +1,249 @@
+import cheng/gui/mobile/host/native_ffi
+import cheng/gui/mobile/render/display_list
+
+type
+    UiEventKind = enum
+        uekNone
+        uekFrameTick
+        uekPointerDown
+        uekPointerMove
+        uekPointerUp
+        uekPointerScroll
+        uekKeyDown
+        uekKeyUp
+        uekTextInput
+        uekResize
+        uekServiceResult
+        uekAppQuit
+
+    UiEvent =
+        kind: UiEventKind
+        x: float64
+        y: float64
+        dx: float64
+        dy: float64
+        pointerId: int32
+        keyCode: int32
+        text: str
+        payload: str
+        timeMs: int64
+
+    HostMetrics =
+        width: int32
+        height: int32
+        scale: float64
+        imeInsetBottom: int32
+
+    UiServiceRequest =
+        id: str
+        service: str
+        method: str
+        payloadCbor: str
+
+    UiServiceResponse =
+        id: str
+        ok: bool
+        payloadCbor: str
+        error: str
+
+    HostAdapter = ref
+        metrics: HostMetrics
+        windowId: int32
+        pixels: void*
+        bufferBytes: int32
+        strideBytes: int32
+        running: bool
+        pendingResponses: UiServiceResponse[]
+        lastEventKind: UiEventKind
+        lastEventX: float64
+        lastEventY: float64
+        lastEventDx: float64
+        lastEventDy: float64
+        lastEventPointerId: int32
+        lastEventKeyCode: int32
+        lastEventText: str
+        lastEventPayload: str
+        lastEventTimeMs: int64
+
+const
+    serviceNone: int32 = 0
+    serviceCamera: int32 = 1
+    serviceLocation: int32 = 2
+    serviceNfc: int32 = 3
+    serviceSecureStore: int32 = 4
+    serviceNetworkState: int32 = 5
+    serviceBiometric: int32 = 6
+    serviceP2pDirect: int32 = 7
+    servicePlugin: int32 = 1000
+
+fn uiDefaultEvent(): UiEvent =
+    var out: UiEvent
+    out.kind = uekNone
+    out.x = 0.0
+    out.y = 0.0
+    out.dx = 0.0
+    out.dy = 0.0
+    out.pointerId = -1
+    out.keyCode = 0
+    out.text = ""
+    out.payload = ""
+    out.timeMs = int64(0)
+    return out
+
+fn uiDefaultHostMetrics(): HostMetrics =
+    var out: HostMetrics
+    out.width = 1080
+    out.height = 1920
+    out.scale = 1.0
+    out.imeInsetBottom = 0
+    return out
+
+fn uiDefaultServiceResponse(id: str): UiServiceResponse =
+    var out: UiServiceResponse
+    out.id = id
+    out.ok = false
+    out.payloadCbor = ""
+    out.error = "not-implemented"
+    return out
+
+fn hostPushServiceResponse(host: HostAdapter, resp: UiServiceResponse) =
+    if host == nil:
+        return
+    host.pendingResponses.add(resp)
+
+fn hostPopServiceResponse(host: HostAdapter, out: var UiServiceResponse): bool =
+    if host == nil || len(host.pendingResponses) == 0:
+        return false
+    out = host.pendingResponses[0]
+    var trimmed: UiServiceResponse[]
+    for i in 1..<len(host.pendingResponses):
+        trimmed.add(host.pendingResponses[i])
+    host.pendingResponses = trimmed
+    return true
+
+fn hostFindSep(raw: str, startAt: int32): int32 =
+    if raw == nil || startAt < 0 || startAt >= len(raw):
+        return -1
+    var i: int32 = startAt
+    while i < len(raw):
+        if raw[i] == '|':
+            return i
+        i = i + 1
+    return -1
+
+fn hostServiceKindByName(name: str): int32 =
+    if name == nil || len(name) == 0:
+        return serviceNone
+    if name == "camera":
+        return serviceCamera
+    if name == "location":
+        return serviceLocation
+    if name == "nfc":
+        return serviceNfc
+    if name == "secure_store":
+        return serviceSecureStore
+    if name == "network_state":
+        return serviceNetworkState
+    if name == "biometric":
+        return serviceBiometric
+    if name == "p2p_direct":
+        return serviceP2pDirect
+    return servicePlugin
+
+fn hostMethodKindByName(name: str): int32 =
+    if name == nil || len(name) == 0:
+        return 0
+    var h: int32 = 0
+    for i in 0..<len(name):
+        h = (h * 131) + int32(name[i])
+        if h < 0:
+            h = -h
+    if h < 0:
+        h = 0
+    return h
+
+fn hostParseServiceResponseEnvelope(raw: str, out: var UiServiceResponse): bool =
+    if raw == nil || len(raw) == 0:
+        return false
+
+    let p0: int32 = hostFindSep(raw, 0)
+    if p0 < 0:
+        out = uiDefaultServiceResponse(raw)
+        out.error = "invalid_response"
+        return false
+
+    let p1: int32 = hostFindSep(raw, p0 + 1)
+    if p1 < 0:
+        out = uiDefaultServiceResponse(raw[0..<p0])
+        out.error = "invalid_response"
+        return false
+
+    let p2: int32 = hostFindSep(raw, p1 + 1)
+    if p2 < 0:
+        out = uiDefaultServiceResponse(raw[0..<p0])
+        out.error = "invalid_response"
+        return false
+
+    var resp: UiServiceResponse = uiDefaultServiceResponse(raw[0..<p0])
+    let okText: str = raw[p0 + 1..<p1]
+    resp.ok = okText == "1" || okText == "true"
+    resp.payloadCbor = raw[p1 + 1..<p2]
+    resp.error = raw[p2 + 1..<len(raw)]
+    out = resp
+    return true
+
+fn hostServiceRequest(host: HostAdapter, req: UiServiceRequest): bool =
+    if host == nil:
+        return false
+
+    let serviceKind: int32 = hostServiceKindByName(req.service)
+    let methodKind: int32 = hostMethodKindByName(req.method)
+    let pushed: int32 = cheng_mobile_bus_send_envelope(serviceKind, methodKind, 0, req.id, req.payloadCbor)
+    if pushed != 0:
+        return true
+
+    var resp: UiServiceResponse = uiDefaultServiceResponse(req.id)
+    resp.error = "service_unavailable"
+    hostPushServiceResponse(host, resp)
+    return false
+
+fn hostPumpServiceResponses(host: HostAdapter) =
+    if host == nil:
+        return
+    while true:
+        let raw: str = cheng_mobile_bus_recv_envelope()
+        if raw == nil || len(raw) == 0:
+            break
+        var resp: UiServiceResponse = uiDefaultServiceResponse("unknown")
+        if hostParseServiceResponseEnvelope(raw, resp):
+            hostPushServiceResponse(host, resp)
+
+fn hostStoreLastEvent(host: HostAdapter, ev: UiEvent) =
+    if host == nil:
+        return
+    host.lastEventKind = ev.kind
+    host.lastEventX = ev.x
+    host.lastEventY = ev.y
+    host.lastEventDx = ev.dx
+    host.lastEventDy = ev.dy
+    host.lastEventPointerId = ev.pointerId
+    host.lastEventKeyCode = ev.keyCode
+    host.lastEventText = ev.text
+    host.lastEventPayload = ev.payload
+    host.lastEventTimeMs = ev.timeMs
+
+fn hostReadLastEvent(host: HostAdapter): UiEvent =
+    var out: UiEvent = uiDefaultEvent()
+    if host == nil:
+        return out
+    out.kind = host.lastEventKind
+    out.x = host.lastEventX
+    out.y = host.lastEventY
+    out.dx = host.lastEventDx
+    out.dy = host.lastEventDy
+    out.pointerId = host.lastEventPointerId
+    out.keyCode = host.lastEventKeyCode
+    out.text = host.lastEventText
+    out.payload = host.lastEventPayload
+    out.timeMs = host.lastEventTimeMs
+    return out

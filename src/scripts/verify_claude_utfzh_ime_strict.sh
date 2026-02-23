@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
 out_dir="$ROOT/build/r2c_real_project_closed_loop/ClaudeDesign"
 report_json="$out_dir/r2capp/r2capp_compile_report.json"
@@ -93,10 +93,13 @@ PY
 smoke_dir="$ROOT/build/claude_utfzh_ime_strict"
 mkdir -p "$smoke_dir"
 event_script="$smoke_dir/ime.events.txt"
+batch_matrix="$smoke_dir/native.batch.matrix.txt"
+batch_out_dir="$smoke_dir/native_batch_out"
 snapshot_out="$smoke_dir/ime.snapshot.txt"
 drawlist_out="$smoke_dir/ime.drawlist.txt"
 state_out="$smoke_dir/ime.state.txt"
 run_log="$smoke_dir/ime.run.log"
+native_run_log="$smoke_dir/native.batch.run.log"
 
 cat >"$event_script" <<'EOF'
 click|#lang-zh-CN|
@@ -105,16 +108,29 @@ text-input|#root|text_cp=20013,25991
 ime-end|#root|text_cp=20013,25991
 EOF
 
+cat >"$batch_matrix" <<'EOF'
+@state lang_select
+click|#lang-zh-CN|
+click|#confirm|
+text-input|#root|text_cp=20013,25991
+ime-end|#root|text_cp=20013,25991
+
+@state update_center_main
+click|#lang-en|
+click|#confirm|
+click|#tab-update-center|
+EOF
+
 if ! run_with_timeout 180 \
   env \
-    CHENG_R2C_APP_URL=about:blank \
-    CHENG_R2CAPP_MANIFEST="$manifest_path" \
-    CHENG_R2C_APP_EVENT_SCRIPT="$event_script" \
-    CHENG_R2C_APP_SNAPSHOT_OUT="$snapshot_out" \
-    CHENG_R2C_APP_DRAWLIST_OUT="$drawlist_out" \
-    CHENG_R2C_APP_STATE_OUT="$state_out" \
-    CHENG_R2C_STRICT_RUNTIME=1 \
-    CHENG_R2C_DESKTOP_AUTOCLOSE_MS=260 \
+    R2C_APP_URL=about:blank \
+    R2CAPP_MANIFEST="$manifest_path" \
+    R2C_APP_EVENT_SCRIPT="$event_script" \
+    R2C_APP_SNAPSHOT_OUT="$snapshot_out" \
+    R2C_APP_DRAWLIST_OUT="$drawlist_out" \
+    R2C_APP_STATE_OUT="$state_out" \
+    R2C_STRICT_RUNTIME=1 \
+    R2C_DESKTOP_AUTOCLOSE_MS=260 \
     "$app_bin" >"$run_log" 2>&1; then
   echo "[verify-claude-utfzh-ime-strict] desktop timeout/failure: $app_bin" >&2
   if [ -f "$run_log" ]; then
@@ -123,12 +139,37 @@ if ! run_with_timeout 180 \
   exit 1
 fi
 
+rm -rf "$batch_out_dir"
+mkdir -p "$batch_out_dir"
+if ! run_with_timeout 180 \
+  env \
+    R2C_APP_URL=about:blank \
+    R2CAPP_MANIFEST="$manifest_path" \
+    R2C_APP_EVENT_MATRIX="$batch_matrix" \
+    R2C_APP_BATCH_OUT_DIR="$batch_out_dir" \
+    R2C_STRICT_RUNTIME=1 \
+    R2C_DISABLE_NATIVE_CJK_TEXT=0 \
+    GUI_DISABLE_BITMAP_TEXT=1 \
+    R2C_DESKTOP_AUTOCLOSE_MS=1 \
+    "$app_bin" >"$native_run_log" 2>&1; then
+  echo "[verify-claude-utfzh-ime-strict] native CJK batch timeout/failure: $app_bin" >&2
+  if [ -f "$native_run_log" ]; then
+    sed -n '1,120p' "$native_run_log" >&2
+  fi
+  exit 1
+fi
+
+if [ ! -f "$batch_out_dir/lang_select.snapshot.txt" ] || [ ! -f "$batch_out_dir/lang_select.drawlist.txt" ] || [ ! -f "$batch_out_dir/update_center_main.snapshot.txt" ]; then
+  echo "[verify-claude-utfzh-ime-strict] native CJK batch outputs missing" >&2
+  exit 1
+fi
+
 if [ ! -f "$snapshot_out" ] || [ ! -f "$drawlist_out" ] || [ ! -f "$state_out" ]; then
   echo "[verify-claude-utfzh-ime-strict] missing output artifacts" >&2
   exit 1
 fi
 
-python3 - "$snapshot_out" "$drawlist_out" "$state_out" <<'PY'
+python3 - "$snapshot_out" "$drawlist_out" "$state_out" "$batch_out_dir/lang_select.snapshot.txt" "$batch_out_dir/lang_select.drawlist.txt" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -136,11 +177,17 @@ from pathlib import Path
 snapshot = Path(sys.argv[1]).read_text(encoding="utf-8")
 drawlist = Path(sys.argv[2]).read_text(encoding="utf-8")
 state = Path(sys.argv[3]).read_text(encoding="utf-8")
+batch_snapshot = Path(sys.argv[4]).read_text(encoding="utf-8")
+batch_drawlist = Path(sys.argv[5]).read_text(encoding="utf-8")
 
 if "???" in snapshot or "???" in drawlist:
     raise SystemExit("[verify-claude-utfzh-ime-strict] detected garbled ??? in snapshot/drawlist")
+if "???" in batch_snapshot or "???" in batch_drawlist:
+    raise SystemExit("[verify-claude-utfzh-ime-strict] detected garbled ??? in native CJK batch snapshot/drawlist")
 if re.search(r"[\u4e00-\u9fff]\?+", snapshot):
     raise SystemExit("[verify-claude-utfzh-ime-strict] detected CJK->? fallback in snapshot")
+if re.search(r"[\u4e00-\u9fff]\?+", batch_snapshot):
+    raise SystemExit("[verify-claude-utfzh-ime-strict] detected CJK->? fallback in native CJK batch snapshot")
 if "IME_COMMIT:中文" not in snapshot:
     raise SystemExit("[verify-claude-utfzh-ime-strict] missing IME_COMMIT:中文 in snapshot")
 if "UTFZH_STRICT:true" not in snapshot:

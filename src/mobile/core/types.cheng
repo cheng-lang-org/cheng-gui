@@ -1,0 +1,190 @@
+import cheng/gui/mobile/design/tokens as design_tokens
+
+type
+    UiDirection = enum
+        udColumn
+        udRow
+
+    UiAlign = enum
+        uaStart
+        uaCenter
+        uaEnd
+        uaStretch
+
+    UiNodeKind = enum
+        unkContainer
+        unkText
+        unkButton
+        unkImage
+
+    UiEdgeInsets =
+        left: float64
+        top: float64
+        right: float64
+        bottom: float64
+
+    UiRect =
+        x: float64
+        y: float64
+        w: float64
+        h: float64
+
+    UiStyle =
+        direction: UiDirection
+        align: UiAlign
+        padding: UiEdgeInsets
+        margin: UiEdgeInsets
+        width: float64
+        height: float64
+        flexGrow: float64
+        cornerRadius: float64
+        bgColor: uint32
+        fgColor: uint32
+        fontPx: int32
+        clipChildren: bool
+
+    UiNode = ref
+        key: str
+        kind: UiNodeKind
+        text: str
+        imageRef: str
+        style: UiStyle
+        children: UiNode[]
+        frame: UiRect
+
+    UiBuildContext =
+        width: int32
+        height: int32
+        scale: float64
+        theme: design_tokens.MobileUiTheme
+
+fn uiInsetsAll(v: float64): UiEdgeInsets =
+    var out: UiEdgeInsets
+    out.left = v
+    out.top = v
+    out.right = v
+    out.bottom = v
+    return out
+
+fn uiInsets(left, top, right, bottom: float64): UiEdgeInsets =
+    var out: UiEdgeInsets
+    out.left = left
+    out.top = top
+    out.right = right
+    out.bottom = bottom
+    return out
+
+fn uiRect(x, y, w, h: float64): UiRect =
+    var out: UiRect
+    out.x = x
+    out.y = y
+    out.w = w
+    out.h = h
+    return out
+
+fn uiDefaultStyle(): UiStyle =
+    var out: UiStyle
+    out.direction = udColumn
+    out.align = uaStart
+    out.padding = uiInsetsAll(0.0)
+    out.margin = uiInsetsAll(0.0)
+    out.width = -1.0
+    out.height = -1.0
+    out.flexGrow = 0.0
+    out.cornerRadius = 0.0
+    out.bgColor = uint32(0)
+    out.fgColor = uint32(0xFF111111)
+    out.fontPx = 14
+    out.clipChildren = false
+    return out
+
+fn uiNodeFrameZero(): UiRect =
+    return uiRect(0.0, 0.0, 0.0, 0.0)
+
+fn uiCopyEdgeInsets(dst: var UiEdgeInsets, src: UiEdgeInsets) =
+    dst.left = src.left
+    dst.top = src.top
+    dst.right = src.right
+    dst.bottom = src.bottom
+
+fn uiCopyStyle(dst: var UiStyle, src: UiStyle) =
+    dst.direction = src.direction
+    dst.align = src.align
+    uiCopyEdgeInsets(dst.padding, src.padding)
+    uiCopyEdgeInsets(dst.margin, src.margin)
+    dst.width = src.width
+    dst.height = src.height
+    dst.flexGrow = src.flexGrow
+    dst.cornerRadius = src.cornerRadius
+    dst.bgColor = src.bgColor
+    dst.fgColor = src.fgColor
+    dst.fontPx = src.fontPx
+    dst.clipChildren = src.clipChildren
+
+fn uiNewContainer(key: str, style: UiStyle, children: UiNode[]): UiNode =
+    var out: UiNode
+    new out
+    out.key = key
+    out.kind = unkContainer
+    out.text = ""
+    out.imageRef = ""
+    uiCopyStyle(out.style, style)
+    out.children = children
+    out.frame.x = 0.0
+    out.frame.y = 0.0
+    out.frame.w = 0.0
+    out.frame.h = 0.0
+    return out
+
+fn uiNewText(key, text: str, style: UiStyle): UiNode =
+    var out: UiNode
+    new out
+    out.key = key
+    out.kind = unkText
+    out.text = text
+    out.imageRef = ""
+    uiCopyStyle(out.style, style)
+    out.children = []
+    out.frame.x = 0.0
+    out.frame.y = 0.0
+    out.frame.w = 0.0
+    out.frame.h = 0.0
+    return out
+
+fn uiNewButton(key, text: str, style: UiStyle): UiNode =
+    var out: UiNode
+    new out
+    out.key = key
+    out.kind = unkButton
+    out.text = text
+    out.imageRef = ""
+    uiCopyStyle(out.style, style)
+    out.children = []
+    out.frame.x = 0.0
+    out.frame.y = 0.0
+    out.frame.w = 0.0
+    out.frame.h = 0.0
+    return out
+
+fn uiNewImage(key, imageRef: str, style: UiStyle): UiNode =
+    var out: UiNode
+    new out
+    out.key = key
+    out.kind = unkImage
+    out.text = ""
+    out.imageRef = imageRef
+    uiCopyStyle(out.style, style)
+    out.children = []
+    out.frame.x = 0.0
+    out.frame.y = 0.0
+    out.frame.w = 0.0
+    out.frame.h = 0.0
+    return out
+
+fn uiBuildContext(width, height: int32, scale: float64, theme: design_tokens.MobileUiTheme): UiBuildContext =
+    var out: UiBuildContext
+    out.width = width
+    out.height = height
+    out.scale = scale
+    out.theme = theme
+    return out

@@ -2,30 +2,30 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
-CHENG_ROOT="${CHENG_ROOT:-}"
-if [ -z "$CHENG_ROOT" ]; then
+ROOT="${ROOT:-}"
+if [ -z "$ROOT" ]; then
   if [ -d "$HOME/.cheng/toolchain/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/.cheng/toolchain/cheng-lang"
+    ROOT="$HOME/.cheng/toolchain/cheng-lang"
   elif [ -d "$HOME/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/cheng-lang"
+    ROOT="$HOME/cheng-lang"
   elif [ -d "/Users/lbcheng/cheng-lang" ]; then
-    CHENG_ROOT="/Users/lbcheng/cheng-lang"
+    ROOT="/Users/lbcheng/cheng-lang"
   fi
 fi
-if [ -z "$CHENG_ROOT" ]; then
-  echo "[verify-unimaker-aot] missing CHENG_ROOT" >&2
+if [ -z "$ROOT" ]; then
+  echo "[verify-unimaker-aot] missing ROOT" >&2
   exit 2
 fi
 
 # Toolchain compat: prefer stage0 compat overlay when available.
-compat_root="$CHENG_ROOT/chengcache/stage0_compat"
+compat_root="$ROOT/chengcache/stage0_compat"
 if [ -d "$compat_root/src/std" ] && [ -d "$compat_root/src/tooling" ] && [ -x "$compat_root/src/tooling/chengc.sh" ]; then
-  CHENG_ROOT="$compat_root"
+  ROOT="$compat_root"
 fi
 
-CHENGC="${CHENGC:-$CHENG_ROOT/src/tooling/chengc.sh}"
+CHENGC="${CHENGC:-$ROOT/src/tooling/chengc.sh}"
 if [ ! -x "$CHENGC" ]; then
   echo "[verify-unimaker-aot] missing chengc: $CHENGC" >&2
   exit 2
@@ -50,7 +50,7 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 2
 fi
 
-pkg_roots="${CHENG_PKG_ROOTS:-}"
+pkg_roots="${PKG_ROOTS:-}"
 default_pkg_root="$HOME/.cheng-packages"
 if [ -d "$default_pkg_root" ]; then
   if [ -z "$pkg_roots" ]; then
@@ -70,24 +70,24 @@ else
     *) pkg_roots="$pkg_roots,$ROOT" ;;
   esac
 fi
-export CHENG_PKG_ROOTS="$pkg_roots"
+export PKG_ROOTS="$pkg_roots"
 
-if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
+if [ -z "${BACKEND_DRIVER:-}" ]; then
   selected_driver=""
-  if [ -x "$CHENG_ROOT/cheng_stable" ]; then
-    selected_driver="$CHENG_ROOT/cheng_stable"
-  elif [ -x "$CHENG_ROOT/cheng" ]; then
-    selected_driver="$CHENG_ROOT/cheng"
+  if [ -x "$ROOT/cheng_stable" ]; then
+    selected_driver="$ROOT/cheng_stable"
+  elif [ -x "$ROOT/cheng" ]; then
+    selected_driver="$ROOT/cheng"
   fi
-  if [ -z "$selected_driver" ] && [ -d "$CHENG_ROOT/dist/releases" ]; then
+  if [ -z "$selected_driver" ] && [ -d "$ROOT/dist/releases" ]; then
     while IFS= read -r candidate; do
       if [ -x "$candidate/cheng" ]; then
         selected_driver="$candidate/cheng"
         break
       fi
-    done < <(ls -1dt "$CHENG_ROOT"/dist/releases/* 2>/dev/null || true)
+    done < <(ls -1dt "$ROOT"/dist/releases/* 2>/dev/null || true)
   fi
-  for cand in "$CHENG_ROOT"/driver_*; do
+  for cand in "$ROOT"/driver_*; do
     if [ -n "$selected_driver" ]; then
       break
     fi
@@ -96,20 +96,20 @@ if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
       break
     fi
   done
-  if [ -z "$selected_driver" ] && [ -x "$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
-    selected_driver="$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
+  if [ -z "$selected_driver" ] && [ -x "$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
+    selected_driver="$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
   fi
   if [ -z "$selected_driver" ]; then
-    echo "[verify-unimaker-aot] missing backend driver under CHENG_ROOT=$CHENG_ROOT" >&2
+    echo "[verify-unimaker-aot] missing backend driver under ROOT=$ROOT" >&2
     exit 2
   fi
-  export CHENG_BACKEND_DRIVER="$selected_driver"
+  export BACKEND_DRIVER="$selected_driver"
 fi
-export CHENG_BACKEND_DRIVER_DIRECT="${CHENG_BACKEND_DRIVER_DIRECT:-0}"
+export BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}"
 
-target="${CHENG_KIT_TARGET:-}"
+target="${KIT_TARGET:-}"
 if [ -z "$target" ]; then
-  target="$(sh "$CHENG_ROOT/src/tooling/detect_host_target.sh")"
+  target="$(sh "$ROOT/src/tooling/detect_host_target.sh")"
 fi
 if [ -z "$target" ]; then
   echo "[verify-unimaker-aot] failed to detect host target" >&2
@@ -151,8 +151,8 @@ cleanup() {
 trap cleanup EXIT
 
 cc="${CC:-clang}"
-obj_sys="$CHENG_ROOT/chengcache/unimaker_aot.system_helpers.runtime.o"
-obj_compat="$CHENG_ROOT/chengcache/unimaker_aot.compat_shim.runtime.o"
+obj_sys="$ROOT/chengcache/unimaker_aot.system_helpers.runtime.o"
+obj_compat="$ROOT/chengcache/unimaker_aot.compat_shim.runtime.o"
 compat_shim_src="$ROOT/runtime/cheng_compat_shim.c"
 
 write_stub_package() {
@@ -215,8 +215,8 @@ compile_and_link() {
 
   rm -f "$obj"
   if ! (
-    cd "$CHENG_ROOT"
-    CHENG_DEFINES="${CHENG_DEFINES:-macos,macosx}" sh "$CHENGC" "$input" --emit-obj --obj-out:"$obj" --target:"$target"
+    cd "$ROOT"
+    DEFINES="${DEFINES:-macos,macosx}" sh "$CHENGC" "$input" --emit-obj --obj-out:"$obj" --target:"$target"
   ) >"$compile_log" 2>&1; then
     echo "[verify-unimaker-aot] compile failed: $input" >&2
     sed -n '1,120p' "$compile_log" >&2
@@ -228,9 +228,9 @@ compile_and_link() {
     exit 1
   fi
 
-  "$cc" -I"$CHENG_ROOT/runtime/include" -I"$CHENG_ROOT/src/runtime/native" \
+  "$cc" -I"$ROOT/runtime/include" -I"$ROOT/src/runtime/native" \
     -Dalloc=cheng_runtime_alloc -DcopyMem=cheng_runtime_copyMem -DsetMem=cheng_runtime_setMem \
-    -c "$CHENG_ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
+    -c "$ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
   if [ -f "$compat_shim_src" ]; then
     "$cc" -c "$compat_shim_src" -o "$obj_compat"
     "$cc" "$obj" "$obj_sys" "$obj_compat" -o "$bin"
@@ -239,18 +239,18 @@ compile_and_link() {
   fi
 }
 
-compiler_obj="$CHENG_ROOT/chengcache/unimaker_aot.compiler.runtime.o"
+compiler_obj="$ROOT/chengcache/unimaker_aot.compiler.runtime.o"
 compiler_bin="$out_dir/unimaker_aot_compiler_macos"
 compiler_log="$out_dir/unimaker_aot_compiler.compile.log"
 compile_and_link "$aot_src" "$compiler_obj" "$compiler_bin" "$compiler_log"
 
-export CHENG_R2C_IN_ROOT="$fixture_root"
-export CHENG_R2C_OUT_ROOT="$out_pkg"
-export CHENG_R2C_ENTRY="/app/main.tsx"
-export CHENG_R2C_PROFILE="unimaker"
-export CHENG_R2C_LEGACY_UNIMAKER="${CHENG_R2C_LEGACY_UNIMAKER:-0}"
-if [ "${CHENG_R2C_LEGACY_UNIMAKER:-0}" != "0" ]; then
-  echo "[verify-unimaker-aot] strict mode: CHENG_R2C_LEGACY_UNIMAKER must be 0" >&2
+export R2C_IN_ROOT="$fixture_root"
+export R2C_OUT_ROOT="$out_pkg"
+export R2C_ENTRY="/app/main.tsx"
+export R2C_PROFILE="unimaker"
+export R2C_LEGACY_UNIMAKER="${R2C_LEGACY_UNIMAKER:-0}"
+if [ "${R2C_LEGACY_UNIMAKER:-0}" != "0" ]; then
+  echo "[verify-unimaker-aot] strict mode: R2C_LEGACY_UNIMAKER must be 0" >&2
   exit 2
 fi
 
@@ -297,14 +297,14 @@ print("[verify-r2c-strict] no-fallback=true")
 print("[verify-r2c-strict] compiler-rc=0")
 PY
 
-tmp_pkg_roots="$CHENG_PKG_ROOTS"
+tmp_pkg_roots="$PKG_ROOTS"
 case ",$tmp_pkg_roots," in
   *,"$tmp_dir",*) ;;
   *) tmp_pkg_roots="$tmp_pkg_roots,$tmp_dir" ;;
 esac
-export CHENG_PKG_ROOTS="$tmp_pkg_roots"
+export PKG_ROOTS="$tmp_pkg_roots"
 
-smoke_obj="$CHENG_ROOT/chengcache/unimaker_aot.smoke.runtime.o"
+smoke_obj="$ROOT/chengcache/unimaker_aot.smoke.runtime.o"
 smoke_bin="$out_dir/unimaker_aot_smoke_macos"
 smoke_log="$out_dir/unimaker_aot_smoke.compile.log"
 compile_and_link "$smoke_src" "$smoke_obj" "$smoke_bin" "$smoke_log"
@@ -379,9 +379,9 @@ fi
 
 http_port="$(cat "$http_port_file")"
 https_port="$(cat "$https_port_file")"
-export CHENG_UNIMAKER_HTTP_URL="http://127.0.0.1:${http_port}/index.html"
-export CHENG_UNIMAKER_HTTPS_URL="https://127.0.0.1:${https_port}/index.html"
-export CHENG_GUI_TEST_INSECURE_TLS=1
+export UNIMAKER_HTTP_URL="http://127.0.0.1:${http_port}/index.html"
+export UNIMAKER_HTTPS_URL="https://127.0.0.1:${https_port}/index.html"
+export GUI_TEST_INSECURE_TLS=1
 
 run_log="$out_dir/unimaker_aot_smoke_macos.run.log"
 set +e

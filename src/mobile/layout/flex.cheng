@@ -1,0 +1,154 @@
+import cheng/gui/mobile/core/types
+
+var
+    gLayoutPassCount: int32 = 0
+    gLayoutLastW: int32 = 0
+    gLayoutLastH: int32 = 0
+
+fn nonNegative(v: float64): float64 =
+    if v < 0.0:
+        return 0.0
+    return v
+
+fn childAutoMainSize(node: types.UiNode, isRow: bool): float64 =
+    if node == nil:
+        return 0.0
+    if isRow:
+        if node.style.width >= 0.0:
+            return node.style.width
+        if node.kind == types.unkText || node.kind == types.unkButton:
+            let approxChars: int32 = if node.text == nil: 0 else: len(node.text)
+            var advance: int32 = node.style.fontPx / 2
+            if advance < 8:
+                advance = 8
+            return float64(approxChars * advance + 20)
+        return 40.0
+    if node.style.height >= 0.0:
+        return node.style.height
+    if node.kind == types.unkText || node.kind == types.unkButton:
+        return float64(node.style.fontPx + 14)
+    return 40.0
+
+fn applyCrossAlign(
+    node: types.UiNode,
+    innerX, innerY, innerW, innerH: float64,
+    childXRef, childYRef, childWRef, childHRef: var float64,
+    isRow: bool
+) =
+    if node == nil:
+        return
+    if isRow:
+        if node.style.align == types.uaStretch:
+            if node.style.height < 0.0:
+                childHRef = innerH - node.style.margin.top - node.style.margin.bottom
+        if node.style.align == types.uaCenter:
+            childYRef = innerY + (innerH - childHRef) / 2.0
+        elif node.style.align == types.uaEnd:
+            childYRef = innerY + innerH - childHRef - node.style.margin.bottom
+    else:
+        if node.style.align == types.uaStretch:
+            if node.style.width < 0.0:
+                childWRef = innerW - node.style.margin.left - node.style.margin.right
+        if node.style.align == types.uaCenter:
+            childXRef = innerX + (innerW - childWRef) / 2.0
+        elif node.style.align == types.uaEnd:
+            childXRef = innerX + innerW - childWRef - node.style.margin.right
+
+fn uiLayoutTree(node: var types.UiNode, x, y, w, h: float64) =
+    if node == nil:
+        return
+
+    gLayoutPassCount = gLayoutPassCount + 1
+    gLayoutLastW = int32(w)
+    gLayoutLastH = int32(h)
+    node.frame.x = x
+    node.frame.y = y
+    node.frame.w = nonNegative(w)
+    node.frame.h = nonNegative(h)
+    if node.kind != types.unkContainer:
+        return
+
+    let childCount: int32 = int32(len(node.children))
+    if childCount <= 0:
+        return
+
+    let innerX: float64 = node.frame.x + node.style.padding.left
+    let innerY: float64 = node.frame.y + node.style.padding.top
+    let innerW: float64 = nonNegative(node.frame.w - node.style.padding.left - node.style.padding.right)
+    let innerH: float64 = nonNegative(node.frame.h - node.style.padding.top - node.style.padding.bottom)
+
+    let isRow: bool = node.style.direction == types.udRow
+    let availableMain: float64 = if isRow: innerW else: innerH
+
+    var totalFixed: float64 = 0.0
+    var totalGrow: float64 = 0.0
+    for i in 0..<childCount:
+        let child: types.UiNode = node.children[i]
+        if child != nil:
+            let marginMain: float64 = if isRow:
+                child.style.margin.left + child.style.margin.right
+            else:
+                child.style.margin.top + child.style.margin.bottom
+            if child.style.flexGrow > 0.0:
+                totalGrow = totalGrow + child.style.flexGrow
+                totalFixed = totalFixed + marginMain
+            else:
+                totalFixed = totalFixed + childAutoMainSize(child, isRow) + marginMain
+
+    let remainingMain: float64 = nonNegative(availableMain - totalFixed)
+    var cursor: float64 = if isRow: innerX else: innerY
+
+    for i in 0..<childCount:
+        var child: types.UiNode = node.children[i]
+        if child != nil:
+            let hasPresetFrame: bool = child.frame.w > 0.0 && child.frame.h > 0.0
+            var childW: float64 = if child.style.width >= 0.0: child.style.width else: innerW
+            var childH: float64 = if child.style.height >= 0.0: child.style.height else: innerH
+            var childX: float64 = innerX
+            var childY: float64 = innerY
+
+            if hasPresetFrame:
+                childX = child.frame.x
+                childY = child.frame.y
+                childW = nonNegative(child.frame.w)
+                childH = nonNegative(child.frame.h)
+                childW = nonNegative(childW)
+                childH = nonNegative(childH)
+                uiLayoutTree(child, childX, childY, childW, childH)
+                if isRow:
+                    cursor = childX + childW + child.style.margin.right
+                else:
+                    cursor = childY + childH + child.style.margin.bottom
+            else:
+                if isRow:
+                    cursor = cursor + child.style.margin.left
+                    if child.style.width >= 0.0:
+                        childW = child.style.width
+                    elif child.style.flexGrow > 0.0 && totalGrow > 0.0:
+                        childW = remainingMain * (child.style.flexGrow / totalGrow)
+                    else:
+                        childW = childAutoMainSize(child, true)
+                    childH = if child.style.height >= 0.0: child.style.height else: innerH - child.style.margin.top - child.style.margin.bottom
+                    childX = cursor
+                    childY = innerY + child.style.margin.top
+                    applyCrossAlign(child, innerX, innerY, innerW, innerH, childX, childY, childW, childH, true)
+                    childW = nonNegative(childW)
+                    childH = nonNegative(childH)
+                    uiLayoutTree(child, childX, childY, childW, childH)
+                    cursor = cursor + childW + child.style.margin.right
+                else:
+                    cursor = cursor + child.style.margin.top
+                    if child.style.height >= 0.0:
+                        childH = child.style.height
+                    elif child.style.flexGrow > 0.0 && totalGrow > 0.0:
+                        childH = remainingMain * (child.style.flexGrow / totalGrow)
+                    else:
+                        childH = childAutoMainSize(child, false)
+                    childW = if child.style.width >= 0.0: child.style.width else: innerW - child.style.margin.left - child.style.margin.right
+                    childX = innerX + child.style.margin.left
+                    childY = cursor
+                    applyCrossAlign(child, innerX, innerY, innerW, innerH, childX, childY, childW, childH, false)
+                    childW = nonNegative(childW)
+                    childH = nonNegative(childH)
+                    uiLayoutTree(child, childX, childY, childW, childH)
+                    cursor = cursor + childH + child.style.margin.bottom

@@ -20,11 +20,16 @@ import type { TradingPair, Candle, OrderBookEntry, Trade } from '../data/trading
 import { type WalletEntry, loadWallets, maskAddr, getWalletPrivateKey } from '../utils/walletChains';
 import { libp2pService } from '../libp2p/service';
 import {
+    disableDexAsiSession,
+    enableDexAsiSession,
+    getDexAsiSessionState,
     getDexSnapshot,
     setDexDefaultSigner,
     startDexSync,
+    subscribeDexAsiSessionState,
     submitDexOrder,
     subscribeDexSnapshot,
+    type DexAsiSessionState,
     type SubmitDexOrderInput,
 } from '../domain/dex/dexSync';
 import { resolveDexMarketId } from '../domain/dex/marketConfig';
@@ -142,6 +147,8 @@ export default function TradingPage({ onClose }: TradingPageProps) {
     const [loading, setLoading] = useState(true);
     const [placing, setPlacing] = useState(false);
     const [orderNotice, setOrderNotice] = useState('');
+    const [asiBusy, setAsiBusy] = useState(false);
+    const [asiState, setAsiState] = useState<DexAsiSessionState>(() => getDexAsiSessionState());
 
     const refreshTimerRef = useRef<number | null>(null);
     const loadingRef = useRef(false);
@@ -204,6 +211,15 @@ export default function TradingPage({ onClose }: TradingPageProps) {
         });
         return () => {
             disposed = true;
+            unsubscribe();
+        };
+    }, []);
+
+    useEffect(() => {
+        const unsubscribe = subscribeDexAsiSessionState((next) => {
+            setAsiState(next);
+        });
+        return () => {
             unsubscribe();
         };
     }, []);
@@ -413,6 +429,25 @@ export default function TradingPage({ onClose }: TradingPageProps) {
         loadChartData(selectedPair, interval);
     }, [loadChartData, selectedPair, interval]);
 
+    const toggleAsiSession = useCallback(async () => {
+        if (asiBusy) {
+            return;
+        }
+        if (asiState.enabled) {
+            disableDexAsiSession('manual_disable');
+            setOrderNotice('ASI 会话已销毁，签名回退为 Root。');
+            return;
+        }
+        setAsiBusy(true);
+        const result = await enableDexAsiSession();
+        setAsiBusy(false);
+        if (!result.ok) {
+            setOrderNotice(`ASI 启用失败: ${result.reason ?? 'session_enable_failed'}`);
+            return;
+        }
+        setOrderNotice('ASI 会话已启用（24h / 500 RWAD / 仅 DEX 动作）。');
+    }, [asiBusy, asiState.enabled]);
+
     const submitOrder = useCallback(async (side: 'BUY' | 'SELL') => {
         if (!isDexMarket || !resolvedDexMarketId) {
             setOrderNotice('当前交易对仅支持行情展示，尚未接入 DEX 订单簿下单。');
@@ -536,6 +571,16 @@ export default function TradingPage({ onClose }: TradingPageProps) {
                         {connectedWallet && (
                             <span className="text-xs text-gray-400 font-mono">{maskAddr(connectedWallet.address)}</span>
                         )}
+                    </button>
+                    <button
+                        onClick={() => { void toggleAsiSession(); }}
+                        disabled={asiBusy || !dexSigner}
+                        className={`px-2 py-1 rounded text-[10px] font-semibold transition-colors ${
+                            asiState.enabled ? 'bg-cyan-500/20 text-cyan-300' : 'bg-gray-500/15 text-gray-400'
+                        } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        title="Enable ASI session signer"
+                    >
+                        {asiBusy ? 'ASI...' : asiState.enabled ? 'ASI ON' : 'ASI OFF'}
                     </button>
                 </div>
             </header>
@@ -787,6 +832,18 @@ export default function TradingPage({ onClose }: TradingPageProps) {
 
                     <div className="mx-3 mb-3 text-[11px] text-gray-400">
                         <div>Signer: {dexSigner ? maskAddr(dexSigner.address) : 'RWAD wallet required'}</div>
+                        <div>
+                            ASI: {asiState.enabled ? (asiState.active ? 'session-active' : 'session-inactive') : 'disabled'}
+                            {asiState.sessionId ? ` (${asiState.sessionId.slice(0, 16)}...)` : ''}
+                        </div>
+                        <div>
+                            Policy: 24h / 500 RWAD / unimaker.dex / placeLimitOrder|cancelOrder|settleMatch / transfer forbidden
+                        </div>
+                        {asiState.expiresAt > 0 && (
+                            <div>
+                                Expires: {new Date(asiState.expiresAt).toLocaleString()} | Remaining: {asiState.remainingRWAD.toFixed(4)} RWAD
+                            </div>
+                        )}
                         {orderNotice && <div className="mt-1 text-cyan-400">{orderNotice}</div>}
                     </div>
                 </div>

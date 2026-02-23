@@ -1,0 +1,44 @@
+import std/os
+import cheng/gui/browser/types
+import cheng/gui/browser/web
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn main(): int32 =
+    let caseUrl = os.getEnv("WPT_CASE_URL")
+    let snapshotOut = os.getEnv("WPT_SNAPSHOT_OUT")
+    if safeLen(caseUrl) <= int32(0):
+        return int32(2)
+
+    let engine = web.createBrowserEngine(types.defaultBrowserEngineConfig())
+    if engine == nil:
+        return int32(10)
+    let ctx = web.createContext(engine, types.defaultBrowserContextOptions())
+    if ctx == nil:
+        web.shutdownBrowserEngine(engine)
+        return int32(11)
+    let page = web.createPage(ctx, types.defaultPageOptions())
+    if page == nil:
+        web.destroyContext(ctx)
+        web.shutdownBrowserEngine(engine)
+        return int32(12)
+
+    var rc = int32(0)
+    if ! web.navigate(page, caseUrl):
+        rc = int32(20)
+    else:
+        let snapshot = web.captureSnapshot(page)
+        if safeLen(snapshot) <= int32(0):
+            rc = int32(21)
+        elif safeLen(snapshotOut) > int32(0):
+            os.writeFile(snapshotOut, snapshot)
+
+    web.destroyPage(page)
+    web.destroyContext(ctx)
+    web.shutdownBrowserEngine(engine)
+    return rc
+
+main()

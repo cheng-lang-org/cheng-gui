@@ -1,0 +1,512 @@
+import cheng/gui/mobile/dapp/api as dapp_api
+import cheng/gui/mobile/core/types
+import cheng/gui/mobile/host/api as host_api
+import cheng/gui/mobile/design/tokens as design_tokens
+
+type
+    SocialFeedItem =
+        id: str
+        author: str
+        content: str
+        meta: str
+
+const
+    TabCount: int32 = 4
+    FeedCardCount: int32 = 4
+
+var
+    gActiveTab: int32 = 0
+    gStatusLine: str = "启动中"
+    gStatusColor: uint32 = uint32(0xFFFF2442)
+    gSelectedCard: int32 = 0
+    gTapCount: int32 = 0
+    gLastWidth: int32 = 1080
+    gLastHeight: int32 = 1920
+    gTabTop: float64 = 64.0
+    gTabBottom: float64 = 112.0
+    gActionTop: float64 = 1720.0
+    gActionBottom: float64 = 1824.0
+    gLayoutReady: bool = false
+    gThemeSnapshot: design_tokens.MobileUiTheme
+    gTabRects: seq[types.UiRect]
+    gActionRects: seq[types.UiRect]
+    gCardRects: seq[types.UiRect]
+
+fn maxI32(a, b: int32): int32 =
+    if a >= b:
+        return a
+    return b
+
+fn minI32(a, b: int32): int32 =
+    if a <= b:
+        return a
+    return b
+
+fn setStatus(text: str, color: uint32) =
+    gStatusLine = text
+    gStatusColor = color
+
+fn rectContains(rect: types.UiRect, x, y: float64): bool =
+    if x < rect.x || y < rect.y:
+        return false
+    if x > rect.x + rect.w || y > rect.y + rect.h:
+        return false
+    return true
+
+fn pushRect(listRef: var seq[types.UiRect], x, y, w, h: int32) =
+    var rect: types.UiRect = types.uiRect(float64(x), float64(y), float64(w), float64(h))
+    listRef.add(rect)
+
+fn makeItem(id, author, content, meta: str): SocialFeedItem =
+    var out: SocialFeedItem
+    out.id = id
+    out.author = author
+    out.content = content
+    out.meta = meta
+    return out
+
+fn socialResetFeedItems() =
+    gSelectedCard = 0
+
+fn feedItemAt(index: int32): SocialFeedItem =
+    if index <= 0:
+        return makeItem("feed-1", "Alice", "昨晚把内容索引迁到了 P2P topic，同步延迟下降到 120ms。", "2m 前 · 18 赞")
+    if index == 1:
+        return makeItem("feed-2", "Bob", "纯 Cheng GUI 接了 ServiceBus，链上事件回调已经打通。", "7m 前 · 31 赞")
+    if index == 2:
+        return makeItem("feed-3", "Carol", "移动端 DisplayList 渲染链路稳定，开始做压测和快照回归。", "15m 前 · 24 赞")
+    return makeItem("feed-4", "Dave", "今晚安排 Android 闭环回归：首页/消息/发布三条主链路。", "28m 前 · 12 赞")
+
+fn tabLabel(index: int32): str =
+    if index == 0:
+        return "关注"
+    if index == 1:
+        return "广场"
+    if index == 2:
+        return "消息"
+    return "资产"
+
+fn clampTabIndex(index: int32): int32 =
+    var out: int32 = index
+    if out < 0:
+        out = 0
+    if out >= TabCount:
+        out = TabCount - 1
+    return out
+
+fn ensureCardSelectionValid() =
+    if gSelectedCard < 0:
+        gSelectedCard = 0
+    if gSelectedCard >= FeedCardCount:
+        gSelectedCard = FeedCardCount - 1
+
+fn textStyle(theme: design_tokens.MobileUiTheme, fontPx: int32, color: uint32): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.fontPx = maxI32(fontPx, 16)
+    style.fgColor = color
+    style.width = -1.0
+    style.height = -1.0
+    return style
+
+fn appBarStyle(theme: design_tokens.MobileUiTheme): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.direction = types.udRow
+    style.align = types.uaCenter
+    style.padding = types.uiInsets(
+        float64(theme.spacing.lg),
+        float64(theme.spacing.lg),
+        float64(theme.spacing.lg),
+        float64(theme.spacing.sm)
+    )
+    style.height = float64(maxI32(theme.spacing.xxl + theme.spacing.xxl + theme.spacing.sm, 128))
+    style.bgColor = theme.bgCanvas
+    return style
+
+fn tabRowStyle(theme: design_tokens.MobileUiTheme): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.direction = types.udRow
+    style.align = types.uaCenter
+    style.padding = types.uiInsets(
+        float64(theme.spacing.lg),
+        0.0,
+        float64(theme.spacing.lg),
+        float64(theme.spacing.sm)
+    )
+    style.height = float64(maxI32(theme.spacing.xxl + theme.spacing.lg, 92))
+    style.bgColor = theme.bgCanvas
+    return style
+
+fn tabButtonStyle(theme: design_tokens.MobileUiTheme, active: bool, last: bool): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.flexGrow = 1.0
+    style.height = float64(maxI32(theme.spacing.xxl + theme.spacing.sm, 74))
+    style.padding = types.uiInsets(
+        float64(theme.spacing.sm),
+        float64(theme.spacing.xs),
+        float64(theme.spacing.sm),
+        float64(theme.spacing.xs)
+    )
+    if !last:
+        style.margin = types.uiInsets(0.0, 0.0, float64(theme.spacing.sm), 0.0)
+    else:
+        style.margin = types.uiInsetsAll(0.0)
+    style.cornerRadius = float64(theme.radii.chip)
+    if active:
+        style.bgColor = theme.accent
+        style.fgColor = theme.textOnPrimary
+    else:
+        style.bgColor = theme.bgSurface
+        style.fgColor = theme.textSecondary
+    style.fontPx = maxI32(theme.typo.bodyStrong, 24)
+    return style
+
+fn feedListStyle(theme: design_tokens.MobileUiTheme): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.direction = types.udColumn
+    style.flexGrow = 1.0
+    style.padding = types.uiInsets(
+        float64(theme.spacing.lg),
+        float64(theme.spacing.sm),
+        float64(theme.spacing.lg),
+        float64(theme.spacing.sm)
+    )
+    style.bgColor = theme.bgCanvas
+    return style
+
+fn feedCardStyle(theme: design_tokens.MobileUiTheme, selected: bool): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.direction = types.udColumn
+    style.padding = types.uiInsetsAll(float64(theme.spacing.md))
+    style.margin = types.uiInsets(0.0, 0.0, 0.0, float64(theme.spacing.sm))
+    style.cornerRadius = float64(theme.radii.card)
+    style.height = -1.0
+    if selected:
+        style.bgColor = uint32(0xFFFFE9EE)
+    else:
+        style.bgColor = theme.bgSurface
+    return style
+
+fn makeFeedCard(theme: design_tokens.MobileUiTheme, item: SocialFeedItem, selected: bool): types.UiNode =
+    var children: types.UiNode[]
+
+    var authorStyle: types.UiStyle = textStyle(theme, maxI32(theme.typo.bodyStrong, 26), theme.textPrimary)
+    authorStyle.margin = types.uiInsets(0.0, 0.0, 0.0, float64(theme.spacing.xs))
+    children.add(types.uiNewText(item.id + "-author", item.author, authorStyle))
+
+    var contentStyle: types.UiStyle = textStyle(theme, maxI32(theme.typo.body, 22), theme.textPrimary)
+    contentStyle.margin = types.uiInsets(0.0, 0.0, 0.0, float64(theme.spacing.sm))
+    children.add(types.uiNewText(item.id + "-content", item.content, contentStyle))
+
+    var metaStyle: types.UiStyle = textStyle(theme, maxI32(theme.typo.caption, 19), theme.textMuted)
+    children.add(types.uiNewText(item.id + "-meta", item.meta, metaStyle))
+
+    return types.uiNewContainer(item.id + "-card", feedCardStyle(theme, selected), children)
+
+fn actionRowStyle(theme: design_tokens.MobileUiTheme): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.direction = types.udRow
+    style.align = types.uaCenter
+    style.padding = types.uiInsets(
+        float64(theme.spacing.lg),
+        float64(theme.spacing.sm),
+        float64(theme.spacing.lg),
+        float64(theme.spacing.md)
+    )
+    style.height = float64(maxI32(theme.spacing.xxl + theme.spacing.xxl, 116))
+    style.bgColor = theme.bgCanvas
+    return style
+
+fn actionButtonStyle(theme: design_tokens.MobileUiTheme, color: uint32, last: bool): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.flexGrow = 1.0
+    style.height = float64(maxI32(theme.spacing.xxl + theme.spacing.xs, 80))
+    style.padding = types.uiInsets(
+        float64(theme.spacing.sm),
+        float64(theme.spacing.xs),
+        float64(theme.spacing.sm),
+        float64(theme.spacing.xs)
+    )
+    if !last:
+        style.margin = types.uiInsets(0.0, 0.0, float64(theme.spacing.sm), 0.0)
+    else:
+        style.margin = types.uiInsetsAll(0.0)
+    style.cornerRadius = float64(theme.radii.input)
+    style.bgColor = color
+    style.fgColor = theme.textOnPrimary
+    style.fontPx = maxI32(theme.typo.bodyStrong, 24)
+    return style
+
+fn footerStyle(theme: design_tokens.MobileUiTheme): types.UiStyle =
+    var style: types.UiStyle = types.uiDefaultStyle()
+    style.padding = types.uiInsets(
+        float64(theme.spacing.lg),
+        0.0,
+        float64(theme.spacing.lg),
+        float64(theme.spacing.lg)
+    )
+    style.height = float64(maxI32(theme.spacing.xxl + theme.spacing.sm, 68))
+    style.bgColor = theme.bgCanvas
+    return style
+
+fn setFrame(node: types.UiNode, x, y, w, h: int32) =
+    if node == nil:
+        return
+    node.frame.x = float64(x)
+    node.frame.y = float64(y)
+    node.frame.w = float64(w)
+    node.frame.h = float64(h)
+
+fn buildRoot(self: dapp_api.Dapp, ctx: types.UiBuildContext): types.UiNode =
+    self
+    let theme: design_tokens.MobileUiTheme = ctx.theme
+    ensureCardSelectionValid()
+
+    let appBarHeight: int32 = maxI32(theme.spacing.xxl + theme.spacing.xxl + theme.spacing.sm, 128)
+    let tabHeight: int32 = maxI32(theme.spacing.xxl + theme.spacing.lg, 92)
+    let actionHeight: int32 = maxI32(theme.spacing.xxl + theme.spacing.xxl, 116)
+    let footerHeight: int32 = maxI32(theme.spacing.xxl + theme.spacing.sm, 68)
+
+    gLastWidth = ctx.width
+    gLastHeight = ctx.height
+    gThemeSnapshot = theme
+    gTabTop = float64(appBarHeight)
+    gTabBottom = float64(appBarHeight + tabHeight)
+    gActionBottom = float64(ctx.height - footerHeight)
+    gActionTop = gActionBottom - float64(actionHeight)
+    gLayoutReady = true
+    gTabRects = []
+    gActionRects = []
+    gCardRects = []
+
+    var rootStyle: types.UiStyle = types.uiDefaultStyle()
+    rootStyle.direction = types.udColumn
+    rootStyle.width = float64(ctx.width)
+    rootStyle.height = float64(ctx.height)
+    rootStyle.bgColor = theme.bgCanvas
+
+    var rootChildren: types.UiNode[]
+
+    var appBarChildren: types.UiNode[]
+    var titleStyle: types.UiStyle = textStyle(theme, maxI32(theme.typo.titleStrong, 36), theme.textPrimary)
+    titleStyle.flexGrow = 1.0
+    appBarChildren.add(types.uiNewText("title", "UniMaker Dapp", titleStyle))
+
+    var badgeStyle: types.UiStyle = textStyle(theme, maxI32(theme.typo.bodyStrong, 24), theme.textOnPrimary)
+    badgeStyle.bgColor = gStatusColor
+    badgeStyle.cornerRadius = float64(theme.radii.chip)
+    badgeStyle.padding = types.uiInsets(
+        float64(theme.spacing.sm),
+        float64(theme.spacing.xxs),
+        float64(theme.spacing.sm),
+        float64(theme.spacing.xxs)
+    )
+    appBarChildren.add(types.uiNewText("status-badge", gStatusLine, badgeStyle))
+    let appBarNode: types.UiNode = types.uiNewContainer("app-bar", appBarStyle(theme), appBarChildren)
+    rootChildren.add(appBarNode)
+
+    var tabChildren: types.UiNode[]
+    for tabIdx in 0..<TabCount:
+        let label: str = tabLabel(tabIdx)
+        let isLast: bool = tabIdx == TabCount - 1
+        tabChildren.add(types.uiNewButton("tab-" + $tabIdx, label, tabButtonStyle(theme, tabIdx == gActiveTab, isLast)))
+    let tabRowNode: types.UiNode = types.uiNewContainer("tab-row", tabRowStyle(theme), tabChildren)
+    rootChildren.add(tabRowNode)
+
+    var listChildren: types.UiNode[]
+    for i in 0..<FeedCardCount:
+        let item: SocialFeedItem = feedItemAt(i)
+        listChildren.add(makeFeedCard(theme, item, i == gSelectedCard))
+    let feedListNode: types.UiNode = types.uiNewContainer("feed-list", feedListStyle(theme), listChildren)
+    rootChildren.add(feedListNode)
+
+    var actionChildren: types.UiNode[]
+    actionChildren.add(types.uiNewButton("action-refresh", "刷新", actionButtonStyle(theme, theme.accent, false)))
+    actionChildren.add(types.uiNewButton("action-post", "发布", actionButtonStyle(theme, theme.success, false)))
+    actionChildren.add(types.uiNewButton("action-sync", "同步", actionButtonStyle(theme, theme.warning, true)))
+    let actionRowNode: types.UiNode = types.uiNewContainer("action-row", actionRowStyle(theme), actionChildren)
+    rootChildren.add(actionRowNode)
+
+    var footerChildren: types.UiNode[]
+    var footerTextStyle: types.UiStyle = textStyle(theme, maxI32(theme.typo.caption, 18), theme.textMuted)
+    footerChildren.add(types.uiNewText("footer-text", "Pure Cheng GUI ready · tap=" + $gTapCount, footerTextStyle))
+    let footerNode: types.UiNode = types.uiNewContainer("footer", footerStyle(theme), footerChildren)
+    rootChildren.add(footerNode)
+
+    let rootNode: types.UiNode = types.uiNewContainer("root", rootStyle, rootChildren)
+
+    # Explicit frame assignment for stable mobile bring-up (int-only math).
+    let screenW: int32 = ctx.width
+    let screenH: int32 = ctx.height
+    let marginX: int32 = maxI32(theme.spacing.lg, 16)
+    let gap: int32 = maxI32(theme.spacing.sm, 8)
+
+    let appBarHi: int32 = appBarHeight
+    let tabHi: int32 = tabHeight
+    let actionHi: int32 = actionHeight
+    let footerHi: int32 = footerHeight
+
+    setFrame(rootNode, 0, 0, screenW, screenH)
+    setFrame(appBarNode, 0, 0, screenW, appBarHi)
+    if len(appBarChildren) >= 2:
+        let badgeW: int32 = maxI32(screenW / 3, 260)
+        let titleH: int32 = maxI32(theme.typo.titleStrong + 20, 56)
+        let badgeH: int32 = maxI32(theme.typo.bodyStrong + 20, 50)
+        let titleW: int32 = maxI32(screenW - marginX * 2 - badgeW - gap, 180)
+        let appTextY: int32 = maxI32((appBarHi - titleH) / 2, 0)
+        setFrame(appBarChildren[0], marginX, appTextY, titleW, titleH)
+        setFrame(appBarChildren[1], screenW - marginX - badgeW, maxI32((appBarHi - badgeH) / 2, 0), badgeW, badgeH)
+
+    let tabY: int32 = appBarHi
+    setFrame(tabRowNode, 0, tabY, screenW, tabHi)
+    var tabW: int32 = (screenW - marginX * 2 - gap * 3) / TabCount
+    if tabW <= 0:
+        tabW = 1
+    var tabX: int32 = marginX
+    for tabLayoutIdx in 0..<len(tabChildren):
+        let tabItemY: int32 = tabY + 8
+        let tabItemH: int32 = maxI32(tabHi - 16, 60)
+        setFrame(tabChildren[tabLayoutIdx], tabX, tabItemY, tabW, tabItemH)
+        pushRect(gTabRects, tabX, tabItemY, tabW, tabItemH)
+        tabX = tabX + tabW + gap
+
+    let feedY: int32 = appBarHi + tabHi
+    let actionTopPx: int32 = screenH - footerHi - actionHi
+    var feedH: int32 = actionTopPx - feedY
+    if feedH < 0:
+        feedH = 0
+    setFrame(feedListNode, 0, feedY, screenW, feedH)
+
+    let cardW: int32 = screenW - marginX * 2
+    let cardGap: int32 = theme.spacing.sm
+    var cardH: int32 = (feedH - cardGap * (FeedCardCount + 1)) / FeedCardCount
+    if cardH < 180:
+        cardH = 180
+    var cardY: int32 = feedY + cardGap
+    for cardIdx in 0..<len(listChildren):
+        let cardNode: types.UiNode = listChildren[cardIdx]
+        setFrame(cardNode, marginX, cardY, cardW, cardH)
+        pushRect(gCardRects, marginX, cardY, cardW, cardH)
+        if cardNode != nil && len(cardNode.children) >= 3:
+            let textX: int32 = marginX + 14
+            let authorH: int32 = maxI32(theme.typo.bodyStrong + 12, 34)
+            let contentH: int32 = maxI32(theme.typo.body + 20, 52)
+            let metaH: int32 = maxI32(theme.typo.caption + 10, 28)
+            setFrame(cardNode.children[0], textX, cardY + 12, cardW - 28, authorH)
+            setFrame(cardNode.children[1], textX, cardY + 20 + authorH, cardW - 28, contentH)
+            setFrame(cardNode.children[2], textX, cardY + cardH - metaH - 10, cardW - 28, metaH)
+        cardY = cardY + cardH + cardGap
+
+    setFrame(actionRowNode, 0, actionTopPx, screenW, actionHi)
+    var actW: int32 = (screenW - marginX * 2 - gap * 2) / 3
+    if actW <= 0:
+        actW = 1
+    let actionY: int32 = actionTopPx + 12
+    let actionH: int32 = maxI32(actionHi - 24, 64)
+    setFrame(actionChildren[0], marginX, actionY, actW, actionH)
+    pushRect(gActionRects, marginX, actionY, actW, actionH)
+    setFrame(actionChildren[1], marginX + actW + gap, actionY, actW, actionH)
+    pushRect(gActionRects, marginX + actW + gap, actionY, actW, actionH)
+    setFrame(actionChildren[2], marginX + (actW + gap) * 2, actionY, actW, actionH)
+    pushRect(gActionRects, marginX + (actW + gap) * 2, actionY, actW, actionH)
+
+    setFrame(footerNode, 0, screenH - footerHi, screenW, footerHi)
+    if len(footerChildren) > 0:
+        setFrame(footerChildren[0], marginX, screenH - footerHi + 8, screenW - marginX * 2, maxI32(footerHi - 12, 30))
+
+    return rootNode
+
+fn handlePointerDown(x, y: float64, ctx: var dapp_api.DappContext): bool =
+    if !gLayoutReady:
+        return false
+
+    ctx
+    gTapCount = gTapCount + 1
+
+    # Generous top hit area to absorb status-bar offset and small target mistakes.
+    if y <= gTabBottom + 24.0:
+        let tabWidth: float64 = float64(gLastWidth) / float64(TabCount)
+        let picked: int32 = clampTabIndex(int32(x / tabWidth))
+        gActiveTab = picked
+        setStatus("切换到 " + tabLabel(gActiveTab) + " · tap#" + $gTapCount, gThemeSnapshot.accent)
+        return true
+
+    for i in 0..<len(gActionRects):
+        if rectContains(gActionRects[i], x, y):
+            if i <= 0:
+                setStatus("刷新中 · tap#" + $gTapCount, gThemeSnapshot.accent)
+                return true
+            if i == 1:
+                setStatus("打开发布器 · tap#" + $gTapCount, gThemeSnapshot.success)
+                return true
+            setStatus("同步节点 · tap#" + $gTapCount, gThemeSnapshot.warning)
+            return true
+
+    for i in 0..<len(gCardRects):
+        if rectContains(gCardRects[i], x, y):
+            if i >= 0 && i < FeedCardCount:
+                let item: SocialFeedItem = feedItemAt(i)
+                gSelectedCard = i
+                setStatus("已选择 " + item.author + " · tap#" + $gTapCount, gThemeSnapshot.accentPressed)
+                return true
+
+    let xInt: int32 = int32(x)
+    let yInt: int32 = int32(y)
+    setStatus("点击 " + $xInt + "," + $yInt + " · tap#" + $gTapCount, gThemeSnapshot.accentPressed)
+    return true
+
+fn socialInit(self: dapp_api.Dapp, ctx: var dapp_api.DappContext) =
+    self
+    ctx
+    gActiveTab = 0
+    gSelectedCard = 0
+    gTapCount = 0
+    gThemeSnapshot = ctx.theme
+    setStatus("就绪", gThemeSnapshot.accent)
+    socialResetFeedItems()
+
+fn socialUpdate(self: dapp_api.Dapp, msg: dapp_api.UiMsg, ctx: var dapp_api.DappContext): bool =
+    self
+    if msg.kind == dapp_api.umkServiceResponse:
+        if msg.serviceResponse.ok:
+            gStatusLine = "服务完成: " + msg.serviceResponse.id
+        else:
+            gStatusLine = "服务失败: " + msg.serviceResponse.error
+        return true
+
+    if msg.kind != dapp_api.umkEvent:
+        return false
+
+    if msg.eventKind == host_api.uekPointerDown:
+        return handlePointerDown(msg.x, msg.y, ctx)
+
+    if msg.eventKind == host_api.uekResize:
+        if ctx != nil && ctx.services.host != nil:
+            let host: host_api.HostAdapter = ctx.services.host
+            gLastWidth = host.metrics.width
+            gLastHeight = host.metrics.height
+        setStatus("窗口变化", gThemeSnapshot.accent)
+        return true
+
+    if msg.eventKind == host_api.uekTextInput:
+        if msg.text != nil && len(msg.text) > 0:
+            setStatus("输入: " + msg.text, gThemeSnapshot.success)
+            return true
+
+    if msg.eventKind == host_api.uekPointerScroll:
+        if msg.dy < 0.0:
+            setStatus("上滑", gThemeSnapshot.accent)
+        elif msg.dy > 0.0:
+            setStatus("下滑", gThemeSnapshot.accent)
+        else:
+            setStatus("滚动", gThemeSnapshot.accent)
+        return true
+
+    return false
+
+fn createSocialFeedDapp(): dapp_api.Dapp =
+    var out: dapp_api.Dapp
+    new out
+    out.Init = socialInit
+    out.Build = buildRoot
+    out.Update = socialUpdate
+    return out

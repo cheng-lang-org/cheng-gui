@@ -1,6 +1,8 @@
 import { canonicalJson } from '../c2c/codec';
 import type { JsonValue } from '../../libp2p/definitions';
 import { libp2pService } from '../../libp2p/service';
+import type { SecureSigner, SessionContext, SessionTxKind } from '../dex/types';
+import { computeSessionPolicyRef, policyGateCanExecute } from '../dex/sessionPolicyEngine';
 
 export interface RwadTxEnvelope {
   chain_id: string;
@@ -12,6 +14,9 @@ export interface RwadTxEnvelope {
   expires_at: number;
   tx_type: string;
   payload: Record<string, JsonValue>;
+  policy_ref?: string;
+  session_id?: string;
+  signer_mode?: 'session' | 'root';
   signature: string;
   encoding: 'cbor' | 'jcs-json';
 }
@@ -37,6 +42,11 @@ export interface MarketEvent {
   txHash?: string;
   action: string;
   metadata: Record<string, JsonValue>;
+}
+
+interface SignerResolution {
+  mode: 'session' | 'root';
+  signBytes: (payload: Uint8Array) => Promise<string>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -119,6 +129,86 @@ async function importPrivateEd25519(privateKeyPkcs8: string): Promise<CryptoKey>
     false,
     ['sign'],
   );
+}
+
+function normalizePolicyError(code: string): SubmitTxResult {
+  return {
+    ok: false,
+    txHash: '',
+    status: 'rejected',
+    reason: code,
+  };
+}
+
+function mapTxTypeToPolicy(input: {
+  txType: string;
+  payload: Record<string, JsonValue>;
+}): { method: string; txKind: SessionTxKind; amountRWAD: number; contract: string } {
+  const type = input.txType.trim().toLowerCase();
+  if (type === 'rwad_escrow_lock') {
+    return {
+      method: 'settleMatch',
+      txKind: 'settle',
+      amountRWAD: asNumber(input.payload.amount ?? 0, 0),
+      contract: 'unimaker.dex',
+    };
+  }
+  if (type === 'asset_transfer') {
+    return {
+      method: 'transfer',
+      txKind: 'transfer',
+      amountRWAD: asNumber(input.payload.amount ?? 0, 0),
+      contract: 'unimaker.dex',
+    };
+  }
+  return {
+    method: 'unknown',
+    txKind: 'unknown',
+    amountRWAD: 0,
+    contract: 'unknown',
+  };
+}
+
+async function resolveSigner(input: {
+  sender: string;
+  privateKeyPkcs8?: string;
+  sessionContext?: SessionContext;
+  secureSigner?: SecureSigner;
+  txType: string;
+  payload: Record<string, JsonValue>;
+}): Promise<SignerResolution> {
+  const { sessionContext, secureSigner } = input;
+  if (sessionContext && secureSigner) {
+    const mapped = mapTxTypeToPolicy({
+      txType: input.txType,
+      payload: input.payload,
+    });
+    const gate = policyGateCanExecute({
+      sessionContext,
+      contract: mapped.contract,
+      method: mapped.method,
+      txKind: mapped.txKind,
+      amountRWAD: mapped.amountRWAD,
+      enforceExposure: false,
+    });
+    if (gate.ok) {
+      return {
+        mode: 'session',
+        signBytes: (payload) => secureSigner.signEnvelope(sessionContext, payload),
+      };
+    }
+  }
+  if (!input.privateKeyPkcs8) {
+    throw new Error('missing_root_private_key');
+  }
+  return {
+    mode: 'root',
+    signBytes: async (payload) => {
+      const key = await importPrivateEd25519(input.privateKeyPkcs8!);
+      const signature = await crypto.subtle.sign({ name: 'Ed25519' }, key, toArrayBuffer(payload));
+      return bytesToBase64(new Uint8Array(signature));
+    },
+  };
 }
 
 function normalizeStatus(value: string): SubmitTxResult['status'] {
@@ -238,7 +328,7 @@ export async function listMarketEvents(options: {
 export async function signTxEnvelope(input: {
   chainId: string;
   sender: string;
-  privateKeyPkcs8: string;
+  privateKeyPkcs8?: string;
   txType: string;
   payload: Record<string, JsonValue>;
   nonce: number;
@@ -247,7 +337,20 @@ export async function signTxEnvelope(input: {
   feePayer?: string;
   expiresAt?: number;
   encoding?: 'cbor' | 'jcs-json';
+  sessionContext?: SessionContext;
+  secureSigner?: SecureSigner;
+  policyRef?: string;
 }): Promise<RwadTxEnvelope> {
+  const signer = await resolveSigner({
+    sender: input.sender,
+    privateKeyPkcs8: input.privateKeyPkcs8,
+    sessionContext: input.sessionContext,
+    secureSigner: input.secureSigner,
+    txType: input.txType,
+    payload: input.payload,
+  });
+  const policyRef = input.policyRef
+    ?? (input.sessionContext ? computeSessionPolicyRef(input.sessionContext.policy) : undefined);
   const envelope: Omit<RwadTxEnvelope, 'signature'> = {
     chain_id: input.chainId,
     sender: input.sender,
@@ -258,22 +361,24 @@ export async function signTxEnvelope(input: {
     expires_at: input.expiresAt ?? Date.now() + 30 * 60 * 1000,
     tx_type: input.txType,
     payload: input.payload,
+    policy_ref: policyRef,
+    session_id: input.sessionContext?.policy.sessionId,
+    signer_mode: signer.mode,
     encoding: input.encoding ?? 'cbor',
   };
 
   const signText = canonicalJson(envelope);
-  const key = await importPrivateEd25519(input.privateKeyPkcs8);
-  const signature = await crypto.subtle.sign({ name: 'Ed25519' }, key, toArrayBuffer(stringToBytes(signText)));
+  const signature = await signer.signBytes(stringToBytes(signText));
   return {
     ...envelope,
-    signature: bytesToBase64(new Uint8Array(signature)),
+    signature,
   };
 }
 
 export async function submitSignedTx(input: {
   chainId: string;
   sender: string;
-  privateKeyPkcs8: string;
+  privateKeyPkcs8?: string;
   txType: string;
   payload: Record<string, JsonValue>;
   gasLimit?: number;
@@ -281,7 +386,28 @@ export async function submitSignedTx(input: {
   feePayer?: string;
   expiresAt?: number;
   encoding?: 'cbor' | 'jcs-json';
+  sessionContext?: SessionContext;
+  secureSigner?: SecureSigner;
+  policyRef?: string;
 }): Promise<SubmitTxResult> {
+  if (input.sessionContext) {
+    const mapped = mapTxTypeToPolicy({
+      txType: input.txType,
+      payload: input.payload,
+    });
+    const gate = policyGateCanExecute({
+      sessionContext: input.sessionContext,
+      contract: mapped.contract,
+      method: mapped.method,
+      txKind: mapped.txKind,
+      amountRWAD: mapped.amountRWAD,
+      enforceExposure: false,
+    });
+    if (!gate.ok) {
+      return normalizePolicyError(gate.code ?? 'POLICY_DENIED_INVALID_POLICY');
+    }
+  }
+
   const account = await getAccount(input.sender).catch(() => ({ nonce: 0 } as Pick<RwadAccount, 'nonce'>));
   const envelope = await signTxEnvelope({
     ...input,

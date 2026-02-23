@@ -20,7 +20,7 @@ if ! command -v shasum >/dev/null 2>&1; then
   exit 2
 fi
 
-chromium_bin="${CHENG_CHROMIUM_TRUTH_BIN:-}"
+chromium_bin="${CHROMIUM_TRUTH_BIN:-}"
 if [ -z "$chromium_bin" ]; then
   if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
     chromium_bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -31,7 +31,7 @@ if [ -z "$chromium_bin" ]; then
   fi
 fi
 if [ -z "$chromium_bin" ] || [ ! -x "$chromium_bin" ]; then
-  echo "[freeze-claude-chromium-truth] missing Chromium binary; set CHENG_CHROMIUM_TRUTH_BIN" >&2
+  echo "[freeze-claude-chromium-truth] missing Chromium binary; set CHROMIUM_TRUTH_BIN" >&2
   exit 2
 fi
 

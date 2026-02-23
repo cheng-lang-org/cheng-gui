@@ -6,3 +6,9 @@ build/
 *.log
 __pycache__
 *.o
+android/project_template/.gradle/
+tmp*
+bin/
+*.py
+claude_fixture/
+*.json

@@ -1,0 +1,29 @@
+# Compatibility layer for one minor version.
+# Old call-sites can keep using `cheng/gui/mobile/ui/components_*` semantics
+# while new code migrates to `mobile_gui/*` pipeline.
+
+import cheng/gui/mobile/ui/tokens_business_cn as old_tokens
+import cheng/gui/mobile/ui/components_form as old_form
+import cheng/gui/mobile/ui/components_nav5 as old_nav
+
+fn compatBusinessTheme(scale: float64): old_tokens.MobileUiTheme =
+    return old_tokens.mobileBusinessTheme(scale)
+
+fn compatDrawPrimaryButton(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w, h: int32,
+    label: str,
+    theme: old_tokens.MobileUiTheme,
+    flags: old_tokens.MobileUiStateFlags
+) =
+    old_form.uiDrawPrimaryButton(pixels, width, height, strideBytes, x, y, w, h, label, theme, flags)
+
+fn compatDrawBottomNav5(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    scale: float64,
+    selectedIdx: int32,
+    theme: old_tokens.MobileUiTheme
+): int32 =
+    return old_nav.uiDrawBottomNav5(pixels, width, height, strideBytes, scale, selectedIdx, theme)

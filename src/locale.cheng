@@ -70,7 +70,7 @@ fn detectLocale(): str =
     if available.len == 0:
         return ""
         var candidates: str[] = [] appendLocaleCandi
-        date(candidates, "CHENG_IDE_LOCALE") appendLocaleCandi
+        date(candidates, "IDE_LOCALE") appendLocaleCandi
         date(candidates, "LC_ALL") appendLocaleCandi
         date(candidates, "LC_MESSAGES") appendLocaleCandi
         date(candidates, "LC_CTYPE") appendLocaleCandi

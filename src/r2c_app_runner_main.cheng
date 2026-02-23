@@ -39,7 +39,7 @@ fn r2cRunnerCleanup(page: web.BrowserPage, ctx: web.BrowserContext, engine: web.
         web.shutdownBrowserEngine(engine)
 
 fn r2cRunnerMain(): int32 =
-    var url = os.getEnv("CHENG_R2C_APP_URL")
+    var url = os.getEnv("R2C_APP_URL")
     if safeLen(url) <= int32(0):
         url = "about:blank"
 
@@ -58,28 +58,28 @@ fn r2cRunnerMain(): int32 =
     if ! web.navigate(page, url):
         r2cRunnerCleanup(page, ctx, engine)
         return int32(13)
-    if ! r2cRuntime.mountCompiledApp(page, os.getEnv("CHENG_R2CAPP_MANIFEST")):
+    if ! r2cRuntime.mountCompiledApp(page, os.getEnv("R2CAPP_MANIFEST")):
         r2cRunnerCleanup(page, ctx, engine)
         return int32(14)
 
-    let oneEvent = os.getEnv("CHENG_R2C_APP_EVENT")
+    let oneEvent = os.getEnv("R2C_APP_EVENT")
     if safeLen(oneEvent) > int32(0):
-        let target = os.getEnv("CHENG_R2C_APP_TARGET")
-        let payload = os.getEnv("CHENG_R2C_APP_PAYLOAD")
+        let target = os.getEnv("R2C_APP_TARGET")
+        let payload = os.getEnv("R2C_APP_PAYLOAD")
         if ! web.dispatchDomEvent(page, oneEvent, target, payload):
             r2cRunnerCleanup(page, ctx, engine)
             return int32(15)
 
-    let eventScript = os.getEnv("CHENG_R2C_APP_EVENT_SCRIPT")
+    let eventScript = os.getEnv("R2C_APP_EVENT_SCRIPT")
     if safeLen(eventScript) > int32(0):
         let _ = eventScript
 
     let snapshot = web.captureSnapshot(page)
-    let snapshotOut = os.getEnv("CHENG_R2C_APP_SNAPSHOT_OUT")
+    let snapshotOut = os.getEnv("R2C_APP_SNAPSHOT_OUT")
     if safeLen(snapshotOut) > int32(0):
         os.writeFile(snapshotOut, snapshot + "\n")
 
-    let stateOut = os.getEnv("CHENG_R2C_APP_STATE_OUT")
+    let stateOut = os.getEnv("R2C_APP_STATE_OUT")
     if safeLen(stateOut) > int32(0):
         let commandCount = int32(0)
         let compiledCount = int32(0)
@@ -89,7 +89,7 @@ fn r2cRunnerMain(): int32 =
         stateText = stateText + "snapshot=" + snapshot + "\n"
         stateText = stateText + "draw_commands=" + intText(commandCount) + "\n"
         stateText = stateText + "mounted=true\n"
-        stateText = stateText + "profile=" + os.getEnv("CHENG_R2C_PROFILE") + "\n"
+        stateText = stateText + "profile=" + os.getEnv("R2C_PROFILE") + "\n"
         stateText = stateText + "module_count=" + intText(compiledCount) + "\n"
         stateText = stateText + "event_applied=" + r2cRunnerBoolText(safeLen(oneEvent) > int32(0) || safeLen(eventScript) > int32(0)) + "\n"
         os.writeFile(stateOut, stateText)

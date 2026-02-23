@@ -2,24 +2,24 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
-CHENG_ROOT="${CHENG_ROOT:-}"
-if [ -z "$CHENG_ROOT" ]; then
+export GUI_ROOT="$ROOT"
+ROOT="${ROOT:-}"
+if [ -z "$ROOT" ]; then
   if [ -d "$HOME/.cheng/toolchain/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/.cheng/toolchain/cheng-lang"
+    ROOT="$HOME/.cheng/toolchain/cheng-lang"
   elif [ -d "$HOME/cheng-lang" ]; then
-    CHENG_ROOT="$HOME/cheng-lang"
+    ROOT="$HOME/cheng-lang"
   elif [ -d "/Users/lbcheng/cheng-lang" ]; then
-    CHENG_ROOT="/Users/lbcheng/cheng-lang"
+    ROOT="/Users/lbcheng/cheng-lang"
   fi
 fi
 
-if [ -z "$CHENG_ROOT" ]; then
-  echo "[verify-gui-kit-runtime] missing CHENG_ROOT" >&2
+if [ -z "$ROOT" ]; then
+  echo "[verify-gui-kit-runtime] missing ROOT" >&2
   exit 2
 fi
 
-CHENGC="${CHENGC:-$CHENG_ROOT/src/tooling/chengc.sh}"
+CHENGC="${CHENGC:-$ROOT/src/tooling/chengc.sh}"
 if [ ! -x "$CHENGC" ]; then
   echo "[verify-gui-kit-runtime] missing chengc: $CHENGC" >&2
   exit 2
@@ -31,7 +31,7 @@ if [ "$host" != "Darwin" ]; then
   exit 0
 fi
 
-pkg_roots="${CHENG_PKG_ROOTS:-}"
+pkg_roots="${PKG_ROOTS:-}"
 default_pkg_root="$HOME/.cheng-packages"
 if [ -d "$default_pkg_root" ]; then
   if [ -z "$pkg_roots" ]; then
@@ -51,24 +51,24 @@ else
     *) pkg_roots="$pkg_roots,$ROOT" ;;
   esac
 fi
-export CHENG_PKG_ROOTS="$pkg_roots"
+export PKG_ROOTS="$pkg_roots"
 
-if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
+if [ -z "${BACKEND_DRIVER:-}" ]; then
   selected_driver=""
-  if [ -x "$CHENG_ROOT/cheng_stable" ]; then
-    selected_driver="$CHENG_ROOT/cheng_stable"
-  elif [ -x "$CHENG_ROOT/cheng" ]; then
-    selected_driver="$CHENG_ROOT/cheng"
+  if [ -x "$ROOT/cheng_stable" ]; then
+    selected_driver="$ROOT/cheng_stable"
+  elif [ -x "$ROOT/cheng" ]; then
+    selected_driver="$ROOT/cheng"
   fi
-  if [ -z "$selected_driver" ] && [ -d "$CHENG_ROOT/dist/releases" ]; then
+  if [ -z "$selected_driver" ] && [ -d "$ROOT/dist/releases" ]; then
     while IFS= read -r candidate; do
       if [ -x "$candidate/cheng" ]; then
         selected_driver="$candidate/cheng"
         break
       fi
-    done < <(ls -1dt "$CHENG_ROOT"/dist/releases/* 2>/dev/null || true)
+    done < <(ls -1dt "$ROOT"/dist/releases/* 2>/dev/null || true)
   fi
-  for cand in "$CHENG_ROOT"/driver_*; do
+  for cand in "$ROOT"/driver_*; do
     if [ -n "$selected_driver" ]; then
       break
     fi
@@ -77,20 +77,20 @@ if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
       break
     fi
   done
-  if [ -z "$selected_driver" ] && [ -x "$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
-    selected_driver="$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
+  if [ -z "$selected_driver" ] && [ -x "$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
+    selected_driver="$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
   fi
   if [ -z "$selected_driver" ]; then
-    echo "[verify-gui-kit-runtime] missing backend driver under CHENG_ROOT=$CHENG_ROOT" >&2
+    echo "[verify-gui-kit-runtime] missing backend driver under ROOT=$ROOT" >&2
     exit 2
   fi
-  export CHENG_BACKEND_DRIVER="$selected_driver"
+  export BACKEND_DRIVER="$selected_driver"
 fi
 
-export CHENG_BACKEND_DRIVER_DIRECT="${CHENG_BACKEND_DRIVER_DIRECT:-0}"
-target="${CHENG_KIT_TARGET:-}"
+export BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}"
+target="${KIT_TARGET:-}"
 if [ -z "$target" ]; then
-  target="$(sh "$CHENG_ROOT/src/tooling/detect_host_target.sh")"
+  target="$(sh "$ROOT/src/tooling/detect_host_target.sh")"
 fi
 if [ -z "$target" ]; then
   echo "[verify-gui-kit-runtime] failed to detect host target" >&2
@@ -107,21 +107,21 @@ out="$ROOT/build/gui_kit_smoke_macos"
 run_log="$ROOT/build/gui_kit_smoke_macos.run.log"
 mkdir -p "$(dirname "$out")"
 
-obj_main="$CHENG_ROOT/chengcache/gui_kit_smoke_main.runtime.o"
-obj_sys="$CHENG_ROOT/chengcache/gui_kit_smoke.system_helpers.runtime.o"
-obj_compat="$CHENG_ROOT/chengcache/gui_kit_smoke.compat_shim.runtime.o"
-obj_stub="$CHENG_ROOT/chengcache/gui_kit_smoke.mobile_stub.runtime.o"
-obj_skia="$CHENG_ROOT/chengcache/gui_kit_smoke.skia_stub.runtime.o"
-obj_plat="$CHENG_ROOT/chengcache/gui_kit_smoke.macos_app.runtime.o"
-obj_text="$CHENG_ROOT/chengcache/gui_kit_smoke.text_macos.runtime.o"
+obj_main="$ROOT/chengcache/gui_kit_smoke_main.runtime.o"
+obj_sys="$ROOT/chengcache/gui_kit_smoke.system_helpers.runtime.o"
+obj_compat="$ROOT/chengcache/gui_kit_smoke.compat_shim.runtime.o"
+obj_stub="$ROOT/chengcache/gui_kit_smoke.mobile_stub.runtime.o"
+obj_skia="$ROOT/chengcache/gui_kit_smoke.skia_stub.runtime.o"
+obj_plat="$ROOT/chengcache/gui_kit_smoke.macos_app.runtime.o"
+obj_text="$ROOT/chengcache/gui_kit_smoke.text_macos.runtime.o"
 compat_shim_src="$ROOT/runtime/cheng_compat_shim.c"
 
-cd "$CHENG_ROOT"
-CHENG_DEFINES="${CHENG_DEFINES:-macos,macosx}" sh "$CHENGC" "$main_src" --emit-obj --obj-out:"$obj_main" --target:"$target" >/dev/null
+cd "$ROOT"
+DEFINES="${DEFINES:-macos,macosx}" sh "$CHENGC" "$main_src" --emit-obj --obj-out:"$obj_main" --target:"$target" >/dev/null
 
-clang -I"$CHENG_ROOT/runtime/include" -I"$CHENG_ROOT/src/runtime/native" \
+clang -I"$ROOT/runtime/include" -I"$ROOT/src/runtime/native" \
   -Dalloc=cheng_runtime_alloc -DcopyMem=cheng_runtime_copyMem -DsetMem=cheng_runtime_setMem \
-  -c "$CHENG_ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
+  -c "$ROOT/src/runtime/native/system_helpers.c" -o "$obj_sys"
 if [ -f "$compat_shim_src" ]; then
   clang -c "$compat_shim_src" -o "$obj_compat"
 else

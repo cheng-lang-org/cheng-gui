@@ -1,0 +1,68 @@
+import cheng/gui/mobile/core/types
+import cheng/gui/mobile/host/api as host_api
+import cheng/gui/mobile/design/tokens as design_tokens
+
+type
+    UiMsgKind = enum
+        umkNone
+        umkEvent
+        umkServiceResponse
+
+    UiMsg =
+        kind: UiMsgKind
+        eventKind: host_api.UiEventKind
+        x: float64
+        y: float64
+        dx: float64
+        dy: float64
+        pointerId: int32
+        keyCode: int32
+        text: str
+        payload: str
+        timeMs: int64
+        serviceResponse: host_api.UiServiceResponse
+
+    DappServices =
+        host: host_api.HostAdapter
+
+    DappContext = ref
+        services: DappServices
+        theme: design_tokens.MobileUiTheme
+        scale: float64
+
+    Dapp = ref
+        Init: fn(self: Dapp, ctx: var DappContext)
+        Build: fn(self: Dapp, ctx: types.UiBuildContext): types.UiNode
+        Update: fn(self: Dapp, msg: UiMsg, ctx: var DappContext): bool
+
+fn uiMsgFromEvent(ev: host_api.UiEvent): UiMsg =
+    var out: UiMsg
+    out.kind = umkEvent
+    out.eventKind = ev.kind
+    out.x = ev.x
+    out.y = ev.y
+    out.dx = ev.dx
+    out.dy = ev.dy
+    out.pointerId = ev.pointerId
+    out.keyCode = ev.keyCode
+    out.text = ev.text
+    out.payload = ev.payload
+    out.timeMs = ev.timeMs
+    out.serviceResponse = host_api.uiDefaultServiceResponse("")
+    return out
+
+fn uiMsgFromServiceResponse(resp: host_api.UiServiceResponse): UiMsg =
+    var out: UiMsg
+    out.kind = umkServiceResponse
+    out.eventKind = host_api.uekNone
+    out.x = 0.0
+    out.y = 0.0
+    out.dx = 0.0
+    out.dy = 0.0
+    out.pointerId = -1
+    out.keyCode = 0
+    out.text = ""
+    out.payload = ""
+    out.timeMs = int64(0)
+    out.serviceResponse = resp
+    return out

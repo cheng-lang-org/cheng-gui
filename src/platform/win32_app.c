@@ -49,10 +49,10 @@ enum {
   ChengGuiWinEventPointerScroll = 10
 };
 
-#define CHENG_GUI_WIN_MOD_SHIFT 0x1u
-#define CHENG_GUI_WIN_MOD_CTRL  0x2u
-#define CHENG_GUI_WIN_MOD_ALT   0x4u
-#define CHENG_GUI_WIN_MOD_META  0x8u
+#define GUI_WIN_MOD_SHIFT 0x1u
+#define GUI_WIN_MOD_CTRL  0x2u
+#define GUI_WIN_MOD_ALT   0x4u
+#define GUI_WIN_MOD_META  0x8u
 
 struct ChengGuiWinWindow {
   HWND hwnd;
@@ -137,16 +137,16 @@ static ChengGuiWinEvent chengGuiWinMakeEvent(ChengGuiWinWindow *window, int kind
 static unsigned int chengGuiWinCurrentModifiers(void) {
   unsigned int mods = 0;
   if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-    mods |= CHENG_GUI_WIN_MOD_SHIFT;
+    mods |= GUI_WIN_MOD_SHIFT;
   }
   if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-    mods |= CHENG_GUI_WIN_MOD_CTRL;
+    mods |= GUI_WIN_MOD_CTRL;
   }
   if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
-    mods |= CHENG_GUI_WIN_MOD_ALT;
+    mods |= GUI_WIN_MOD_ALT;
   }
   if ((GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0) {
-    mods |= CHENG_GUI_WIN_MOD_META;
+    mods |= GUI_WIN_MOD_META;
   }
   return mods;
 }
@@ -1182,6 +1182,40 @@ __declspec(dllexport) int chengGuiNativeDrawTextBgraLen(
 ) {
   (void)textLen;
   return chengGuiDrawTextBgra(pixels, width, height, strideBytes, x, y, w, h, color, fontSize, text);
+}
+
+__declspec(dllexport) int chengGuiNativeDrawTextBgraLenI(
+  void *pixels,
+  int width,
+  int height,
+  int strideBytes,
+  int x,
+  int y,
+  int w,
+  int h,
+  uint32_t color,
+  int fontSizeX100,
+  const char *text,
+  int textLen
+) {
+  (void)textLen;
+  double fontSize = (double)fontSizeX100 / 100.0;
+  if (fontSize <= 1.0) {
+    fontSize = 14.0;
+  }
+  return chengGuiDrawTextBgra(
+    pixels,
+    width,
+    height,
+    strideBytes,
+    (double)x,
+    (double)y,
+    (double)w,
+    (double)h,
+    color,
+    fontSize,
+    text
+  );
 }
 
 __declspec(dllexport) int chengGuiNativeDrawTextBgraCode(

@@ -1,5 +1,13 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { checkDailyLimit, clearDailyLimitState, consumeDailyLimit, getDailyLimitConsumed } from '../limitEngine';
+import {
+  checkDailyLimit,
+  checkSessionExposureLimit,
+  clearDailyLimitState,
+  consumeDailyLimit,
+  consumeSessionExposureLimit,
+  getDailyLimitConsumed,
+  getSessionExposureConsumed,
+} from '../limitEngine';
 
 class MemoryStorage implements Storage {
   private store = new Map<string, string>();
@@ -94,5 +102,26 @@ describe('dex maker daily limit engine', () => {
     const after = getDailyLimitConsumed('INTL', 'XAU', ts2);
     expect(before).toBe(1);
     expect(after).toBe(0);
+  });
+
+  it('enforces session + wallet daily exposure limit', () => {
+    const consume = consumeSessionExposureLimit({
+      sessionId: 'sess-1',
+      walletId: 'wallet-1',
+      amountRWAD: 300,
+      maxAmountRWAD: 500,
+    });
+    expect(consume.ok).toBe(true);
+    expect(consume.remaining).toBe(200);
+
+    const checkDenied = checkSessionExposureLimit({
+      sessionId: 'sess-2',
+      walletId: 'wallet-1',
+      amountRWAD: 250,
+      maxAmountRWAD: 500,
+    });
+    expect(checkDenied.ok).toBe(false);
+    expect(checkDenied.reason).toBe('session_daily_limit_exceeded');
+    expect(getSessionExposureConsumed('sess-1', 'wallet-1')).toBe(300);
   });
 });

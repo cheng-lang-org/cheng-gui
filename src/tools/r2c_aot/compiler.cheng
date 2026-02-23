@@ -96,6 +96,18 @@ type
         routeCoveragePath: str
         visualStates: str[]
         visualGoldenManifestPath: str
+        androidTruthManifestPath: str
+        androidRouteGraphPath: str
+        androidRouteEventMatrixPath: str
+        androidRouteCoveragePath: str
+        reactIrPath: str
+        hookGraphPath: str
+        effectPlanPath: str
+        thirdPartyRewriteReportPath: str
+        truthTraceManifestAndroidPath: str
+        truthTraceManifestIosPath: str
+        truthTraceManifestHarmonyPath: str
+        perfSummaryPath: str
         textProfilePath: str
         frameHashesExpectedPath: str
         fullRouteStatesPath: str
@@ -105,6 +117,10 @@ type
         semanticMappingMode: str
         semanticNodeMapPath: str
         semanticRuntimeMapPath: str
+        semanticRenderNodesPath: str
+        semanticRenderNodesCount: int32
+        semanticRenderNodesHash: str
+        semanticRenderNodesFnv64: str
         semanticNodeCount: int32
         pixelGoldenDir: str
         pixelTolerance: int32
@@ -279,7 +295,7 @@ fn compilerProjectName(report: R2cCompileReport): str =
     return "r2capp"
 
 fn compilerRuntimeTemplatePath(): str =
-    let envRoot = os.getEnv("CHENG_GUI_ROOT")
+    let envRoot = os.getEnv("GUI_ROOT")
     if len(envRoot) > 0:
         let byEnv = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
         if os.fileExists(byEnv):
@@ -568,7 +584,7 @@ fn compilerReadText(path: str): tuple[text: str, err: str] =
     return (text: text, err: "")
 
 fn traceStep(outRoot, step: str) =
-    if os.getEnv("CHENG_R2C_TRACE") != "1":
+    if os.getEnv("R2C_TRACE") != "1":
         return
     if len(outRoot) == 0:
         return
@@ -661,6 +677,18 @@ fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     setLen(report.visualStates,  0)
     fillFullRouteStates(report.visualStates)
     report.visualGoldenManifestPath = ""
+    report.androidTruthManifestPath = ""
+    report.androidRouteGraphPath = ""
+    report.androidRouteEventMatrixPath = ""
+    report.androidRouteCoveragePath = ""
+    report.reactIrPath = ""
+    report.hookGraphPath = ""
+    report.effectPlanPath = ""
+    report.thirdPartyRewriteReportPath = ""
+    report.truthTraceManifestAndroidPath = ""
+    report.truthTraceManifestIosPath = ""
+    report.truthTraceManifestHarmonyPath = ""
+    report.perfSummaryPath = ""
     report.textProfilePath = ""
     report.frameHashesExpectedPath = ""
     report.fullRouteStatesPath = ""
@@ -670,6 +698,10 @@ fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     report.semanticMappingMode = "source-node-map"
     report.semanticNodeMapPath = ""
     report.semanticRuntimeMapPath = ""
+    report.semanticRenderNodesPath = ""
+    report.semanticRenderNodesCount = int32(0)
+    report.semanticRenderNodesHash = ""
+    report.semanticRenderNodesFnv64 = ""
     report.semanticNodeCount = int32(0)
     report.pixelGoldenDir = ""
     report.pixelTolerance = int32(0)
@@ -1345,17 +1377,17 @@ fn cpAdapterForBareSpec(spec: str): R2cAdapterResolve =
         return out
     if spec == "lunar-javascript":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
         out.reason = ""
         return out
     if spec == "virtual:pwa-register":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
         out.reason = ""
         return out
     if spec == "jspdf":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
         out.reason = ""
         return out
     if spec == "crypto":
@@ -1370,37 +1402,37 @@ fn cpAdapterForBareSpec(spec: str): R2cAdapterResolve =
         return out
     if spec == "three":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/three_native"
         out.reason = ""
         return out
     if spec == "zustand":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
         out.reason = ""
         return out
     if spec == "@react-three/fiber":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if spec == "@react-three/drei":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if spec == "@react-three/cannon":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if cpHasPrefix(spec, "@radix-ui/"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/radix_native"
         out.reason = ""
         return out
     if cpHasPrefix(spec, "@vitejs/"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
         out.reason = ""
         return out
     if spec == "@capacitor/cli" ||
@@ -1422,17 +1454,20 @@ fn cpAdapterForBareSpec(spec: str): R2cAdapterResolve =
             spec == "vite-plugin-wasm" ||
             spec == "vitest":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        if spec == "@capacitor/cli":
+            out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_equiv"
+        else:
+            out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
         out.reason = ""
         return out
     if cpHasPrefix(spec, "@noble/hashes/"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
         out.reason = ""
         return out
     if cpHasPrefix(spec, "node:"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "cheng/gui/browser/r2capp/adapters/node_polyfill"
         out.reason = ""
         return out
     return out
@@ -1984,6 +2019,105 @@ fn buildSemanticNodeMapText(mode: str, nodes: str[]): str =
     out = out + "}\n"
     return out
 
+fn buildReactIrText(entry: str, modules: R2cModuleRecord[], semanticNodes: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-react-ir-v1\",\n"
+    out = out + "  \"entry\": \"" + jsonEscape(entry) + "\",\n"
+    out = out + "  \"module_count\": " + $len(modules) + ",\n"
+    out = out + "  \"semantic_node_count\": " + $len(semanticNodes) + ",\n"
+    out = out + "  \"semantic_nodes\": " + jsonStringList(semanticNodes) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildHookGraphText(semanticNodes: str[]): str =
+    var hookKinds: str[]
+    setLen(hookKinds,  0)
+    var idx: int32 = int32(0)
+    while idx < len(semanticNodes):
+        let node = semanticNodes[idx]
+        if detectTextContains(node, "useState"):
+            pushUnique(hookKinds, "useState")
+        if detectTextContains(node, "useEffect"):
+            pushUnique(hookKinds, "useEffect")
+        if detectTextContains(node, "useMemo"):
+            pushUnique(hookKinds, "useMemo")
+        if detectTextContains(node, "useCallback"):
+            pushUnique(hookKinds, "useCallback")
+        if detectTextContains(node, "useRef"):
+            pushUnique(hookKinds, "useRef")
+        if detectTextContains(node, "useContext"):
+            pushUnique(hookKinds, "useContext")
+        if detectTextContains(node, "lazy"):
+            pushUnique(hookKinds, "lazy")
+        if detectTextContains(node, "Suspense"):
+            pushUnique(hookKinds, "Suspense")
+        if detectTextContains(node, "dynamic-import"):
+            pushUnique(hookKinds, "import()")
+        idx = idx + int32(1)
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-hook-graph-v1\",\n"
+    out = out + "  \"hook_count\": " + $len(hookKinds) + ",\n"
+    out = out + "  \"hooks\": " + jsonStringList(hookKinds) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildEffectPlanText(semanticNodes: str[]): str =
+    var effectHooks: str[]
+    setLen(effectHooks,  0)
+    var idx: int32 = int32(0)
+    while idx < len(semanticNodes):
+        let node = semanticNodes[idx]
+        if detectTextContains(node, "useEffect"):
+            pushUnique(effectHooks, node)
+        idx = idx + int32(1)
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-effect-plan-v1\",\n"
+    out = out + "  \"effect_count\": " + $len(effectHooks) + ",\n"
+    out = out + "  \"effects\": " + jsonStringList(effectHooks) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildThirdPartyRewriteReportText(modules: R2cModuleRecord[]): str =
+    var rewrites: str[]
+    setLen(rewrites,  0)
+    var idx: int32 = int32(0)
+    while idx < len(modules):
+        let rec = modules[idx]
+        if rec != nil && rec.kind == "adapter":
+            appendString(rewrites, rec.moduleId + "=>" + rec.adapter)
+        idx = idx + int32(1)
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-third-party-rewrite-report-v1\",\n"
+    out = out + "  \"count\": " + $len(rewrites) + ",\n"
+    out = out + "  \"rewrites\": " + jsonStringList(rewrites) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildTruthTraceManifestText(platform: str, states: str[], frameHashesExpectedPath: str): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-truth-trace-manifest-v1\",\n"
+    out = out + "  \"platform\": \"" + jsonEscape(platform) + "\",\n"
+    out = out + "  \"schema\": \"src/tools/r2c_aot/schema/r2c_truth_trace_v1.json\",\n"
+    out = out + "  \"state_snapshot_schema\": \"src/tools/r2c_aot/schema/r2c_state_snapshot_v1.json\",\n"
+    out = out + "  \"side_effect_schema\": \"src/tools/r2c_aot/schema/r2c_side_effect_v1.json\",\n"
+    out = out + "  \"expected_frame_hash_source\": \"" + jsonEscape(frameHashesExpectedPath) + "\",\n"
+    out = out + "  \"state_count\": " + $len(states) + ",\n"
+    out = out + "  \"states\": " + jsonStringList(states) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildPerfSummaryText(report: R2cCompileReport): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-perf-summary-v1\",\n"
+    out = out + "  \"fps_target\": 60,\n"
+    out = out + "  \"tti_target_ms\": 2000,\n"
+    out = out + "  \"memory_regression_limit_pct\": 10,\n"
+    out = out + "  \"profile\": \"" + jsonEscape(report.profile) + "\",\n"
+    out = out + "  \"module_count\": " + $len(report.modules) + ",\n"
+    out = out + "  \"semantic_node_count\": " + $report.semanticNodeCount + "\n"
+    out = out + "}\n"
+    return out
+
 fn detectTemplateRuntimeFallback(runtimeSource: str): bool =
     if len(runtimeSource) == 0:
         return false
@@ -2021,6 +2155,18 @@ fn buildManifestText(report: R2cCompileReport): str =
     out = out + "  \"route_coverage_path\": \"" + jsonEscape(report.routeCoveragePath) + "\",\n"
     out = out + "  \"visual_states\": " + jsonStringList(report.visualStates) + ",\n"
     out = out + "  \"visual_golden_manifest_path\": \"" + jsonEscape(report.visualGoldenManifestPath) + "\",\n"
+    out = out + "  \"android_truth_manifest_path\": \"" + jsonEscape(report.androidTruthManifestPath) + "\",\n"
+    out = out + "  \"android_route_graph_path\": \"" + jsonEscape(report.androidRouteGraphPath) + "\",\n"
+    out = out + "  \"android_route_event_matrix_path\": \"" + jsonEscape(report.androidRouteEventMatrixPath) + "\",\n"
+    out = out + "  \"android_route_coverage_path\": \"" + jsonEscape(report.androidRouteCoveragePath) + "\",\n"
+    out = out + "  \"react_ir_path\": \"" + jsonEscape(report.reactIrPath) + "\",\n"
+    out = out + "  \"hook_graph_path\": \"" + jsonEscape(report.hookGraphPath) + "\",\n"
+    out = out + "  \"effect_plan_path\": \"" + jsonEscape(report.effectPlanPath) + "\",\n"
+    out = out + "  \"third_party_rewrite_report_path\": \"" + jsonEscape(report.thirdPartyRewriteReportPath) + "\",\n"
+    out = out + "  \"truth_trace_manifest_android_path\": \"" + jsonEscape(report.truthTraceManifestAndroidPath) + "\",\n"
+    out = out + "  \"truth_trace_manifest_ios_path\": \"" + jsonEscape(report.truthTraceManifestIosPath) + "\",\n"
+    out = out + "  \"truth_trace_manifest_harmony_path\": \"" + jsonEscape(report.truthTraceManifestHarmonyPath) + "\",\n"
+    out = out + "  \"perf_summary_path\": \"" + jsonEscape(report.perfSummaryPath) + "\",\n"
     out = out + "  \"text_profile_path\": \"" + jsonEscape(report.textProfilePath) + "\",\n"
     out = out + "  \"frame_hashes_expected_path\": \"" + jsonEscape(report.frameHashesExpectedPath) + "\",\n"
     out = out + "  \"full_route_states_path\": \"" + jsonEscape(report.fullRouteStatesPath) + "\",\n"
@@ -2030,6 +2176,10 @@ fn buildManifestText(report: R2cCompileReport): str =
     out = out + "  \"semantic_mapping_mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
     out = out + "  \"semantic_node_map_path\": \"" + jsonEscape(report.semanticNodeMapPath) + "\",\n"
     out = out + "  \"semantic_runtime_map_path\": \"" + jsonEscape(report.semanticRuntimeMapPath) + "\",\n"
+    out = out + "  \"semantic_render_nodes_path\": \"" + jsonEscape(report.semanticRenderNodesPath) + "\",\n"
+    out = out + "  \"semantic_render_nodes_count\": " + $report.semanticRenderNodesCount + ",\n"
+    out = out + "  \"semantic_render_nodes_hash\": \"" + jsonEscape(report.semanticRenderNodesHash) + "\",\n"
+    out = out + "  \"semantic_render_nodes_fnv64\": \"" + jsonEscape(report.semanticRenderNodesFnv64) + "\",\n"
     out = out + "  \"semantic_node_count\": " + $report.semanticNodeCount + ",\n"
     out = out + "  \"pixel_golden_dir\": \"" + jsonEscape(report.pixelGoldenDir) + "\",\n"
     out = out + "  \"pixel_tolerance\": " + $report.pixelTolerance + ",\n"
@@ -2067,6 +2217,18 @@ fn buildReportText(report: R2cCompileReport): str =
     out = out + "  \"route_coverage_path\": \"" + jsonEscape(report.routeCoveragePath) + "\",\n"
     out = out + "  \"visual_states\": " + jsonStringList(report.visualStates) + ",\n"
     out = out + "  \"visual_golden_manifest_path\": \"" + jsonEscape(report.visualGoldenManifestPath) + "\",\n"
+    out = out + "  \"android_truth_manifest_path\": \"" + jsonEscape(report.androidTruthManifestPath) + "\",\n"
+    out = out + "  \"android_route_graph_path\": \"" + jsonEscape(report.androidRouteGraphPath) + "\",\n"
+    out = out + "  \"android_route_event_matrix_path\": \"" + jsonEscape(report.androidRouteEventMatrixPath) + "\",\n"
+    out = out + "  \"android_route_coverage_path\": \"" + jsonEscape(report.androidRouteCoveragePath) + "\",\n"
+    out = out + "  \"react_ir_path\": \"" + jsonEscape(report.reactIrPath) + "\",\n"
+    out = out + "  \"hook_graph_path\": \"" + jsonEscape(report.hookGraphPath) + "\",\n"
+    out = out + "  \"effect_plan_path\": \"" + jsonEscape(report.effectPlanPath) + "\",\n"
+    out = out + "  \"third_party_rewrite_report_path\": \"" + jsonEscape(report.thirdPartyRewriteReportPath) + "\",\n"
+    out = out + "  \"truth_trace_manifest_android_path\": \"" + jsonEscape(report.truthTraceManifestAndroidPath) + "\",\n"
+    out = out + "  \"truth_trace_manifest_ios_path\": \"" + jsonEscape(report.truthTraceManifestIosPath) + "\",\n"
+    out = out + "  \"truth_trace_manifest_harmony_path\": \"" + jsonEscape(report.truthTraceManifestHarmonyPath) + "\",\n"
+    out = out + "  \"perf_summary_path\": \"" + jsonEscape(report.perfSummaryPath) + "\",\n"
     out = out + "  \"text_profile_path\": \"" + jsonEscape(report.textProfilePath) + "\",\n"
     out = out + "  \"frame_hashes_expected_path\": \"" + jsonEscape(report.frameHashesExpectedPath) + "\",\n"
     out = out + "  \"full_route_states_path\": \"" + jsonEscape(report.fullRouteStatesPath) + "\",\n"
@@ -2076,6 +2238,10 @@ fn buildReportText(report: R2cCompileReport): str =
     out = out + "  \"semantic_mapping_mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
     out = out + "  \"semantic_node_map_path\": \"" + jsonEscape(report.semanticNodeMapPath) + "\",\n"
     out = out + "  \"semantic_runtime_map_path\": \"" + jsonEscape(report.semanticRuntimeMapPath) + "\",\n"
+    out = out + "  \"semantic_render_nodes_path\": \"" + jsonEscape(report.semanticRenderNodesPath) + "\",\n"
+    out = out + "  \"semantic_render_nodes_count\": " + $report.semanticRenderNodesCount + ",\n"
+    out = out + "  \"semantic_render_nodes_hash\": \"" + jsonEscape(report.semanticRenderNodesHash) + "\",\n"
+    out = out + "  \"semantic_render_nodes_fnv64\": \"" + jsonEscape(report.semanticRenderNodesFnv64) + "\",\n"
     out = out + "  \"semantic_node_count\": " + $report.semanticNodeCount + ",\n"
     out = out + "  \"pixel_golden_dir\": \"" + jsonEscape(report.pixelGoldenDir) + "\",\n"
     out = out + "  \"pixel_tolerance\": " + $report.pixelTolerance + ",\n"
@@ -2223,11 +2389,11 @@ fn cpProcessImportSpec(report: R2cCompileReport, queue: var str[], rec: R2cModul
                     appendIssueRaw(report.unsupportedImports, "import", moduleId, spec, adap.reason)
                 rec.supported = false
             else:
-                ensureAdapterModule(report, spec, "cheng/gui/browser/r2capp/adapters/external_stub")
+                ensureAdapterModule(report, spec, "cheng/gui/browser/r2capp/adapters/third_party_native")
                 if dynamicImport:
-                    appendIssueRaw(report.degradedFeatures, "dynamic-import", moduleId, spec, "dynamic-external-stub")
+                    appendIssueRaw(report.degradedFeatures, "dynamic-import", moduleId, spec, "dynamic-third-party-adapter")
                 else:
-                    appendIssueRaw(report.degradedFeatures, "import", moduleId, spec, "external-stub")
+                    appendIssueRaw(report.degradedFeatures, "import", moduleId, spec, "third-party-adapter")
         return
 
     let resolved = cpResolveRelativeSource(inRoot, sourcePath, spec)
@@ -2456,8 +2622,24 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     report.fullRouteStatesPath = opts.outRoot + "/r2c_fullroute_states.json"
     report.fullRouteEventMatrixPath = opts.outRoot + "/r2c_fullroute_event_matrix.json"
     report.fullRouteCoverageReportPath = opts.outRoot + "/r2c_fullroute_coverage_report.json"
+    report.reactIrPath = opts.outRoot + "/r2c_react_ir.json"
+    report.hookGraphPath = opts.outRoot + "/r2c_hook_graph.json"
+    report.effectPlanPath = opts.outRoot + "/r2c_effect_plan.json"
+    report.thirdPartyRewriteReportPath = opts.outRoot + "/r2c_third_party_rewrite_report.json"
+    report.truthTraceManifestAndroidPath = opts.outRoot + "/r2c_truth_trace_manifest_android.json"
+    report.truthTraceManifestIosPath = opts.outRoot + "/r2c_truth_trace_manifest_ios.json"
+    report.truthTraceManifestHarmonyPath = opts.outRoot + "/r2c_truth_trace_manifest_harmony.json"
+    report.perfSummaryPath = opts.outRoot + "/r2c_perf_summary.json"
+    report.androidTruthManifestPath = report.truthTraceManifestAndroidPath
+    report.androidRouteGraphPath = report.routeGraphPath
+    report.androidRouteEventMatrixPath = report.routeEventMatrixPath
+    report.androidRouteCoveragePath = report.routeCoveragePath
     report.semanticNodeMapPath = opts.outRoot + "/r2c_semantic_node_map.json"
     report.semanticRuntimeMapPath = opts.outRoot + "/r2c_semantic_runtime_map.json"
+    report.semanticRenderNodesPath = opts.outRoot + "/r2c_semantic_render_nodes.tsv"
+    report.semanticRenderNodesCount = int32(0)
+    report.semanticRenderNodesHash = ""
+    report.semanticRenderNodesFnv64 = ""
     report.textProfilePath = opts.outRoot + "/r2c_text_profile.json"
     report.fullRouteStateCount = int32(len(report.visualStates))
     report.pixelTolerance = int32(0)
@@ -2562,7 +2744,29 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     routeCoverageText = routeCoverageText + "}\n"
     if ! compilerWriteText(report.routeCoveragePath, routeCoverageText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeCoveragePath, "write-route-coverage-failed")
+    let reactIrText = buildReactIrText(report.entry, report.modules, semanticNodes)
+    if ! compilerWriteText(report.reactIrPath, reactIrText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.reactIrPath, "write-react-ir-failed")
+    let hookGraphText = buildHookGraphText(semanticNodes)
+    if ! compilerWriteText(report.hookGraphPath, hookGraphText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.hookGraphPath, "write-hook-graph-failed")
+    let effectPlanText = buildEffectPlanText(semanticNodes)
+    if ! compilerWriteText(report.effectPlanPath, effectPlanText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.effectPlanPath, "write-effect-plan-failed")
+    let rewriteReportText = buildThirdPartyRewriteReportText(report.modules)
+    if ! compilerWriteText(report.thirdPartyRewriteReportPath, rewriteReportText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.thirdPartyRewriteReportPath, "write-third-party-rewrite-report-failed")
+    let truthTraceAndroidText = buildTruthTraceManifestText("android", report.visualStates, report.frameHashesExpectedPath)
+    if ! compilerWriteText(report.truthTraceManifestAndroidPath, truthTraceAndroidText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestAndroidPath, "write-truth-trace-android-failed")
+    let truthTraceIosText = buildTruthTraceManifestText("ios", report.visualStates, report.frameHashesExpectedPath)
+    if ! compilerWriteText(report.truthTraceManifestIosPath, truthTraceIosText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestIosPath, "write-truth-trace-ios-failed")
+    let truthTraceHarmonyText = buildTruthTraceManifestText("harmony", report.visualStates, report.frameHashesExpectedPath)
+    if ! compilerWriteText(report.truthTraceManifestHarmonyPath, truthTraceHarmonyText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestHarmonyPath, "write-truth-trace-harmony-failed")
     report.semanticNodeCount = int32(len(semanticNodes))
+    report.semanticRenderNodesCount = report.semanticNodeCount
     let semanticMapText = buildSemanticNodeMapText(report.semanticMappingMode, semanticNodes)
     if ! compilerWriteText(report.semanticNodeMapPath, semanticMapText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.semanticNodeMapPath, "write-semantic-node-map-failed")
@@ -2588,6 +2792,9 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     textProfileText = textProfileText + "}\n"
     if ! compilerWriteText(report.textProfilePath, textProfileText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.textProfilePath, "write-text-profile-failed")
+    let perfSummaryText = buildPerfSummaryText(report)
+    if ! compilerWriteText(report.perfSummaryPath, perfSummaryText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.perfSummaryPath, "write-perf-summary-failed")
     if strictMode && report.semanticNodeCount <= int32(0):
         appendIssueRaw(report.unsupportedSyntax, "semantic", "compiler", "semantic-node-map-empty", "semantic-node-map-empty")
     traceStep(opts.outRoot, "step:entry-written")
@@ -2638,16 +2845,16 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     return report
 
 fn compileProjectFromMainEnv(): R2cCompileReport =
-    let inRoot = os.getEnv("CHENG_R2C_IN_ROOT")
-    let outRoot = os.getEnv("CHENG_R2C_OUT_ROOT")
-    let entry = os.getEnv("CHENG_R2C_ENTRY")
-    let profile = os.getEnv("CHENG_R2C_PROFILE")
-    let projectName = os.getEnv("CHENG_R2C_PROJECT_NAME")
-    let targetMatrixEnv = os.getEnv("CHENG_R2C_TARGET_MATRIX")
-    let wptProfile = os.getEnv("CHENG_R2C_WPT_PROFILE")
-    let equivalenceMode = os.getEnv("CHENG_R2C_EQUIVALENCE_MODE")
-    let strictEnv = os.getEnv("CHENG_R2C_STRICT")
-    let noJsRuntimeEnv = os.getEnv("CHENG_R2C_NO_JS_RUNTIME")
+    let inRoot = os.getEnv("R2C_IN_ROOT")
+    let outRoot = os.getEnv("R2C_OUT_ROOT")
+    let entry = os.getEnv("R2C_ENTRY")
+    let profile = os.getEnv("R2C_PROFILE")
+    let projectName = os.getEnv("R2C_PROJECT_NAME")
+    let targetMatrixEnv = os.getEnv("R2C_TARGET_MATRIX")
+    let wptProfile = os.getEnv("R2C_WPT_PROFILE")
+    let equivalenceMode = os.getEnv("R2C_EQUIVALENCE_MODE")
+    let strictEnv = os.getEnv("R2C_STRICT")
+    let noJsRuntimeEnv = os.getEnv("R2C_NO_JS_RUNTIME")
 
     var effectiveEntry = entry
     if len(effectiveEntry) == 0:

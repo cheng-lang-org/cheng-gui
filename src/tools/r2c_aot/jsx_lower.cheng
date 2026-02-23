@@ -24,9 +24,9 @@ type
         text: str
 
 fn debugMark(mark: str) =
-    if len(os.getEnv("CHENG_R2C_DEBUG")) == 0:
+    if len(os.getEnv("R2C_DEBUG")) == 0:
         return
-    let outRoot = os.getEnv("CHENG_R2C_OUT_ROOT")
+    let outRoot = os.getEnv("R2C_OUT_ROOT")
     if len(outRoot) == 0:
         return
     os.writeFile(outRoot + "/r2capp_jsx_debug_mark.txt", mark + "\n")

@@ -8,6 +8,9 @@ import cheng/gui/platform/native_sys_impl as nativePlat
 import cheng/gui/render/backend_compat
 import cheng/gui/render/drawlist_ir as drawir
 
+@ importc("setenv")
+fn cSetEnv(key: str, value: str, overwrite: int32): int32
+
 fn cEq(a: char, b: char): bool =
     return int32(a) == int32(b)
 
@@ -22,7 +25,7 @@ fn boolText(value: bool): str =
     return "false"
 
 fn resolveR2cManifestPath(): str =
-    let raw = os.getEnv("CHENG_R2CAPP_MANIFEST")
+    let raw = os.getEnv("R2CAPP_MANIFEST")
     if safeLen(raw) > int32(0):
         return raw
     return "r2capp/r2capp_manifest.json"
@@ -46,6 +49,24 @@ fn u64ToHex(value: uint64): str =
         idx = idx + int32(1)
     return out
 
+fn hexByteText(value: int32): str =
+    let hi = (value / int32(16)) % int32(16)
+    let lo = value % int32(16)
+    return charToStr(hexDigit(hi)) + charToStr(hexDigit(lo))
+
+fn textToHex(text: str): str =
+    if safeLen(text) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        var code = int32(text[idx])
+        if code < int32(0):
+            code = code + int32(256)
+        out = out + hexByteText(code)
+        idx = idx + int32(1)
+    return out
+
 fn ownStr(text: str): str =
     if safeLen(text) <= int32(0):
         return ""
@@ -56,9 +77,9 @@ fn ownStr(text: str): str =
         idx = idx + int32(1)
     return out
 
-fn parseInt32(text: str, fallback: int32): int32 =
+fn parseInt32(text: str): int32 =
     if safeLen(text) <= int32(0):
-        return fallback
+        return int32(0)
     var idx: int32 = int32(0)
     var sign: int32 = int32(1)
     if cEq(text[idx], '-'):
@@ -75,11 +96,11 @@ fn parseInt32(text: str, fallback: int32): int32 =
         else:
             break
     if ! saw:
-        return fallback
+        return int32(0)
     return value * sign
 
 fn shouldRunRunnerMode(): bool =
-    let raw0 = os.getEnv("CHENG_R2C_RUNNER_MODE")
+    let raw0 = os.getEnv("R2C_RUNNER_MODE")
     let raw = trimLine(raw0)
     if safeLen(raw) <= int32(0):
         return false
@@ -108,7 +129,7 @@ fn r2cRunnerCleanup(page: web.BrowserPage, ctx: web.BrowserContext, engine: web.
         web.shutdownBrowserEngine(engine)
 
 fn r2cRunnerMain(): int32 =
-    var url = os.getEnv("CHENG_R2C_APP_URL")
+    var url = os.getEnv("R2C_APP_URL")
     if safeLen(url) <= int32(0):
         url = "about:blank"
 
@@ -131,28 +152,28 @@ fn r2cRunnerMain(): int32 =
         r2cRunnerCleanup(page, ctx, engine)
         return int32(14)
 
-    let oneEvent = os.getEnv("CHENG_R2C_APP_EVENT")
+    let oneEvent = os.getEnv("R2C_APP_EVENT")
     if safeLen(oneEvent) > int32(0):
-        let target = os.getEnv("CHENG_R2C_APP_TARGET")
-        let payload = os.getEnv("CHENG_R2C_APP_PAYLOAD")
+        let target = os.getEnv("R2C_APP_TARGET")
+        let payload = os.getEnv("R2C_APP_PAYLOAD")
         if ! web.dispatchDomEvent(page, oneEvent, target, payload):
             r2cRunnerCleanup(page, ctx, engine)
             return int32(15)
 
-    let eventScript = os.getEnv("CHENG_R2C_APP_EVENT_SCRIPT")
+    let eventScript = os.getEnv("R2C_APP_EVENT_SCRIPT")
     if safeLen(eventScript) > int32(0):
         if ! dispatchEventScript(page, eventScript):
             r2cRunnerCleanup(page, ctx, engine)
             return int32(16)
 
     let snapshot = web.captureSnapshot(page)
-    let snapshotOut = os.getEnv("CHENG_R2C_APP_SNAPSHOT_OUT")
+    let snapshotOut = os.getEnv("R2C_APP_SNAPSHOT_OUT")
     if safeLen(snapshotOut) > int32(0):
         os.writeFile(snapshotOut, snapshot + "\n")
 
-    let stateOut = os.getEnv("CHENG_R2C_APP_STATE_OUT")
+    let stateOut = os.getEnv("R2C_APP_STATE_OUT")
     if safeLen(stateOut) > int32(0):
-        let commandCount = int32(0)
+        let commandCount = web.paintCommandCount(page)
         let compiledCount = int32(0)
         var stateText: str = ""
         stateText = stateText + "title=" + "" + "\n"
@@ -160,7 +181,7 @@ fn r2cRunnerMain(): int32 =
         stateText = stateText + "snapshot=" + snapshot + "\n"
         stateText = stateText + "draw_commands=" + i32Text(commandCount) + "\n"
         stateText = stateText + "mounted=true\n"
-        stateText = stateText + "profile=" + os.getEnv("CHENG_R2C_PROFILE") + "\n"
+        stateText = stateText + "profile=" + os.getEnv("R2C_PROFILE") + "\n"
         stateText = stateText + "module_count=" + i32Text(compiledCount) + "\n"
         stateText = stateText + "event_applied=" + r2cRunnerBoolText(safeLen(oneEvent) > int32(0) || safeLen(eventScript) > int32(0)) + "\n"
         os.writeFile(stateOut, stateText)
@@ -177,6 +198,22 @@ fn envBool(name: str, fallback: bool): bool =
     if raw == "0" || raw == "false" || raw == "FALSE" || raw == "no" || raw == "NO" || raw == "off" || raw == "OFF":
         return false
     return fallback
+
+fn ensureRuntimeEnvDefaults(strictRuntime: bool) =
+    # Keep desktop binary behavior aligned with launcher defaults so direct
+    # execution does not silently regress into bitmap '?' fallback.
+    if strictRuntime:
+        if safeLen(os.getEnv("R2C_STRICT_RUNTIME")) <= int32(0):
+            cSetEnv("R2C_STRICT_RUNTIME", "1", int32(1))
+        if safeLen(os.getEnv("GUI_DISABLE_BITMAP_TEXT")) <= int32(0):
+            cSetEnv("GUI_DISABLE_BITMAP_TEXT", "1", int32(1))
+        let disableNative = os.getEnv("R2C_DISABLE_NATIVE_CJK_TEXT")
+        if safeLen(disableNative) <= int32(0) || disableNative == "1":
+            cSetEnv("R2C_DISABLE_NATIVE_CJK_TEXT", "0", int32(1))
+        if safeLen(os.getEnv("R2C_VIEWPORT_WIDTH")) <= int32(0):
+            cSetEnv("R2C_VIEWPORT_WIDTH", "960", int32(1))
+        if safeLen(os.getEnv("R2C_VIEWPORT_HEIGHT")) <= int32(0):
+            cSetEnv("R2C_VIEWPORT_HEIGHT", "540", int32(1))
 
 fn dispatchOne(page: web.BrowserPage, spec: str): bool =
     if safeLen(spec) <= int32(0):
@@ -298,7 +335,7 @@ fn maxI32(a, b: int32): int32 =
     return b
 
 fn tracePhase(phase: str) =
-    let traceFile = os.getEnv("CHENG_R2C_TRACE_FILE")
+    let traceFile = os.getEnv("R2C_TRACE_FILE")
     if safeLen(traceFile) <= int32(0):
         return
     os.writeFile(traceFile, phase + "\n")
@@ -355,7 +392,8 @@ fn processWindowEvents(page: web.BrowserPage, scriptedInput: bool, rounds: int32
     if scriptedInput:
         return true
     var loop = int32(0)
-    let pollTimeoutMs = parseInt32(os.getEnv("CHENG_R2C_EVENT_POLL_TIMEOUT_MS"), int32(0))
+    let pollTimeoutRaw = ownStr(os.getEnv("R2C_EVENT_POLL_TIMEOUT_MS"))
+    let pollTimeoutMs = parseInt32(pollTimeoutRaw)
     while loop < rounds:
         let events = nativePlat.pumpEvents(pollTimeoutMs)
         for idx in 0..<len(events):
@@ -377,6 +415,34 @@ fn processWindowEvents(page: web.BrowserPage, scriptedInput: bool, rounds: int32
                 if safeLen(target) > int32(0):
                     let payload = "x=" + i32Text(int32(ev.x)) + ";y=" + i32Text(int32(ev.y))
                     web.dispatchDomEvent(page, "pointer-move", target, payload)
+            elif ev.kind == geKeyDown:
+                if scriptedInput:
+                    continue
+                var keyPayload = "keyCode=" + i32Text(ev.keyCode)
+                if safeLen(ev.text) > int32(0):
+                    keyPayload = keyPayload + ";text_hex=" + textToHex(ev.text)
+                web.dispatchDomEvent(page, "key-down", "#utfzh-editor", keyPayload)
+            elif ev.kind == geTextInput:
+                if scriptedInput:
+                    continue
+                if safeLen(ev.text) > int32(0):
+                    let payload = "text_hex=" + textToHex(ev.text)
+                    web.dispatchDomEvent(page, "text-input", "#utfzh-editor", payload)
+            elif ev.kind == geTextCompositionStart:
+                if scriptedInput:
+                    continue
+                let payload = "text_hex=" + textToHex(ev.text)
+                web.dispatchDomEvent(page, "ime-start", "#utfzh-editor", payload)
+            elif ev.kind == geTextCompositionUpdate:
+                if scriptedInput:
+                    continue
+                let payload = "text_hex=" + textToHex(ev.text)
+                web.dispatchDomEvent(page, "ime-update", "#utfzh-editor", payload)
+            elif ev.kind == geTextCompositionEnd:
+                if scriptedInput:
+                    continue
+                let payload = "text_hex=" + textToHex(ev.text)
+                web.dispatchDomEvent(page, "ime-end", "#utfzh-editor", payload)
         loop = loop + int32(1)
     return true
 
@@ -402,7 +468,7 @@ fn writeCaptureOutputs(page: web.BrowserPage,
     if safeLen(routeStateOut) > int32(0):
         os.writeFile(routeStateOut, web.pageR2cCurrentTab(page) + "\n")
     if safeLen(stateOut) > int32(0):
-        let commandCount = int32(0)
+        let commandCount = web.paintCommandCount(page)
         let compiledCount = int32(0)
         var stateText: str = ""
         stateText = stateText + "title=" + "" + "\n"
@@ -410,7 +476,7 @@ fn writeCaptureOutputs(page: web.BrowserPage,
         stateText = stateText + "snapshot=" + snapshot + "\n"
         stateText = stateText + "draw_commands=" + i32Text(commandCount) + "\n"
         stateText = stateText + "mounted=true\n"
-        stateText = stateText + "profile=" + os.getEnv("CHENG_R2C_PROFILE") + "\n"
+        stateText = stateText + "profile=" + os.getEnv("R2C_PROFILE") + "\n"
         stateText = stateText + "module_count=" + i32Text(compiledCount) + "\n"
         stateText = stateText + "event_applied=" + boolText(eventApplied) + "\n"
         stateText = stateText + "route_state=" + web.pageR2cCurrentTab(page) + "\n"
@@ -418,11 +484,13 @@ fn writeCaptureOutputs(page: web.BrowserPage,
         os.writeFile(stateOut, stateText)
 
 fn markPhase(path: str, text: str) =
-    if safeLen(path) <= int32(0):
+    let pathText = ownStr(path)
+    if safeLen(pathText) <= int32(0):
         return
-    if safeLen(text) <= int32(0):
+    let lineText = ownStr(text)
+    if safeLen(lineText) <= int32(0):
         return
-    os.writeFile(path, text + "\n")
+    os.writeFile(pathText, lineText + "\n")
 
 fn captureStateBundle(page: web.BrowserPage, surface: SurfaceHandle, outDir, stateName: str, eventApplied: bool) =
     var base = ownStr(joinPath(outDir, stateName))
@@ -454,7 +522,7 @@ fn resetBatchPage(page: web.BrowserPage): bool =
 fn runBatchState(page: web.BrowserPage, surface: SurfaceHandle, outDir, stateName, eventBlock: str): bool =
     let nameRaw = trimLine(stateName)
     let name = ownStr(nameRaw)
-    let progressPath = joinPath(outDir, "_batch_progress.txt")
+    let progressPath = ownStr(joinPath(outDir, "_batch_progress.txt"))
     markPhase(progressPath, "start:" + name)
     if safeLen(name) <= int32(0):
         return true
@@ -464,11 +532,18 @@ fn runBatchState(page: web.BrowserPage, surface: SurfaceHandle, outDir, stateNam
         os.writeFile(progressPath, "state=" + name + "\nphase=reset-failed\n")
         return false
     os.writeFile(progressPath, "state=" + name + "\nphase=dispatch\n")
-    if ! dispatchEventText(page, eventBlock):
-        markPhase(progressPath, "end:" + name + " fail=dispatch")
-        os.writeFile(progressPath, "state=" + name + "\nphase=dispatch-failed\n")
+    if ! web.dispatchDomEvent(page, "route", "#" + name, name):
+        markPhase(progressPath, "end:" + name + " fail=route")
+        os.writeFile(progressPath, "state=" + name + "\nphase=route-failed\n")
         return false
-    let pumpRounds = parseInt32(os.getEnv("CHENG_R2C_BATCH_PUMP_ROUNDS"), int32(0))
+    let skipRouteEventBlock = hasPrefix(name, "publish_")
+    if ! skipRouteEventBlock:
+        if ! dispatchEventText(page, eventBlock):
+            markPhase(progressPath, "end:" + name + " fail=dispatch")
+            os.writeFile(progressPath, "state=" + name + "\nphase=dispatch-failed\n")
+            return false
+    let pumpRoundsRaw = ownStr(os.getEnv("R2C_BATCH_PUMP_ROUNDS"))
+    let pumpRounds = parseInt32(pumpRoundsRaw)
     if pumpRounds > int32(0):
         os.writeFile(progressPath, "state=" + name + "\nphase=pump\n")
         if ! processWindowEvents(page, true, pumpRounds):
@@ -603,8 +678,9 @@ fn main(): int32 =
         tracePhase("main-runner-mode")
         return r2cRunnerMain()
 
-    let strictRuntime = envBool("CHENG_R2C_STRICT_RUNTIME", true)
-    var url = os.getEnv("CHENG_R2C_APP_URL")
+    let strictRuntime = envBool("R2C_STRICT_RUNTIME", true)
+    ensureRuntimeEnvDefaults(strictRuntime)
+    var url = os.getEnv("R2C_APP_URL")
     if safeLen(url) <= int32(0):
         url = "about:blank"
 
@@ -612,7 +688,7 @@ fn main(): int32 =
     nativePlat.initializePlat()
 
     var windowConfig: GuiWindowConfig
-    windowConfig.title = os.getEnv("CHENG_R2C_APP_TITLE")
+    windowConfig.title = os.getEnv("R2C_APP_TITLE")
     if safeLen(windowConfig.title) <= int32(0):
         windowConfig.title = "R2C Desktop"
     windowConfig.initialRect = makeRect(0.0, 0.0, 1280.0, 800.0)
@@ -651,6 +727,18 @@ fn main(): int32 =
         cleanup(nil, ctx, engine, surface, window)
         return int32(12)
 
+    var viewportW = parseInt32(ownStr(os.getEnv("R2C_VIEWPORT_WIDTH")))
+    var viewportH = parseInt32(ownStr(os.getEnv("R2C_VIEWPORT_HEIGHT")))
+    if viewportW <= int32(0):
+        viewportW = int32(960)
+    if viewportH <= int32(0):
+        viewportH = int32(540)
+    if viewportW < int32(320):
+        viewportW = int32(320)
+    if viewportH < int32(240):
+        viewportH = int32(240)
+    r2cRuntime.notifyViewport(page, viewportW, viewportH)
+
     tracePhase("browser-navigate")
     if ! web.navigate(page, url):
         tracePhase("fail-navigate")
@@ -663,18 +751,18 @@ fn main(): int32 =
         return int32(14)
     tracePhase("after-mount")
 
-    let batchOutDir = os.getEnv("CHENG_R2C_APP_BATCH_OUT_DIR")
-    var eventScript = os.getEnv("CHENG_R2C_APP_EVENT_SCRIPT")
-    let eventMatrix = os.getEnv("CHENG_R2C_APP_EVENT_MATRIX")
+    let batchOutDir = os.getEnv("R2C_APP_BATCH_OUT_DIR")
+    var eventScript = os.getEnv("R2C_APP_EVENT_SCRIPT")
+    let eventMatrix = os.getEnv("R2C_APP_EVENT_MATRIX")
     if safeLen(eventScript) <= int32(0) && safeLen(eventMatrix) > int32(0) && safeLen(batchOutDir) <= int32(0):
         eventScript = eventMatrix
     let scriptedInput = safeLen(eventScript) > int32(0) || (safeLen(eventMatrix) > int32(0) && safeLen(batchOutDir) > int32(0))
-    let snapshotOut = os.getEnv("CHENG_R2C_APP_SNAPSHOT_OUT")
-    let drawlistOut = os.getEnv("CHENG_R2C_APP_DRAWLIST_OUT")
-    let stateOut = os.getEnv("CHENG_R2C_APP_STATE_OUT")
-    let routeStateOut = os.getEnv("CHENG_R2C_APP_ROUTE_STATE_OUT")
-    let frameHashOut = os.getEnv("CHENG_R2C_APP_FRAME_HASH_OUT")
-    let frameRgbaOut = os.getEnv("CHENG_R2C_APP_FRAME_RGBA_OUT")
+    let snapshotOut = os.getEnv("R2C_APP_SNAPSHOT_OUT")
+    let drawlistOut = os.getEnv("R2C_APP_DRAWLIST_OUT")
+    let stateOut = os.getEnv("R2C_APP_STATE_OUT")
+    let routeStateOut = os.getEnv("R2C_APP_ROUTE_STATE_OUT")
+    let frameHashOut = os.getEnv("R2C_APP_FRAME_HASH_OUT")
+    let frameRgbaOut = os.getEnv("R2C_APP_FRAME_RGBA_OUT")
     if safeLen(batchOutDir) > int32(0):
         tracePhase("batch-run")
         if strictRuntime && ! os.fileExists(eventMatrix):
@@ -700,13 +788,17 @@ fn main(): int32 =
 
     if strictRuntime && scriptedInput:
         tracePhase("strict-scripted-single-frame")
-        # Strict scripted gates assert snapshot/drawlist/state; skip blocking present path.
+        # Strict scripted runs still need one present pass so frame hash / RGBA
+        # outputs are derived from the same rendered surface path as batch mode.
+        renderFrame(surface, page)
         writeCaptureOutputs(page, surface, true, snapshotOut, drawlistOut, stateOut, routeStateOut, frameHashOut, frameRgbaOut)
         cleanup(page, ctx, engine, surface, window)
         return int32(0)
 
-    let autoCloseMs = parseInt32(os.getEnv("CHENG_R2C_DESKTOP_AUTOCLOSE_MS"), int32(0))
-    let autoCloseFramesEnv = parseInt32(os.getEnv("CHENG_R2C_DESKTOP_AUTOCLOSE_FRAMES"), int32(0))
+    let autoCloseMsRaw = ownStr(os.getEnv("R2C_DESKTOP_AUTOCLOSE_MS"))
+    let autoCloseMs = parseInt32(autoCloseMsRaw)
+    let autoCloseFramesRaw = ownStr(os.getEnv("R2C_DESKTOP_AUTOCLOSE_FRAMES"))
+    let autoCloseFramesEnv = parseInt32(autoCloseFramesRaw)
     let startMs = int64(epochTime() * 1000.0)
     var autoCloseFrameBudget = autoCloseFramesEnv
     if autoCloseFrameBudget <= int32(0) && autoCloseMs > int32(0):

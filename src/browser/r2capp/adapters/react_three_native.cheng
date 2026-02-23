@@ -1,0 +1,23 @@
+import cheng/gui/browser/r2capp/react_compat
+import cheng/gui/browser/r2capp/adapters/three_native
+
+fn adapterId(): str =
+    return "@react-three/native"
+
+fn fiberCanvas(canvasId: str, children: react_compat.ReactNode[]): react_compat.ReactNode =
+    var props = "{\"id\":\"" + canvasId + "\",\"data-react-three-native\":true}"
+    return react_compat.createElement("r3f-canvas", props, children)
+
+fn createDefaultScene(canvasId: str): react_compat.ReactNode =
+    let scene = three_native.newScene("perspective")
+    three_native.addLight(scene, "key")
+    three_native.addLight(scene, "fill")
+    three_native.addObject(scene, "mesh-default")
+    return three_native.renderScene(scene, canvasId)
+
+fn dreiControl(kind: str): react_compat.ReactNode =
+    return react_compat.createElement(
+        "r3f-control",
+        "{\"kind\":\"" + kind + "\",\"bridge\":\"drei\"}",
+        []
+    )

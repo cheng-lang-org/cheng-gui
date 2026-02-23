@@ -83,6 +83,18 @@ type
         routeCoveragePath: str
         visualStates: str[]
         visualGoldenManifestPath: str
+        androidTruthManifestPath: str
+        androidRouteGraphPath: str
+        androidRouteEventMatrixPath: str
+        androidRouteCoveragePath: str
+        reactIrPath: str
+        hookGraphPath: str
+        effectPlanPath: str
+        thirdPartyRewriteReportPath: str
+        truthTraceManifestAndroidPath: str
+        truthTraceManifestIosPath: str
+        truthTraceManifestHarmonyPath: str
+        perfSummaryPath: str
         textProfilePath: str
         frameHashesExpectedPath: str
         fullRouteStatesPath: str
@@ -92,6 +104,10 @@ type
         semanticMappingMode: str
         semanticNodeMapPath: str
         semanticRuntimeMapPath: str
+        semanticRenderNodesPath: str
+        semanticRenderNodesCount: int32
+        semanticRenderNodesHash: str
+        semanticRenderNodesFnv64: str
         semanticNodeCount: int32
         pixelGoldenDir: str
         pixelTolerance: int32

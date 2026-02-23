@@ -1074,12 +1074,12 @@ fn iconMaskLoadBmp(path: str): IconMask =
 fn guiCodexAssetPath(filename: str): str =
     if len(filename) == 0:
         return ""
-    let resourceRoot = getEnv("CHENG_IDE_RESOURCE_ROOT")
+    let resourceRoot = getEnv("IDE_RESOURCE_ROOT")
     if len(resourceRoot) > 0:
         let candidate = joinPath(resourceRoot, "codex/" + filename)
         if fileExists(candidate):
             return candidate
-    let projectRoot = getEnv("CHENG_IDE_ROOT")
+    let projectRoot = getEnv("IDE_ROOT")
     if len(projectRoot) > 0:
         let candidate = joinPath(projectRoot, "resources/codex/" + filename)
         if fileExists(candidate):
@@ -1096,19 +1096,19 @@ fn guiCodexAssetPath(filename: str): str =
     return ""
 
 fn guiCodexIconPath(): str =
-    let override = getEnv("CHENG_IDE_CODEX_ICON")
+    let override = getEnv("IDE_CODEX_ICON")
     if len(override) > 0 && fileExists(override):
         return override
     return guiCodexAssetPath("blossom-24.bmp")
 
 fn guiCodexEditIconPath(): str =
-    let override = getEnv("CHENG_IDE_CODEX_EDIT_ICON")
+    let override = getEnv("IDE_CODEX_EDIT_ICON")
     if len(override) > 0 && fileExists(override):
         return override
     return guiCodexAssetPath("edit-16.bmp")
 
 fn guiCodexCloseIconPath(): str =
-    let override = getEnv("CHENG_IDE_CODEX_CLOSE_ICON")
+    let override = getEnv("IDE_CODEX_CLOSE_ICON")
     if len(override) > 0 && fileExists(override):
         return override
     return guiCodexAssetPath("close-16.bmp")
@@ -1171,7 +1171,7 @@ fn useFileIcons(): bool =
     return fileIconFontReady
 
 fn iconDebugLabel(layout: GuiLayout): str =
-    if ! envFlagEnabled(getEnv("CHENG_IDE_DEBUG_ICONS"), false):
+    if ! envFlagEnabled(getEnv("IDE_DEBUG_ICONS"), false):
         return ""
     let iconGlyph = codiconGlyph(CodiconFiles)
     let iconAvail = if chengGuiIconFontAvailable() != 0: "1" else: "0"
@@ -1274,10 +1274,10 @@ fn setiGlyphFromFontChar(text: str): str =
     return utf8FromCodepoint(codepoint)
 
 fn resolveSetiThemePath(): str =
-    let env = getEnv("CHENG_IDE_SETI_THEME")
+    let env = getEnv("IDE_SETI_THEME")
     if len(env) > 0 && fileExists(env):
         return env
-    let vscodeRoot = getEnv("CHENG_IDE_VSCODE_ROOT")
+    let vscodeRoot = getEnv("IDE_VSCODE_ROOT")
     if len(vscodeRoot) > 0:
         let candidate = joinPath(vscodeRoot, "extensions/theme-seti/icons/vs-seti-icon-theme.json")
         if fileExists(candidate):
@@ -1307,7 +1307,7 @@ fn loadSetiLanguageMappings(langIds: str[], langDefIdx: int32[]) =
         return
     if ! loadSetiLanguageMapEnabled():
         return
-    var vscodeRoot = getEnv("CHENG_IDE_VSCODE_ROOT")
+    var vscodeRoot = getEnv("IDE_VSCODE_ROOT")
     if len(vscodeRoot) == 0:
         vscodeRoot = "/Users/lbcheng/vscode"
     let extensionsDir = joinPath(vscodeRoot, "extensions")
@@ -2223,7 +2223,7 @@ fn guiPsQuote(text: str): str =
     return quoted + "'"
 
 fn guiIsWindows(): bool =
-    let defines = textutils.toLowerAscii(getEnv("CHENG_DEFINES"))
+    let defines = textutils.toLowerAscii(getEnv("DEFINES"))
     if indexOfSubstr(defines, "windows", 0) >= 0:
         return true
     let osName = textutils.toLowerAscii(getEnv("OS"))
@@ -2235,7 +2235,7 @@ fn guiIsWindows(): bool =
     return false
 
 fn guiIsMac(): bool =
-    let defines = textutils.toLowerAscii(getEnv("CHENG_DEFINES"))
+    let defines = textutils.toLowerAscii(getEnv("DEFINES"))
     if indexOfSubstr(defines, "macos", 0) >= 0 || indexOfSubstr(defines, "macosx", 0) >= 0:
         return true
     let ostype = textutils.toLowerAscii(getEnv("OSTYPE"))
@@ -2261,7 +2261,7 @@ fn guiTempDir(): str =
     return "/tmp"
 
 fn guiClipboardTempPath(): str =
-    let override = getEnv("CHENG_IDE_CLIPBOARD_TMP")
+    let override = getEnv("IDE_CLIPBOARD_TMP")
     if len(override) > 0:
         return override
     let tempDir = guiTempDir()
@@ -2303,7 +2303,7 @@ fn guiClipboardTryGet(cmd: str, workDir: str): ClipboardResult =
     return clip
 
 fn guiClipboardSetSystem(text: str): bool =
-    let custom = getEnv("CHENG_IDE_CLIPBOARD_SET")
+    let custom = getEnv("IDE_CLIPBOARD_SET")
     let workDir = getCurrentDir()
     let tempPath = guiClipboardWriteTemp(text)
     var ok: bool = false
@@ -2330,7 +2330,7 @@ fn guiClipboardSetSystem(text: str): bool =
     return ok
 
 fn guiClipboardGetSystem(): ClipboardResult =
-    let custom = getEnv("CHENG_IDE_CLIPBOARD_GET")
+    let custom = getEnv("IDE_CLIPBOARD_GET")
     let workDir = getCurrentDir()
     if len(custom) > 0:
         var res: ClipboardResult = guiClipboardTryGet(custom, workDir)
@@ -2955,7 +2955,7 @@ fn guiMarkRenderDirty(state: GuiState): GuiState =
     return state
 
 fn loadSetiLanguageMapEnabled(): bool =
-    return envFlagEnabled(getEnv("CHENG_IDE_SETI_LANG_MAP"), false)
+    return envFlagEnabled(getEnv("IDE_SETI_LANG_MAP"), false)
 
 
 fn makeSymbolEntry(kind: str, name: str, line: int32, col: int32): str =
@@ -3407,7 +3407,7 @@ fn workspaceRootUniqueLabel(roots: str[], label: str): str =
 
 fn workspaceRootsFromEnv(baseRoot: str): str[] =
     var outVal: str[] = default[str[]]
-    let envRoots = getEnv("CHENG_IDE_ROOTS")
+    let envRoots = getEnv("IDE_ROOTS")
     if len(envRoots) == 0:
         return outVal
     let parts: str[] = splitSemicolonList(envRoots)
@@ -3611,69 +3611,69 @@ fn putEnv(key: str, value: str) =
 fn guiApplyEnvDefaults(projectRoot: str) =
     if len(projectRoot) == 0:
         return
-    guiSetEnvIfMissing("CHENG_IDE_ROOT", projectRoot)
-    if len(getEnv("CHENG_ROOT")) == 0:
+    guiSetEnvIfMissing("IDE_ROOT", projectRoot)
+    if len(getEnv("ROOT")) == 0:
         let parent = splitFile(projectRoot).dir
         let candidate = joinPath(parent, "cheng-lang")
         if dirExists(candidate):
-            putEnv("CHENG_ROOT", candidate)
+            putEnv("ROOT", candidate)
     let resourceRoot = joinPath(projectRoot, "resources")
     if dirExists(resourceRoot):
-        guiSetEnvIfMissing("CHENG_IDE_RESOURCE_ROOT", resourceRoot)
+        guiSetEnvIfMissing("IDE_RESOURCE_ROOT", resourceRoot)
     else:
         let fallbackRoot = joinPath(projectRoot, "ide/resources")
         if dirExists(fallbackRoot):
-            guiSetEnvIfMissing("CHENG_IDE_RESOURCE_ROOT", fallbackRoot)
+            guiSetEnvIfMissing("IDE_RESOURCE_ROOT", fallbackRoot)
     var codiconPath = joinPath(projectRoot, "resources/fonts/codicon.ttf")
     if ! fileExists(codiconPath):
         codiconPath = joinPath(projectRoot, "ide/resources/fonts/codicon.ttf")
     if fileExists(codiconPath):
-        guiSetEnvIfMissing("CHENG_IDE_ICON_FONT", codiconPath)
+        guiSetEnvIfMissing("IDE_ICON_FONT", codiconPath)
     var setiFontLocal = joinPath(projectRoot, "resources/fonts/seti.woff")
     if ! fileExists(setiFontLocal):
         setiFontLocal = joinPath(projectRoot, "ide/resources/fonts/seti.woff")
     if fileExists(setiFontLocal):
-        guiSetEnvIfMissing("CHENG_IDE_FILE_ICON_FONT", setiFontLocal)
+        guiSetEnvIfMissing("IDE_FILE_ICON_FONT", setiFontLocal)
     var setiThemeLocal = joinPath(projectRoot, "resources/seti/vs-seti-icon-theme.json")
     if ! fileExists(setiThemeLocal):
         setiThemeLocal = joinPath(projectRoot, "ide/resources/seti/vs-seti-icon-theme.json")
     if fileExists(setiThemeLocal):
-        guiSetEnvIfMissing("CHENG_IDE_SETI_THEME", setiThemeLocal)
-    var vscodeRoot = getEnv("CHENG_IDE_VSCODE_ROOT")
+        guiSetEnvIfMissing("IDE_SETI_THEME", setiThemeLocal)
+    var vscodeRoot = getEnv("IDE_VSCODE_ROOT")
     if len(vscodeRoot) == 0:
         let candidate = "/Users/lbcheng/vscode"
         if dirExists(candidate):
-            putEnv("CHENG_IDE_VSCODE_ROOT", candidate)
+            putEnv("IDE_VSCODE_ROOT", candidate)
             vscodeRoot = candidate
     p2p_bridge.guiP2PMaybeInit()
     if len(vscodeRoot) == 0:
         return
     let vscodeCodicon = joinPath(vscodeRoot, "src/vs/base/browser/ui/codicons/codicon/codicon.ttf")
     if fileExists(vscodeCodicon):
-        guiSetEnvIfMissing("CHENG_IDE_ICON_FONT", vscodeCodicon)
+        guiSetEnvIfMissing("IDE_ICON_FONT", vscodeCodicon)
     let setiFont = joinPath(vscodeRoot, "extensions/theme-seti/icons/seti.woff")
     if fileExists(setiFont):
-        guiSetEnvIfMissing("CHENG_IDE_FILE_ICON_FONT", setiFont)
+        guiSetEnvIfMissing("IDE_FILE_ICON_FONT", setiFont)
     let setiTheme = joinPath(vscodeRoot, "extensions/theme-seti/icons/vs-seti-icon-theme.json")
     if fileExists(setiTheme):
-        guiSetEnvIfMissing("CHENG_IDE_SETI_THEME", setiTheme)
+        guiSetEnvIfMissing("IDE_SETI_THEME", setiTheme)
     var codexIcon = joinPath(projectRoot, "resources/codex/blossom-24.bmp")
     if ! fileExists(codexIcon):
         codexIcon = joinPath(projectRoot, "ide/resources/codex/blossom-24.bmp")
     if fileExists(codexIcon):
-        guiSetEnvIfMissing("CHENG_IDE_CODEX_ICON", codexIcon)
+        guiSetEnvIfMissing("IDE_CODEX_ICON", codexIcon)
     let codexEditIcon = joinPath(projectRoot, "resources/codex/edit-16.bmp")
     if fileExists(codexEditIcon):
-        guiSetEnvIfMissing("CHENG_IDE_CODEX_EDIT_ICON", codexEditIcon)
+        guiSetEnvIfMissing("IDE_CODEX_EDIT_ICON", codexEditIcon)
     let codexEditIconLegacy = joinPath(projectRoot, "ide/resources/codex/edit-16.bmp")
     if fileExists(codexEditIconLegacy):
-        guiSetEnvIfMissing("CHENG_IDE_CODEX_EDIT_ICON", codexEditIconLegacy)
+        guiSetEnvIfMissing("IDE_CODEX_EDIT_ICON", codexEditIconLegacy)
     let codexCloseIcon = joinPath(projectRoot, "resources/codex/close-16.bmp")
     if fileExists(codexCloseIcon):
-        guiSetEnvIfMissing("CHENG_IDE_CODEX_CLOSE_ICON", codexCloseIcon)
+        guiSetEnvIfMissing("IDE_CODEX_CLOSE_ICON", codexCloseIcon)
     let codexCloseIconLegacy = joinPath(projectRoot, "ide/resources/codex/close-16.bmp")
     if fileExists(codexCloseIconLegacy):
-        guiSetEnvIfMissing("CHENG_IDE_CODEX_CLOSE_ICON", codexCloseIconLegacy)
+        guiSetEnvIfMissing("IDE_CODEX_CLOSE_ICON", codexCloseIconLegacy)
 
     iconFontChecked = false
     fileIconFontChecked = false
@@ -3682,7 +3682,7 @@ fn guiApplyEnvDefaults(projectRoot: str) =
     codexCloseIconChecked = false
 
 fn guiWorkspaceConfigPath(root: str): str =
-    let override = getEnv("CHENG_IDE_WORKSPACE_CONFIG")
+    let override = getEnv("IDE_WORKSPACE_CONFIG")
     if len(override) > 0:
         if isAbsolute(override) || len(root) == 0:
             return override
@@ -3692,7 +3692,7 @@ fn guiWorkspaceConfigPath(root: str): str =
 
 fn guiWorkspaceConfigLoad(root: str): WorkspaceConfig =
     var config: WorkspaceConfig = defaultWorkspaceConfig()
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return config
     let path = guiWorkspaceConfigPath(root)
@@ -3750,7 +3750,7 @@ fn collectExplorerPathsFromRoots(roots: str[], config: WorkspaceConfig): str[] =
     var outVal: str[] = default[str[]]
     if seqLenString(roots) == 0:
         return outVal
-    let maxEnv = trimLine(getEnv("CHENG_IDE_EXPLORER_MAX"))
+    let maxEnv = trimLine(getEnv("IDE_EXPLORER_MAX"))
     var maxEntries: int32 = DefaultExplorerMax
     if len(maxEnv) > 0:
         maxEntries = parseInt32(maxEnv, DefaultExplorerMax)
@@ -3903,9 +3903,9 @@ fn buildExplorerTreeItems(paths: str[]): str[] =
     return outVal
 
 fn explorerDebugDump(roots: str[], paths: str[], items: str[], useDefault: bool) =
-    if ! envFlagEnabled(getEnv("CHENG_IDE_DEBUG_EXPLORER"), false):
+    if ! envFlagEnabled(getEnv("IDE_DEBUG_EXPLORER"), false):
         return
-    let verbose: bool = envFlagEnabled(getEnv("CHENG_IDE_DEBUG_EXPLORER_VERBOSE"), false)
+    let verbose: bool = envFlagEnabled(getEnv("IDE_DEBUG_EXPLORER_VERBOSE"), false)
     if verbose:
         textutils.print("[explorer-debug] start\n")
     var lines: str[] = default[str[]]
@@ -3953,8 +3953,8 @@ fn explorerDebugDump(roots: str[], paths: str[], items: str[], useDefault: bool)
     let logPath = joinPath(logDir, "explorer.log")
     if verbose:
         textutils.print("[explorer-debug] writing log\n")
-    let writeToFile: bool = envFlagEnabled(getEnv("CHENG_IDE_DEBUG_EXPLORER_FILE"), false)
-    if ! writeToFile || envFlagEnabled(getEnv("CHENG_IDE_DEBUG_EXPLORER_STDOUT"), false):
+    let writeToFile: bool = envFlagEnabled(getEnv("IDE_DEBUG_EXPLORER_FILE"), false)
+    if ! writeToFile || envFlagEnabled(getEnv("IDE_DEBUG_EXPLORER_STDOUT"), false):
         for idx in 0..<seqLenString(lines):
             textutils.print(seqGetString(lines, idx) + "\n")
     if writeToFile:
@@ -3974,11 +3974,11 @@ fn explorerDebugDump(roots: str[], paths: str[], items: str[], useDefault: bool)
 fn loadExplorerState(roots: str[], defaultList: str, config: WorkspaceConfig): ExplorerState =
     var state: ExplorerState
     var listText: str = ""
-    let listPath = getEnv("CHENG_IDE_FILE_LIST_PATH")
+    let listPath = getEnv("IDE_FILE_LIST_PATH")
     if len(listPath) > 0 && fileExists(listPath):
         listText = readFile(listPath)
     if len(listText) == 0:
-        listText = getEnv("CHENG_IDE_FILE_LIST")
+        listText = getEnv("IDE_FILE_LIST")
     var useDefault = false
     var paths: str[] = default[str[]]
     if len(listText) > 0:
@@ -4687,7 +4687,7 @@ fn guiWorkspacePickInitialFile(roots: str[], root: str, state: WorkspaceState): 
 
 fn guiWorkspaceStateLoad(root: str): WorkspaceState =
     var state: WorkspaceState = defaultWorkspaceState()
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return state
     let path = guiWorkspaceStatePath(root)
@@ -4821,13 +4821,13 @@ fn guiDesktopBridgePath(root: str): str =
     return joinPath(guiWorkspaceStateDir(root), DesktopBridgeFile)
 
 fn guiDesktopCommandPath(root: str): str =
-    let override: str = getEnv("CHENG_IDE_COMMAND_PATH")
+    let override: str = getEnv("IDE_COMMAND_PATH")
     if len(override) > 0:
         return override
     return joinPath(guiWorkspaceStateDir(root), DesktopCommandFile)
 
 fn guiDesktopCommandAckPath(root: str): str =
-    let override: str = getEnv("CHENG_IDE_COMMAND_ACK_PATH")
+    let override: str = getEnv("IDE_COMMAND_ACK_PATH")
     if len(override) > 0:
         return override
     return joinPath(guiWorkspaceStateDir(root), DesktopCommandAckFile)
@@ -4845,7 +4845,7 @@ fn guiDesktopBridgeSanitize(text: str): str =
     return trimLine(outVal)
 
 fn guiDesktopCommandEnabled(): bool =
-    return envFlagEnabled(getEnv("CHENG_IDE_COMMAND"), true)
+    return envFlagEnabled(getEnv("IDE_COMMAND"), true)
 
 fn guiDesktopCommandParse(content: str): DesktopCommand =
     var cmd: DesktopCommand
@@ -4896,7 +4896,7 @@ fn guiDesktopCommandAckEncode(cmd: DesktopCommand, status: str, errorCode: str, 
     return joinLines(lines) + "\n"
 
 fn guiDesktopCommandWriteAck(state: GuiState, cmd: DesktopCommand, status: str, errorCode: str, message: str, retryable: bool): GuiState =
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return state
     let path = guiDesktopCommandAckPath(state.projectRoot)
@@ -5003,7 +5003,7 @@ fn guiDesktopCommandHandle(state: GuiState, cmd: DesktopCommand): GuiState =
     return next
 
 fn guiDesktopCommandTick(state: GuiState): GuiState =
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return state
     if ! guiDesktopCommandEnabled():
@@ -5049,7 +5049,7 @@ fn guiDesktopBridgeTaskLine(state: GuiState): str =
     return line
 
 fn guiIdeVersion(): str =
-    let override: str = getEnv("CHENG_IDE_VERSION")
+    let override: str = getEnv("IDE_VERSION")
     if len(override) > 0:
         return override
     return IdeVersionDefault
@@ -5115,10 +5115,10 @@ fn guiWriteTextAtomic(path: str, content: str): bool =
     return false
 
 fn guiDesktopBridgeSave(state: GuiState): GuiState =
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return state
-    if ! envFlagEnabled(getEnv("CHENG_IDE_BRIDGE"), true):
+    if ! envFlagEnabled(getEnv("IDE_BRIDGE"), true):
         return state
     if len(state.projectRoot) == 0:
         return state
@@ -5134,12 +5134,12 @@ fn guiDesktopBridgeSave(state: GuiState): GuiState =
     return state
 
 fn guiWorkspaceStateSave(state: GuiState): GuiState =
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return state
     if len(state.projectRoot) == 0:
         return state
-    let debugIO: bool = envFlagEnabled(getEnv("CHENG_IDE_DEBUG_IO"), false)
+    let debugIO: bool = envFlagEnabled(getEnv("IDE_DEBUG_IO"), false)
     if debugIO:
         textutils.print("[io] workspace save start\n")
     var next: GuiState = syncActiveBuffer(state)
@@ -5230,12 +5230,12 @@ fn guiRecoveryMaybeLoad(state: GuiState, editor: EditorState): RecoveryLoad =
     outVal.recovered = false
     if ! state.recoveryEnabled:
         return outVal
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return outVal
     if len(editor.filePath) == 0:
         return outVal
-    let maxBytes: int32 = largeFileLimitFromEnv("CHENG_IDE_RECOVERY_BYTES", RecoveryMaxBytes)
+    let maxBytes: int32 = largeFileLimitFromEnv("IDE_RECOVERY_BYTES", RecoveryMaxBytes)
     if maxBytes <= 0:
         return outVal
     if editor.largeFile || (editor.largeFileBytes > 0 && editor.largeFileBytes >= maxBytes):
@@ -5261,7 +5261,7 @@ fn guiRecoveryMaybeLoad(state: GuiState, editor: EditorState): RecoveryLoad =
     return outVal
 
 fn guiRecoveryClearForPath(state: GuiState, path: str): GuiState =
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return state
     if len(path) == 0:
@@ -5278,14 +5278,14 @@ fn guiRecoveryWriteAll(state: GuiState): GuiState =
         return state
     if state.autoSave:
         return state
-    let skipIO: str = getEnv("CHENG_IDE_SKIP_IO")
+    let skipIO: str = getEnv("IDE_SKIP_IO")
     if len(skipIO) > 0:
         return state
     var next: GuiState = syncActiveBuffer(state)
-    let maxBytes: int32 = largeFileLimitFromEnv("CHENG_IDE_RECOVERY_BYTES", RecoveryMaxBytes)
+    let maxBytes: int32 = largeFileLimitFromEnv("IDE_RECOVERY_BYTES", RecoveryMaxBytes)
     if maxBytes <= 0:
         return next
-    let debugIO: bool = envFlagEnabled(getEnv("CHENG_IDE_DEBUG_IO"), false)
+    let debugIO: bool = envFlagEnabled(getEnv("IDE_DEBUG_IO"), false)
     let dir = guiRecoveryDir(next.projectRoot)
     guiEnsureDirExists(dir)
     for idx in 0..<bufferLen(next.buffers):
@@ -5371,8 +5371,8 @@ fn loadEditorState(path: str, fallbackText: str): EditorState =
         content = fallbackText
     var rawLines: str[] = splitLinesSimple(content)
     state.lines = normalizeLines(rawLines)
-    let lineLimit: int32 = largeFileLimitFromEnv("CHENG_IDE_LARGE_FILE_LINES", LargeFileLineLimit)
-    let byteLimit: int32 = largeFileLimitFromEnv("CHENG_IDE_LARGE_FILE_BYTES", LargeFileByteLimit)
+    let lineLimit: int32 = largeFileLimitFromEnv("IDE_LARGE_FILE_LINES", LargeFileLineLimit)
+    let byteLimit: int32 = largeFileLimitFromEnv("IDE_LARGE_FILE_BYTES", LargeFileByteLimit)
     let lineCount: int32 = seqLenString(state.lines)
     let byteCount: int32 = len(content)
     state.largeFileLines = lineCount
@@ -6964,14 +6964,14 @@ fn guiCodexShow(state: GuiState): GuiState =
     return next
 
 fn codexLogEnabled(): bool =
-    return envFlagEnabled(getEnv("CHENG_IDE_CODEX_LOG"), false)
+    return envFlagEnabled(getEnv("IDE_CODEX_LOG"), false)
 
 fn codexLog(msg: str) =
     if codexLogEnabled():
         textutils.print("[codex] " + msg + "\n")
 
 fn codexLogIoEnabled(): bool =
-    let raw = getEnv("CHENG_IDE_CODEX_LOG_IO")
+    let raw = getEnv("IDE_CODEX_LOG_IO")
     if len(raw) > 0:
         return envFlagEnabled(raw, false)
     return codexLogEnabled()
@@ -6981,10 +6981,10 @@ fn codexLogIo(msg: str) =
         textutils.print("[codex-io] " + msg + "\n")
 
 fn guiCodexDisabled(): bool =
-    return envFlagEnabled(getEnv("CHENG_IDE_CODEX_DISABLE"), false)
+    return envFlagEnabled(getEnv("IDE_CODEX_DISABLE"), false)
 
 fn guiCodexCliPath(): str =
-    let override = getEnv("CHENG_CODEX_CLI")
+    let override = getEnv("CODEX_CLI")
     if len(override) > 0:
         return override
     var current = getCurrentDir()

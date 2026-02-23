@@ -21,6 +21,23 @@ function nowMs(): number {
   return Date.now();
 }
 
+function getLocalStorageSafe(): { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void } | null {
+  if (typeof localStorage === 'undefined' || !localStorage) {
+    return null;
+  }
+  const storage = localStorage as unknown as {
+    getItem?: (key: string) => string | null;
+    setItem?: (key: string, value: string) => void;
+  };
+  if (typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function') {
+    return null;
+  }
+  return {
+    getItem: storage.getItem.bind(localStorage),
+    setItem: storage.setItem.bind(localStorage),
+  };
+}
+
 function cloneSnapshot(snapshot: C2CSnapshot): C2CSnapshot {
   return JSON.parse(JSON.stringify(snapshot)) as C2CSnapshot;
 }
@@ -57,10 +74,11 @@ function asString(value: unknown): string {
 }
 
 function loadSnapshot(): C2CSnapshot {
-  if (typeof localStorage === 'undefined') {
+  const storage = getLocalStorageSafe();
+  if (!storage) {
     return emptySnapshot();
   }
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = storage.getItem(STORAGE_KEY);
   if (!raw) {
     return emptySnapshot();
   }
@@ -82,10 +100,11 @@ function loadSnapshot(): C2CSnapshot {
 }
 
 function persistSnapshot(snapshot: C2CSnapshot): void {
-  if (typeof localStorage === 'undefined') {
+  const storage = getLocalStorageSafe();
+  if (!storage) {
     return;
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  storage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
 }
 
 function sortListings(listings: C2CListingRecord[]): C2CListingRecord[] {

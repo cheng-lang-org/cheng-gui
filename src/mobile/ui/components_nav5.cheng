@@ -1,0 +1,64 @@
+import cheng/gui/mobile/ui/tokens_business_cn as ui_tokens
+import cheng/gui/mobile/ui/components_surface as ui_surface
+
+fn uiNavLabelByIndex(idx: int32): str =
+    if idx == 0:
+        return ui_tokens.uiLabelZhCn("nav.home")
+    if idx == 1:
+        return ui_tokens.uiLabelZhCn("nav.message")
+    if idx == 2:
+        return ui_tokens.uiLabelZhCn("nav.publish")
+    if idx == 3:
+        return ui_tokens.uiLabelZhCn("nav.node")
+    if idx == 4:
+        return ui_tokens.uiLabelZhCn("nav.profile")
+    return ""
+
+fn uiBottomNavHeight(scale: float64): int32 =
+    return ui_tokens.uiPx(62, scale)
+
+fn uiDrawBottomNav5(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    scale: float64,
+    selectedIdx: int32,
+    theme: ui_tokens.MobileUiTheme
+): int32 =
+    let navH: int32 = uiBottomNavHeight(scale)
+    let topY: int32 = height - navH
+    let cellW: int32 = if width > 0: width / 5 else: 0
+    ui_surface.uiFillRect(pixels, width, height, strideBytes, 0, topY, width, navH, theme.bgSurface)
+    ui_surface.uiFillRect(pixels, width, height, strideBytes, 0, topY, width, 1, theme.borderSoft)
+    for i in 0..<5:
+        let label: str = uiNavLabelByIndex(i)
+        let cx: int32 = i * cellW + cellW / 2
+        let active: bool = i == selectedIdx
+        let fg: uint32 = if active: theme.accent else: theme.textMuted
+        let textY: int32 = topY + ui_tokens.uiPx(22, scale)
+        if active:
+            let dotW: int32 = ui_tokens.uiPx(28, scale)
+            let dotH: int32 = ui_tokens.uiPx(3, scale)
+            ui_surface.uiFillRoundRect(
+                pixels, width, height, strideBytes,
+                cx - dotW / 2, topY + ui_tokens.uiPx(8, scale), dotW, dotH, dotH / 2, theme.accent
+            )
+        ui_surface.uiDrawTextCentered(
+            pixels, width, height, strideBytes,
+            cx, textY, fg, theme.typo.caption, label
+        )
+    return topY
+
+fn uiHitBottomNav5(x, y, width, height: int32, scale: float64): int32 =
+    let navH: int32 = uiBottomNavHeight(scale)
+    let topY: int32 = height - navH
+    if y < topY || y >= height || x < 0 || x >= width:
+        return -1
+    if width <= 0:
+        return -1
+    let cellW: int32 = width / 5
+    if cellW <= 0:
+        return -1
+    let idx: int32 = x / cellW
+    if idx < 0 || idx > 4:
+        return -1
+    return idx

@@ -14,6 +14,7 @@ import type {
 } from './types';
 import type { JsonValue } from '../../libp2p/definitions';
 import { decodeDexEnvelope, verifyDexEnvelopeSignature } from './codec';
+import { validateSessionEnvelope } from './sessionPolicyEngine';
 
 const STORAGE_KEY = 'unimaker_dex_orderbook_store_v1';
 
@@ -21,6 +22,40 @@ type SnapshotListener = (snapshot: DexSnapshot) => void;
 
 function nowMs(): number {
   return Date.now();
+}
+
+function getLocalStorageSafe(): { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void } | null {
+  if (typeof localStorage === 'undefined' || !localStorage) {
+    return null;
+  }
+  const storage = localStorage as unknown as {
+    getItem?: (key: string) => string | null;
+    setItem?: (key: string, value: string) => void;
+  };
+  if (typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function') {
+    return null;
+  }
+  return {
+    getItem: storage.getItem.bind(localStorage),
+    setItem: storage.setItem.bind(localStorage),
+  };
+}
+
+function emitPolicyReject(payload: {
+  reason: string;
+  source: 'p2p' | 'chain' | 'local';
+  schema: string;
+  signer: string;
+  traceId: string;
+}): void {
+  const detail = {
+    ...payload,
+    ts: Date.now(),
+  };
+  console.warn('[dex-policy-reject]', detail);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('dex-policy-reject', { detail }));
+  }
 }
 
 function cloneSnapshot(snapshot: DexSnapshot): DexSnapshot {
@@ -67,10 +102,11 @@ function normalizePrice(value: number): number {
 }
 
 function loadSnapshot(): DexSnapshot {
-  if (typeof localStorage === 'undefined') {
+  const storage = getLocalStorageSafe();
+  if (!storage) {
     return emptySnapshot();
   }
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = storage.getItem(STORAGE_KEY);
   if (!raw) {
     return emptySnapshot();
   }
@@ -92,10 +128,11 @@ function loadSnapshot(): DexSnapshot {
 }
 
 function persistSnapshot(snapshot: DexSnapshot): void {
-  if (typeof localStorage === 'undefined') {
+  const storage = getLocalStorageSafe();
+  if (!storage) {
     return;
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  storage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
 }
 
 function sortOrders(orders: DexOrderRecord[]): DexOrderRecord[] {
@@ -261,10 +298,32 @@ export class DexOrderbookStore {
     if (!verified.ok) {
       return false;
     }
+    const policy = validateSessionEnvelope(envelope);
+    if (!policy.ok) {
+      emitPolicyReject({
+        reason: policy.code ?? policy.reason ?? 'POLICY_DENIED_INVALID_POLICY',
+        source,
+        schema: envelope.schema,
+        signer: envelope.signer,
+        traceId: envelope.traceId,
+      });
+      return false;
+    }
     return this.applyVerifiedEnvelope(envelope, source);
   }
 
   applyVerifiedEnvelope(envelope: DexEnvelope<JsonValue>, source: 'p2p' | 'chain' | 'local'): boolean {
+    const policy = validateSessionEnvelope(envelope);
+    if (!policy.ok) {
+      emitPolicyReject({
+        reason: policy.code ?? policy.reason ?? 'POLICY_DENIED_INVALID_POLICY',
+        source,
+        schema: envelope.schema,
+        signer: envelope.signer,
+        traceId: envelope.traceId,
+      });
+      return false;
+    }
     if (envelope.schema === 'unimaker.dex.order.v1') {
       const payload = envelope.payload as unknown as DexOrderV1;
       if (!payload.orderId || !payload.marketId || !payload.side || !payload.type) {

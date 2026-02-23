@@ -689,7 +689,7 @@ fn backendDisplayName(kind: RenderBackendKind): str =
     of rbNone:
         "none"
 fn detectGpuName(kind: RenderBackendKind): str =
-    let override = os.getEnv("CHENG_GUI_GPU_NAME")
+    let override = os.getEnv("GUI_GPU_NAME")
     if len(override) > 0:
         return override
         case kind
@@ -700,7 +700,7 @@ fn detectGpuName(kind: RenderBackendKind): str =
         of rbNone:
             "unavailable"
 fn detectBackendKind(kind: RenderBackendKind): RenderBackendKind =
-    let forced = strutils.toLowerAscii(os.getEnv("CHENG_GUI_BACKEND").strip())
+    let forced = strutils.toLowerAscii(os.getEnv("GUI_BACKEND").strip())
     if len(forced) > 0:
         if forced == "cpu" || forced == "software":
             return rbSkiaCpuFallback

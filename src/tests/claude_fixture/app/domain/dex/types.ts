@@ -36,6 +36,8 @@ export interface DexEnvelope<TPayload extends JsonValue = JsonValue> {
   signer: string;
   sig: string;
   traceId: string;
+  policyRef?: string;
+  sessionContext?: SessionContext;
   payload: TPayload;
 }
 
@@ -136,6 +138,48 @@ export interface DexSignerIdentity {
   address: string;
   peerId: string;
   privateKeyPkcs8: string;
+}
+
+export const SESSION_ALLOWED_CONTRACTS = ['unimaker.dex'] as const;
+export const SESSION_ALLOWED_METHODS = ['placeLimitOrder', 'cancelOrder', 'settleMatch'] as const;
+export const SESSION_ALLOWED_TX_KINDS = ['order', 'cancel', 'settle'] as const;
+export const SESSION_FORBIDDEN_ACTIONS = ['transfer'] as const;
+
+export type SessionAllowedContract = (typeof SESSION_ALLOWED_CONTRACTS)[number];
+export type SessionAllowedMethod = (typeof SESSION_ALLOWED_METHODS)[number];
+export type SessionAllowedTxKind = (typeof SESSION_ALLOWED_TX_KINDS)[number];
+export type SessionForbiddenAction = (typeof SESSION_FORBIDDEN_ACTIONS)[number];
+export type SessionSignerMode = 'session' | 'root';
+export type SessionAction = SessionAllowedMethod | SessionForbiddenAction | 'unknown';
+export type SessionContract = SessionAllowedContract | 'unknown';
+export type SessionTxKind = SessionAllowedTxKind | 'transfer' | 'unknown';
+
+export interface SessionPolicy {
+  sessionId: string;
+  walletId: string;
+  rootPubKey: string;
+  sessionPubKey: string;
+  issuedAt: number;
+  expiresAt: number;
+  maxAmountRWAD: '500';
+  allowedContracts: typeof SESSION_ALLOWED_CONTRACTS;
+  allowedMethods: typeof SESSION_ALLOWED_METHODS;
+  allowedTxKinds: typeof SESSION_ALLOWED_TX_KINDS;
+  forbiddenActions: typeof SESSION_FORBIDDEN_ACTIONS;
+  nonce: string;
+  policySig: string;
+}
+
+export interface SessionContext {
+  policy: SessionPolicy;
+  signedChallenge: string;
+  signerMode: SessionSignerMode;
+}
+
+export interface SecureSigner {
+  signEnvelope(session: SessionContext, payload: Uint8Array): Promise<string>;
+  signChallenge(challenge: string): Promise<string>;
+  isBiometricReady(): Promise<boolean>;
 }
 
 export interface ListingFallbackResult {

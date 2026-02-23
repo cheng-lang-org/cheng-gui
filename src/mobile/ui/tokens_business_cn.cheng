@@ -1,0 +1,152 @@
+type
+    MobileUiSpacing =
+        xxs: int32
+        xs: int32
+        sm: int32
+        md: int32
+        lg: int32
+        xl: int32
+        xxl: int32
+
+    MobileUiTypography =
+        caption: int32
+        body: int32
+        bodyStrong: int32
+        title: int32
+        titleStrong: int32
+        h1: int32
+
+    MobileUiRadii =
+        chip: int32
+        input: int32
+        card: int32
+        panel: int32
+        sheet: int32
+
+    MobileUiStateFlags =
+        disabled: bool
+        focused: bool
+        pressed: bool
+        selected: bool
+        loading: bool
+        error: bool
+
+    MobileUiTheme =
+        bgCanvas: uint32
+        bgSurface: uint32
+        bgSubtle: uint32
+        bgElevated: uint32
+        textPrimary: uint32
+        textSecondary: uint32
+        textMuted: uint32
+        textOnPrimary: uint32
+        borderStrong: uint32
+        borderSoft: uint32
+        accent: uint32
+        accentPressed: uint32
+        success: uint32
+        warning: uint32
+        danger: uint32
+        overlay: uint32
+        spacing: MobileUiSpacing
+        typo: MobileUiTypography
+        radii: MobileUiRadii
+
+fn uiColor(r, g, b, a: int32): uint32 =
+    let packed: int32 = ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF)
+    return uint32(packed)
+
+fn uiPx(dp: int32, scale: float64): int32 =
+    if dp <= 0:
+        return 0
+    var resolvedScale: float64 = scale
+    if resolvedScale <= 0.0:
+        resolvedScale = 1.0
+    if resolvedScale < 1.0:
+        resolvedScale = 1.0
+    if resolvedScale > 4.0:
+        resolvedScale = 4.0
+    let pxv: int32 = int32(float64(dp) * resolvedScale + 0.5)
+    if pxv > 0:
+        return pxv
+    return dp
+
+fn mobileBusinessTheme(scale: float64): MobileUiTheme =
+    var out: MobileUiTheme
+    out.bgCanvas = uiColor(247, 247, 248, 255)
+    out.bgSurface = uiColor(255, 255, 255, 255)
+    out.bgSubtle = uiColor(250, 250, 251, 255)
+    out.bgElevated = uiColor(255, 255, 255, 255)
+    out.textPrimary = uiColor(24, 24, 24, 255)
+    out.textSecondary = uiColor(78, 78, 78, 255)
+    out.textMuted = uiColor(120, 120, 120, 255)
+    out.textOnPrimary = uiColor(255, 255, 255, 255)
+    out.borderStrong = uiColor(222, 222, 222, 255)
+    out.borderSoft = uiColor(236, 236, 236, 255)
+    out.accent = uiColor(255, 36, 66, 255)
+    out.accentPressed = uiColor(233, 30, 64, 255)
+    out.success = uiColor(22, 163, 74, 255)
+    out.warning = uiColor(202, 138, 4, 255)
+    out.danger = uiColor(220, 38, 38, 255)
+    out.overlay = uiColor(17, 17, 17, 104)
+
+    out.spacing.xxs = uiPx(2, scale)
+    out.spacing.xs = uiPx(4, scale)
+    out.spacing.sm = uiPx(8, scale)
+    out.spacing.md = uiPx(12, scale)
+    out.spacing.lg = uiPx(16, scale)
+    out.spacing.xl = uiPx(20, scale)
+    out.spacing.xxl = uiPx(24, scale)
+
+    out.typo.caption = uiPx(11, scale)
+    out.typo.body = uiPx(13, scale)
+    out.typo.bodyStrong = uiPx(14, scale)
+    out.typo.title = uiPx(16, scale)
+    out.typo.titleStrong = uiPx(18, scale)
+    out.typo.h1 = uiPx(22, scale)
+
+    out.radii.chip = uiPx(10, scale)
+    out.radii.input = uiPx(12, scale)
+    out.radii.card = uiPx(14, scale)
+    out.radii.panel = uiPx(16, scale)
+    out.radii.sheet = uiPx(18, scale)
+    return out
+
+fn uiDefaultStateFlags(): MobileUiStateFlags =
+    var out: MobileUiStateFlags
+    out.disabled = false
+    out.focused = false
+    out.pressed = false
+    out.selected = false
+    out.loading = false
+    out.error = false
+    return out
+
+fn uiLabelZhCn(key: str): str =
+    if key == "app.title":
+        return "Unimaker"
+    if key == "nav.home":
+        return "首页"
+    if key == "nav.message":
+        return "消息"
+    if key == "nav.publish":
+        return "发布"
+    if key == "nav.node":
+        return "节点"
+    if key == "nav.profile":
+        return "我的"
+    if key == "action.refresh":
+        return "刷新"
+    if key == "action.open":
+        return "进入"
+    if key == "status.installed":
+        return "已安装"
+    if key == "status.not_installed":
+        return "未安装"
+    if key == "state.loading":
+        return "加载中..."
+    if key == "state.empty":
+        return "暂无数据"
+    if key == "state.error":
+        return "请求失败，请稍后重试"
+    return key

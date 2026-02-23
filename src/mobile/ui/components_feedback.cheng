@@ -1,0 +1,74 @@
+import cheng/gui/mobile/ui/tokens_business_cn as ui_tokens
+import cheng/gui/mobile/ui/components_surface as ui_surface
+
+fn uiDrawToast(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    scale: float64,
+    text: str,
+    isError: bool,
+    theme: ui_tokens.MobileUiTheme
+) =
+    if text == nil || len(text) == 0:
+        return
+    let padX: int32 = ui_tokens.uiPx(14, scale)
+    let h: int32 = ui_tokens.uiPx(40, scale)
+    var w: int32 = ui_surface.uiMeasureTextWidth(text, theme.typo.body) + padX * 2
+    let maxW: int32 = width - ui_tokens.uiPx(24, scale)
+    if w > maxW:
+        w = maxW
+    if w < ui_tokens.uiPx(120, scale):
+        w = ui_tokens.uiPx(120, scale)
+    let x: int32 = (width - w) / 2
+    let y: int32 = height - ui_tokens.uiPx(120, scale)
+    let bg: uint32 = if isError: theme.danger else: theme.textPrimary
+    ui_surface.uiFillRoundRect(
+        pixels, width, height, strideBytes,
+        x, y, w, h, h / 2, bg
+    )
+    ui_surface.uiDrawTextCentered(
+        pixels, width, height, strideBytes,
+        x + w / 2, y + (h - theme.typo.bodyStrong) / 2,
+        theme.textOnPrimary, theme.typo.bodyStrong, text
+    )
+
+fn uiDrawEmptyState(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    yTop, yBottom: int32,
+    theme: ui_tokens.MobileUiTheme
+) =
+    let title: str = ui_tokens.uiLabelZhCn("state.empty")
+    let y: int32 = yTop + (yBottom - yTop) / 2 - theme.typo.title / 2
+    ui_surface.uiDrawTextCentered(
+        pixels, width, height, strideBytes,
+        width / 2, y, theme.textMuted, theme.typo.title, title
+    )
+
+fn uiDrawLoadingState(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    yTop, yBottom: int32,
+    theme: ui_tokens.MobileUiTheme
+) =
+    let title: str = ui_tokens.uiLabelZhCn("state.loading")
+    let y: int32 = yTop + (yBottom - yTop) / 2 - theme.typo.title / 2
+    ui_surface.uiDrawTextCentered(
+        pixels, width, height, strideBytes,
+        width / 2, y, theme.textSecondary, theme.typo.title, title
+    )
+
+fn uiDrawErrorState(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    yTop, yBottom: int32,
+    err: str,
+    theme: ui_tokens.MobileUiTheme
+) =
+    let fallback: str = ui_tokens.uiLabelZhCn("state.error")
+    let text: str = if err == nil || len(err) == 0: fallback else: err
+    let y: int32 = yTop + (yBottom - yTop) / 2 - theme.typo.body / 2
+    ui_surface.uiDrawTextCentered(
+        pixels, width, height, strideBytes,
+        width / 2, y, theme.danger, theme.typo.body, text
+    )

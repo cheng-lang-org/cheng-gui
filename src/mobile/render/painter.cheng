@@ -1,0 +1,41 @@
+import cheng/gui/mobile/core/types
+import cheng/gui/mobile/render/display_list as display_list
+
+fn uiDefaultTextColor(node: types.UiNode): uint32 =
+    if node == nil:
+        return uint32(0xFF111111)
+    if node.style.fgColor != uint32(0):
+        return node.style.fgColor
+    return uint32(0xFF111111)
+
+fn uiPaintNode(node: types.UiNode, list: display_list.UiDisplayList) =
+    if node == nil || list == nil:
+        return
+
+    if node.style.bgColor != uint32(0):
+        if node.style.cornerRadius > 0.0:
+            display_list.uiPushRRect(list, node.frame, node.style.cornerRadius, node.style.bgColor)
+        else:
+            display_list.uiPushRect(list, node.frame, node.style.bgColor)
+
+    if node.kind == types.unkText || node.kind == types.unkButton:
+        let textX: int32 = int32(node.frame.x) + 8
+        let textY: int32 = int32(node.frame.y) + 6
+        display_list.uiPushText(list, textX, textY, uiDefaultTextColor(node), node.style.fontPx, node.text)
+
+    if node.kind == types.unkImage && node.imageRef != nil && len(node.imageRef) > 0:
+        display_list.uiPushImage(list, node.frame, node.imageRef)
+
+    if node.style.clipChildren:
+        display_list.uiPushClipPush(list, node.frame)
+    if node.kind == types.unkContainer:
+        for i in 0..<len(node.children):
+            uiPaintNode(node.children[i], list)
+
+    if node.style.clipChildren:
+        display_list.uiPushClipPop(list)
+
+fn uiBuildDisplayList(root: types.UiNode): display_list.UiDisplayList =
+    let list: display_list.UiDisplayList = display_list.uiNewDisplayList()
+    uiPaintNode(root, list)
+    return list

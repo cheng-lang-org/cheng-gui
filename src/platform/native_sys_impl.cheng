@@ -134,16 +134,17 @@ fn chengGuiMacGetSurfaceInfoRaw(surface: void*; info: void*): RealMacCInt @ impo
 fn chengGuiMacPresentPixels(surface: void*; pixels: void*; width: RealMacCInt; height: RealMacCInt; strideBytes: RealMacCInt): RealMacCInt @ importc("chengGuiMacPresentPixels")
 fn chengGuiMacEventStructSize(): uint @ importc("chengGuiMacEventStructSize")
 fn chengGuiMacSurfaceInfoStructSize(): uint @ importc("chengGuiMacSurfaceInfoStructSize")
+fn chengGuiMacSurfaceFrameHash(surface: void*): uint64 @ importc("chengGuiMacSurfaceFrameHash")
 fn chengGuiMacSurfaceReadbackRgba(surface: void*; outPath: cstring): RealMacCInt @ importc("chengGuiMacSurfaceReadbackRgba")
 
 var realMacStructsChecked = false
 var realMacStructsValid = false
 
 fn guiRealEnabled(): bool =
-    return envValue("CHENG_GUI_USE_REAL_MAC") != "0"
+    return envValue("GUI_USE_REAL_MAC") != "0"
 
 fn realMacAbiCompatible(): bool =
-    if envValue("CHENG_GUI_REAL_MAC_SKIP_ABI_CHECK") == "1":
+    if envValue("GUI_REAL_MAC_SKIP_ABI_CHECK") == "1":
         realMacStructsChecked = true
         realMacStructsValid = true
         return true
@@ -377,7 +378,7 @@ fn u64ToHex(value: uint64): str =
     return out
 
 fn useFallbackBackend(): bool =
-    return envValue("CHENG_GUI_FORCE_FALLBACK") == "1"
+    return envValue("GUI_FORCE_FALLBACK") == "1"
 
 fn decodeMacText(raw: char[256]): str =
     var out: str = ""
@@ -790,6 +791,10 @@ fn presentPixels(surface: SurfaceHandle, pixels: uint32*, width, height: int, st
 fn surfaceFrameHash(surface: SurfaceHandle): uint64 =
     if surface == nil:
         return uint64(0)
+    if ! useFallbackBackend() && realBackendReady():
+        let nativeHash = chengGuiMacSurfaceFrameHash(void*(surface))
+        if nativeHash != uint64(0):
+            return nativeHash
     return sysLastFrameHash
 
 fn surfaceReadbackRgba(surface: SurfaceHandle, outPath: str): bool =

@@ -1,4 +1,13 @@
-import { DEX_SCHEMAS, DEX_TOPICS, isDexSchema, isDexTopic, type DexEnvelope, type DexSchema, type DexTopic } from './types';
+import {
+  DEX_SCHEMAS,
+  DEX_TOPICS,
+  isDexSchema,
+  isDexTopic,
+  type DexEnvelope,
+  type DexSchema,
+  type DexTopic,
+  type SessionContext,
+} from './types';
 import type { JsonValue } from '../../libp2p/definitions';
 
 const NONCE_STORAGE_KEY = 'unimaker_dex_seen_nonces_v1';
@@ -10,7 +19,10 @@ interface EnvelopeSignPayload<TPayload extends JsonValue> {
   topic: DexTopic;
   payload: TPayload;
   signer: string;
-  privateKeyPkcs8: string;
+  privateKeyPkcs8?: string;
+  signBytes?: (payload: Uint8Array) => Promise<string>;
+  sessionContext?: SessionContext;
+  policyRef?: string;
   ttlMs?: number;
   ts?: number;
   nonce?: string;
@@ -246,6 +258,8 @@ export function decodeDexEnvelope(value: unknown): DexEnvelope<JsonValue> | null
   if (typeof value.traceId !== 'string' || value.traceId.trim().length === 0) {
     return null;
   }
+  const policyRef = typeof value.policyRef === 'string' ? value.policyRef : undefined;
+  const sessionContext = isRecord(value.sessionContext) ? (value.sessionContext as unknown as SessionContext) : undefined;
   const payload = value.payload as JsonValue;
   return {
     schema,
@@ -257,6 +271,8 @@ export function decodeDexEnvelope(value: unknown): DexEnvelope<JsonValue> | null
     signer: value.signer,
     sig: value.sig,
     traceId: value.traceId,
+    policyRef,
+    sessionContext,
     payload,
   };
 }
@@ -276,14 +292,28 @@ export async function signDexEnvelopePayload<TPayload extends JsonValue>(
     ttlMs,
     signer: input.signer,
     traceId: normalizeTraceId(input.traceId),
+    policyRef: input.policyRef,
+    sessionContext: input.sessionContext,
     payload: input.payload,
   };
-  const key = await importPrivateEd25519Key(input.privateKeyPkcs8);
   const payloadBytes = stringToBytes(signingView(unsigned));
-  const signature = await crypto.subtle.sign({ name: 'Ed25519' }, key, toArrayBuffer(payloadBytes));
+  let signatureBase64 = '';
+  if (typeof input.signBytes === 'function') {
+    signatureBase64 = (await input.signBytes(payloadBytes)).trim();
+  } else {
+    if (!input.privateKeyPkcs8) {
+      throw new Error('missing_signer_key');
+    }
+    const key = await importPrivateEd25519Key(input.privateKeyPkcs8);
+    const signature = await crypto.subtle.sign({ name: 'Ed25519' }, key, toArrayBuffer(payloadBytes));
+    signatureBase64 = bytesToBase64(new Uint8Array(signature));
+  }
+  if (!signatureBase64) {
+    throw new Error('empty_signature');
+  }
   return {
     ...unsigned,
-    sig: bytesToBase64(new Uint8Array(signature)),
+    sig: signatureBase64,
   };
 }
 
@@ -325,6 +355,8 @@ export async function verifyDexEnvelopeSignature(
       ttlMs: envelope.ttlMs,
       signer: envelope.signer,
       traceId: envelope.traceId,
+      policyRef: envelope.policyRef,
+      sessionContext: envelope.sessionContext,
       payload: envelope.payload,
     };
     const ok = await crypto.subtle.verify(

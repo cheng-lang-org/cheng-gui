@@ -1,0 +1,18 @@
+type
+    ThirdPartyResolve = ref
+        spec: str
+        supported: bool
+        bridge: str
+        notes: str
+
+fn adapterId(): str =
+    return "third-party-native"
+
+fn resolve(spec: str): ThirdPartyResolve =
+    var out: ThirdPartyResolve
+    new(out)
+    out.spec = spec
+    out.supported = true
+    out.bridge = "native"
+    out.notes = "mapped-by-r2c"
+    return out

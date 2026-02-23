@@ -173,11 +173,6 @@ fn commitStrict(page: web.BrowserPage, text: str): bool =
     page.r2cUtfZhStrict = true
     page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
     if ! strict.ok:
-        if strict.lastError == "dict index out of range" || strict.lastError == "utfzh-roundtrip-mismatch" || strict.lastError == "utfzh-canonical-mismatch":
-            # Keep pipeline moving for known codec bridge mismatch while preserving committed UTF-8 text.
-            page.r2cUtfZhLastError = ""
-            page.r2cImeCommitted = text
-            return true
         page.r2cUtfZhLastError = strict.lastError
         return false
     page.r2cUtfZhLastError = ""

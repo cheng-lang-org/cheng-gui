@@ -159,12 +159,12 @@ fn pushText(list: DrawList, rect: GuiRect, text: str, color: uint32, fontSize: f
     cmd.kind = dcText
     cmd.rect = rect
     setRectInts(cmd, rect)
-    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
-    cmd.p0x = int32(0)
-    cmd.p0y = int32(0)
-    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
-    cmd.p1x = int32(0)
-    cmd.p1y = int32(0)
+    cmd.p0 = GuiPosition(x: rect.origin.x, y: rect.origin.y)
+    cmd.p0x = cmd.rectX
+    cmd.p0y = cmd.rectY
+    cmd.p1 = GuiPosition(x: rect.origin.x + rect.size.width, y: rect.origin.y + rect.size.height)
+    cmd.p1x = cmd.rectX + cmd.rectW
+    cmd.p1y = cmd.rectY + cmd.rectH
     cmd.strokeWidth = 0.0
     cmd.color = color
     cmd.opacity = 1.0
@@ -180,12 +180,12 @@ fn pushTextOpacity(list: DrawList, rect: GuiRect, text: str, color: uint32, font
     cmd.kind = dcText
     cmd.rect = rect
     setRectInts(cmd, rect)
-    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
-    cmd.p0x = int32(0)
-    cmd.p0y = int32(0)
-    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
-    cmd.p1x = int32(0)
-    cmd.p1y = int32(0)
+    cmd.p0 = GuiPosition(x: rect.origin.x, y: rect.origin.y)
+    cmd.p0x = cmd.rectX
+    cmd.p0y = cmd.rectY
+    cmd.p1 = GuiPosition(x: rect.origin.x + rect.size.width, y: rect.origin.y + rect.size.height)
+    cmd.p1x = cmd.rectX + cmd.rectW
+    cmd.p1y = cmd.rectY + cmd.rectH
     cmd.strokeWidth = 0.0
     cmd.color = color
     cmd.opacity = opacity
@@ -336,12 +336,12 @@ fn pushTextInt(list: DrawList, x, y, w, h: int32, text: str, color: uint32, font
     cmd.rectY = y
     cmd.rectW = w
     cmd.rectH = h
-    cmd.p0 = GuiPosition(x: 0.0, y: 0.0)
-    cmd.p0x = int32(0)
-    cmd.p0y = int32(0)
-    cmd.p1 = GuiPosition(x: 0.0, y: 0.0)
-    cmd.p1x = int32(0)
-    cmd.p1y = int32(0)
+    cmd.p0 = GuiPosition(x: intToFloat(x, 0.0), y: intToFloat(y, 0.0))
+    cmd.p0x = x
+    cmd.p0y = y
+    cmd.p1 = GuiPosition(x: intToFloat(x + w, 1280.0), y: intToFloat(y + h, 720.0))
+    cmd.p1x = x + w
+    cmd.p1y = y + h
     cmd.strokeWidth = 0.0
     cmd.color = color
     cmd.opacity = 1.0

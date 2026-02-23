@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
 strict_export() {
   local name="$1"
@@ -16,15 +16,15 @@ strict_export() {
   export "$name=$required"
 }
 
-strict_export CHENG_CHROMIUM_RUNTIME_EXEC 1
-strict_export CHENG_CHROMIUM_ENGINE_REUSE_OBJ 0
-strict_export CHENG_CHROMIUM_RUNTIME_REUSE_OBJ 0
-strict_export CHENG_CHROMIUM_NETWORK_REUSE_OBJ 0
-strict_export CHENG_CHROMIUM_NETWORK_REUSE_BIN 0
-strict_export CHENG_CHROMIUM_SECURITY_REUSE_OBJ 0
-strict_export CHENG_CHROMIUM_SECURITY_REUSE_BIN 0
-strict_export CHENG_CHROMIUM_PERF_REUSE_OBJ 0
-strict_export CHENG_CHROMIUM_PERF_REUSE_BIN 0
+strict_export CHROMIUM_RUNTIME_EXEC 1
+strict_export CHROMIUM_ENGINE_REUSE_OBJ 0
+strict_export CHROMIUM_RUNTIME_REUSE_OBJ 0
+strict_export CHROMIUM_NETWORK_REUSE_OBJ 0
+strict_export CHROMIUM_NETWORK_REUSE_BIN 0
+strict_export CHROMIUM_SECURITY_REUSE_OBJ 0
+strict_export CHROMIUM_SECURITY_REUSE_BIN 0
+strict_export CHROMIUM_PERF_REUSE_OBJ 0
+strict_export CHROMIUM_PERF_REUSE_BIN 0
 
 if [ ! -f "$REPO_ROOT/docs/chromium_closure_spec.md" ]; then
   echo "[verify-chromium-production-closed-loop] missing spec: $REPO_ROOT/docs/chromium_closure_spec.md" >&2

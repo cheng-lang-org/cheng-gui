@@ -1,0 +1,396 @@
+import cheng/gui/mobile/ui/tokens_business_cn as ui_tokens
+
+when defined(android):
+    @importc("chengGuiNativeDrawTextBgra")
+    fn chengGuiNativeDrawTextBgra(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y, w, h: float64,
+        color: uint32,
+        fontSize: float64,
+        text: str
+    ): int32
+    @importc("chengGuiNativeDrawTextBgraI32")
+    fn chengGuiNativeDrawTextBgraI32(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y: int32,
+        color: uint32,
+        fontSizePx: int32,
+        text: str
+    ): int32
+else:
+    @weak
+    fn chengGuiNativeDrawTextBgra(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y, w, h: float64,
+        color: uint32,
+        fontSize: float64,
+        text: str
+    ): int32 =
+        pixels
+        width
+        height
+        strideBytes
+        x
+        y
+        w
+        h
+        color
+        fontSize
+        text
+        return 0
+    @weak
+    fn chengGuiNativeDrawTextBgraI32(
+        pixels: void*,
+        width, height, strideBytes: int32,
+        x, y: int32,
+        color: uint32,
+        fontSizePx: int32,
+        text: str
+    ): int32 =
+        pixels
+        width
+        height
+        strideBytes
+        x
+        y
+        color
+        fontSizePx
+        text
+        return 0
+
+fn uiClampI32(v, lo, hi: int32): int32 =
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+fn uiFillRect(pixels: void*, width, height, strideBytes: int32, x, y, w, h: int32, color: uint32) =
+    if pixels == nil || width <= 0 || height <= 0 || w <= 0 || h <= 0:
+        return
+    let x0: int32 = uiClampI32(x, 0, width)
+    let y0: int32 = uiClampI32(y, 0, height)
+    let x1: int32 = uiClampI32(x + w, 0, width)
+    let y1: int32 = uiClampI32(y + h, 0, height)
+    if x1 <= x0 || y1 <= y0:
+        return
+    for yy in y0..<y1:
+        let row: void* = ptr_add(pixels, yy * strideBytes)
+        for xx in x0..<x1:
+            let p: uint32* = uint32*(ptr_add(row, xx * 4))
+            *p = color
+
+fn uiFillCircleCorner(pixels: void*, width, height, strideBytes: int32, cx, cy, radius: int32, x0, y0, x1, y1: int32, color: uint32) =
+    if pixels == nil || width <= 0 || height <= 0 || radius <= 0:
+        return
+    let r2: int32 = radius * radius
+    for yy in y0..<y1:
+        if yy >= 0 && yy < height:
+            let dy: int32 = yy - cy
+            let dy2: int32 = dy * dy
+            let row: void* = ptr_add(pixels, yy * strideBytes)
+            for xx in x0..<x1:
+                if xx >= 0 && xx < width:
+                    let dx: int32 = xx - cx
+                    if dx * dx + dy2 <= r2:
+                        let p: uint32* = uint32*(ptr_add(row, xx * 4))
+                        *p = color
+
+fn uiFillRoundRect(pixels: void*, width, height, strideBytes: int32, x, y, w, h, radius: int32, color: uint32) =
+    if w <= 0 || h <= 0:
+        return
+    let x0: int32 = uiClampI32(x, 0, width)
+    let y0: int32 = uiClampI32(y, 0, height)
+    let x1: int32 = uiClampI32(x + w, 0, width)
+    let y1: int32 = uiClampI32(y + h, 0, height)
+    if x1 <= x0 || y1 <= y0:
+        return
+    let ww: int32 = x1 - x0
+    let hh: int32 = y1 - y0
+    var r: int32 = radius
+    let maxR0: int32 = ww / 2
+    let maxR1: int32 = hh / 2
+    let maxR: int32 = if maxR0 < maxR1: maxR0 else: maxR1
+    r = uiClampI32(r, 0, maxR)
+    if r <= 0:
+        uiFillRect(pixels, width, height, strideBytes, x0, y0, ww, hh, color)
+        return
+    uiFillRect(pixels, width, height, strideBytes, x0 + r, y0, ww - r * 2, hh, color)
+    let midH: int32 = hh - r * 2
+    if midH > 0:
+        uiFillRect(pixels, width, height, strideBytes, x0, y0 + r, r, midH, color)
+        uiFillRect(pixels, width, height, strideBytes, x1 - r, y0 + r, r, midH, color)
+    uiFillCircleCorner(pixels, width, height, strideBytes, x0 + r, y0 + r, r, x0, y0, x0 + r, y0 + r, color)
+    uiFillCircleCorner(pixels, width, height, strideBytes, x1 - r, y0 + r, r, x1 - r, y0, x1, y0 + r, color)
+    uiFillCircleCorner(pixels, width, height, strideBytes, x0 + r, y1 - r, r, x0, y1 - r, x0 + r, y1, color)
+    uiFillCircleCorner(pixels, width, height, strideBytes, x1 - r, y1 - r, r, x1 - r, y1 - r, x1, y1, color)
+
+fn uiFillRoundRectBorder(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w, h, radius: int32,
+    borderColor, fillColor: uint32,
+    borderPx: int32
+) =
+    if borderPx <= 0:
+        uiFillRoundRect(pixels, width, height, strideBytes, x, y, w, h, radius, fillColor)
+        return
+    uiFillRoundRect(pixels, width, height, strideBytes, x, y, w, h, radius, borderColor)
+    let innerX: int32 = x + borderPx
+    let innerY: int32 = y + borderPx
+    let innerW: int32 = w - borderPx * 2
+    let innerH: int32 = h - borderPx * 2
+    let innerR: int32 = if radius > borderPx: radius - borderPx else: 0
+    if innerW <= 0 || innerH <= 0:
+        return
+    uiFillRoundRect(pixels, width, height, strideBytes, innerX, innerY, innerW, innerH, innerR, fillColor)
+
+fn uiDrawText(pixels: void*, width, height, strideBytes: int32, x, y: int32, color: uint32, fontPx: int32, text: str) =
+    if text == nil:
+        return
+    chengGuiNativeDrawTextBgraI32(
+        pixels, width, height, strideBytes,
+        x, y,
+        color, fontPx, text
+    )
+
+fn uiUtf8CodepointCount(text: str): int32 =
+    if text == nil:
+        return 0
+    for i in 0..<int32(len(text)):
+        let b: int32 = int32(text[i]) & 0xFF
+        if (b & 0xC0) != 0x80:
+            count = count + 1
+    return count
+
+fn uiTextAdvance(fontPx: int32): int32 =
+    var scale: int32 = int32(float64(fontPx) / 8.0 + 0.5)
+    if scale < 1:
+        scale = 1
+    if scale > 8:
+        scale = 8
+    return 8 * scale
+
+fn uiMeasureTextWidth(text: str, fontPx: int32): int32 =
+    return uiUtf8CodepointCount(text) * uiTextAdvance(fontPx)
+
+fn uiDrawTextCentered(pixels: void*, width, height, strideBytes: int32, centerX, y: int32, color: uint32, fontPx: int32, text: str) =
+    let w: int32 = uiMeasureTextWidth(text, fontPx)
+    uiDrawText(pixels, width, height, strideBytes, centerX - (w / 2), y, color, fontPx, text)
+
+fn uiDrawCard(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w, h: int32,
+    theme: ui_tokens.MobileUiTheme,
+    elevated: bool
+) =
+    let fillColor: uint32 = if elevated: theme.bgElevated else: theme.bgSurface
+    uiFillRoundRectBorder(
+        pixels, width, height, strideBytes,
+        x, y, w, h, theme.radii.card,
+        theme.borderSoft, fillColor, 1
+    )
+
+fn uiDrawTopBar(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    scale: float64,
+    title: str,
+    theme: ui_tokens.MobileUiTheme
+): int32 =
+    let barH: int32 = ui_tokens.uiPx(56, scale)
+    uiFillRect(pixels, width, height, strideBytes, 0, 0, width, barH, theme.bgSurface)
+    uiFillRect(pixels, width, height, strideBytes, 0, barH - 1, width, 1, theme.borderSoft)
+    let titleY: int32 = ui_tokens.uiPx(18, scale)
+    uiDrawTextCentered(
+        pixels, width, height, strideBytes,
+        width / 2, titleY, theme.textPrimary, theme.typo.titleStrong, title
+    )
+    return barH
+
+fn uiDrawHeaderShell(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    scale: float64,
+    barH, titleRowH: int32,
+    title: str,
+    subtitle: str,
+    showBack: bool,
+    actionLabel: str,
+    theme: ui_tokens.MobileUiTheme
+) =
+    if barH <= 0 || titleRowH <= 0:
+        return
+    let pad: int32 = ui_tokens.uiPx(12, scale)
+    uiFillRect(pixels, width, height, strideBytes, 0, 0, width, barH, theme.bgSurface)
+    uiFillRect(pixels, width, height, strideBytes, 0, barH - 1, width, 1, theme.borderSoft)
+    if barH > titleRowH:
+        uiFillRect(pixels, width, height, strideBytes, 0, titleRowH - 1, width, 1, theme.borderSoft)
+
+    if showBack:
+        uiDrawText(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            pad,
+            (titleRowH - theme.typo.titleStrong) / 2,
+            theme.textPrimary,
+            theme.typo.titleStrong,
+            "<"
+        )
+
+    uiDrawTextCentered(
+        pixels,
+        width,
+        height,
+        strideBytes,
+        width / 2,
+        (titleRowH - theme.typo.titleStrong) / 2,
+        theme.textPrimary,
+        theme.typo.titleStrong,
+        title
+    )
+
+    if actionLabel != nil && len(actionLabel) > 0:
+        let btnH: int32 = ui_tokens.uiPx(30, scale)
+        let minW: int32 = ui_tokens.uiPx(64, scale)
+        var btnW: int32 = uiMeasureTextWidth(actionLabel, theme.typo.body) + ui_tokens.uiPx(24, scale)
+        if btnW < minW:
+            btnW = minW
+        let btnX: int32 = width - pad - btnW
+        let btnY: int32 = (titleRowH - btnH) / 2
+        uiFillRoundRectBorder(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            btnX,
+            btnY,
+            btnW,
+            btnH,
+            btnH / 2,
+            theme.borderSoft,
+            theme.bgSubtle,
+            1
+        )
+        uiDrawTextCentered(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            btnX + btnW / 2,
+            btnY + (btnH - theme.typo.body) / 2,
+            theme.textSecondary,
+            theme.typo.body,
+            actionLabel
+        )
+
+    if subtitle != nil && len(subtitle) > 0 && barH > titleRowH + ui_tokens.uiPx(8, scale):
+        uiDrawText(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            pad,
+            titleRowH + ui_tokens.uiPx(8, scale),
+            theme.textSecondary,
+            theme.typo.caption,
+            subtitle
+        )
+
+fn uiDrawSegmentTabs(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w, h: int32,
+    labels: seq[str],
+    selectedIdx: int32,
+    theme: ui_tokens.MobileUiTheme
+) =
+    let count: int32 = int32(len(labels))
+    if count <= 0 || w <= 0 || h <= 0:
+        return
+    let segW: int32 = if count > 0: w / count else: 0
+    if segW <= 0:
+        return
+    for i in 0..<count:
+        let cellX: int32 = x + i * segW
+        var cellW: int32 = segW
+        if i == count - 1:
+            cellW = x + w - cellX
+        let selected: bool = i == selectedIdx
+        let bg: uint32 = if selected: theme.accent else: theme.bgSubtle
+        let fg: uint32 = if selected: theme.textOnPrimary else: theme.textSecondary
+        uiFillRoundRectBorder(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            cellX,
+            y,
+            cellW,
+            h,
+            h / 2,
+            theme.borderSoft,
+            bg,
+            1
+        )
+        uiDrawTextCentered(
+            pixels,
+            width,
+            height,
+            strideBytes,
+            cellX + cellW / 2,
+            y + (h - theme.typo.body) / 2,
+            fg,
+            theme.typo.body,
+            labels[i]
+        )
+
+fn uiDrawStatusBadge(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y: int32,
+    scale: float64,
+    label: str,
+    positive: bool,
+    theme: ui_tokens.MobileUiTheme
+): int32 =
+    let padX: int32 = theme.spacing.sm
+    let minW: int32 = ui_tokens.uiPx(58, scale)
+    let h: int32 = ui_tokens.uiPx(24, scale)
+    var w: int32 = uiMeasureTextWidth(label, theme.typo.caption) + padX * 2
+    if w < minW:
+        w = minW
+    let fg: uint32 = if positive: theme.success else: theme.textMuted
+    let bg: uint32 = if positive: theme.bgSubtle else: theme.bgSurface
+    uiFillRoundRectBorder(
+        pixels,
+        width,
+        height,
+        strideBytes,
+        x,
+        y,
+        w,
+        h,
+        h / 2,
+        theme.borderSoft,
+        bg,
+        1
+    )
+    uiDrawTextCentered(
+        pixels,
+        width,
+        height,
+        strideBytes,
+        x + w / 2,
+        y + (h - theme.typo.caption) / 2,
+        fg,
+        theme.typo.caption,
+        label
+    )
+    return w

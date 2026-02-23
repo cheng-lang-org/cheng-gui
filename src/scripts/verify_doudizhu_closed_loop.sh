@@ -8,8 +8,8 @@ Usage:
 
 Notes:
   - Always compiles doudizhu main + doudizhu_rules_test.
-  - Default mode is real(libp2p); fallback is controlled by CHENG_GAMES_P2P_ALLOW_MOCK_FALLBACK.
-  - If you also want single-process runtime smoke in verify_examples_games, set CHENG_EXAMPLES_ENABLE_RUNTIME_SMOKE=1.
+  - Default mode is real(libp2p); fallback is controlled by GAMES_P2P_ALLOW_MOCK_FALLBACK.
+  - If you also want single-process runtime smoke in verify_examples_games, set EXAMPLES_ENABLE_RUNTIME_SMOKE=1.
   - --smoke performs optional local dual-process startup smoke on macOS.
 EOF
 }
@@ -56,8 +56,8 @@ PKG_ROOT="$(CDPATH= cd -- "$SCRIPT_ROOT/.." && pwd)"
 VERIFY_SCRIPT="$SCRIPT_ROOT/verify_examples_games.sh"
 BIN_ROOT="$PKG_ROOT/../build/examples_games/bin"
 
-export CHENG_GAMES_P2P_MODE="$mode"
-export CHENG_GAMES_P2P_ALLOW_MOCK_FALLBACK="${CHENG_GAMES_P2P_ALLOW_MOCK_FALLBACK:-1}"
+export GAMES_P2P_MODE="$mode"
+export GAMES_P2P_ALLOW_MOCK_FALLBACK="${GAMES_P2P_ALLOW_MOCK_FALLBACK:-1}"
 
 echo "[verify-doudizhu-closed-loop] step1 compile doudizhu + rules test"
 bash "$VERIFY_SCRIPT" --obj-only --doudizhu-only
@@ -106,12 +106,12 @@ cleanup() {
 trap cleanup EXIT
 
 echo "[verify-doudizhu-closed-loop] step3 dual-process startup smoke"
-CHENG_GUI_FORCE_FALLBACK=0 CHENG_GUI_USE_REAL_MAC=1 CHENG_GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$bin" >"$log_dir/doudizhu_host.log" 2>&1 &
+GUI_FORCE_FALLBACK=0 GUI_USE_REAL_MAC=1 GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$bin" >"$log_dir/doudizhu_host.log" 2>&1 &
 host_pid=$!
 sleep 1
-CHENG_GUI_FORCE_FALLBACK=0 CHENG_GUI_USE_REAL_MAC=1 CHENG_GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$bin" >"$log_dir/doudizhu_client.log" 2>&1 &
+GUI_FORCE_FALLBACK=0 GUI_USE_REAL_MAC=1 GUI_REAL_MAC_SKIP_ABI_CHECK=1 "$bin" >"$log_dir/doudizhu_client.log" 2>&1 &
 client_pid=$!
-sleep "${CHENG_DDZ_SMOKE_SECONDS:-4}"
+sleep "${DDZ_SMOKE_SECONDS:-4}"
 
 if ! kill -0 "$host_pid" >/dev/null 2>&1; then
   echo "[verify-doudizhu-closed-loop] host process exited unexpectedly" >&2

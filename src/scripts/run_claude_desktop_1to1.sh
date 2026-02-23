@@ -27,7 +27,7 @@ Options:
   --entry <path>           Entry module (default: /app/main.tsx)
   --out <abs_path>         Output directory (default: src/build/claude_desktop_1to1)
   --rebuild                Force recompile before launch
-  --debug                  Enable CHENG_GUI_DEBUG=1
+  --debug                  Enable GUI_DEBUG=1
   --autoclose-ms <ms>      Auto-close desktop app after ms
   --capture                Export snapshot/state/drawlist into out_dir/run_capture
   -h, --help               Show this help
@@ -37,7 +37,7 @@ USAGE
 require_strict_gate_marker() {
   local project_path="$1"
   local entry_path="$2"
-  if [ "${CHENG_STRICT_GATE_CONTEXT:-0}" = "1" ]; then
+  if [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
     return 0
   fi
   if [ ! -f "$STRICT_MARKER" ]; then
@@ -147,6 +147,19 @@ require_strict_gate_marker "$project" "$entry"
 
 app_bin="$out_dir/r2c_app_macos"
 launcher_bin="$out_dir/run_r2c_app_macos.sh"
+report_json="$out_dir/r2capp/r2capp_compile_report.json"
+runtime_generated="$out_dir/r2capp/src/runtime_generated.cheng"
+export R2C_TARGET_MATRIX="${R2C_TARGET_MATRIX:-macos}"
+
+if [ "$rebuild" -eq 0 ]; then
+  if [ ! -f "$report_json" ] || [ ! -f "$runtime_generated" ]; then
+    rebuild=1
+    echo "[run-claude-1to1] rebuild: missing compile report/runtime" >&2
+  elif grep -Eq 'legacy\.mountUnimakerAot|legacy\.unimakerDispatch|APP_HOME|buildSnapshot\(|rebuildPaint\(|__R2C_' "$runtime_generated"; then
+    rebuild=1
+    echo "[run-claude-1to1] rebuild: detected legacy/template runtime output" >&2
+  fi
+fi
 
 if [ "$rebuild" -eq 1 ] || [ ! -x "$app_bin" ] || [ ! -x "$launcher_bin" ]; then
   "$COMPILE_SCRIPT" \
@@ -161,32 +174,38 @@ if [ ! -x "$launcher_bin" ]; then
   exit 1
 fi
 
-export CHENG_GUI_USE_REAL_MAC=1
-export CHENG_GUI_FORCE_FALLBACK=0
-export CHENG_GUI_DISABLE_BITMAP_TEXT=0
-export CHENG_R2C_APP_URL="${CHENG_R2C_APP_URL:-about:blank}"
+export GUI_USE_REAL_MAC=1
+export GUI_FORCE_FALLBACK=0
+export GUI_DISABLE_BITMAP_TEXT=1
+export R2C_DISABLE_NATIVE_CJK_TEXT="${R2C_DISABLE_NATIVE_CJK_TEXT:-0}"
+export R2C_STRICT_RUNTIME="${R2C_STRICT_RUNTIME:-1}"
+if [ "$R2C_STRICT_RUNTIME" = "1" ]; then
+  export R2C_DISABLE_NATIVE_CJK_TEXT=0
+fi
+export R2C_APP_URL="${R2C_APP_URL:-about:blank}"
 
 if [ "$debug" -eq 1 ]; then
-  export CHENG_GUI_DEBUG=1
+  export GUI_DEBUG=1
 fi
 
 if [ -n "$autoclose_ms" ]; then
-  export CHENG_R2C_DESKTOP_AUTOCLOSE_MS="$autoclose_ms"
+  export R2C_DESKTOP_AUTOCLOSE_MS="$autoclose_ms"
 fi
 
 if [ "$capture" -eq 1 ]; then
   capture_dir="$out_dir/run_capture"
   mkdir -p "$capture_dir"
-  export CHENG_R2C_APP_SNAPSHOT_OUT="$capture_dir/snapshot.txt"
-  export CHENG_R2C_APP_STATE_OUT="$capture_dir/state.txt"
-  export CHENG_R2C_APP_DRAWLIST_OUT="$capture_dir/drawlist.txt"
+  export R2C_APP_SNAPSHOT_OUT="$capture_dir/snapshot.txt"
+  export R2C_APP_STATE_OUT="$capture_dir/state.txt"
+  export R2C_APP_DRAWLIST_OUT="$capture_dir/drawlist.txt"
   echo "[run-claude-1to1] capture dir: $capture_dir"
 fi
 
 echo "[run-claude-1to1] launcher: $launcher_bin"
 echo "[run-claude-1to1] project: $project"
 echo "[run-claude-1to1] entry: $entry"
-echo "[run-claude-1to1] fallback: $CHENG_GUI_FORCE_FALLBACK"
-echo "[run-claude-1to1] url: $CHENG_R2C_APP_URL"
+echo "[run-claude-1to1] target-matrix: $R2C_TARGET_MATRIX"
+echo "[run-claude-1to1] fallback: $GUI_FORCE_FALLBACK"
+echo "[run-claude-1to1] url: $R2C_APP_URL"
 
 exec "$launcher_bin" "$@"

@@ -1,0 +1,21 @@
+import cheng/gui/browser/r2capp/adapters/crypto_lite
+
+type
+    NodePolyfill = ref
+        spec: str
+        resolved: bool
+        module: str
+
+fn adapterId(): str =
+    return "node-polyfill-native"
+
+fn resolve(spec: str): NodePolyfill =
+    var out: NodePolyfill
+    new(out)
+    out.spec = spec
+    out.resolved = true
+    out.module = "polyfill"
+    return out
+
+fn randomHex(size: int32): str =
+    return crypto_lite.randomBytesHex(size)

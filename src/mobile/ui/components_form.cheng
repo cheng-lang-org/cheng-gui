@@ -1,0 +1,102 @@
+import cheng/gui/mobile/ui/tokens_business_cn as ui_tokens
+import cheng/gui/mobile/ui/components_surface as ui_surface
+
+fn uiDrawPrimaryButton(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w, h: int32,
+    label: str,
+    theme: ui_tokens.MobileUiTheme,
+    flags: ui_tokens.MobileUiStateFlags
+) =
+    var bg: uint32 = theme.accent
+    var fg: uint32 = theme.textOnPrimary
+    if flags.disabled:
+        bg = theme.borderStrong
+        fg = theme.textMuted
+    elif flags.pressed:
+        bg = theme.accentPressed
+    ui_surface.uiFillRoundRect(
+        pixels, width, height, strideBytes,
+        x, y, w, h, theme.radii.input, bg
+    )
+    let textY: int32 = y + (h - theme.typo.bodyStrong) / 2
+    ui_surface.uiDrawTextCentered(
+        pixels, width, height, strideBytes,
+        x + w / 2, textY, fg, theme.typo.bodyStrong, label
+    )
+
+fn uiDrawSecondaryButton(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w, h: int32,
+    label: str,
+    theme: ui_tokens.MobileUiTheme,
+    flags: ui_tokens.MobileUiStateFlags
+) =
+    var border: uint32 = theme.borderSoft
+    var fg: uint32 = theme.textSecondary
+    var bg: uint32 = theme.bgSurface
+    if flags.disabled:
+        fg = theme.textMuted
+        bg = theme.bgSubtle
+    elif flags.pressed:
+        border = theme.borderStrong
+        bg = theme.bgSubtle
+    ui_surface.uiFillRoundRectBorder(
+        pixels, width, height, strideBytes,
+        x, y, w, h, theme.radii.input, border, bg, 1
+    )
+    let textY: int32 = y + (h - theme.typo.bodyStrong) / 2
+    ui_surface.uiDrawTextCentered(
+        pixels, width, height, strideBytes,
+        x + w / 2, textY, fg, theme.typo.bodyStrong, label
+    )
+
+fn uiDrawInput(
+    pixels: void*,
+    width, height, strideBytes: int32,
+    x, y, w, h: int32,
+    label: str,
+    value: str,
+    placeholder: str,
+    theme: ui_tokens.MobileUiTheme,
+    flags: ui_tokens.MobileUiStateFlags
+) =
+    var border: uint32 = theme.borderSoft
+    if flags.error:
+        border = theme.danger
+    elif flags.focused:
+        border = theme.accent
+    ui_surface.uiFillRoundRectBorder(
+        pixels, width, height, strideBytes,
+        x, y, w, h, theme.radii.input, border, theme.bgSurface, 1
+    )
+    let labelY: int32 = y + ui_tokens.uiPx(8, 1.0)
+    ui_surface.uiDrawText(
+        pixels, width, height, strideBytes,
+        x + theme.spacing.md, labelY,
+        theme.textMuted, theme.typo.caption, label
+    )
+    let hasValue: bool = value != nil && len(value) > 0
+    let valueY: int32 = y + h - theme.typo.bodyStrong - ui_tokens.uiPx(10, 1.0)
+    if hasValue:
+        ui_surface.uiDrawText(
+            pixels, width, height, strideBytes,
+            x + theme.spacing.md, valueY,
+            theme.textPrimary, theme.typo.bodyStrong, value
+        )
+    else:
+        ui_surface.uiDrawText(
+            pixels, width, height, strideBytes,
+            x + theme.spacing.md, valueY,
+            theme.textMuted, theme.typo.body, placeholder
+        )
+
+fn uiInputCaretX(
+    x: int32,
+    leftPadding: int32,
+    text: str,
+    fontPx: int32
+): int32 =
+    return x + leftPadding + ui_surface.uiMeasureTextWidth(text, fontPx)

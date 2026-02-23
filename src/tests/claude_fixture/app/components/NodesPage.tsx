@@ -3,6 +3,7 @@ import {
   Search,
   Activity,
   ArrowLeft,
+  Menu,
   MessageCircle,
   Users,
   ChevronRight,
@@ -26,6 +27,7 @@ import { libp2pService } from '../libp2p/service';
 import { libp2pEventPump } from '../libp2p/eventPump';
 import { useLocale } from '../i18n/LocaleContext';
 import type { Translations } from '../i18n/translations';
+import Sidebar from './Sidebar';
 
 interface Node {
   peerId: string;
@@ -963,8 +965,9 @@ function NodeDetail({ node, onBack, onAction, onViewContent, isBandwidthProbeRun
 
 type SourceFilter = 'all' | NodeSourceTag;
 
-export default function NodesPage() {
+export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (page: string) => void; onOpenApp?: (appId: string) => void }) {
   const { t } = useLocale();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -1086,9 +1089,15 @@ export default function NodesPage() {
         setRuntimeStatusHint('');
       }
       const now = Date.now();
-      const shouldRefreshRendezvous = now - lastRendezvousRefreshAtRef.current > 15_000;
+      const runtimeReadyForDiscovery = runtimeReady && runtimeHealth.nativeReady;
+      const shouldRefreshRendezvous =
+        runtimeReadyForDiscovery && now - lastRendezvousRefreshAtRef.current > 15_000;
       const shouldRefreshMdnsDebug =
-        lastMdnsDebugRefreshAtRef.current === 0 || now - lastMdnsDebugRefreshAtRef.current > 5_000;
+        runtimeReadyForDiscovery
+        && (lastMdnsDebugRefreshAtRef.current === 0 || now - lastMdnsDebugRefreshAtRef.current > 5_000);
+      const discoveredPeersPromise = runtimeReadyForDiscovery
+        ? libp2pService.socialListDiscoveredPeers('', 256)
+        : Promise.resolve({ peers: [] as DiscoveredPeer[], totalCount: 0 });
       const rendezvousPromise = shouldRefreshRendezvous
         ? libp2pService.rendezvousDiscover('unimaker/nodes/v1', 64).catch(() => [] as Record<string, unknown>[])
         : Promise.resolve([] as Record<string, unknown>[]);
@@ -1100,7 +1109,7 @@ export default function NodesPage() {
         libp2pService.getLocalPeerId(),
         libp2pService.getConnectedPeers(),
         rendezvousPromise,
-        libp2pService.socialListDiscoveredPeers('', 256),
+        discoveredPeersPromise,
         mdnsDebugPromise,
       ]);
 
@@ -1289,20 +1298,10 @@ export default function NodesPage() {
     if (!libp2pService.isNativePlatform()) {
       return;
     }
-    let disposed = false;
-    void libp2pService.mdnsSetEnabled(true);
-    void libp2pService.mdnsSetInterval(2);
-    const tick = () => {
-      if (disposed) return;
-      const now = Date.now();
-      void libp2pService.mdnsProbe();
-      scheduleRefreshNativeStatus();
-    };
-    tick();
-    const timer = setInterval(tick, 2000);
+    void libp2pService.setDiscoveryActive(true, 'nodes-page');
+    scheduleRefreshNativeStatus();
     return () => {
-      disposed = true;
-      clearInterval(timer);
+      void libp2pService.setDiscoveryActive(false, 'nodes-page');
     };
   }, []);
 
@@ -1862,8 +1861,12 @@ export default function NodesPage() {
 
   return (
     <>
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} onNavigate={onNavigate} onOpenApp={onOpenApp} />
       <div className="h-full flex flex-col bg-white">
         <header className="sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-2 z-10">
+          <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-gray-100 rounded-full transition-colors" aria-label="展开侧边栏">
+            <Menu size={22} />
+          </button>
           {showSearch ? (
             <>
               <input
@@ -1886,18 +1889,18 @@ export default function NodesPage() {
             <>
               <div className="flex-1" />
               <button
-                onClick={() => { setSelectMode(!selectMode); setSelectedPeerIds(new Set()); }}
-                className={`p-2 rounded-full transition-colors ${selectMode ? 'bg-purple-100 text-purple-600' : 'hover:bg-gray-100'}`}
-                aria-label={t.nodes_multiSelect}
-              >
-                <Users size={20} />
-              </button>
-              <button
                 onClick={() => setShowSearch(true)}
                 className="p-2 hover:bg-gray-100 rounded-full transition-colors"
                 aria-label={t.nodes_searchNodes}
               >
                 <Search size={22} />
+              </button>
+              <button
+                onClick={() => { setSelectMode(!selectMode); setSelectedPeerIds(new Set()); }}
+                className={`p-2 rounded-full transition-colors ${selectMode ? 'bg-purple-100 text-purple-600' : 'hover:bg-gray-100'}`}
+                aria-label={t.nodes_multiSelect}
+              >
+                <Users size={20} />
               </button>
             </>
           )}

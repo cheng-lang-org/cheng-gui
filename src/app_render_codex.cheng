@@ -996,7 +996,7 @@ fn guiCodexConfigBoolValue(key: str, defaultValue: bool): bool =
     return envFlagEnabled(value, defaultValue)
 
 fn guiCodexPreferredLanguage(): str =
-    let envLang = getEnv("CHENG_CODEX_LANGUAGE")
+    let envLang = getEnv("CODEX_LANGUAGE")
     if len(envLang) > 0:
         return envLang
     let altLang = getEnv("CODEX_LANGUAGE")
@@ -1010,7 +1010,7 @@ fn guiCodexPreferredLanguage(): str =
     return value
 
 fn guiCodexStartFocusValue(): str =
-    let envFocus = getEnv("CHENG_CODEX_START_FOCUS")
+    let envFocus = getEnv("CODEX_START_FOCUS")
     if len(envFocus) > 0:
         return envFocus
     let altFocus = getEnv("CODEX_START_FOCUS")
@@ -1624,16 +1624,16 @@ fn guiCodexHandleSlashCommand(state: GuiState, input: str, outHandled: var bool,
     return next
 
 fn guiCodexLoginPreferCli(tokenKind: str): bool =
-    let mode = textutils.toLowerAscii(trimLine(getEnv("CHENG_IDE_CODEX_LOGIN_MODE")))
+    let mode = textutils.toLowerAscii(trimLine(getEnv("IDE_CODEX_LOGIN_MODE")))
     if len(mode) > 0:
         return mode == "cli"
-    let flag = getEnv("CHENG_IDE_CODEX_LOGIN_CLI")
+    let flag = getEnv("IDE_CODEX_LOGIN_CLI")
     if len(flag) > 0:
         return envFlagEnabled(flag, false)
     return false
 
 fn guiCodexWslEnabled(): bool =
-    let envWsl = getEnv("CHENG_CODEX_WSL")
+    let envWsl = getEnv("CODEX_WSL")
     if len(envWsl) > 0:
         return envFlagEnabled(envWsl, false)
     let altWsl = getEnv("CODEX_WSL")
@@ -2179,9 +2179,9 @@ fn guiCodexConnect(state: GuiState): GuiState =
         return next
     var cmd = baseCmd + " app-server"
     if guiIsWindows():
-        cmd = "set CHENG_CODEX_APP_SERVER=1 && set CHENG_CODEX_LOGIN_STRICT_STATE=0 && " + cmd
+        cmd = "set CODEX_APP_SERVER=1 && set CODEX_LOGIN_STRICT_STATE=0 && " + cmd
     else:
-        cmd = "CHENG_CODEX_APP_SERVER=1 CHENG_CODEX_LOGIN_STRICT_STATE=0 " + cmd
+        cmd = "CODEX_APP_SERVER=1 CODEX_LOGIN_STRICT_STATE=0 " + cmd
     var readFd: int32 = -1
     var writeFd: int32 = -1
     var pid: int64 = 0
@@ -2191,7 +2191,7 @@ fn guiCodexConnect(state: GuiState): GuiState =
     var ok: bool = false
     var usePty: bool = false
     let preferPtyDefault = false
-    let preferPty = envFlagEnabled(getEnv("CHENG_IDE_CODEX_PTY"), preferPtyDefault)
+    let preferPty = envFlagEnabled(getEnv("IDE_CODEX_PTY"), preferPtyDefault)
     if ! preferPty:
         ok = pipeSpawn(cmd, workDir, &readFd, &writeFd, &pid)
     if ! ok && ptySupported():
@@ -3033,14 +3033,14 @@ fn guiCodexFallbackBrowserLogin(state: GuiState): GuiState =
     if len(logDir) > 0:
         guiEnsureDirExists(logDir)
     if guiIsWindows():
-        var envPrefix = "set CHENG_CODEX_LOGIN_QUIET=1 && set CHENG_CODEX_LOGIN_STRICT_STATE=0 && set CHENG_CODEX_APP_SERVER=1"
+        var envPrefix = "set CODEX_LOGIN_QUIET=1 && set CODEX_LOGIN_STRICT_STATE=0 && set CODEX_APP_SERVER=1"
         if len(logPath) > 0:
-            envPrefix = envPrefix + " && set CHENG_CODEX_LOGIN_LOG=" + guiShellQuote(logPath)
+            envPrefix = envPrefix + " && set CODEX_LOGIN_LOG=" + guiShellQuote(logPath)
         cmd = envPrefix + " && " + cmd
     else:
-        var envPrefix = "CHENG_CODEX_LOGIN_QUIET=1 CHENG_CODEX_LOGIN_STRICT_STATE=0 CHENG_CODEX_APP_SERVER=1 "
+        var envPrefix = "CODEX_LOGIN_QUIET=1 CODEX_LOGIN_STRICT_STATE=0 CODEX_APP_SERVER=1 "
         if len(logPath) > 0:
-            envPrefix = envPrefix + "CHENG_CODEX_LOGIN_LOG=" + guiShellQuote(logPath) + " "
+            envPrefix = envPrefix + "CODEX_LOGIN_LOG=" + guiShellQuote(logPath) + " "
         cmd = envPrefix + cmd
     let workDir = guiWorkspaceActiveRoot(next)
     if guiSpawnDetached(cmd, workDir):
@@ -3111,9 +3111,9 @@ fn guiCodexLogin(state: GuiState, token: str): GuiState =
         return next
     var cmd = baseCmd + " login --token " + guiShellQuote(trimmed)
     if guiIsWindows():
-        cmd = "set CHENG_CODEX_LOGIN_QUIET=1 && set CHENG_CODEX_LOGIN_STRICT_STATE=0 && set CHENG_CODEX_APP_SERVER=1 && " + cmd
+        cmd = "set CODEX_LOGIN_QUIET=1 && set CODEX_LOGIN_STRICT_STATE=0 && set CODEX_APP_SERVER=1 && " + cmd
     else:
-        cmd = "CHENG_CODEX_LOGIN_QUIET=1 CHENG_CODEX_LOGIN_STRICT_STATE=0 CHENG_CODEX_APP_SERVER=1 " + cmd
+        cmd = "CODEX_LOGIN_QUIET=1 CODEX_LOGIN_STRICT_STATE=0 CODEX_APP_SERVER=1 " + cmd
     let workDir = guiWorkspaceActiveRoot(next)
     if guiSpawnDetached(cmd, workDir):
         codexLog("login: cli spawned")

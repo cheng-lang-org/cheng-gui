@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
 host="$(uname -s)"
 if [ "$host" != "Darwin" ]; then
@@ -14,13 +14,13 @@ out_dir="$ROOT/build/r2c_platform_matrix"
 mkdir -p "$out_dir"
 
 bash "$ROOT/scripts/sync_claude_fixture.sh" || true
-export CHENG_R2C_PROFILE="claude-platform"
-export CHENG_R2C_PROJECT_NAME="claude-platform"
-export CHENG_R2C_TARGET_MATRIX="macos,windows,linux,android,ios,web"
-export CHENG_R2C_NO_JS_RUNTIME="1"
-export CHENG_R2C_WPT_PROFILE="core"
-export CHENG_R2C_EQUIVALENCE_MODE="wpt+e2e"
-export CHENG_STRICT_GATE_CONTEXT=1
+export R2C_PROFILE="claude-platform"
+export R2C_PROJECT_NAME="claude-platform"
+export R2C_TARGET_MATRIX="macos,windows,linux,android,ios,web"
+export R2C_NO_JS_RUNTIME="1"
+export R2C_WPT_PROFILE="core"
+export R2C_EQUIVALENCE_MODE="wpt+e2e"
+export STRICT_GATE_CONTEXT=1
 bash "$ROOT/scripts/r2c_compile_react_project.sh" --project "$ROOT/tests/claude_fixture" --entry "/app/main.tsx" --out "$out_dir/claude" --strict
 
 artifacts_dir="$out_dir/claude/r2capp_platform_artifacts"

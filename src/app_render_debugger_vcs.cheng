@@ -288,7 +288,7 @@ fn guiDebuggerRemoveBreakpoint(state: GuiState, token: str): GuiState =
 fn guiDebuggerHelp(state: GuiState): GuiState =
     state.terminal = pushTerminalLine(state.terminal, "debug: status <idle|running|paused|stopped> [reason]")
     state.terminal = pushTerminalLine(state.terminal, "debug: load <path>, refresh, sync, clear")
-    state.terminal = pushTerminalLine(state.terminal, "debug: run/continue/step/next/pause/stop (CHENG_IDE_DEBUG_CMD)")
+    state.terminal = pushTerminalLine(state.terminal, "debug: run/continue/step/next/pause/stop (IDE_DEBUG_CMD)")
     state.terminal = pushTerminalLine(state.terminal, "bp: add [path:line|line], del <idx|path:line>, clear")
     state.terminal = pushTerminalLine(state.terminal, "frames: set <items...>, clear")
     state.terminal = pushTerminalLine(state.terminal, "vars: set <items...>, clear")
@@ -332,7 +332,7 @@ fn guiDebuggerListWatches(state: GuiState): GuiState =
     return state
 
 fn guiDebugBackendAvailable(): bool =
-    return len(getEnv("CHENG_IDE_DEBUG_CMD")) > 0
+    return len(getEnv("IDE_DEBUG_CMD")) > 0
 
 fn guiDebugListPayload(items: str[]): str =
     var outVal: str = ""
@@ -343,7 +343,7 @@ fn guiDebugListPayload(items: str[]): str =
     return outVal
 
 fn guiDebugBackendCommand(state: GuiState, action: str, args: str): str =
-    var cmd = getEnv("CHENG_IDE_DEBUG_CMD")
+    var cmd = getEnv("IDE_DEBUG_CMD")
     if len(cmd) == 0:
         return ""
     let hasAction: bool = indexOfSubstr(cmd, "{action}", 0) >= 0
@@ -430,10 +430,10 @@ fn guiVcsSummaryForError(output: str): str =
 fn guiVcsRefreshInternalAt(state: GuiState, announce: bool, workDir: str): GuiState =
     let root = if len(workDir) > 0: workDir else: guiWorkspaceActiveRoot(state)
     state.vcsRoot = root
-    if envFlagEnabled(getEnv("CHENG_IDE_DEBUG_STARTUP"), false):
+    if envFlagEnabled(getEnv("IDE_DEBUG_STARTUP"), false):
         textutils.print("[startup] vcs exec start\n")
     let result: ExecCmdResult = execCmdEx("git status --porcelain=v1 -b", {poStdErrToStdOut}, root)
-    if envFlagEnabled(getEnv("CHENG_IDE_DEBUG_STARTUP"), false):
+    if envFlagEnabled(getEnv("IDE_DEBUG_STARTUP"), false):
         textutils.print("[startup] vcs exec done\n")
     if result.exitCode != 0:
         state.vcsSummary = guiVcsSummaryForError(result.output)

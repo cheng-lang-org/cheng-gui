@@ -17,6 +17,7 @@ const mock = vi.hoisted(() => ({
   boostConnectivity: vi.fn(async () => true),
   syncPeerstoreState: vi.fn(async () => ({} as Record<string, unknown>)),
   mdnsProbe: vi.fn(async () => true),
+  setDiscoveryActive: vi.fn(async () => undefined),
   getConnectedPeers: vi.fn(async () => [] as string[]),
   joinViaRandomBootstrap: vi.fn(async () => ({ ok: true, connectedCount: 0 })),
   loadStoredPeers: vi.fn(async () => ({ peers: [] as Array<Record<string, unknown>> })),
@@ -50,6 +51,7 @@ vi.mock('../../../libp2p/service', () => ({
     mdnsProbe: (...args: unknown[]) => mock.mdnsProbe(...args),
     mdnsSetEnabled: async () => true,
     mdnsSetInterval: async () => true,
+    setDiscoveryActive: (...args: unknown[]) => mock.setDiscoveryActive(...args),
     getConnectedPeers: (...args: unknown[]) => mock.getConnectedPeers(...args),
     joinViaRandomBootstrap: (...args: unknown[]) => mock.joinViaRandomBootstrap(...args),
     fetchFeedSnapshot: (...args: unknown[]) => mock.fetchFeedSnapshot(...args),
@@ -92,6 +94,7 @@ describe('update transport authority convergence', () => {
     mock.boostConnectivity.mockClear();
     mock.syncPeerstoreState.mockClear();
     mock.mdnsProbe.mockClear();
+    mock.setDiscoveryActive.mockClear();
     mock.getConnectedPeers.mockReset();
     mock.getConnectedPeers.mockResolvedValue([]);
     mock.joinViaRandomBootstrap.mockClear();

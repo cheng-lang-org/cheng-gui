@@ -123,7 +123,7 @@ static int gChengPresentFrames = 0;
 static int gChengBeginFrames = 0;
 
 static bool chengGuiMacDebugEnabled(void) {
-  const char *flag = getenv("CHENG_GUI_DEBUG");
+  const char *flag = getenv("GUI_DEBUG");
   if (flag == NULL || flag[0] == '\0') {
     return false;
   }
@@ -578,7 +578,7 @@ static void chengGuiMacEnsureInitialized(void) {
     if (chengGuiMacDebugEnabled()) {
       fprintf(stderr, "[gui-macos] init main_thread=%d\n", [NSThread isMainThread] ? 1 : 0);
     }
-    gChengUseViewPointerEvents = chengGuiMacEnvFlag("CHENG_GUI_VIEW_EVENTS", true);
+    gChengUseViewPointerEvents = chengGuiMacEnvFlag("GUI_VIEW_EVENTS", true);
     chengGuiMacPromoteProcessToForeground();
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -1510,7 +1510,7 @@ int chengGuiMacPresentPixels(void *surfaceHandle,
     sizeChanged = true;
   }
   memcpy(surface->frameBuffer, pixels, totalBytes);
-  bool forceProvider = chengGuiMacEnvFlag("CHENG_GUI_FORCE_IMAGE_RECREATE", false);
+  bool forceProvider = chengGuiMacEnvFlag("GUI_FORCE_IMAGE_RECREATE", false);
   if (surface->image != NULL) {
     CGImageRelease(surface->image);
     surface->image = NULL;
@@ -1723,6 +1723,20 @@ int chengGuiMacDrawTextBgraLen(
   const char *text,
   int textLen
 );
+int chengGuiMacDrawTextBgraLenI(
+  void *pixels,
+  int width,
+  int height,
+  int strideBytes,
+  int x,
+  int y,
+  int w,
+  int h,
+  uint32_t color,
+  int fontSizeX100,
+  const char *text,
+  int textLen
+);
 int chengGuiMacDrawTextBgraCode(
   void *pixels,
   int width,
@@ -1831,6 +1845,12 @@ int chengGuiNativeDrawTextBgra(
   double fontSize,
   const char *text
 ) {
+  if (text == NULL) {
+    return -1;
+  }
+  if ((uintptr_t)text < (uintptr_t)4096u) {
+    return -2;
+  }
   return chengGuiMacDrawTextBgra(pixels, width, height, strideBytes, x, y, w, h, color, fontSize, text);
 }
 
@@ -1848,7 +1868,55 @@ int chengGuiNativeDrawTextBgraLen(
   const char *text,
   int textLen
 ) {
+  if (text == NULL) {
+    return -1;
+  }
+  if ((uintptr_t)text < (uintptr_t)4096u) {
+    return -2;
+  }
+  if (textLen < 0 || textLen > (1 << 20)) {
+    return -3;
+  }
   return chengGuiMacDrawTextBgraLen(pixels, width, height, strideBytes, x, y, w, h, color, fontSize, text, textLen);
+}
+
+int chengGuiNativeDrawTextBgraLenI(
+  void *pixels,
+  int width,
+  int height,
+  int strideBytes,
+  int x,
+  int y,
+  int w,
+  int h,
+  uint32_t color,
+  int fontSizeX100,
+  const char *text,
+  int textLen
+) {
+  if (text == NULL) {
+    return -1;
+  }
+  if ((uintptr_t)text < (uintptr_t)4096u) {
+    return -2;
+  }
+  if (textLen < 0 || textLen > (1 << 20)) {
+    return -3;
+  }
+  return chengGuiMacDrawTextBgraLenI(
+    pixels,
+    width,
+    height,
+    strideBytes,
+    x,
+    y,
+    w,
+    h,
+    color,
+    fontSizeX100,
+    text,
+    textLen
+  );
 }
 
 int chengGuiNativeDrawTextBgraCode(

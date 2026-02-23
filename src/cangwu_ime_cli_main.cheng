@@ -1,0 +1,761 @@
+import std/os
+import std/strings as strings
+import std/cmdline
+import cheng/gui/ime/cangwu_assets_loader
+import cheng/gui/ime/legacy_assets_loader
+import cheng/gui/ime/legacy_codec
+import cheng/gui/ime/legacy_types
+import cheng/gui/ime/utfzh_codec
+
+@importc("cheng_compat_argc")
+fn chengCompatArgc(): int32
+@importc("cheng_compat_argv")
+fn chengCompatArgv(): void*
+@importc("__cheng_setCmdLine")
+fn chengSetCmdLine(argc: int32, argv: void*)
+
+fn cliInitCmdline() =
+    let argc = chengCompatArgc()
+    if argc <= 0:
+        return
+    let argv = chengCompatArgv()
+    if argv == nil:
+        return
+    chengSetCmdLine(argc, argv)
+
+fn cliParamCount(): int32 =
+    return cmdline.paramCount()
+
+fn cliParamStr(i: int32): str =
+    return cmdline.paramStr(i)
+
+fn cliProgramName(): str =
+    let program = cmdline.programName()
+    if len(program) > 0:
+        return program
+    return cliParamStr(0)
+
+fn cliStartsWith(text: str, prefix: str): bool =
+    let n = len(text)
+    let m = len(prefix)
+    if m <= 0 || n < m:
+        return false
+    for i in 0..<m:
+        if text[i] != prefix[i]:
+            return false
+    return true
+
+fn cliInlineFlagValue(arg: str, key: str): str =
+    if len(arg) == 0 || len(key) == 0:
+        return ""
+    let keyColon = key + ":"
+    if cliStartsWith(arg, keyColon):
+        return strings.dropPrefix(arg, keyColon)
+    let keyEq = key + "="
+    if cliStartsWith(arg, keyEq):
+        return strings.dropPrefix(arg, keyEq)
+    return ""
+
+fn cliHasInlineFlag(arg: str, key: str): bool =
+    let keyColon = key + ":"
+    if cliStartsWith(arg, keyColon):
+        return true
+    let keyEq = key + "="
+    if cliStartsWith(arg, keyEq):
+        return true
+    return false
+
+fn cliUsage() =
+    echo "仓五码 UTF-ZH 工具"
+    echo "用法: cangwu_ime_cli <subcommand> [options]"
+    echo ""
+    echo "subcommand:"
+    echo "  convert      旧编码 -> Unicode Hub -> UTF-ZH 严格转码"
+    echo "  build-assets 生成并校验 IME/UTF-ZH/legacy 资产"
+    echo "  verify       运行 IME 闭环验证"
+    echo ""
+    echo "查看子命令帮助: cangwu_ime_cli <subcommand> --help"
+
+fn cliConvertUsage() =
+    echo "用法: cangwu_ime_cli convert --in <input> --out <output> [--from auto|utf8|utf16le|utf16be|gbk|gb2312] [--report <path>] [--data-root <path>] [--engine cheng|auto] [--optimize-dict] [--dict-out <path>]"
+
+fn cliBuildUsage() =
+    echo "用法: cangwu_ime_cli build-assets [--out-dir <path>] [--python <python3>] [--skip-install]"
+
+fn cliVerifyUsage() =
+    echo "用法: cangwu_ime_cli verify [--impl <path>] [-- <extra args>]"
+
+fn cliDebug(msg: str) =
+    if os.getEnv("CW_IME_DEBUG") == "1":
+        echo "[cangwu-ime-cli][debug] " + msg
+
+fn cliByte(ch: char): int32 =
+    var b: int32 = int32(ch)
+    if b < 0:
+        b = b + 256
+    return b
+
+fn cliIsTrail(b: int32): bool =
+    return b >= 0x80 && b <= 0xBF
+
+fn cliCountUtfZhBuckets(bytes: str, outAscii: var int32, outDict1: var int32, outDict2: var int32,
+                        outDict3: var int32, outFallback4: var int32) =
+    outAscii = 0
+    outDict1 = 0
+    outDict2 = 0
+    outDict3 = 0
+    outFallback4 = 0
+
+    let total = len(bytes)
+    var idx: int32 = 0
+    while idx < total:
+        let b1 = cliByte(bytes[idx])
+        if b1 < 0x80:
+            outAscii = outAscii + 1
+            idx = idx + 1
+            continue
+        if b1 >= 0xC0 && b1 <= 0xE1:
+            outDict1 = outDict1 + 1
+            idx = idx + 1
+            continue
+        if b1 >= 0xE2 && b1 <= 0xF8:
+            if idx + 1 < total:
+                let b2 = cliByte(bytes[idx + 1])
+                if cliIsTrail(b2):
+                    outDict2 = outDict2 + 1
+                    idx = idx + 2
+                    continue
+            outFallback4 = outFallback4 + 1
+            idx = idx + 1
+            continue
+        if b1 >= 0xF9 && b1 <= 0xFA:
+            if idx + 2 < total:
+                let b2 = cliByte(bytes[idx + 1])
+                let b3 = cliByte(bytes[idx + 2])
+                if cliIsTrail(b2) && cliIsTrail(b3):
+                    outDict3 = outDict3 + 1
+                    idx = idx + 3
+                    continue
+            outFallback4 = outFallback4 + 1
+            idx = idx + 1
+            continue
+        if idx + 3 < total:
+            let b2 = cliByte(bytes[idx + 1])
+            let b3 = cliByte(bytes[idx + 2])
+            let b4 = cliByte(bytes[idx + 3])
+            if cliIsTrail(b2) && cliIsTrail(b3) && cliIsTrail(b4):
+                outFallback4 = outFallback4 + 1
+                idx = idx + 4
+                continue
+        outFallback4 = outFallback4 + 1
+        idx = idx + 1
+
+fn cliScaledRatioText(num: int32, den: int32): str =
+    if den <= 0:
+        return "0.000000"
+    let scaled = (int64(num) * int64(1000000)) / int64(den)
+    let whole = scaled / int64(1000000)
+    let frac = scaled % int64(1000000)
+    var fracText = intToStr(int32(frac))
+    while len(fracText) < 6:
+        fracText = "0" + fracText
+    return intToStr(int32(whole)) + "." + fracText
+
+fn cliCollectUtf8DictHits(textUtf8: str, dict: UtfZhDict): int32[] =
+    var hits: int32[] = []
+    setLen(hits, len(dict.codepoints))
+    if len(dict.codepoints) == 0 || len(textUtf8) == 0:
+        return hits
+
+    var idx: int32 = 0
+    while idx < len(textUtf8):
+        let packed = utfzhDecodeUtf8At(textUtf8, idx)
+        var step = utfzhPackUtf8Step(packed)
+        if step <= 0:
+            step = 1
+        if packed > 0:
+            let cp = utfzhPackUtf8Cp(packed)
+            let dIdx = utfzhDictIndex(dict, cp)
+            if dIdx >= 0 && dIdx < len(hits):
+                hits[dIdx] = hits[dIdx] + 1
+        idx = idx + step
+    return hits
+
+fn cliOrderKeepLeft(left, right: int32, hits: int32[]): bool =
+    let leftHit = if left >= 0 && left < len(hits): hits[left] else: int32(0)
+    let rightHit = if right >= 0 && right < len(hits): hits[right] else: int32(0)
+    if leftHit != rightHit:
+        return leftHit > rightHit
+    return left < right
+
+fn cliBuildOptimizedDict(base: UtfZhDict, textUtf8: str): UtfZhDict =
+    if len(base.codepoints) == 0:
+        return base
+
+    let hits = cliCollectUtf8DictHits(textUtf8, base)
+    var order: int32[] = []
+    setLen(order, len(base.codepoints))
+    for i in 0..<len(order):
+        order[i] = i
+
+    var i: int32 = 1
+    while i < len(order):
+        let key = order[i]
+        var pos = i
+        while pos > 0:
+            let left = order[pos - 1]
+            if cliOrderKeepLeft(left, key, hits):
+                break
+            order[pos] = left
+            pos = pos - 1
+        order[pos] = key
+        i = i + 1
+
+    var out: UtfZhDict
+    for j in 0..<len(order):
+        let src = order[j]
+        if src >= 0 && src < len(base.codepoints):
+            if src < len(base.chars):
+                add(out.chars, base.chars[src])
+            else:
+                add(out.chars, utfzhEncodeUtf8Codepoint(base.codepoints[src]))
+            add(out.codepoints, base.codepoints[src])
+    out.cpToIndex = []
+    cwBuildUtfZhIndex(out)
+    return out
+
+fn cliWriteUtfZhDict(path: str, dict: UtfZhDict): bool =
+    if len(path) == 0:
+        return true
+    var out = ""
+    for i in 0..<len(dict.codepoints):
+        let ch = if i < len(dict.chars): dict.chars[i] else: utfzhEncodeUtf8Codepoint(dict.codepoints[i])
+        out = out + intToStr(i) + "\t" + ch + "\t" + intToStr(dict.codepoints[i]) + "\t1\n"
+    os.writeFile(path, out)
+    return os.fileExists(path)
+
+fn cliWriteReport(path: str, inPath: str, outPath: str, result: UtfZhTranscodeResult,
+                  inputBytes: str, outputBytes: str, scalarCount: int32,
+                  dictOptimized: bool, dictPath: str): bool =
+    if len(path) == 0:
+        return true
+
+    var ascii: int32 = 0
+    var dict1: int32 = 0
+    var dict2: int32 = 0
+    var dict3: int32 = 0
+    var fallback4: int32 = 0
+    cliCountUtfZhBuckets(outputBytes, ascii, dict1, dict2, dict3, fallback4)
+
+    var report = ""
+    report = report + "ok=" + if result.ok: "true" else: "false"
+    report = report + "\n"
+    report = report + "input=" + inPath + "\n"
+    report = report + "output=" + outPath + "\n"
+    report = report + "detected=" + legacyEncodingLabel(result.detected) + "\n"
+    report = report + "error_count=" + intToStr(result.errorCount) + "\n"
+    report = report + "input_bytes=" + intToStr(len(inputBytes)) + "\n"
+    report = report + "output_bytes=" + intToStr(len(outputBytes)) + "\n"
+    if len(inputBytes) > 0:
+        report = report + "output_over_input_ratio=" + cliScaledRatioText(len(outputBytes), len(inputBytes)) + "\n"
+        let ratioPpm = (int64(len(outputBytes)) * int64(1000000)) / int64(len(inputBytes))
+        report = report + "output_over_input_ratio_ppm=" + intToStr(int32(ratioPpm)) + "\n"
+    report = report + "utfzh_ascii=" + intToStr(ascii) + "\n"
+    report = report + "utfzh_dict_1b=" + intToStr(dict1) + "\n"
+    report = report + "utfzh_dict_2b=" + intToStr(dict2) + "\n"
+    report = report + "utfzh_dict_3b=" + intToStr(dict3) + "\n"
+    report = report + "utfzh_fallback_4b=" + intToStr(fallback4) + "\n"
+    if scalarCount > 0:
+        report = report + "utfzh_avg_bytes_per_scalar=" + cliScaledRatioText(len(outputBytes), scalarCount) + "\n"
+        let avgPpm = (int64(len(outputBytes)) * int64(1000000)) / int64(scalarCount)
+        report = report + "utfzh_avg_bytes_per_scalar_ppm=" + intToStr(int32(avgPpm)) + "\n"
+    report = report + "dict_optimized=" + if dictOptimized: "true" else: "false"
+    report = report + "\n"
+    if dictOptimized && len(dictPath) > 0:
+        report = report + "dict_path=" + dictPath + "\n"
+
+    for idx in 0..<len(result.errors):
+        let err = result.errors[idx]
+        report = report + "error[" + intToStr(idx) + "]=" + intToStr(err.offset) + ":" + err.message + "\n"
+
+    os.writeFile(path, report)
+    return os.fileExists(path)
+
+fn cliFindSubstr(text: str, marker: str): int32 =
+    let n = len(text)
+    let m = len(marker)
+    if m <= 0 || n < m:
+        return -1
+
+    var i: int32 = 0
+    while i <= n - m:
+        var matched = true
+        var j: int32 = 0
+        while j < m:
+            if text[i + j] != marker[j]:
+                matched = false
+                break
+            j = j + 1
+        if matched:
+            return i
+        i = i + 1
+    return -1
+
+fn cliBaseName(path: str): str =
+    let n = len(path)
+    if n <= 0:
+        return ""
+
+    var idx = n - 1
+    while true:
+        if path[idx] == '/':
+            let start = idx + 1
+            return strings.sliceBytes(path, start, n - start)
+        if idx == 0:
+            break
+        idx = idx - 1
+    return path
+
+fn cliPkgRoot(): str =
+    let envRoot = os.getEnv("CW_IME_PKG_ROOT")
+    if len(envRoot) > 0:
+        return envRoot
+
+    let program = cliProgramName()
+    let marker = "/build/cangwu_ime/bin"
+    let pos = cliFindSubstr(program, marker)
+    if pos > 0:
+        return strings.sliceBytes(program, 0, pos)
+    return os.getCurrentDir()
+
+fn cliExec(command: str, workDir: str): int32 =
+    let options = os.processOptionMask(os.poStdErrToStdOut) | os.processOptionMask(os.poEvalCommand)
+    let result = os.execCmdEx(command, options, workDir)
+    let out = os.execCmdResultOutput(result)
+    if len(out) > 0:
+        echo out
+    return os.execCmdResultExitCode(result)
+
+fn cliCountLines(content: str): int32 =
+    if len(content) == 0:
+        return 0
+    var lines: int32 = 0
+    for idx in 0..<len(content):
+        if content[idx] == '\n':
+            lines = lines + 1
+    if content[len(content) - 1] != '\n':
+        lines = lines + 1
+    return lines
+
+fn cliTryParseEncoding(text: str, outEncoding: var LegacyEncoding): bool =
+    let norm = legacyNormalizeText(text)
+    if len(norm) == 0 || norm == "auto":
+        outEncoding = leAuto
+        return true
+    if norm == "utf8" || norm == "utf":
+        outEncoding = leUtf8
+        return true
+    if norm == "utf16" || norm == "utf16le":
+        outEncoding = leUtf16Le
+        return true
+    if norm == "utf16be":
+        outEncoding = leUtf16Be
+        return true
+    if norm == "gbk" || norm == "cp936":
+        outEncoding = leGbk
+        return true
+    if norm == "gb2312":
+        outEncoding = leGb2312
+        return true
+    return false
+
+fn cliParsePositiveInt(text: str, fallback: int32): int32 =
+    if len(text) == 0:
+        return fallback
+    var idx: int32 = 0
+    var value: int32 = 0
+    var saw = false
+    while idx < len(text):
+        let ch = text[idx]
+        if ch < '0' || ch > '9':
+            break
+        value = value * 10 + int32(ch) - int32('0')
+        saw = true
+        idx = idx + 1
+    if ! saw || value <= 0:
+        return fallback
+    return value
+
+fn cliLooksLikeValidUtf8(text: str): bool =
+    let total = len(text)
+    var idx: int32 = 0
+    while idx < total:
+        let packed = utfzhDecodeUtf8At(text, idx)
+        if packed <= 0:
+            return false
+        var step = utfzhPackUtf8Step(packed)
+        if step <= 0:
+            return false
+        idx = idx + step
+    return true
+
+fn cliTranscodeRun(inPath: str, outPath: str, source: LegacyEncoding, reportPath: str, dataRoot: str,
+                   optimizeDict: bool, dictOutPath: str): int32 =
+    cliDebug("transcode:start")
+    if len(inPath) == 0 || len(outPath) == 0:
+        return 31
+    if ! os.fileExists(inPath):
+        return 32
+
+    cliDebug("transcode:read-file")
+    let raw = os.readFile(inPath)
+    var effectiveSource = source
+    if effectiveSource == leAuto && cliLooksLikeValidUtf8(raw):
+        effectiveSource = leUtf8
+
+    var decoded: LegacyDecodeResult
+    if effectiveSource == leUtf8:
+        decoded.ok = true
+        decoded.textUtf8 = raw
+        decoded.detected = leUtf8
+        decoded.errorCount = 0
+        decoded.errors = []
+    else:
+        cliDebug("transcode:load-legacy")
+        let legacy = legacyLoadAssetsFor(effectiveSource, dataRoot)
+        decoded = legacyDecodeStrict(raw, effectiveSource, legacy)
+
+    cliDebug("transcode:load-dict")
+    let baseDict = cwLoadUtfZhDict(dataRoot)
+    var encodeDict = baseDict
+    var effectiveDictPath = dictOutPath
+    if optimizeDict:
+        encodeDict = cliBuildOptimizedDict(baseDict, decoded.textUtf8)
+        if len(effectiveDictPath) == 0:
+            effectiveDictPath = outPath + ".dict.tsv"
+        if ! cliWriteUtfZhDict(effectiveDictPath, encodeDict):
+            return 33
+
+    cliDebug("transcode:encode")
+    let chunkScalars = cliParsePositiveInt(os.getEnv("UTFZH_ENCODE_CHUNK_SCALARS"), 1024)
+    let encoded = utfZhEncodeStrictChunked(decoded.textUtf8, encodeDict, chunkScalars)
+    var result: UtfZhTranscodeResult
+    result.ok = decoded.ok && encoded.ok
+    result.bytes = encoded.bytes
+    result.detected = decoded.detected
+    result.errorCount = decoded.errorCount + encoded.errorCount
+    result.errors = []
+    for idx in 0..<len(decoded.errors):
+        var e: UtfZhError
+        e.offset = decoded.errors[idx].offset
+        e.message = "legacy: " + decoded.errors[idx].message
+        add(result.errors, e)
+    for idx in 0..<len(encoded.errors):
+        add(result.errors, encoded.errors[idx])
+
+    cliDebug("transcode:write-output")
+    os.writeFile(outPath, result.bytes)
+    if ! os.fileExists(outPath):
+        return 33
+    let scalarCount = legacyCountScalars(decoded.textUtf8)
+    cliDebug("transcode:write-report")
+    if ! cliWriteReport(reportPath, inPath, outPath, result, raw, result.bytes, scalarCount, optimizeDict, effectiveDictPath):
+        return 34
+    if ! result.ok:
+        return 35
+    cliDebug("transcode:ok")
+    return 0
+
+fn runConvert(startIndex: int32): int32 =
+    cliDebug("convert:start")
+    let pkgRoot = cliPkgRoot()
+    var inPath = ""
+    var outPath = ""
+    var fromText = "auto"
+    var reportPath = ""
+    var dictOutPath = ""
+    var dataRoot = os.joinPath(pkgRoot, "src/ime/data")
+    var engineText = "cheng"
+    var optimizeDict = false
+
+    let total = cliParamCount()
+    var idx = startIndex
+    while idx <= total:
+        let arg = cliParamStr(idx)
+        if arg == "--help" || arg == "-h":
+            cliConvertUsage()
+            return 0
+
+        if cliHasInlineFlag(arg, "--in"):
+            inPath = cliInlineFlagValue(arg, "--in")
+            idx = idx + 1
+            continue
+        if cliHasInlineFlag(arg, "--out"):
+            outPath = cliInlineFlagValue(arg, "--out")
+            idx = idx + 1
+            continue
+        if cliHasInlineFlag(arg, "--from"):
+            fromText = cliInlineFlagValue(arg, "--from")
+            idx = idx + 1
+            continue
+        if cliHasInlineFlag(arg, "--report"):
+            reportPath = cliInlineFlagValue(arg, "--report")
+            idx = idx + 1
+            continue
+        if cliHasInlineFlag(arg, "--data-root"):
+            dataRoot = cliInlineFlagValue(arg, "--data-root")
+            idx = idx + 1
+            continue
+        if cliHasInlineFlag(arg, "--engine"):
+            engineText = cliInlineFlagValue(arg, "--engine")
+            idx = idx + 1
+            continue
+        if arg == "--optimize-dict":
+            optimizeDict = true
+            idx = idx + 1
+            continue
+        if cliHasInlineFlag(arg, "--dict-out"):
+            dictOutPath = cliInlineFlagValue(arg, "--dict-out")
+            idx = idx + 1
+            continue
+
+        if arg == "--in" || arg == "--out" || arg == "--from" || arg == "--report" || arg == "--data-root" || arg == "--engine" || arg == "--dict-out":
+            if idx + 1 > total:
+                echo "[cangwu-ime-cli] missing value for " + arg
+                return 2
+            let value = cliParamStr(idx + 1)
+            if arg == "--in":
+                inPath = value
+            elif arg == "--out":
+                outPath = value
+            elif arg == "--from":
+                fromText = value
+            elif arg == "--report":
+                reportPath = value
+            elif arg == "--data-root":
+                dataRoot = value
+            elif arg == "--dict-out":
+                dictOutPath = value
+            else:
+                engineText = value
+            idx = idx + 2
+            continue
+
+        echo "[cangwu-ime-cli] unknown convert arg: " + arg
+        return 2
+
+    if len(inPath) == 0 || len(outPath) == 0:
+        cliConvertUsage()
+        return 2
+    if ! os.fileExists(inPath):
+        echo "[cangwu-ime-cli] missing input: " + inPath
+        return 2
+
+    cliDebug("convert:parsed")
+    var source = leAuto
+    if ! cliTryParseEncoding(fromText, source):
+        echo "[cangwu-ime-cli] invalid --from: " + fromText
+        return 2
+
+    var engineNorm = legacyNormalizeText(engineText)
+    if engineNorm == "auto":
+        engineNorm = "cheng"
+    if engineNorm != "cheng":
+        echo "[cangwu-ime-cli] invalid --engine: " + engineText + " (pure Cheng only)"
+        return 2
+
+    cliDebug("convert:run-transcode")
+    let inArg = inPath + ""
+    let outArg = outPath + ""
+    let reportArg = reportPath + ""
+    let sourceLabel = legacyEncodingLabel(source)
+
+    echo "[cangwu-ime-cli] convert"
+    echo "  in=" + inArg
+    echo "  out=" + outArg
+    echo "  from=" + sourceLabel
+    if len(reportArg) > 0:
+        echo "  report=" + reportArg
+
+    let rc = cliTranscodeRun(inArg, outArg, source, reportArg, dataRoot, optimizeDict, dictOutPath)
+    if rc != 0:
+        echo "[cangwu-ime-cli] conversion failed: rc=" + intToStr(rc)
+        return rc
+
+    echo "[cangwu-ime-cli] convert ok"
+    return 0
+
+fn runBuildAssets(startIndex: int32): int32 =
+    let pkgRoot = cliPkgRoot()
+    var outDir = os.joinPath(pkgRoot, "src/ime/data")
+    var python = "python3"
+    var skipInstall = false
+
+    let total = cliParamCount()
+    var idx = startIndex
+    while idx <= total:
+        let arg = cliParamStr(idx)
+        if arg == "--help" || arg == "-h":
+            cliBuildUsage()
+            return 0
+        if arg == "--skip-install":
+            skipInstall = true
+            idx = idx + 1
+            continue
+
+        if cliHasInlineFlag(arg, "--out-dir"):
+            outDir = cliInlineFlagValue(arg, "--out-dir")
+            idx = idx + 1
+            continue
+        if cliHasInlineFlag(arg, "--python"):
+            python = cliInlineFlagValue(arg, "--python")
+            idx = idx + 1
+            continue
+
+        if arg == "--out-dir" || arg == "--python":
+            if idx + 1 > total:
+                echo "[cangwu-ime-cli] missing value for " + arg
+                return 2
+            let value = cliParamStr(idx + 1)
+            if arg == "--out-dir":
+                outDir = value
+            else:
+                python = value
+            idx = idx + 2
+            continue
+
+        echo "[cangwu-ime-cli] unknown build-assets arg: " + arg
+        return 2
+
+    let gen = os.joinPath(pkgRoot, "src/ime/tools/gen_ime_assets.py")
+    let legacyGen = os.joinPath(pkgRoot, "src/ime/tools/gen_legacy_codec_assets.py")
+    if ! os.fileExists(gen):
+        echo "[cangwu-ime-cli] missing generator: " + gen
+        return 1
+    if ! os.fileExists(legacyGen):
+        echo "[cangwu-ime-cli] missing generator: " + legacyGen
+        return 1
+
+    let checkDepsCmd = python + " -c " + os.quoteShell("import rdata,pandas")
+    var rc = cliExec(checkDepsCmd, "")
+    if rc != 0:
+        if skipInstall:
+            echo "[cangwu-ime-cli] python deps missing and --skip-install is set"
+            return 1
+        echo "[cangwu-ime-cli] installing python deps: rdata pandas"
+        rc = cliExec(python + " -m pip install --user rdata pandas", "")
+        if rc != 0:
+            echo "[cangwu-ime-cli] dependency install failed"
+            return rc
+
+    rc = cliExec(python + " " + os.quoteShell(gen) + " --out-dir " + os.quoteShell(outDir), "")
+    if rc != 0:
+        echo "[cangwu-ime-cli] gen_ime_assets failed"
+        return rc
+    rc = cliExec(python + " " + os.quoteShell(legacyGen) + " --out-dir " + os.quoteShell(outDir), "")
+    if rc != 0:
+        echo "[cangwu-ime-cli] gen_legacy_codec_assets failed"
+        return rc
+
+    let dictFile = os.joinPath(outDir, "utfzh_dict_v1.tsv")
+    let legacyGbkFile = os.joinPath(outDir, "legacy_gbk_to_u_v1.tsv")
+    let legacyGb2312File = os.joinPath(outDir, "legacy_gb2312_to_u_v1.tsv")
+    if ! os.fileExists(dictFile):
+        echo "[cangwu-ime-cli] missing dict output: " + dictFile
+        return 1
+    if ! os.fileExists(legacyGbkFile) || ! os.fileExists(legacyGb2312File):
+        echo "[cangwu-ime-cli] missing legacy map outputs"
+        return 1
+
+    let dictLines = cliCountLines(os.readFile(dictFile))
+    let gbkLines = cliCountLines(os.readFile(legacyGbkFile))
+    let gb2312Lines = cliCountLines(os.readFile(legacyGb2312File))
+    if dictLines != 9698:
+        echo "[cangwu-ime-cli] dict line count mismatch: " + intToStr(dictLines) + " (want 9698)"
+        return 1
+    if gbkLines <= 0 || gb2312Lines <= 0:
+        echo "[cangwu-ime-cli] legacy map is empty"
+        return 1
+
+    echo "[cangwu-ime-cli] build-assets ok"
+    echo "  out=" + outDir
+    echo "  dict_lines=" + intToStr(dictLines)
+    echo "  gbk_lines=" + intToStr(gbkLines)
+    echo "  gb2312_lines=" + intToStr(gb2312Lines)
+    return 0
+
+fn runVerify(startIndex: int32): int32 =
+    var implPath = os.joinPath(cliPkgRoot(), "src/scripts/verify_cangwu_ime_impl.sh")
+    var passthrough: str[] = []
+
+    let total = cliParamCount()
+    var idx = startIndex
+    var literal = false
+    while idx <= total:
+        let arg = cliParamStr(idx)
+        if ! literal && (arg == "--help" || arg == "-h"):
+            cliVerifyUsage()
+            return 0
+        if ! literal && arg == "--":
+            literal = true
+            idx = idx + 1
+            continue
+
+        if ! literal:
+            if cliHasInlineFlag(arg, "--impl"):
+                implPath = cliInlineFlagValue(arg, "--impl")
+                idx = idx + 1
+                continue
+            if arg == "--impl":
+                if idx + 1 > total:
+                    echo "[cangwu-ime-cli] missing value for --impl"
+                    return 2
+                implPath = cliParamStr(idx + 1)
+                idx = idx + 2
+                continue
+        add(passthrough, arg)
+        idx = idx + 1
+
+    if ! os.fileExists(implPath):
+        echo "[cangwu-ime-cli] missing verify implementation script: " + implPath
+        return 2
+
+    var command = "bash " + os.quoteShell(implPath)
+    for i in 0..<len(passthrough):
+        command = command + " " + os.quoteShell(passthrough[i])
+
+    return cliExec(command, "")
+
+fn runCli(): int32 =
+    cliInitCmdline()
+
+    let invoked = cliBaseName(cliProgramName())
+    if invoked == "convert_to_utfzh":
+        return runConvert(1)
+    if invoked == "build_cangwu_assets":
+        return runBuildAssets(1)
+    if invoked == "verify_cangwu_ime":
+        return runVerify(1)
+
+    if cliParamCount() <= 0:
+        cliUsage()
+        return 2
+
+    let subcmd = cliParamStr(1)
+    if subcmd == "help" || subcmd == "--help" || subcmd == "-h":
+        cliUsage()
+        return 0
+    if subcmd == "convert":
+        return runConvert(2)
+    if subcmd == "build-assets":
+        return runBuildAssets(2)
+    if subcmd == "verify":
+        return runVerify(2)
+
+    echo "[cangwu-ime-cli] unknown subcommand: " + subcmd
+    cliUsage()
+    return 2
+
+@ exportc("cw_cli_entry")
+fn cwCliEntry(): int32 =
+    return runCli()

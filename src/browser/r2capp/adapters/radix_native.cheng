@@ -1,0 +1,11 @@
+import cheng/gui/browser/r2capp/react_compat
+
+fn adapterId(): str =
+    return "@radix-ui/native"
+
+fn primitive(componentName, propsJson: str, children: react_compat.ReactNode[]): react_compat.ReactNode =
+    let tag = "radix-" + componentName
+    return react_compat.createElement(tag, propsJson, children)
+
+fn slot(children: react_compat.ReactNode[]): react_compat.ReactNode =
+    return react_compat.createElement("radix-slot", "{}", children)

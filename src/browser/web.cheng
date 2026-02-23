@@ -88,6 +88,13 @@ type
         r2cImePreedit: str
         r2cImeCandidates: str[]
         r2cImeCommitted: str
+        r2cEditorBooted: bool
+        r2cEditorEnabled: bool
+        r2cEditorFocused: bool
+        r2cEditorText: str
+        r2cEditorCursor: int32
+        r2cEditorLastBytes: int32
+        r2cEditorStatus: str
         loading: bool
         lastError: str
         hostHandle: int64
@@ -632,6 +639,13 @@ fn createPage(ctx: BrowserContext, options: types.PageOptions): BrowserPage =
     page.r2cImePreedit = ""
     setLen[str](&page.r2cImeCandidates, 0)
     page.r2cImeCommitted = ""
+    page.r2cEditorBooted = false
+    page.r2cEditorEnabled = false
+    page.r2cEditorFocused = false
+    page.r2cEditorText = ""
+    page.r2cEditorCursor = int32(0)
+    page.r2cEditorLastBytes = int32(0)
+    page.r2cEditorStatus = ""
     page.loading = false
     page.lastError = ""
     page.hostHandle = host.webHostCreate(page.currentUrl, "")

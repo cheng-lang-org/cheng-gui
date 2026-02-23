@@ -1,0 +1,310 @@
+# Cheng Mobile UI: minimal scroll gestures + inertial physics.
+#
+# Design goals:
+# - Pure Cheng (no std/os, no std/times) to keep mobile export stable.
+# - App owns layout + contentHeight/viewportHeight; this module owns gesture feel.
+
+type
+    ScrollMove =
+        dragging: bool
+        dragStarted: bool
+        hasDelta: bool
+        deltaY: float64
+
+    ScrollGesture[T] =
+        pointerDown: bool
+        activePointerId: int32
+        downX: float64
+        downY: float64
+        lastX: float64
+        lastY: float64
+        hasTime: bool
+        lastTimeMs: int64
+        lastDtMs: int64
+        dragging: bool
+        hasTarget: bool
+        target: T
+        velocityY: float64
+        carryY: float64
+
+fn absF64(v: float64): float64 =
+    if v < 0.0:
+        return -v
+    return v
+
+fn touchSlopPx(scale: float64): float64 =
+    return float64(int32(8.0 * scale + 0.5))
+
+fn tapSlopPx(scale: float64): float64 =
+    return float64(int32(12.0 * scale + 0.5))
+
+fn initScrollGesture[T](g: var ScrollGesture[T], noneTarget: T) =
+    g.pointerDown = false
+    g.activePointerId = -1
+    g.downX = 0.0
+    g.downY = 0.0
+    g.lastX = 0.0
+    g.lastY = 0.0
+    g.hasTime = false
+    g.lastTimeMs = 0
+    g.lastDtMs = 16
+    g.dragging = false
+    g.hasTarget = false
+    g.target = noneTarget
+    g.velocityY = 0.0
+    g.carryY = 0.0
+
+fn setTarget[T](g: var ScrollGesture[T], target: T) =
+    g.hasTarget = true
+    g.target = target
+
+fn clearTarget[T](g: var ScrollGesture[T], noneTarget: T) =
+    g.hasTarget = false
+    g.target = noneTarget
+    g.velocityY = 0.0
+    g.carryY = 0.0
+
+fn stopInertia[T](g: var ScrollGesture[T]) =
+    g.velocityY = 0.0
+    g.carryY = 0.0
+
+fn onPointerDown[T](g: var ScrollGesture[T], x, y: float64, target: T) =
+    g.pointerDown = true
+    g.activePointerId = -1
+    g.downX = x
+    g.downY = y
+    g.lastX = x
+    g.lastY = y
+    g.hasTime = false
+    g.lastTimeMs = 0
+    g.lastDtMs = 16
+    g.dragging = false
+    g.hasTarget = true
+    g.target = target
+    g.velocityY = 0.0
+    g.carryY = 0.0
+
+fn onPointerDownNoTarget[T](g: var ScrollGesture[T], x, y: float64, noneTarget: T) =
+    g.pointerDown = true
+    g.activePointerId = -1
+    g.downX = x
+    g.downY = y
+    g.lastX = x
+    g.lastY = y
+    g.hasTime = false
+    g.lastTimeMs = 0
+    g.lastDtMs = 16
+    g.dragging = false
+    g.hasTarget = false
+    g.target = noneTarget
+    g.velocityY = 0.0
+    g.carryY = 0.0
+
+fn onPointerDownEx[T](g: var ScrollGesture[T], pointerId: int32, timeMs: int64, x, y: float64, target: T) =
+    g.pointerDown = true
+    g.activePointerId = pointerId
+    g.downX = x
+    g.downY = y
+    g.lastX = x
+    g.lastY = y
+    g.hasTime = timeMs > 0
+    g.lastTimeMs = timeMs
+    g.lastDtMs = 16
+    g.dragging = false
+    g.hasTarget = true
+    g.target = target
+    g.velocityY = 0.0
+    g.carryY = 0.0
+
+fn onPointerDownNoTargetEx[T](g: var ScrollGesture[T], pointerId: int32, timeMs: int64, x, y: float64, noneTarget: T) =
+    g.pointerDown = true
+    g.activePointerId = pointerId
+    g.downX = x
+    g.downY = y
+    g.lastX = x
+    g.lastY = y
+    g.hasTime = timeMs > 0
+    g.lastTimeMs = timeMs
+    g.lastDtMs = 16
+    g.dragging = false
+    g.hasTarget = false
+    g.target = noneTarget
+    g.velocityY = 0.0
+    g.carryY = 0.0
+
+fn onPointerMove[T](g: var ScrollGesture[T], x, y: float64, scale: float64): ScrollMove =
+    var out: ScrollMove
+    out.dragging = false
+    out.dragStarted = false
+    out.hasDelta = false
+    out.deltaY = 0.0
+
+    if !g.pointerDown:
+        return out
+
+    let dyStep: float64 = y - g.lastY
+    let dxTotal: float64 = x - g.downX
+    let dyTotal: float64 = y - g.downY
+
+    let wasDragging: bool = g.dragging
+    if !g.dragging:
+        let threshold: float64 = touchSlopPx(scale)
+        # Prefer vertical scroll: diagonal/horizontal movement won't trigger drag early.
+        if absF64(dyTotal) > threshold && absF64(dyTotal) >= absF64(dxTotal):
+            g.dragging = true
+
+    out.dragging = g.dragging
+    out.dragStarted = (!wasDragging) && g.dragging
+
+    if g.dragging:
+        # Finger moves down -> content moves down -> scrollY should decrease.
+        let rawDelta: float64 = -dyStep
+
+        # Keep sub-pixel deltas stable for slow drags/flings (NDK gives float coords).
+        let total: float64 = rawDelta + g.carryY
+        let deltaI: int32 = int32(total)
+        g.carryY = total - float64(deltaI)
+
+        out.deltaY = float64(deltaI)
+        out.hasDelta = deltaI != 0
+
+    g.lastX = x
+    g.lastY = y
+    return out
+
+fn onPointerMoveEx[T](g: var ScrollGesture[T], pointerId: int32, timeMs: int64, x, y: float64, scale: float64): ScrollMove =
+    var out: ScrollMove
+    out.dragging = false
+    out.dragStarted = false
+    out.hasDelta = false
+    out.deltaY = 0.0
+
+    if !g.pointerDown:
+        return out
+    if g.activePointerId >= 0 && pointerId != g.activePointerId:
+        return out
+    if g.activePointerId < 0:
+        g.activePointerId = pointerId
+
+    var dtMs: int64 = 16
+    if timeMs > 0:
+        if g.hasTime:
+            dtMs = timeMs - g.lastTimeMs
+            if dtMs < 1:
+                dtMs = 1
+        else:
+            g.hasTime = true
+        g.lastTimeMs = timeMs
+    g.lastDtMs = dtMs
+
+    let dyStep: float64 = y - g.lastY
+    let dxTotal: float64 = x - g.downX
+    let dyTotal: float64 = y - g.downY
+
+    let wasDragging: bool = g.dragging
+    if !g.dragging:
+        let threshold: float64 = touchSlopPx(scale)
+        # Prefer vertical scroll: diagonal/horizontal movement won't trigger drag early.
+        if absF64(dyTotal) > threshold && absF64(dyTotal) >= absF64(dxTotal):
+            g.dragging = true
+
+    out.dragging = g.dragging
+    out.dragStarted = (!wasDragging) && g.dragging
+
+    if g.dragging:
+        # Finger moves down -> content moves down -> scrollY should decrease.
+        let rawDelta: float64 = -dyStep
+
+        # Keep sub-pixel deltas stable for slow drags/flings (NDK gives float coords).
+        let total: float64 = rawDelta + g.carryY
+        let deltaI: int32 = int32(total)
+        g.carryY = total - float64(deltaI)
+
+        out.deltaY = float64(deltaI)
+        out.hasDelta = deltaI != 0
+
+    g.lastX = x
+    g.lastY = y
+    return out
+
+fn onScrollApplied[T](g: var ScrollGesture[T], deltaY: float64, moved: bool) =
+    if !moved:
+        if g.dragging:
+            g.velocityY = 0.0
+        return
+    var dt: float64 = float64(g.lastDtMs)
+    if dt < 1.0:
+        dt = 1.0
+    let vFrame: float64 = deltaY * (16.0 / dt)
+    g.velocityY = g.velocityY * 0.6 + vFrame * 0.4
+
+fn onPointerUp[T](g: var ScrollGesture[T], x, y: float64, scale: float64): bool =
+    if !g.pointerDown:
+        return false
+    let dx: float64 = x - g.downX
+    let dy: float64 = y - g.downY
+    let threshold: float64 = tapSlopPx(scale)
+
+    let isTap: bool = (!g.dragging) && absF64(dx) <= threshold && absF64(dy) <= threshold
+
+    if g.dragging && absF64(g.velocityY) < 0.1:
+        g.velocityY = 0.0
+
+    g.pointerDown = false
+    g.dragging = false
+    g.activePointerId = -1
+    g.hasTime = false
+    return isTap
+
+fn onPointerUpEx[T](g: var ScrollGesture[T], pointerId: int32, timeMs: int64, x, y: float64, scale: float64): bool =
+    if !g.pointerDown:
+        return false
+    if g.activePointerId >= 0 && pointerId != g.activePointerId:
+        return false
+    let dx: float64 = x - g.downX
+    let dy: float64 = y - g.downY
+    let threshold: float64 = tapSlopPx(scale)
+
+    let isTap: bool = (!g.dragging) && absF64(dx) <= threshold && absF64(dy) <= threshold
+
+    if g.dragging && absF64(g.velocityY) < 0.1:
+        g.velocityY = 0.0
+
+    g.pointerDown = false
+    g.dragging = false
+    g.activePointerId = -1
+    g.hasTime = false
+    timeMs
+    return isTap
+
+fn inertiaActive[T](g: ScrollGesture[T]): bool =
+    if g.pointerDown || !g.hasTarget:
+        return false
+    return absF64(g.velocityY) >= 0.25
+
+fn inertiaTakeDelta[T](g: var ScrollGesture[T]): float64 =
+    if g.pointerDown || !g.hasTarget:
+        return 0.0
+    let v: float64 = g.velocityY
+    if absF64(v) < 0.25:
+        return 0.0
+    let total: float64 = v + g.carryY
+    let deltaI: int32 = int32(total)
+    g.carryY = total - float64(deltaI)
+    return float64(deltaI)
+
+fn inertiaCommit[T](g: var ScrollGesture[T], scrollMoved: bool): bool =
+    if !g.hasTarget:
+        stopInertia(g)
+        return false
+    if absF64(g.velocityY) < 0.25:
+        stopInertia(g)
+        return false
+    if !scrollMoved:
+        stopInertia(g)
+        return false
+    g.velocityY = g.velocityY * 0.92
+    if absF64(g.velocityY) < 0.25:
+        stopInertia(g)
+        return false
+    return true

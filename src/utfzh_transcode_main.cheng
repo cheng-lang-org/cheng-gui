@@ -1,54 +1,13 @@
-import std/os
-import cheng/gui/ime/cangwu_assets_loader
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/legacy_assets_loader
-import cheng/gui/ime/legacy_codec
-import cheng/gui/ime/legacy_types
+import cheng/gui/ime/utfzh_transcode_entry
 
-fn cExit(code: int32): int32 @ importc("exit")
-
-fn writeReport(path: str, inPath: str, outPath: str, result: UtfZhTranscodeResult): bool =
-    if len(path) == 0:
-        return true
-    var report = ""
-    report = report + "ok=" + if result.ok: "true" else: "false"
-    report = report + "\n"
-    report = report + "input=" + inPath + "\n"
-    report = report + "output=" + outPath + "\n"
-    report = report + "detected=" + legacyEncodingLabel(result.detected) + "\n"
-    report = report + "error_count=" + intToStr(result.errorCount) + "\n"
-    for idx in 0..<len(result.errors):
-        let err = result.errors[idx]
-        report = report + "error[" + intToStr(idx) + "]=" + intToStr(err.offset) + ":" + err.message + "\n"
-    writeFile(path, report)
-    return fileExists(path)
+@importc("__cheng_global_init")
+fn chengGlobalInit()
+@importc("__cheng_setCmdLine")
+fn chengSetCmdLine(argc: int32, argv: void*)
 
 fn main(): int32 =
-    let inPath = getEnv("CHENG_UTFZH_IN")
-    let outPath = getEnv("CHENG_UTFZH_OUT")
-    let fromText = getEnv("CHENG_UTFZH_FROM")
-    let reportPath = getEnv("CHENG_UTFZH_REPORT")
+    chengGlobalInit()
+    chengSetCmdLine(0, nil)
+    return utfzhTranscodeEnvRun()
 
-    if len(inPath) == 0 || len(outPath) == 0:
-        return 31
-    if ! fileExists(inPath):
-        return 32
-
-    let source = legacyEncodingFromText(fromText, leAuto)
-    let raw = readFile(inPath)
-
-    let dict = cwLoadUtfZhDict("src/ime/data")
-    let legacyAssets = legacyLoadAssets("src/ime/data")
-    let result = utfZhTranscodeStrict(raw, source, dict, legacyAssets)
-
-    writeFile(outPath, result.bytes)
-    if ! fileExists(outPath):
-        return 33
-    if ! writeReport(reportPath, inPath, outPath, result):
-        return 34
-    if ! result.ok:
-        return 35
-    return 0
-
-let rc = main()
-cExit(rc)
+main()

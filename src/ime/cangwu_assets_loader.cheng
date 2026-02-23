@@ -113,10 +113,11 @@ fn cwParseUtfZhDict(path: str): UtfZhDict =
     if ! fileExists(path):
         return dict
     let content = readFile(path)
+    let total = len(content)
     var lineStart: int32 = 0
     var idx: int32 = 0
-    while idx <= len(content):
-        if idx == len(content) || content[idx] == '\n':
+    while idx <= total:
+        if idx == total || content[idx] == '\n':
             let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
             if len(clean) > 0 && clean[0] != '#':
                 let cols = cwSplitTsvLine(clean)
@@ -134,15 +135,39 @@ fn cwParseUtfZhDict(path: str): UtfZhDict =
     cwBuildUtfZhIndex(dict)
     return dict
 
+fn cwParseUtfZhDictNoMap(path: str): UtfZhDict =
+    var dict: UtfZhDict
+    dict.cpToIndex = []
+    if ! fileExists(path):
+        return dict
+    let content = readFile(path)
+    let total = len(content)
+    var lineStart: int32 = 0
+    var idx: int32 = 0
+    while idx <= total:
+        if idx == total || content[idx] == '\n':
+            let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
+            if len(clean) > 0 && clean[0] != '#':
+                let cols = cwSplitTsvLine(clean)
+                if len(cols) >= 3:
+                    let ch = cols[1]
+                    let cp64 = cwParseInt64(cols[2])
+                    add(dict.chars, ch)
+                    add(dict.codepoints, int32(cp64))
+            lineStart = idx + 1
+        idx = idx + 1
+    return dict
+
 fn cwParseSingles(path: str): CwSingleEntry[] =
     var out: CwSingleEntry[]
     if ! fileExists(path):
         return out
     let content = readFile(path)
+    let total = len(content)
     var lineStart: int32 = 0
     var idx: int32 = 0
-    while idx <= len(content):
-        if idx == len(content) || content[idx] == '\n':
+    while idx <= total:
+        if idx == total || content[idx] == '\n':
             let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
             if len(clean) > 0 && clean[0] != '#':
                 let cols = cwSplitTsvLine(clean)
@@ -161,14 +186,15 @@ fn cwParseSingles(path: str): CwSingleEntry[] =
 
 fn cwParsePhrases(path: str): CwPhraseEntry[] =
     var out: CwPhraseEntry[]
-    let limit = cwParseInt32(getEnv("CHENG_CW_IME_MAX_PHRASES"), 0)
+    let limit = cwParseInt32(getEnv("CW_IME_MAX_PHRASES"), 0)
     if ! fileExists(path):
         return out
     let content = readFile(path)
+    let total = len(content)
     var lineStart: int32 = 0
     var idx: int32 = 0
-    while idx <= len(content):
-        if idx == len(content) || content[idx] == '\n':
+    while idx <= total:
+        if idx == total || content[idx] == '\n':
             let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
             if len(clean) > 0 && clean[0] != '#':
                 let cols = cwSplitTsvLine(clean)
@@ -186,14 +212,15 @@ fn cwParsePhrases(path: str): CwPhraseEntry[] =
 
 fn cwParseReverse(path: str): CwReverseEntry[] =
     var out: CwReverseEntry[]
-    let limit = cwParseInt32(getEnv("CHENG_CW_IME_MAX_REVERSE"), 0)
+    let limit = cwParseInt32(getEnv("CW_IME_MAX_REVERSE"), 0)
     if ! fileExists(path):
         return out
     let content = readFile(path)
+    let total = len(content)
     var lineStart: int32 = 0
     var idx: int32 = 0
-    while idx <= len(content):
-        if idx == len(content) || content[idx] == '\n':
+    while idx <= total:
+        if idx == total || content[idx] == '\n':
             let clean = cwTrimLine(cwSliceRange(content, lineStart, idx))
             if len(clean) > 0 && clean[0] != '#':
                 let cols = cwSplitTsvLine(clean)
@@ -233,4 +260,4 @@ fn cwLoadAssets(dataRoot: str): CwAssets =
 
 fn cwLoadUtfZhDict(dataRoot: str): UtfZhDict =
     let dictPath = cwDataPath(dataRoot, "utfzh_dict_v1.tsv")
-    return cwParseUtfZhDict(dictPath)
+    return cwParseUtfZhDictNoMap(dictPath)

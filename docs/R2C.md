@@ -16,9 +16,9 @@
 - 扩展内部稳定接口：
   - `/Users/lbcheng/.cheng-packages/cheng-gui/src/platform/native_sys_impl.cheng` 新增 `surfaceReadbackRgba(surface: SurfaceHandle, outPath: str): bool`。
   - `/Users/lbcheng/.cheng-packages/cheng-gui/src/r2c_app_desktop_main.cheng` 新增环境变量：
-    - `CHENG_R2C_APP_FRAME_RGBA_OUT`
-    - `CHENG_R2C_APP_ROUTE_STATE_OUT`
-    - `CHENG_R2C_APP_EVENT_MATRIX`
+    - `R2C_APP_FRAME_RGBA_OUT`
+    - `R2C_APP_ROUTE_STATE_OUT`
+    - `R2C_APP_EVENT_MATRIX`
 - 扩展编译报告类型：
   - `/Users/lbcheng/.cheng-packages/cheng-gui/src/tools/r2c_aot/types.cheng` 的 `R2cCompileReport` 新增：
     - `fullRouteStatesPath`
@@ -147,7 +147,7 @@
 
 ## 交付命令（单入口）
 - 一次性总门禁：
-  - `CHENG_R2C_REAL_PROJECT=/Users/lbcheng/UniMaker/ClaudeDesign CHENG_R2C_REAL_ENTRY=/app/main.tsx /Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_production_closed_loop.sh`
+  - `R2C_REAL_PROJECT=/Users/lbcheng/UniMaker/ClaudeDesign R2C_REAL_ENTRY=/app/main.tsx /Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_production_closed_loop.sh`
 - 单独全路由全像素门禁：
   - `/Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_claude_fullroute_visual_pixel.sh`
 

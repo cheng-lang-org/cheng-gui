@@ -31,7 +31,7 @@ bash /Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_doudizhu_closed
 如需在链接后额外做运行时 smoke（会短暂拉起窗口），先设置：
 
 ```bash
-export CHENG_EXAMPLES_ENABLE_RUNTIME_SMOKE=1
+export EXAMPLES_ENABLE_RUNTIME_SMOKE=1
 ```
 
 可选双进程启动 smoke：
@@ -69,13 +69,13 @@ bash /Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/run_examples_games.sh 
 默认真实网络：
 
 ```bash
-export CHENG_GAMES_P2P_MODE=real
-export CHENG_GAMES_P2P_ALLOW_MOCK_FALLBACK=1
+export GAMES_P2P_MODE=real
+export GAMES_P2P_ALLOW_MOCK_FALLBACK=1
 ```
 
 强制 mock：
 
 ```bash
-export CHENG_GAMES_P2P_MODE=mock
-export CHENG_GAMES_P2P_ALLOW_MOCK_FALLBACK=1
+export GAMES_P2P_MODE=mock
+export GAMES_P2P_ALLOW_MOCK_FALLBACK=1
 ```

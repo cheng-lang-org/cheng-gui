@@ -1,0 +1,745 @@
+import std/os
+import cheng/gui/browser/web
+import cheng/gui/browser/r2capp/utfzh_bridge
+import cheng/gui/browser/r2capp/ime_bridge
+import cheng/gui/render/drawlist_ir as drawir
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cLt(a: char, b: char): bool =
+    return int32(a) < int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn safeLen(text: str): int32 =
+    if text == nil:
+        return int32(0)
+    return len(text)
+
+fn i32Text(value: int32): str =
+    if value == int32(0):
+        return "0"
+    var neg = false
+    var n = value
+    if n < int32(0):
+        neg = true
+        n = -n
+    var out: str = ""
+    while n > int32(0):
+        let digit = n % int32(10)
+        out = charToStr(char(int32('0') + digit)) + out
+        n = n / int32(10)
+    if neg:
+        out = "-" + out
+    return out
+
+fn boolText(value: bool): str =
+    if value:
+        return "true"
+    return "false"
+
+fn maxInt(a, b: int32): int32 =
+    if a >= b:
+        return a
+    return b
+
+fn minInt(a, b: int32): int32 =
+    if a <= b:
+        return a
+    return b
+
+fn lowerAsciiChar(ch: char): char =
+    if cGe(ch, 'A') && cLe(ch, 'Z'):
+        return char(int32(ch) + int32(32))
+    return ch
+
+fn lowerAscii(text: str): str =
+    if safeLen(text) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < safeLen(text):
+        out = out + charToStr(lowerAsciiChar(text[idx]))
+        idx = idx + int32(1)
+    return out
+
+fn envEnabled(name: str): bool =
+    let raw = lowerAscii(os.getEnv(name))
+    if raw == "1" || raw == "true" || raw == "yes" || raw == "on":
+        return true
+    if raw == "0" || raw == "false" || raw == "no" || raw == "off":
+        return false
+    return false
+
+fn utf8Byte(ch: char): int32 =
+    var code = int32(ch)
+    if code < int32(0):
+        code = code + int32(256)
+    return code
+
+fn utf8Trail(b: int32): bool =
+    return b >= int32(0x80) && b <= int32(0xBF)
+
+fn utf8StepAt(text: str, offset: int32): int32 =
+    if offset < int32(0) || offset >= safeLen(text):
+        return int32(1)
+    let b0 = utf8Byte(text[offset])
+    if b0 < int32(0x80):
+        return int32(1)
+    if b0 >= int32(0xC2) && b0 <= int32(0xDF):
+        if offset + int32(1) >= safeLen(text):
+            return int32(1)
+        if ! utf8Trail(utf8Byte(text[offset + int32(1)])):
+            return int32(1)
+        return int32(2)
+    if b0 >= int32(0xE0) && b0 <= int32(0xEF):
+        if offset + int32(2) >= safeLen(text):
+            return int32(1)
+        if ! utf8Trail(utf8Byte(text[offset + int32(1)])):
+            return int32(1)
+        if ! utf8Trail(utf8Byte(text[offset + int32(2)])):
+            return int32(1)
+        return int32(3)
+    if b0 >= int32(0xF0) && b0 <= int32(0xF4):
+        if offset + int32(3) >= safeLen(text):
+            return int32(1)
+        if ! utf8Trail(utf8Byte(text[offset + int32(1)])):
+            return int32(1)
+        if ! utf8Trail(utf8Byte(text[offset + int32(2)])):
+            return int32(1)
+        if ! utf8Trail(utf8Byte(text[offset + int32(3)])):
+            return int32(1)
+        return int32(4)
+    return int32(1)
+
+fn alignUtf8Boundary(text: str, pos: int32): int32 =
+    if pos <= int32(0):
+        return int32(0)
+    let total = safeLen(text)
+    if pos >= total:
+        return total
+    var idx: int32 = int32(0)
+    var prev: int32 = int32(0)
+    while idx < total:
+        if idx == pos:
+            return idx
+        if idx > pos:
+            return prev
+        prev = idx
+        var step = utf8StepAt(text, idx)
+        if step <= int32(0):
+            step = int32(1)
+        idx = idx + step
+    return total
+
+fn prevUtf8Start(text: str, cursor: int32): int32 =
+    let total = safeLen(text)
+    if total <= int32(0) || cursor <= int32(0):
+        return int32(0)
+    var idx: int32 = int32(0)
+    var prev: int32 = int32(0)
+    let stop = minInt(cursor, total)
+    while idx < stop:
+        prev = idx
+        var step = utf8StepAt(text, idx)
+        if step <= int32(0):
+            step = int32(1)
+        idx = idx + step
+        if idx >= stop:
+            break
+    return prev
+
+fn payloadValue(payload: str, key: str): str =
+    if safeLen(payload) <= int32(0) || safeLen(key) <= int32(0):
+        return ""
+    let pattern = key + "="
+    let pLen = safeLen(pattern)
+    var idx: int32 = int32(0)
+    while idx + pLen <= safeLen(payload):
+        var ok = true
+        var j: int32 = int32(0)
+        while j < pLen:
+            if cNe(payload[idx + j], pattern[j]):
+                ok = false
+                break
+            j = j + int32(1)
+        if ok:
+            var end = idx + pLen
+            while end < safeLen(payload):
+                if cEq(payload[end], ';') || cEq(payload[end], '\n'):
+                    break
+                end = end + int32(1)
+            return payload[idx + pLen..<end]
+        idx = idx + int32(1)
+    return ""
+
+fn parsePayloadI32(payload: str, key: str, fallback: int32): int32 =
+    let text = payloadValue(payload, key)
+    if safeLen(text) <= int32(0):
+        return fallback
+    var idx: int32 = int32(0)
+    var sign: int32 = int32(1)
+    if cEq(text[0], '-'):
+        sign = int32(-1)
+        idx = idx + int32(1)
+    var out: int32 = int32(0)
+    var saw = false
+    while idx < safeLen(text):
+        let ch = text[idx]
+        if cGe(ch, '0') && cLe(ch, '9'):
+            out = out * int32(10) + int32(ch) - int32('0')
+            saw = true
+            idx = idx + int32(1)
+        else:
+            return fallback
+    if ! saw:
+        return fallback
+    return out * sign
+
+fn parsePayloadBool(payload: str, key: str, fallback: bool): bool =
+    let raw = lowerAscii(payloadValue(payload, key))
+    if safeLen(raw) <= int32(0):
+        return fallback
+    if raw == "1" || raw == "true" || raw == "yes" || raw == "on":
+        return true
+    if raw == "0" || raw == "false" || raw == "no" || raw == "off":
+        return false
+    return fallback
+
+fn hexValue(ch: char): int32 =
+    if cGe(ch, '0') && cLe(ch, '9'):
+        return int32(ch) - int32('0')
+    if cGe(ch, 'a') && cLe(ch, 'f'):
+        return int32(ch) - int32('a') + int32(10)
+    if cGe(ch, 'A') && cLe(ch, 'F'):
+        return int32(ch) - int32('A') + int32(10)
+    return int32(-1)
+
+fn decodeHexText(value: str): str =
+    if safeLen(value) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx + int32(1) < safeLen(value):
+        let hi = hexValue(value[idx])
+        let lo = hexValue(value[idx + int32(1)])
+        if hi < int32(0) || lo < int32(0):
+            return ""
+        out = out + charToStr(char(hi * int32(16) + lo))
+        idx = idx + int32(2)
+    if idx < safeLen(value):
+        return ""
+    return out
+
+fn utf8FromCodepoint(cp: int32): str =
+    if cp < int32(0x80):
+        return charToStr(char(cp))
+    if cp < int32(0x800):
+        let b1 = int32(0xC0) + (cp / int32(64))
+        let b2 = int32(0x80) + (cp % int32(64))
+        return charToStr(char(b1)) + charToStr(char(b2))
+    if cp < int32(0x10000):
+        let b1 = int32(0xE0) + (cp / int32(4096))
+        let remain = cp % int32(4096)
+        let b2 = int32(0x80) + (remain / int32(64))
+        let b3 = int32(0x80) + (remain % int32(64))
+        return charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3))
+    let b1 = int32(0xF0) + (cp / int32(262144))
+    let remainA = cp % int32(262144)
+    let b2 = int32(0x80) + (remainA / int32(4096))
+    let remainB = remainA % int32(4096)
+    let b3 = int32(0x80) + (remainB / int32(64))
+    let b4 = int32(0x80) + (remainB % int32(64))
+    return charToStr(char(b1)) + charToStr(char(b2)) + charToStr(char(b3)) + charToStr(char(b4))
+
+fn parseCodepointToken(token: str, fallback: int32): int32 =
+    if safeLen(token) <= int32(0):
+        return fallback
+    var idx: int32 = int32(0)
+    var value: int32 = int32(0)
+    var saw = false
+    while idx < safeLen(token):
+        let ch = token[idx]
+        if cGe(ch, '0') && cLe(ch, '9'):
+            value = value * int32(10) + int32(ch) - int32('0')
+            saw = true
+            idx = idx + int32(1)
+        else:
+            return fallback
+    if ! saw:
+        return fallback
+    return value
+
+fn decodeCodepointList(value: str): str =
+    if safeLen(value) <= int32(0):
+        return ""
+    var out: str = ""
+    var token: str = ""
+    var idx: int32 = int32(0)
+    while idx <= safeLen(value):
+        let atEnd = idx == safeLen(value)
+        if ! atEnd && ! cEq(value[idx], ','):
+            token = token + charToStr(value[idx])
+            idx = idx + int32(1)
+            continue
+        let cp = parseCodepointToken(token, int32(-1))
+        if cp < int32(0) || cp > int32(0x10FFFF):
+            return ""
+        out = out + utf8FromCodepoint(cp)
+        token = ""
+        idx = idx + int32(1)
+    return out
+
+fn payloadText(payload: str): str =
+    let cp = payloadValue(payload, "text_cp")
+    if safeLen(cp) > int32(0):
+        let decodedCp = decodeCodepointList(cp)
+        if safeLen(decodedCp) > int32(0):
+            return decodedCp
+    let hex = payloadValue(payload, "text_hex")
+    if safeLen(hex) > int32(0):
+        let decoded = decodeHexText(hex)
+        if safeLen(decoded) > int32(0):
+            return decoded
+    let plain = payloadValue(payload, "text")
+    if safeLen(plain) > int32(0):
+        return plain
+    return payload
+
+fn ensureEditorState(page: web.BrowserPage) =
+    if page == nil:
+        return
+    if page.r2cEditorBooted:
+        page.r2cEditorCursor = alignUtf8Boundary(page.r2cEditorText, page.r2cEditorCursor)
+        return
+    page.r2cEditorBooted = true
+    let byA = envEnabled("R2C_UTFZH_EDITOR")
+    let byB = envEnabled("CHENG_R2C_UTFZH_EDITOR")
+    if byA || byB:
+        page.r2cEditorEnabled = true
+    else:
+        page.r2cEditorEnabled = true
+    page.r2cEditorFocused = true
+    page.r2cEditorCursor = alignUtf8Boundary(page.r2cEditorText, page.r2cEditorCursor)
+    page.r2cEditorStatus = "editor-ready"
+    page.r2cUtfZhStrict = true
+    page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
+    if ! page.r2cUtfZhEnabled:
+        page.r2cUtfZhLastError = utfzh_bridge.utfZhLastError()
+
+fn strictRoundtrip(page: web.BrowserPage, text: str): tuple[ok: bool, out: str, bytesLen: int32, err: str] =
+    if page == nil:
+        return (ok: false, out: "", bytesLen: int32(0), err: "nil-page")
+    let rt = utfzh_bridge.utfZhRoundtripStrict(text)
+    page.r2cUtfZhStrict = true
+    page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
+    if ! rt.ok:
+        page.r2cUtfZhLastError = rt.lastError
+        return (ok: false, out: "", bytesLen: int32(0), err: rt.lastError)
+    page.r2cUtfZhLastError = ""
+    return (ok: true, out: rt.text, bytesLen: safeLen(rt.bytes), err: "")
+
+fn insertStrictText(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    ensureEditorState(page)
+    if ! page.r2cEditorEnabled:
+        return false
+    if safeLen(text) <= int32(0):
+        return true
+    let strict = strictRoundtrip(page, text)
+    if ! strict.ok:
+        page.r2cEditorStatus = "insert-failed:" + strict.err
+        return false
+    let current = page.r2cEditorText
+    let total = safeLen(current)
+    var cursor = alignUtf8Boundary(current, page.r2cEditorCursor)
+    if cursor < int32(0):
+        cursor = int32(0)
+    if cursor > total:
+        cursor = total
+    var left = ""
+    var right = ""
+    if cursor > int32(0):
+        left = current[0..<cursor]
+    if cursor < total:
+        right = current[cursor..<total]
+    page.r2cEditorText = left + strict.out + right
+    page.r2cEditorCursor = cursor + safeLen(strict.out)
+    page.r2cEditorLastBytes = strict.bytesLen
+    page.r2cEditorStatus = "insert-ok"
+    return true
+
+fn setTextStrict(page: web.BrowserPage, text: str): bool =
+    if page == nil:
+        return false
+    ensureEditorState(page)
+    let strict = strictRoundtrip(page, text)
+    if ! strict.ok:
+        page.r2cEditorStatus = "set-text-failed:" + strict.err
+        return false
+    page.r2cEditorText = strict.out
+    page.r2cEditorCursor = safeLen(page.r2cEditorText)
+    page.r2cEditorLastBytes = strict.bytesLen
+    page.r2cEditorStatus = "set-text-ok"
+    return true
+
+fn moveCursorLeft(page: web.BrowserPage) =
+    if page == nil:
+        return
+    ensureEditorState(page)
+    page.r2cEditorCursor = prevUtf8Start(page.r2cEditorText, page.r2cEditorCursor)
+
+fn moveCursorRight(page: web.BrowserPage) =
+    if page == nil:
+        return
+    ensureEditorState(page)
+    let total = safeLen(page.r2cEditorText)
+    var cursor = alignUtf8Boundary(page.r2cEditorText, page.r2cEditorCursor)
+    if cursor >= total:
+        page.r2cEditorCursor = total
+        return
+    var step = utf8StepAt(page.r2cEditorText, cursor)
+    if step <= int32(0):
+        step = int32(1)
+    cursor = cursor + step
+    if cursor > total:
+        cursor = total
+    page.r2cEditorCursor = cursor
+
+fn moveCursorHome(page: web.BrowserPage) =
+    if page == nil:
+        return
+    ensureEditorState(page)
+    page.r2cEditorCursor = int32(0)
+
+fn moveCursorEnd(page: web.BrowserPage) =
+    if page == nil:
+        return
+    ensureEditorState(page)
+    page.r2cEditorCursor = safeLen(page.r2cEditorText)
+
+fn deleteBackward(page: web.BrowserPage) =
+    if page == nil:
+        return
+    ensureEditorState(page)
+    let total = safeLen(page.r2cEditorText)
+    if total <= int32(0):
+        return
+    let cursor = alignUtf8Boundary(page.r2cEditorText, page.r2cEditorCursor)
+    if cursor <= int32(0):
+        page.r2cEditorCursor = int32(0)
+        return
+    let start = prevUtf8Start(page.r2cEditorText, cursor)
+    var left = ""
+    var right = ""
+    if start > int32(0):
+        left = page.r2cEditorText[0..<start]
+    if cursor < total:
+        right = page.r2cEditorText[cursor..<total]
+    page.r2cEditorText = left + right
+    page.r2cEditorCursor = start
+    page.r2cEditorStatus = "delete-backward"
+
+fn deleteForward(page: web.BrowserPage) =
+    if page == nil:
+        return
+    ensureEditorState(page)
+    let total = safeLen(page.r2cEditorText)
+    if total <= int32(0):
+        return
+    var cursor = alignUtf8Boundary(page.r2cEditorText, page.r2cEditorCursor)
+    if cursor >= total:
+        page.r2cEditorCursor = total
+        return
+    var step = utf8StepAt(page.r2cEditorText, cursor)
+    if step <= int32(0):
+        step = int32(1)
+    let stop = minInt(cursor + step, total)
+    var left = ""
+    var right = ""
+    if cursor > int32(0):
+        left = page.r2cEditorText[0..<cursor]
+    if stop < total:
+        right = page.r2cEditorText[stop..<total]
+    page.r2cEditorText = left + right
+    page.r2cEditorCursor = cursor
+    page.r2cEditorStatus = "delete-forward"
+
+fn consumeImeCommitted(page: web.BrowserPage): bool =
+    if page == nil:
+        return false
+    if safeLen(page.r2cImeCommitted) <= int32(0):
+        return true
+    let committed = page.r2cImeCommitted
+    page.r2cImeCommitted = ""
+    return insertStrictText(page, committed)
+
+fn handleKeyCode(page: web.BrowserPage, keyCode: int32): bool =
+    if keyCode == int32(8) || keyCode == int32(51):
+        deleteBackward(page)
+        return true
+    if keyCode == int32(46) || keyCode == int32(127) || keyCode == int32(117):
+        deleteForward(page)
+        return true
+    if keyCode == int32(37) || keyCode == int32(123):
+        moveCursorLeft(page)
+        return true
+    if keyCode == int32(39) || keyCode == int32(124):
+        moveCursorRight(page)
+        return true
+    if keyCode == int32(36) || keyCode == int32(115):
+        moveCursorHome(page)
+        return true
+    if keyCode == int32(35) || keyCode == int32(119):
+        moveCursorEnd(page)
+        return true
+    if keyCode == int32(13):
+        return insertStrictText(page, "\n")
+    return false
+
+fn handleKeyDown(page: web.BrowserPage, payload: str): bool =
+    if page == nil:
+        return false
+    let keyCode = parsePayloadI32(payload, "keyCode", parsePayloadI32(payload, "key", int32(-1)))
+    if keyCode >= int32(0):
+        if handleKeyCode(page, keyCode):
+            return true
+    let text = payloadText(payload)
+    if safeLen(text) > int32(0):
+        return insertStrictText(page, text)
+    return false
+
+fn handleEditorEvent(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+    if page == nil:
+        return false
+    ensureEditorState(page)
+    if eventName == "editor-toggle":
+        page.r2cEditorEnabled = parsePayloadBool(payload, "enabled", page.r2cEditorEnabled)
+        if ! page.r2cEditorEnabled:
+            page.r2cEditorFocused = false
+        page.r2cEditorStatus = "toggle:" + boolText(page.r2cEditorEnabled)
+        return true
+    if eventName == "editor-focus":
+        page.r2cEditorFocused = true
+        page.r2cEditorStatus = "focus"
+        return true
+    if eventName == "editor-blur":
+        page.r2cEditorFocused = false
+        page.r2cEditorStatus = "blur"
+        return true
+    if eventName == "click":
+        if targetSelector == "#utfzh-editor" || targetSelector == "#utfzh-editor-input":
+            page.r2cEditorFocused = true
+            page.r2cEditorStatus = "focus"
+            return true
+    if ! page.r2cEditorEnabled:
+        return false
+    if eventName == "editor-clear":
+        page.r2cEditorText = ""
+        page.r2cEditorCursor = int32(0)
+        page.r2cEditorLastBytes = int32(0)
+        page.r2cEditorStatus = "clear"
+        return true
+    if eventName == "editor-set-text":
+        let text = payloadText(payload)
+        return setTextStrict(page, text)
+    if eventName == "editor-insert":
+        let text = payloadText(payload)
+        return insertStrictText(page, text)
+    if eventName == "editor-left":
+        moveCursorLeft(page)
+        return true
+    if eventName == "editor-right":
+        moveCursorRight(page)
+        return true
+    if eventName == "editor-home":
+        moveCursorHome(page)
+        return true
+    if eventName == "editor-end":
+        moveCursorEnd(page)
+        return true
+    if eventName == "editor-backspace":
+        deleteBackward(page)
+        return true
+    if eventName == "editor-delete":
+        deleteForward(page)
+        return true
+    if eventName == "key-down":
+        if ! page.r2cEditorFocused:
+            return false
+        return handleKeyDown(page, payload)
+    if eventName == "text-input" || eventName == "ime-start" || eventName == "ime-update" || eventName == "ime-end":
+        page.r2cEditorFocused = true
+        if ! ime_bridge.handleImeEvent(page, eventName, payload):
+            return false
+        if ! consumeImeCommitted(page):
+            return false
+        return true
+    return false
+
+fn splitLines(text: str): str[] =
+    var lines: str[]
+    if safeLen(text) <= int32(0):
+        add(lines, "")
+        return lines
+    var start: int32 = int32(0)
+    var idx: int32 = int32(0)
+    while idx <= safeLen(text):
+        if idx == safeLen(text) || cEq(text[idx], '\n'):
+            add(lines, text[start..<idx])
+            start = idx + int32(1)
+        idx = idx + int32(1)
+    if len(lines) <= int32(0):
+        add(lines, "")
+    return lines
+
+fn cursorLine(text: str, cursor: int32): int32 =
+    var idx: int32 = int32(0)
+    var line: int32 = int32(0)
+    let stop = minInt(cursor, safeLen(text))
+    while idx < stop:
+        if cEq(text[idx], '\n'):
+            line = line + int32(1)
+            idx = idx + int32(1)
+        else:
+            var step = utf8StepAt(text, idx)
+            if step <= int32(0):
+                step = int32(1)
+            idx = idx + step
+    return line
+
+fn cursorCol(text: str, cursor: int32): int32 =
+    var idx: int32 = int32(0)
+    var col: int32 = int32(0)
+    let stop = minInt(cursor, safeLen(text))
+    while idx < stop:
+        if cEq(text[idx], '\n'):
+            col = int32(0)
+            idx = idx + int32(1)
+        else:
+            var step = utf8StepAt(text, idx)
+            if step <= int32(0):
+                step = int32(1)
+            idx = idx + step
+            col = col + int32(1)
+    return col
+
+fn joinCandidates(page: web.BrowserPage): str =
+    if page == nil:
+        return ""
+    if len(page.r2cImeCandidates) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(page.r2cImeCandidates) && idx < int32(5):
+        if idx > int32(0):
+            out = out + "  "
+        out = out + i32Text(idx + int32(1)) + "." + page.r2cImeCandidates[idx]
+        idx = idx + int32(1)
+    return out
+
+fn editorSnapshot(page: web.BrowserPage): str =
+    if page == nil:
+        return ""
+    ensureEditorState(page)
+    var out: str = ""
+    out = out + "UTFZH_EDITOR_ENABLED:" + boolText(page.r2cEditorEnabled) + "\n"
+    out = out + "UTFZH_EDITOR_FOCUSED:" + boolText(page.r2cEditorFocused) + "\n"
+    out = out + "UTFZH_EDITOR_CURSOR:" + i32Text(page.r2cEditorCursor) + "\n"
+    out = out + "UTFZH_EDITOR_BYTES:" + i32Text(page.r2cEditorLastBytes) + "\n"
+    if safeLen(page.r2cEditorStatus) > int32(0):
+        out = out + "UTFZH_EDITOR_STATUS:" + page.r2cEditorStatus + "\n"
+    if safeLen(page.r2cImeQuery) > int32(0):
+        out = out + "UTFZH_EDITOR_QUERY:" + page.r2cImeQuery + "\n"
+    if safeLen(page.r2cImePreedit) > int32(0):
+        out = out + "UTFZH_EDITOR_PREEDIT:" + page.r2cImePreedit + "\n"
+    let cands = joinCandidates(page)
+    if safeLen(cands) > int32(0):
+        out = out + "UTFZH_EDITOR_CANDS:" + cands + "\n"
+    if safeLen(page.r2cEditorText) > int32(0):
+        out = out + "UTFZH_EDITOR_TEXT:" + page.r2cEditorText + "\n"
+    return out
+
+fn renderEditorPanel(page: web.BrowserPage, list: drawir.DrawList, viewportW, viewportH: int32): str =
+    if page == nil || list == nil:
+        return ""
+    ensureEditorState(page)
+    if ! page.r2cEditorEnabled:
+        return ""
+    var vw = viewportW
+    var vh = viewportH
+    if vw <= int32(0):
+        vw = int32(960)
+    if vh <= int32(0):
+        vh = int32(540)
+    var panelH = vh / int32(3)
+    if panelH < int32(180):
+        panelH = int32(180)
+    if panelH > vh - int32(24):
+        panelH = vh - int32(24)
+    panelH = maxInt(panelH, int32(120))
+    let panelX = int32(12)
+    let panelY = vh - panelH - int32(12)
+    let panelW = maxInt(vw - int32(24), int32(260))
+
+    drawir.pushRectInt(list, panelX, panelY, panelW, panelH, uint32(0xFFF8FAFC))
+    drawir.pushLineInt(list, panelX, panelY, panelX + panelW, panelY, uint32(0xFFCBD5E1), 1.0)
+    drawir.pushLineInt(list, panelX, panelY + panelH, panelX + panelW, panelY + panelH, uint32(0xFFCBD5E1), 1.0)
+    drawir.pushLineInt(list, panelX, panelY, panelX, panelY + panelH, uint32(0xFFCBD5E1), 1.0)
+    drawir.pushLineInt(list, panelX + panelW, panelY, panelX + panelW, panelY + panelH, uint32(0xFFCBD5E1), 1.0)
+
+    var title = "UTF-ZH Editor"
+    if safeLen(page.r2cEditorStatus) > int32(0):
+        title = title + "  [" + page.r2cEditorStatus + "]"
+    drawir.pushTextInt(list, panelX + int32(12), panelY + int32(8), panelW - int32(24), int32(20), title, uint32(0xFF0F172A), 13.0)
+
+    let textX = panelX + int32(12)
+    let textY = panelY + int32(34)
+    let lineH = int32(20)
+    let footerH = int32(46)
+    let bodyH = panelH - int32(42) - footerH
+    var maxLines = bodyH / lineH
+    if maxLines < int32(1):
+        maxLines = int32(1)
+
+    let lines = splitLines(page.r2cEditorText)
+    var rendered: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(lines) && idx < maxLines:
+        let lineText = lines[idx]
+        drawir.pushTextInt(list, textX, textY + idx * lineH, panelW - int32(24), lineH, lineText, uint32(0xFF111827), 14.0)
+        rendered = rendered + lineText + "\n"
+        idx = idx + int32(1)
+    if safeLen(page.r2cEditorText) <= int32(0):
+        drawir.pushTextInt(list, textX, textY, panelW - int32(24), lineH, "Type Cangwu code or UTF-ZH text...", uint32(0xFF94A3B8), 13.0)
+        rendered = "Type Cangwu code or UTF-ZH text...\n"
+
+    if page.r2cEditorFocused:
+        let cursor = alignUtf8Boundary(page.r2cEditorText, page.r2cEditorCursor)
+        page.r2cEditorCursor = cursor
+        let line = cursorLine(page.r2cEditorText, cursor)
+        let col = cursorCol(page.r2cEditorText, cursor)
+        if line >= int32(0) && line < maxLines:
+            let cx = textX + col * int32(9)
+            let cy = textY + line * lineH
+            drawir.pushLineInt(list, cx, cy + int32(2), cx, cy + lineH - int32(2), uint32(0xFF2563EB), 1.0)
+
+    let footerY = panelY + panelH - footerH
+    if safeLen(page.r2cImePreedit) > int32(0):
+        drawir.pushTextInt(list, textX, footerY, panelW - int32(24), int32(18), "Preedit: " + page.r2cImePreedit, uint32(0xFF1D4ED8), 12.0)
+    elif safeLen(page.r2cImeQuery) > int32(0):
+        drawir.pushTextInt(list, textX, footerY, panelW - int32(24), int32(18), "Code: " + page.r2cImeQuery, uint32(0xFF1D4ED8), 12.0)
+    let cands = joinCandidates(page)
+    if safeLen(cands) > int32(0):
+        drawir.pushTextInt(list, textX, footerY + int32(18), panelW - int32(24), int32(18), cands, uint32(0xFF334155), 12.0)
+
+    return rendered

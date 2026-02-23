@@ -9,9 +9,9 @@
 #include <unistd.h>
 
 #if defined(__GNUC__)
-#define CHENG_X11_EXPORT __attribute__((visibility("default")))
+#define X11_EXPORT __attribute__((visibility("default")))
 #else
-#define CHENG_X11_EXPORT
+#define X11_EXPORT
 #endif
 
 enum {
@@ -455,7 +455,7 @@ static void chengGuiX11FreeAllWindows(void) {
   gChengGuiX11Windows = NULL;
 }
 
-CHENG_X11_EXPORT void chengGuiX11Initialize(void) {
+X11_EXPORT void chengGuiX11Initialize(void) {
   if (gChengGuiX11Display != NULL) {
     return;
   }
@@ -467,11 +467,11 @@ CHENG_X11_EXPORT void chengGuiX11Initialize(void) {
   gChengGuiX11Screen = DefaultScreen(gChengGuiX11Display);
 }
 
-CHENG_X11_EXPORT int chengGuiX11IsInitialized(void) {
+X11_EXPORT int chengGuiX11IsInitialized(void) {
   return gChengGuiX11Display != NULL ? 1 : 0;
 }
 
-CHENG_X11_EXPORT void chengGuiX11Shutdown(void) {
+X11_EXPORT void chengGuiX11Shutdown(void) {
   if (gChengGuiX11Display != NULL) {
     chengGuiX11FreeAllWindows();
     XCloseDisplay(gChengGuiX11Display);
@@ -481,7 +481,7 @@ CHENG_X11_EXPORT void chengGuiX11Shutdown(void) {
   }
 }
 
-CHENG_X11_EXPORT void *chengGuiX11CreateWindow(
+X11_EXPORT void *chengGuiX11CreateWindow(
     const char *title,
     double x,
     double y,
@@ -560,11 +560,11 @@ CHENG_X11_EXPORT void *chengGuiX11CreateWindow(
   return (void *)window;
 }
 
-CHENG_X11_EXPORT void *chengGuiX11CreateDefaultWindow(const char *title) {
+X11_EXPORT void *chengGuiX11CreateDefaultWindow(const char *title) {
   return chengGuiX11CreateWindow(title, 100.0, 100.0, 1280.0, 800.0, true, true);
 }
 
-CHENG_X11_EXPORT void chengGuiX11DestroyWindow(void *handle) {
+X11_EXPORT void chengGuiX11DestroyWindow(void *handle) {
   ChengGuiX11Window *window = (ChengGuiX11Window *)handle;
   if (window == NULL) {
     return;
@@ -577,11 +577,11 @@ CHENG_X11_EXPORT void chengGuiX11DestroyWindow(void *handle) {
   free(window);
 }
 
-CHENG_X11_EXPORT int chengGuiX11PollEvents(ChengGuiX11Event *events, int maxEvents, int timeoutMs) {
+X11_EXPORT int chengGuiX11PollEvents(ChengGuiX11Event *events, int maxEvents, int timeoutMs) {
   return chengGuiX11PollEventLoop(events, maxEvents, timeoutMs);
 }
 
-CHENG_X11_EXPORT void *chengGuiX11CreateSurface(void *handle) {
+X11_EXPORT void *chengGuiX11CreateSurface(void *handle) {
   ChengGuiX11Window *window = (ChengGuiX11Window *)handle;
   if (window == NULL || window->display == NULL) {
     return NULL;
@@ -599,7 +599,7 @@ CHENG_X11_EXPORT void *chengGuiX11CreateSurface(void *handle) {
   return (void *)surface;
 }
 
-CHENG_X11_EXPORT void chengGuiX11DestroySurface(void *handle) {
+X11_EXPORT void chengGuiX11DestroySurface(void *handle) {
   ChengGuiX11Surface *surface = (ChengGuiX11Surface *)handle;
   if (surface == NULL) {
     return;
@@ -610,7 +610,7 @@ CHENG_X11_EXPORT void chengGuiX11DestroySurface(void *handle) {
   free(surface);
 }
 
-CHENG_X11_EXPORT int chengGuiX11GetSurfaceInfo(void *handle, ChengGuiX11SurfaceInfo *info) {
+X11_EXPORT int chengGuiX11GetSurfaceInfo(void *handle, ChengGuiX11SurfaceInfo *info) {
   ChengGuiX11Surface *surface = (ChengGuiX11Surface *)handle;
   if (surface == NULL || surface->window == NULL || info == NULL) {
     return -1;
@@ -634,7 +634,7 @@ CHENG_X11_EXPORT int chengGuiX11GetSurfaceInfo(void *handle, ChengGuiX11SurfaceI
   return 0;
 }
 
-CHENG_X11_EXPORT int chengGuiX11BeginFrame(void *handle) {
+X11_EXPORT int chengGuiX11BeginFrame(void *handle) {
   ChengGuiX11Surface *surface = (ChengGuiX11Surface *)handle;
   if (surface == NULL || surface->window == NULL || surface->window->display == NULL || surface->gc == NULL) {
     return -1;
@@ -658,7 +658,7 @@ CHENG_X11_EXPORT int chengGuiX11BeginFrame(void *handle) {
   return 0;
 }
 
-CHENG_X11_EXPORT int chengGuiX11EndFrame(void *handle) {
+X11_EXPORT int chengGuiX11EndFrame(void *handle) {
   ChengGuiX11Surface *surface = (ChengGuiX11Surface *)handle;
   if (surface == NULL || surface->window == NULL || surface->window->display == NULL) {
     return -1;
@@ -667,7 +667,7 @@ CHENG_X11_EXPORT int chengGuiX11EndFrame(void *handle) {
   return 0;
 }
 
-CHENG_X11_EXPORT int chengGuiX11PresentPixels(void *handle,
+X11_EXPORT int chengGuiX11PresentPixels(void *handle,
                                               const uint32_t *pixels,
                                               int width,
                                               int height,
@@ -741,31 +741,31 @@ CHENG_X11_EXPORT int chengGuiX11PresentPixels(void *handle,
   return 0;
 }
 
-CHENG_X11_EXPORT size_t chengGuiX11EventStructSize(void) {
+X11_EXPORT size_t chengGuiX11EventStructSize(void) {
   return sizeof(ChengGuiX11Event);
 }
 
-CHENG_X11_EXPORT size_t chengGuiX11SurfaceInfoStructSize(void) {
+X11_EXPORT size_t chengGuiX11SurfaceInfoStructSize(void) {
   return sizeof(ChengGuiX11SurfaceInfo);
 }
 
-CHENG_X11_EXPORT int chengGuiNativeTextAvailable(void) {
+X11_EXPORT int chengGuiNativeTextAvailable(void) {
   return 0;
 }
 
-CHENG_X11_EXPORT const char *chengGuiNativeTextBackend(void) {
+X11_EXPORT const char *chengGuiNativeTextBackend(void) {
   return "unavailable";
 }
 
-CHENG_X11_EXPORT int chengGuiIconFontAvailable(void) {
+X11_EXPORT int chengGuiIconFontAvailable(void) {
   return 0;
 }
 
-CHENG_X11_EXPORT int chengGuiFileIconFontAvailable(void) {
+X11_EXPORT int chengGuiFileIconFontAvailable(void) {
   return 0;
 }
 
-CHENG_X11_EXPORT int chengGuiDrawTextBgra(void *pixels,
+X11_EXPORT int chengGuiDrawTextBgra(void *pixels,
                                          int width,
                                          int height,
                                          int strideBytes,
@@ -790,99 +790,99 @@ CHENG_X11_EXPORT int chengGuiDrawTextBgra(void *pixels,
   return -1;
 }
 
-CHENG_X11_EXPORT double chengGuiTextWidth(const char *text, double fontSize) {
+X11_EXPORT double chengGuiTextWidth(const char *text, double fontSize) {
   (void)text;
   (void)fontSize;
   return 0.0;
 }
 
-CHENG_X11_EXPORT double chengGuiTextWidthCode(const char *text, double fontSize) {
+X11_EXPORT double chengGuiTextWidthCode(const char *text, double fontSize) {
   (void)text;
   (void)fontSize;
   return 0.0;
 }
 
-CHENG_X11_EXPORT double chengGuiTextWidthIcon(const char *text, double fontSize) {
+X11_EXPORT double chengGuiTextWidthIcon(const char *text, double fontSize) {
   (void)text;
   (void)fontSize;
   return 0.0;
 }
 
-CHENG_X11_EXPORT double chengGuiTextWidthFileIcon(const char *text, double fontSize) {
+X11_EXPORT double chengGuiTextWidthFileIcon(const char *text, double fontSize) {
   (void)text;
   (void)fontSize;
   return 0.0;
 }
 
-CHENG_X11_EXPORT double chengGuiTextXAtIndex(const char *text, double fontSize, int32_t byteIndex) {
+X11_EXPORT double chengGuiTextXAtIndex(const char *text, double fontSize, int32_t byteIndex) {
   (void)text;
   (void)fontSize;
   (void)byteIndex;
   return 0.0;
 }
 
-CHENG_X11_EXPORT double chengGuiTextXAtIndexCode(const char *text, double fontSize, int32_t byteIndex) {
+X11_EXPORT double chengGuiTextXAtIndexCode(const char *text, double fontSize, int32_t byteIndex) {
   (void)text;
   (void)fontSize;
   (void)byteIndex;
   return 0.0;
 }
 
-CHENG_X11_EXPORT int32_t chengGuiTextIndexAtX(const char *text, double fontSize, double x) {
+X11_EXPORT int32_t chengGuiTextIndexAtX(const char *text, double fontSize, double x) {
   (void)text;
   (void)fontSize;
   (void)x;
   return 0;
 }
 
-CHENG_X11_EXPORT int32_t chengGuiTextIndexAtXCode(const char *text, double fontSize, double x) {
+X11_EXPORT int32_t chengGuiTextIndexAtXCode(const char *text, double fontSize, double x) {
   (void)text;
   (void)fontSize;
   (void)x;
   return 0;
 }
 
-CHENG_X11_EXPORT void chengGuiNativeInitialize(void) {
+X11_EXPORT void chengGuiNativeInitialize(void) {
   chengGuiX11Initialize();
 }
 
-CHENG_X11_EXPORT void chengGuiNativeShutdown(void) {
+X11_EXPORT void chengGuiNativeShutdown(void) {
   chengGuiX11Shutdown();
 }
 
-CHENG_X11_EXPORT void *chengGuiNativeCreateDefaultWindow(const char *title) {
+X11_EXPORT void *chengGuiNativeCreateDefaultWindow(const char *title) {
   return chengGuiX11CreateDefaultWindow(title);
 }
 
-CHENG_X11_EXPORT void chengGuiNativeDestroyWindow(void *handle) {
+X11_EXPORT void chengGuiNativeDestroyWindow(void *handle) {
   chengGuiX11DestroyWindow(handle);
 }
 
-CHENG_X11_EXPORT int chengGuiNativePollEvents(void *events, int maxEvents, int timeoutMs) {
+X11_EXPORT int chengGuiNativePollEvents(void *events, int maxEvents, int timeoutMs) {
   return chengGuiX11PollEvents((ChengGuiX11Event *)events, maxEvents, timeoutMs);
 }
 
-CHENG_X11_EXPORT void *chengGuiNativeCreateSurface(void *windowHandle) {
+X11_EXPORT void *chengGuiNativeCreateSurface(void *windowHandle) {
   return chengGuiX11CreateSurface(windowHandle);
 }
 
-CHENG_X11_EXPORT void chengGuiNativeDestroySurface(void *surfaceHandle) {
+X11_EXPORT void chengGuiNativeDestroySurface(void *surfaceHandle) {
   chengGuiX11DestroySurface(surfaceHandle);
 }
 
-CHENG_X11_EXPORT int chengGuiNativeBeginFrame(void *surfaceHandle) {
+X11_EXPORT int chengGuiNativeBeginFrame(void *surfaceHandle) {
   return chengGuiX11BeginFrame(surfaceHandle);
 }
 
-CHENG_X11_EXPORT int chengGuiNativeEndFrame(void *surfaceHandle) {
+X11_EXPORT int chengGuiNativeEndFrame(void *surfaceHandle) {
   return chengGuiX11EndFrame(surfaceHandle);
 }
 
-CHENG_X11_EXPORT int chengGuiNativeGetSurfaceInfo(void *surfaceHandle, void *outInfo) {
+X11_EXPORT int chengGuiNativeGetSurfaceInfo(void *surfaceHandle, void *outInfo) {
   return chengGuiX11GetSurfaceInfo(surfaceHandle, (ChengGuiX11SurfaceInfo *)outInfo);
 }
 
-CHENG_X11_EXPORT int chengGuiNativePresentPixels(
+X11_EXPORT int chengGuiNativePresentPixels(
   void *surfaceHandle,
   void *pixels,
   int width,
@@ -892,7 +892,7 @@ CHENG_X11_EXPORT int chengGuiNativePresentPixels(
   return chengGuiX11PresentPixels(surfaceHandle, pixels, width, height, strideBytes);
 }
 
-CHENG_X11_EXPORT int chengGuiNativeDrawTextBgra(
+X11_EXPORT int chengGuiNativeDrawTextBgra(
   void *pixels,
   int width,
   int height,
@@ -908,7 +908,7 @@ CHENG_X11_EXPORT int chengGuiNativeDrawTextBgra(
   return chengGuiDrawTextBgra(pixels, width, height, strideBytes, x, y, w, h, color, fontSize, text);
 }
 
-CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraLen(
+X11_EXPORT int chengGuiNativeDrawTextBgraLen(
   void *pixels,
   int width,
   int height,
@@ -926,7 +926,41 @@ CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraLen(
   return chengGuiDrawTextBgra(pixels, width, height, strideBytes, x, y, w, h, color, fontSize, text);
 }
 
-CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraCode(
+X11_EXPORT int chengGuiNativeDrawTextBgraLenI(
+  void *pixels,
+  int width,
+  int height,
+  int strideBytes,
+  int x,
+  int y,
+  int w,
+  int h,
+  uint32_t color,
+  int fontSizeX100,
+  const char *text,
+  int textLen
+) {
+  (void)textLen;
+  double fontSize = (double)fontSizeX100 / 100.0;
+  if (fontSize <= 1.0) {
+    fontSize = 14.0;
+  }
+  return chengGuiDrawTextBgra(
+    pixels,
+    width,
+    height,
+    strideBytes,
+    (double)x,
+    (double)y,
+    (double)w,
+    (double)h,
+    color,
+    fontSize,
+    text
+  );
+}
+
+X11_EXPORT int chengGuiNativeDrawTextBgraCode(
   void *pixels,
   int width,
   int height,
@@ -953,7 +987,7 @@ CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraCode(
   return -1;
 }
 
-CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraIcon(
+X11_EXPORT int chengGuiNativeDrawTextBgraIcon(
   void *pixels,
   int width,
   int height,
@@ -980,7 +1014,7 @@ CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraIcon(
   return -1;
 }
 
-CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraFileIcon(
+X11_EXPORT int chengGuiNativeDrawTextBgraFileIcon(
   void *pixels,
   int width,
   int height,
@@ -1007,6 +1041,6 @@ CHENG_X11_EXPORT int chengGuiNativeDrawTextBgraFileIcon(
   return -1;
 }
 
-CHENG_X11_EXPORT size_t chengGuiNativeEventStructSize(void) {
+X11_EXPORT size_t chengGuiNativeEventStructSize(void) {
   return chengGuiX11EventStructSize();
 }

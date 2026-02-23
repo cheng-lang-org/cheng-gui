@@ -136,6 +136,7 @@ const CATEGORY_VALUES: DistributedPublishCategory[] = [
   'sell',
   'secondhand',
   'crowdfunding',
+  'ad',
 ];
 
 const listeners = new Set<ContentListener>();

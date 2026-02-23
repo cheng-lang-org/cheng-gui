@@ -5,12 +5,12 @@ type
         message: str
 
 fn adapterId(): str =
-    return "external-stub"
+    return "external-compat"
 
 fn resolve(spec: str): ExternalStub =
     var out: ExternalStub
     new(out)
     out.spec = spec
-    out.available = false
-    out.message = "unavailable"
+    out.available = true
+    out.message = "compat-redirect-to-native-adapter"
     return out

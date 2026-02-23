@@ -1,0 +1,284 @@
+import cheng/gui/mobile/host/native_ffi
+import cheng/gui/mobile/host/api as host_api
+import cheng/gui/mobile/render/display_list
+
+const
+    nativeEventRuntimeStarted: int32 = 0
+    nativeEventWindowOpened: int32 = 1
+    nativeEventFrameTick: int32 = 2
+    nativeEventRuntimeStopped: int32 = 3
+    nativeEventLog: int32 = 4
+    nativeEventPointerDown: int32 = 5
+    nativeEventPointerUp: int32 = 6
+    nativeEventPointerMove: int32 = 7
+    nativeEventPointerScroll: int32 = 8
+    nativeEventKeyDown: int32 = 9
+    nativeEventKeyUp: int32 = 10
+    nativeEventTextInput: int32 = 11
+
+fn clampI32(v, lo, hi: int32): int32 =
+    var out: int32 = v
+    if out < lo:
+        out = lo
+    if out > hi:
+        out = hi
+    return out
+
+fn uiCodepointCount(text: str): int32 =
+    if text == nil:
+        return 0
+    var count: int32 = 0
+    for i in 0..<len(text):
+        let b: int32 = int32(text[i]) & 0xFF
+        if (b & 0xC0) != 0x80:
+            count = count + 1
+    return count
+
+fn ensureMetrics(host: host_api.HostAdapter) =
+    if host == nil:
+        return
+
+    var widthNow: int32 = cheng_mobile_host_android_width()
+    if widthNow <= 0:
+        widthNow = host.metrics.width
+    if widthNow <= 0:
+        widthNow = 1080
+
+    var heightNow: int32 = cheng_mobile_host_android_height()
+    if heightNow <= 0:
+        heightNow = host.metrics.height
+    if heightNow <= 0:
+        heightNow = 1920
+
+    host.metrics.width = widthNow
+    host.metrics.height = heightNow
+    host.metrics.imeInsetBottom = cheng_mobile_host_android_ime_inset_bottom()
+    var scaleNow: float64 = cheng_mobile_host_android_density_scale()
+    if scaleNow <= 0.0:
+        scaleNow = host.metrics.scale
+    if scaleNow <= 0.0:
+        scaleNow = float64(widthNow) / 390.0
+    if scaleNow < 1.0:
+        scaleNow = 1.0
+    if scaleNow > 4.0:
+        scaleNow = 4.0
+    host.metrics.scale = scaleNow
+
+fn ensureBuffer(host: host_api.HostAdapter) =
+    if host == nil:
+        return
+    ensureMetrics(host)
+    let nextStride: int32 = host.metrics.width * 4
+    let nextBytes: int32 = nextStride * host.metrics.height
+    if nextBytes <= 0:
+        return
+    if host.pixels == nil || host.bufferBytes != nextBytes:
+        if host.pixels != nil:
+            dealloc(host.pixels)
+            host.pixels = nil
+        host.pixels = alloc nextBytes
+        host.bufferBytes = nextBytes
+        host.strideBytes = nextStride
+
+fn fillRect(pixels: void*, width, height, strideBytes: int32, x, y, w, h: int32, color: uint32) =
+    if pixels == nil || width <= 0 || height <= 0 || w <= 0 || h <= 0:
+        return
+    let x0: int32 = clampI32(x, 0, width)
+    let y0: int32 = clampI32(y, 0, height)
+    let x1: int32 = clampI32(x + w, 0, width)
+    let y1: int32 = clampI32(y + h, 0, height)
+    if x1 <= x0 || y1 <= y0:
+        return
+    for yy in y0..<y1:
+        let row: void* = ptr_add(pixels, yy * strideBytes)
+        for xx in x0..<x1:
+            let p: uint32* = uint32*(ptr_add(row, xx * 4))
+            *p = color
+
+fn drawCommand(host: host_api.HostAdapter, cmd: display_list.UiCommand) =
+    if host == nil || host.pixels == nil || cmd == nil:
+        return
+    if cmd.kind == display_list.uckRect || cmd.kind == display_list.uckRRect:
+        fillRect(
+            host.pixels,
+            host.metrics.width,
+            host.metrics.height,
+            host.strideBytes,
+            int32(cmd.rect.x),
+            int32(cmd.rect.y),
+            int32(cmd.rect.w),
+            int32(cmd.rect.h),
+            cmd.color
+        )
+        return
+    if cmd.kind == display_list.uckText:
+        chengGuiNativeDrawTextBgraI32(
+            host.pixels,
+            host.metrics.width,
+            host.metrics.height,
+            host.strideBytes,
+            int32(cmd.rect.x),
+            int32(cmd.rect.y),
+            cmd.color,
+            cmd.fontPx,
+            cmd.text
+        )
+
+fn submitDisplayList(host: host_api.HostAdapter, list: display_list.UiDisplayList): int32 =
+    if host == nil:
+        return 0
+    ensureBuffer(host)
+    if host.pixels == nil || host.metrics.width <= 0 || host.metrics.height <= 0:
+        return 0
+
+    fillRect(
+        host.pixels,
+        host.metrics.width,
+        host.metrics.height,
+        host.strideBytes,
+        0,
+        0,
+        host.metrics.width,
+        host.metrics.height,
+        uint32(0xFFF7F7F8)
+    )
+
+    if list != nil:
+        for i in 0..<len(list.commands):
+            drawCommand(host, list.commands[i])
+
+    cheng_mobile_host_present(host.pixels, host.metrics.width, host.metrics.height, host.strideBytes)
+    if list == nil:
+        return 0
+    return int32(len(list.commands))
+
+fn measureText(host: host_api.HostAdapter, text: str, fontPx: int32): int32 =
+    host
+    var px: int32 = fontPx
+    if px <= 0:
+        px = 14
+    let measured: int32 = chengGuiNativeMeasureTextWidthPxI32(text, px)
+    if measured > 0:
+        return measured
+    let count: int32 = uiCodepointCount(text)
+    return count * maxInt(6, px / 2)
+
+fn mapNativeEventKind(kind: int32): host_api.UiEventKind =
+    if kind == nativeEventWindowOpened:
+        return host_api.uekResize
+    if kind == nativeEventFrameTick:
+        return host_api.uekFrameTick
+    if kind == nativeEventRuntimeStopped:
+        return host_api.uekAppQuit
+    if kind == nativeEventPointerDown:
+        return host_api.uekPointerDown
+    if kind == nativeEventPointerUp:
+        return host_api.uekPointerUp
+    if kind == nativeEventPointerMove:
+        return host_api.uekPointerMove
+    if kind == nativeEventPointerScroll:
+        return host_api.uekPointerScroll
+    if kind == nativeEventKeyDown:
+        return host_api.uekKeyDown
+    if kind == nativeEventKeyUp:
+        return host_api.uekKeyUp
+    if kind == nativeEventTextInput:
+        return host_api.uekTextInput
+    if kind == nativeEventRuntimeStarted || kind == nativeEventLog:
+        return host_api.uekNone
+    return host_api.uekNone
+
+fn pollEvent(host: host_api.HostAdapter, ev: var host_api.UiEvent): bool =
+    if host == nil:
+        return false
+
+    host_api.hostPumpServiceResponses(host)
+
+    var pending: host_api.UiServiceResponse
+    if host_api.hostPopServiceResponse(host, pending):
+        ev = host_api.uiDefaultEvent()
+        ev.kind = host_api.uekServiceResult
+        ev.payload = pending.id + "|" + (if pending.ok: "1" else: "0") + "|" + pending.payloadCbor + "|" + pending.error
+        ev.text = pending.payloadCbor
+        host.lastEventKind = ev.kind
+        host.lastEventX = ev.x
+        host.lastEventY = ev.y
+        host.lastEventDx = ev.dx
+        host.lastEventDy = ev.dy
+        host.lastEventPointerId = ev.pointerId
+        host.lastEventKeyCode = ev.keyCode
+        host.lastEventText = ev.text
+        host.lastEventPayload = ev.payload
+        host.lastEventTimeMs = ev.timeMs
+        return true
+
+    let got: int32 = cheng_mobile_host_poll_event_cached()
+    if got == 0:
+        return false
+
+    ensureMetrics(host)
+    ev = host_api.uiDefaultEvent()
+    let nativeKind: int32 = cheng_mobile_host_cached_event_kind()
+    ev.kind = mapNativeEventKind(nativeKind)
+    ev.x = float64(cheng_mobile_host_cached_event_pointer_x_i32())
+    ev.y = float64(cheng_mobile_host_cached_event_pointer_y_i32())
+    ev.dx = float64(cheng_mobile_host_cached_event_pointer_delta_x_i32())
+    ev.dy = float64(cheng_mobile_host_cached_event_pointer_delta_y_i32())
+    ev.pointerId = cheng_mobile_host_cached_event_pointer_id()
+    ev.keyCode = cheng_mobile_host_cached_event_key_code()
+    ev.text = cheng_mobile_host_cached_event_text()
+    ev.payload = cheng_mobile_host_cached_event_message()
+    ev.timeMs = cheng_mobile_host_cached_event_time_ms()
+
+    if nativeKind == nativeEventWindowOpened:
+        ev.dx = float64(host.metrics.width)
+        ev.dy = float64(host.metrics.height)
+        ev.payload = "window-opened"
+
+    if ev.kind == host_api.uekAppQuit:
+        host.running = false
+
+    if ev.kind == host_api.uekNone:
+        return false
+    host.lastEventKind = ev.kind
+    host.lastEventX = ev.x
+    host.lastEventY = ev.y
+    host.lastEventDx = ev.dx
+    host.lastEventDy = ev.dy
+    host.lastEventPointerId = ev.pointerId
+    host.lastEventKeyCode = ev.keyCode
+    host.lastEventText = ev.text
+    host.lastEventPayload = ev.payload
+    host.lastEventTimeMs = ev.timeMs
+    return true
+
+fn shutdown(host: host_api.HostAdapter) =
+    if host == nil:
+        return
+    if host.pixels != nil:
+        dealloc(host.pixels)
+        host.pixels = nil
+    cheng_mobile_host_shutdown("pure-cheng-gui-exit")
+
+fn createDefaultHostAdapter(title: str, width, height: int32): host_api.HostAdapter =
+    var cfg: MobileHostConfig = buildHostConfig(title)
+    width
+    height
+
+    cheng_mobile_host_init(&cfg)
+    let winId: int32 = cheng_mobile_host_open_window(&cfg)
+
+    var host: host_api.HostAdapter
+    new host
+    host.metrics = host_api.uiDefaultHostMetrics()
+    if width > 0:
+        host.metrics.width = width
+    if height > 0:
+        host.metrics.height = height
+    host.windowId = winId
+    host.pixels = nil
+    host.bufferBytes = 0
+    host.strideBytes = 0
+    host.running = true
+    host.pendingResponses = []
+    return host

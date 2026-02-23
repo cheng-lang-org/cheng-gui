@@ -1,0 +1,42 @@
+import cheng/gui/browser/r2capp/react_compat
+
+type
+    ThreeScene = ref
+        camera: str
+        lights: str[]
+        objects: str[]
+
+fn adapterId(): str =
+    return "three"
+
+fn newScene(camera: str): ThreeScene =
+    var scene: ThreeScene
+    new(scene)
+    scene.camera = camera
+    setLen[str](&scene.lights, 0)
+    setLen[str](&scene.objects, 0)
+    return scene
+
+fn addLight(scene: ThreeScene, light: str) =
+    if scene == nil:
+        return
+    let idx = len(scene.lights)
+    setLen[str](&scene.lights, idx + 1)
+    scene.lights[idx] = light
+
+fn addObject(scene: ThreeScene, objectId: str) =
+    if scene == nil:
+        return
+    let idx = len(scene.objects)
+    setLen[str](&scene.objects, idx + 1)
+    scene.objects[idx] = objectId
+
+fn renderScene(scene: ThreeScene, canvasId: str): react_compat.ReactNode =
+    var summary = "three-scene"
+    if scene != nil:
+        summary = summary + ":camera=" + scene.camera + ";lights=" + $len(scene.lights) + ";objects=" + $len(scene.objects)
+    return react_compat.createElement(
+        "canvas",
+        "{\"id\":\"" + canvasId + "\",\"data-three-native\":\"" + summary + "\"}",
+        []
+    )

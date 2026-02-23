@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 SRC_DEFAULT="/Users/lbcheng/UniMaker/ClaudeDesign"
-SRC="${CHENG_CLAUDE_SOURCE:-$SRC_DEFAULT}"
+SRC="${CLAUDE_SOURCE:-$SRC_DEFAULT}"
 DST="$ROOT/tests/claude_fixture"
 
 strict=0

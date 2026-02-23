@@ -103,7 +103,7 @@ fn envLower(name: str): str =
     return sutil.toLowerAscii(sutil.strip(nodeGetEnv(name)))
 
 fn preferP2PMode(): str =
-    let mode: str = envLower("CHENG_GAMES_P2P_MODE")
+    let mode: str = envLower("GAMES_P2P_MODE")
     if mode == "mock":
         return "mock"
     if mode == "real":
@@ -111,7 +111,7 @@ fn preferP2PMode(): str =
     return "real"
 
 fn allowMockFallback(): bool =
-    let raw: str = envLower("CHENG_GAMES_P2P_ALLOW_MOCK_FALLBACK")
+    let raw: str = envLower("GAMES_P2P_ALLOW_MOCK_FALLBACK")
     if raw == "0" || raw == "false" || raw == "no":
         return false
     return true

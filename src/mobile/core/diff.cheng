@@ -1,0 +1,54 @@
+import cheng/gui/mobile/core/types
+
+type
+    UiDiffResult =
+        changed: bool
+        oldNodeCount: int32
+        newNodeCount: int32
+        changedNodes: int32
+
+fn uiNodeCount(node: types.UiNode): int32 =
+    if node == nil:
+        return 0
+    var total: int32 = 1
+    if node.kind == types.unkContainer:
+        for i in 0..<len(node.children):
+            total = total + uiNodeCount(node.children[i])
+    return total
+
+fn uiNodesEqual(left, right: types.UiNode, changedRef: var int32): bool =
+    if left == nil && right == nil:
+        return true
+    if left == nil || right == nil:
+        changedRef = changedRef + 1
+        return false
+    if left.kind != right.kind:
+        changedRef = changedRef + 1
+        return false
+    if left.key != right.key:
+        changedRef = changedRef + 1
+        return false
+    if left.text != right.text:
+        changedRef = changedRef + 1
+        return false
+    if left.kind == types.unkContainer || right.kind == types.unkContainer:
+        if left.kind != right.kind:
+            changedRef = changedRef + 1
+            return false
+        if len(left.children) != len(right.children):
+            changedRef = changedRef + 1
+            return false
+
+        for i in 0..<len(left.children):
+            if !uiNodesEqual(left.children[i], right.children[i], changedRef):
+                return false
+    return true
+
+fn uiDiffTrees(oldRoot, newRoot: types.UiNode): UiDiffResult =
+    var out: UiDiffResult
+    out.oldNodeCount = uiNodeCount(oldRoot)
+    out.newNodeCount = uiNodeCount(newRoot)
+    out.changedNodes = 0
+    let equal: bool = uiNodesEqual(oldRoot, newRoot, out.changedNodes)
+    out.changed = !equal || out.oldNodeCount != out.newNodeCount
+    return out

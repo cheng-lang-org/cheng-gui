@@ -1,0 +1,135 @@
+import cheng/gui/mobile/core/types
+
+type
+    UiCommandKind = enum
+        uckRect
+        uckRRect
+        uckText
+        uckImage
+        uckClipPush
+        uckClipPop
+
+    UiCommand = ref
+        kind: UiCommandKind
+        rect: types.UiRect
+        color: uint32
+        radius: float64
+        text: str
+        fontPx: int32
+        imageRef: str
+
+    UiDisplayList = ref
+        commands: UiCommand[]
+
+fn uiNewDisplayList(): UiDisplayList =
+    var out: UiDisplayList
+    new out
+    out.commands = []
+    return out
+
+fn uiClearDisplayList(list: UiDisplayList) =
+    if list == nil:
+        return
+    list.commands = []
+
+fn uiPushRect(list: UiDisplayList, rect: types.UiRect, color: uint32) =
+    if list == nil:
+        return
+    var cmd: UiCommand
+    new cmd
+    cmd.kind = uckRect
+    cmd.rect.x = rect.x
+    cmd.rect.y = rect.y
+    cmd.rect.w = rect.w
+    cmd.rect.h = rect.h
+    cmd.color = color
+    cmd.radius = 0.0
+    cmd.text = ""
+    cmd.fontPx = 0
+    cmd.imageRef = ""
+    list.commands.add(cmd)
+
+fn uiPushRRect(list: UiDisplayList, rect: types.UiRect, radius: float64, color: uint32) =
+    if list == nil:
+        return
+    var cmd: UiCommand
+    new cmd
+    cmd.kind = uckRRect
+    cmd.rect.x = rect.x
+    cmd.rect.y = rect.y
+    cmd.rect.w = rect.w
+    cmd.rect.h = rect.h
+    cmd.color = color
+    cmd.radius = radius
+    cmd.text = ""
+    cmd.fontPx = 0
+    cmd.imageRef = ""
+    list.commands.add(cmd)
+
+fn uiPushText(list: UiDisplayList, x, y: int32, color: uint32, fontPx: int32, text: str) =
+    if list == nil:
+        return
+    var cmd: UiCommand
+    new cmd
+    cmd.kind = uckText
+    cmd.rect.x = float64(x)
+    cmd.rect.y = float64(y)
+    cmd.rect.w = 0.0
+    cmd.rect.h = 0.0
+    cmd.color = color
+    cmd.radius = 0.0
+    cmd.text = text
+    cmd.fontPx = fontPx
+    cmd.imageRef = ""
+    list.commands.add(cmd)
+
+fn uiPushImage(list: UiDisplayList, rect: types.UiRect, imageRef: str) =
+    if list == nil:
+        return
+    var cmd: UiCommand
+    new cmd
+    cmd.kind = uckImage
+    cmd.rect.x = rect.x
+    cmd.rect.y = rect.y
+    cmd.rect.w = rect.w
+    cmd.rect.h = rect.h
+    cmd.color = uint32(0)
+    cmd.radius = 0.0
+    cmd.text = ""
+    cmd.fontPx = 0
+    cmd.imageRef = imageRef
+    list.commands.add(cmd)
+
+fn uiPushClipPush(list: UiDisplayList, rect: types.UiRect) =
+    if list == nil:
+        return
+    var cmd: UiCommand
+    new cmd
+    cmd.kind = uckClipPush
+    cmd.rect.x = rect.x
+    cmd.rect.y = rect.y
+    cmd.rect.w = rect.w
+    cmd.rect.h = rect.h
+    cmd.color = uint32(0)
+    cmd.radius = 0.0
+    cmd.text = ""
+    cmd.fontPx = 0
+    cmd.imageRef = ""
+    list.commands.add(cmd)
+
+fn uiPushClipPop(list: UiDisplayList) =
+    if list == nil:
+        return
+    var cmd: UiCommand
+    new cmd
+    cmd.kind = uckClipPop
+    cmd.rect.x = 0.0
+    cmd.rect.y = 0.0
+    cmd.rect.w = 0.0
+    cmd.rect.h = 0.0
+    cmd.color = uint32(0)
+    cmd.radius = 0.0
+    cmd.text = ""
+    cmd.fontPx = 0
+    cmd.imageRef = ""
+    list.commands.add(cmd)

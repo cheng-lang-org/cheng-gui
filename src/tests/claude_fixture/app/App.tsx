@@ -9,6 +9,7 @@ import PublishContentPage from './components/PublishContentPage';
 import PublishProductPage from './components/PublishProductPage';
 import LiveStreamPage from './components/LiveStreamPage';
 import PublishAppPage from './components/PublishAppPage';
+import PublishAdPage from './components/PublishAdPage';
 import PublishFoodPage from './components/PublishFoodPage';
 import PublishRidePage from './components/PublishRidePage';
 import PublishJobPage from './components/PublishJobPage';
@@ -101,15 +102,9 @@ function AppContent() {
 
   useEffect(() => {
     let disposed = false;
-    let mdnsTimer: ReturnType<typeof setInterval> | null = null;
     let bootstrapTimer: ReturnType<typeof setInterval> | null = null;
     let peerIdSyncTimer: ReturnType<typeof setInterval> | null = null;
-    const runMdnsMaintenance = () => {
-      void libp2pService.mdnsSetEnabled(true);
-      void libp2pService.mdnsSetInterval(2);
-      void libp2pService.mdnsProbe();
-      void libp2pService.boostConnectivity().catch(() => false);
-    };
+    let discoveryStartupTimer: ReturnType<typeof setTimeout> | null = null;
     const runBootstrapMaintenance = () => {
       void libp2pService.bootstrapTick().catch(() => ({}));
     };
@@ -202,17 +197,13 @@ function AppContent() {
 
       // Start inbound handler
       await startInboundHandler();
-      // Delay the first probe slightly to avoid startup-time native contention.
-      window.setTimeout(() => {
+      discoveryStartupTimer = window.setTimeout(() => {
         if (!disposed) {
-          runMdnsMaintenance();
+          void libp2pService.setDiscoveryActive(true, 'app-startup').catch(() => false);
+          void libp2pService.boostConnectivity().catch(() => false);
           runBootstrapMaintenance();
         }
       }, 2000);
-      // mDNS probe loop: every 2s.
-      mdnsTimer = setInterval(() => {
-        runMdnsMaintenance();
-      }, 2_000);
       // Bootstrap maintenance stays coarse-grained to avoid unnecessary fanout.
       bootstrapTimer = setInterval(() => {
         runBootstrapMaintenance();
@@ -229,10 +220,6 @@ function AppContent() {
       stopDexSync();
       stopInboundHandler();
       libp2pEventPump.stop();
-      if (mdnsTimer) {
-        clearInterval(mdnsTimer);
-        mdnsTimer = null;
-      }
       if (bootstrapTimer) {
         clearInterval(bootstrapTimer);
         bootstrapTimer = null;
@@ -241,6 +228,11 @@ function AppContent() {
         clearInterval(peerIdSyncTimer);
         peerIdSyncTimer = null;
       }
+      if (discoveryStartupTimer) {
+        clearTimeout(discoveryStartupTimer);
+        discoveryStartupTimer = null;
+      }
+      void libp2pService.setDiscoveryActive(false, 'app-startup');
       void libp2pService.stop();
     };
   }, []);
@@ -279,6 +271,8 @@ function AppContent() {
         return <LiveStreamPage onClose={handleClosePublish} />;
       case 'app':
         return <PublishAppPage onClose={handleClosePublish} />;
+      case 'ad':
+        return <PublishAdPage onClose={handleClosePublish} />;
       case 'food':
         return <PublishFoodPage onClose={handleClosePublish} />;
       case 'ride':
@@ -400,12 +394,13 @@ function AppContent() {
           />
         );
       case 'messages':
-        return <MessagesPage onOpenApp={(appId, roomId) => setCurrentApp({ id: appId, roomId })} />;
+        return <MessagesPage onNavigate={handleHomeNavigate} onOpenApp={(appId, roomId) => setCurrentApp({ id: appId, roomId })} />;
       case 'nodes':
-        return <NodesPage />;
+        return <NodesPage onNavigate={handleHomeNavigate} onOpenApp={(appId) => setCurrentApp({ id: appId })} />;
       case 'profile':
         return (
           <ProfilePage
+            onNavigate={handleHomeNavigate}
             onOpenBazi={() => setCurrentApp({ id: 'bazi' })}
             onOpenEcom={() => setShowEcom(true)}
             onOpenMarketplace={() => setShowMarketplace(true)}

@@ -43,7 +43,7 @@
 ## 使用方式（本机）
 
 ```sh
-CHENG_ROOT=/Users/lbcheng/cheng-lang src/scripts/verify_native_gui.sh
+ROOT=/Users/lbcheng/cheng-lang src/scripts/verify_native_gui.sh
 ```
 
 可选参数：
@@ -56,8 +56,8 @@ CHENG_ROOT=/Users/lbcheng/cheng-lang src/scripts/verify_native_gui.sh
 ## 依赖与约束
 
 - `src/tooling/chengc.sh` 可用
-- 可选：`CHENG_BACKEND_DRIVER` 指向可运行 backend driver（未设置时脚本会自动探测）
-- `runtime/include` 可用（可用 `CHENG_C_INC` 覆盖）
+- 可选：`BACKEND_DRIVER` 指向可运行 backend driver（未设置时脚本会自动探测）
+- `runtime/include` 可用（可用 `C_INC` 覆盖）
 - macOS 需 `clang` 与系统框架（Cocoa/CoreGraphics/CoreText）
 - Android/iOS 仅验证 backend obj 产物，实际 App 打包需对应平台工程链路
 
@@ -65,7 +65,7 @@ CHENG_ROOT=/Users/lbcheng/cheng-lang src/scripts/verify_native_gui.sh
 
 - `cheng-mobile` 负责移动端平台桥接（JNI/NDK/iOS glue + Host 队列）。
 - `cheng-gui` 只保留 Cheng 侧 UI/渲染逻辑与 FFI 声明，不内置平台 C 代码。
-- UniMaker/Android 构建通过 `CHENG_MOBILE_ROOT` 引入独立包，未设置时回退本地副本。
+- UniMaker/Android 构建通过 `MOBILE_ROOT` 引入独立包，未设置时回退本地副本。
 
 ## 依赖关系与职责分层
 
@@ -76,7 +76,7 @@ CHENG_ROOT=/Users/lbcheng/cheng-lang src/scripts/verify_native_gui.sh
 
 ## 失败排查
 
-- backend 编译失败：检查 `CHENG_ROOT` / `src/tooling/chengc.sh` / `CHENG_PKG_ROOTS`
+- backend 编译失败：检查 `ROOT` / `src/tooling/chengc.sh` / `PKG_ROOTS`
 - 链接失败：检查平台编译器/系统库是否可用
 - 移动 obj 失败：检查目标 triple 与平台定义（android/ios）是否正确
 

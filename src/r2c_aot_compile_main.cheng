@@ -130,12 +130,12 @@ fn buildRuntimeSource(projectName: str): str =
     return out
 
 fn main(): int32 =
-    let inRoot = os.getEnv("CHENG_R2C_IN_ROOT")
-    let outRoot = os.getEnv("CHENG_R2C_OUT_ROOT")
-    let entry = os.getEnv("CHENG_R2C_ENTRY")
-    let profile = os.getEnv("CHENG_R2C_PROFILE")
-    let projectName = os.getEnv("CHENG_R2C_PROJECT_NAME")
-    let strictEnv = os.getEnv("CHENG_R2C_STRICT")
+    let inRoot = os.getEnv("R2C_IN_ROOT")
+    let outRoot = os.getEnv("R2C_OUT_ROOT")
+    let entry = os.getEnv("R2C_ENTRY")
+    let profile = os.getEnv("R2C_PROFILE")
+    let projectName = os.getEnv("R2C_PROJECT_NAME")
+    let strictEnv = os.getEnv("R2C_STRICT")
 
     if len(outRoot) == 0:
         return int32(3)

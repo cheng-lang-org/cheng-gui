@@ -100,8 +100,9 @@ fn utfZhRoundtripStrict(text: str): UtfZhRoundtripResult =
         result.lastError = canonical.message
         utfzhBridgeErr = result.lastError
         return result
-    # In strict mode we preserve caller text to avoid codepoint-equivalent display drift.
-    result.text = text
+    # Strict mode returns the decode result from UTF-ZH bytes.
+    # This keeps rendering/input paths aligned with compact UTF-ZH roundtrip output.
+    result.text = decoded.text
     result.ok = true
     result.lastError = ""
     utfzhBridgeErr = ""

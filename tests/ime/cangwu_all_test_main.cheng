@@ -17,35 +17,39 @@ fn miniDict(): UtfZhDict =
 
     add(dict.chars, utfzhEncodeUtf8Codepoint(20013))
     add(dict.codepoints, 20013)
-    var e1: CwIntMapEntry
-    e1.key = "20013"
-    e1.value = 0
-    add(dict.cpToIndex, e1)
 
     add(dict.chars, utfzhEncodeUtf8Codepoint(25991))
     add(dict.codepoints, 25991)
-    var e2: CwIntMapEntry
-    e2.key = "25991"
-    e2.value = 1
-    add(dict.cpToIndex, e2)
     return dict
 
 fn miniLegacyAssets(): LegacyAssets =
     var assets: LegacyAssets
     assets.gbkToUnicode = []
     assets.gb2312ToUnicode = []
+    assets.gbkKeys = []
+    assets.gbkVals = []
+    assets.gb2312Keys = []
+    assets.gb2312Vals = []
 
     var g1: CwIntMapEntry
     g1.key = "D6D0"
     g1.value = 0x4E2D
     add(assets.gbkToUnicode, g1)
     add(assets.gb2312ToUnicode, g1)
+    add(assets.gbkKeys, 0xD6D0)
+    add(assets.gbkVals, 0x4E2D)
+    add(assets.gb2312Keys, 0xD6D0)
+    add(assets.gb2312Vals, 0x4E2D)
 
     var g2: CwIntMapEntry
     g2.key = "CEC4"
     g2.value = 0x6587
     add(assets.gbkToUnicode, g2)
     add(assets.gb2312ToUnicode, g2)
+    add(assets.gbkKeys, 0xCEC4)
+    add(assets.gbkVals, 0x6587)
+    add(assets.gb2312Keys, 0xCEC4)
+    add(assets.gb2312Vals, 0x6587)
     return assets
 
 fn miniAssets(): CwAssets =

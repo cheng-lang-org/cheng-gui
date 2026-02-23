@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export CHENG_GUI_ROOT="$ROOT"
+export GUI_ROOT="$ROOT"
 
 host="$(uname -s)"
 if [ "$host" != "Darwin" ]; then
@@ -36,15 +36,15 @@ done
 out_dir="$ROOT/build/r2c_visual_desktop"
 mkdir -p "$out_dir"
 compile_out="$out_dir/claude_visual"
-batch_single_run="${CHENG_R2C_BATCH_SINGLE_RUN:-0}"
-rebuild_desktop="${CHENG_R2C_REBUILD_DESKTOP:-1}"
+batch_single_run="${R2C_BATCH_SINGLE_RUN:-0}"
+rebuild_desktop="${R2C_REBUILD_DESKTOP:-1}"
 
-export CHENG_R2C_PROFILE="claude"
-export CHENG_R2C_REUSE_RUNTIME_BINS="${CHENG_R2C_REUSE_RUNTIME_BINS:-0}"
-export CHENG_BACKEND_JOBS="${CHENG_BACKEND_JOBS:-16}"
-export CHENG_BACKEND_WHOLE_PROGRAM="${CHENG_BACKEND_WHOLE_PROGRAM:-0}"
-export CHENG_R2C_DESKTOP_FRONTEND="${CHENG_R2C_DESKTOP_FRONTEND:-stage1}"
-export CHENG_STRICT_GATE_CONTEXT=1
+export R2C_PROFILE="claude"
+export R2C_REUSE_RUNTIME_BINS="${R2C_REUSE_RUNTIME_BINS:-0}"
+export BACKEND_JOBS="${BACKEND_JOBS:-16}"
+export BACKEND_WHOLE_PROGRAM="${BACKEND_WHOLE_PROGRAM:-0}"
+export R2C_DESKTOP_FRONTEND="${R2C_DESKTOP_FRONTEND:-stage1}"
+export STRICT_GATE_CONTEXT=1
 if [ "$rebuild_desktop" = "1" ]; then
   rm -f "$compile_out/r2c_app_macos" "$compile_out/r2capp_platform_artifacts/macos/r2c_app_macos" "$compile_out/r2capp_platform_artifacts/macos/r2c_app_macos.o"
 fi
@@ -117,14 +117,14 @@ run_state_legacy() {
   local drawlist_out="$out_dir/${state}.drawlist.txt"
   local framehash_out="$out_dir/${state}.framehash.txt"
 
-  CHENG_GUI_FORCE_FALLBACK="${CHENG_GUI_FORCE_FALLBACK:-1}" \
-  CHENG_R2C_APP_URL="about:blank" \
-  CHENG_R2C_APP_EVENT_SCRIPT="$event_file" \
-  CHENG_R2C_APP_SNAPSHOT_OUT="$snapshot_out" \
-  CHENG_R2C_APP_STATE_OUT="$state_out" \
-  CHENG_R2C_APP_DRAWLIST_OUT="$drawlist_out" \
-  CHENG_R2C_APP_FRAME_HASH_OUT="$framehash_out" \
-  CHENG_R2C_DESKTOP_AUTOCLOSE_MS="140" \
+  GUI_FORCE_FALLBACK="${GUI_FORCE_FALLBACK:-1}" \
+  R2C_APP_URL="about:blank" \
+  R2C_APP_EVENT_SCRIPT="$event_file" \
+  R2C_APP_SNAPSHOT_OUT="$snapshot_out" \
+  R2C_APP_STATE_OUT="$state_out" \
+  R2C_APP_DRAWLIST_OUT="$drawlist_out" \
+  R2C_APP_FRAME_HASH_OUT="$framehash_out" \
+  R2C_DESKTOP_AUTOCLOSE_MS="140" \
     "$app_bin" >/dev/null 2>&1
 
   run_state "$state"
@@ -214,12 +214,12 @@ $(cat "$events_profile")
 $(cat "$events_trading")
 EOF
 
-  CHENG_GUI_FORCE_FALLBACK="${CHENG_GUI_FORCE_FALLBACK:-1}" \
-  CHENG_GUI_USE_REAL_MAC="${CHENG_GUI_USE_REAL_MAC:-0}" \
-  CHENG_R2C_APP_URL="about:blank" \
-  CHENG_R2C_APP_EVENT_MATRIX="$batch_matrix" \
-  CHENG_R2C_APP_BATCH_OUT_DIR="$out_dir" \
-  CHENG_R2C_DESKTOP_AUTOCLOSE_MS="1" \
+  GUI_FORCE_FALLBACK="${GUI_FORCE_FALLBACK:-1}" \
+  GUI_USE_REAL_MAC="${GUI_USE_REAL_MAC:-0}" \
+  R2C_APP_URL="about:blank" \
+  R2C_APP_EVENT_MATRIX="$batch_matrix" \
+  R2C_APP_BATCH_OUT_DIR="$out_dir" \
+  R2C_DESKTOP_AUTOCLOSE_MS="1" \
     "$app_bin" >/dev/null 2>&1
 
   run_state "lang_select"
@@ -239,11 +239,11 @@ else
   run_state_legacy "trading" "$events_trading"
 fi
 
-if [ "${CHENG_R2C_SINGLE_POPUP_VERIFY:-0}" = "1" ]; then
-  CHENG_GUI_FORCE_FALLBACK=0 \
-  CHENG_R2C_APP_URL="about:blank" \
-  CHENG_R2C_APP_EVENT_SCRIPT="$events_trading" \
-  CHENG_R2C_DESKTOP_AUTOCLOSE_MS="${CHENG_R2C_SINGLE_POPUP_AUTOCLOSE_MS:-1200}" \
+if [ "${R2C_SINGLE_POPUP_VERIFY:-0}" = "1" ]; then
+  GUI_FORCE_FALLBACK=0 \
+  R2C_APP_URL="about:blank" \
+  R2C_APP_EVENT_SCRIPT="$events_trading" \
+  R2C_DESKTOP_AUTOCLOSE_MS="${R2C_SINGLE_POPUP_AUTOCLOSE_MS:-1200}" \
     "$app_bin" >/dev/null 2>&1 || true
 fi
 
@@ -263,7 +263,7 @@ if ! grep -Fq "TAB:profile" "$out_dir/profile.snapshot.txt"; then
   echo "[verify-claude-visual] profile snapshot missing TAB:profile" >&2
   exit 1
 fi
-if [ "${CHENG_R2C_STRICT_PROFILE_MARKERS:-0}" = "1" ]; then
+if [ "${R2C_STRICT_PROFILE_MARKERS:-0}" = "1" ]; then
   if ! grep -Fq "CLIPBOARD:CLIPBOARD_OK" "$out_dir/profile.snapshot.txt"; then
     echo "[verify-claude-visual] profile snapshot missing clipboard marker" >&2
     exit 1

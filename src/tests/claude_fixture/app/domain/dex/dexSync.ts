@@ -1,12 +1,21 @@
 import { getCurrentPolicyGroupId } from '../../utils/region';
 import { getFeatureFlag } from '../../utils/featureFlags';
 import { getWalletPrivateKey, loadWallets } from '../../utils/walletChains';
+import { clearSessionVault, loadSessionVault, saveSessionVault } from '../../utils/sessionVault';
 import { getLibp2pRuntime, type RuntimeEvent } from '../../libp2p/runtime';
 import { libp2pService } from '../../libp2p/service';
 import { submitSignedTx } from '../rwad/rwadGateway';
 import { signDexEnvelopePayload } from './codec';
 import { DexC2CBridgeService, runDexToC2CFallback, type C2CToDexHedgeSignal } from './c2cBridge';
 import { checkDailyLimit, consumeDailyLimit } from './limitEngine';
+import { createMemorySecureSigner, type MemorySecureSigner } from './sessionSigner';
+import {
+  computeSessionPolicyRef,
+  consumeSessionPolicyExposure,
+  getSessionPolicyExposure,
+  policyGateCanExecute,
+  validatePolicy,
+} from './sessionPolicyEngine';
 import {
   DEX_MARKETS,
   getDexMakerFundConfig,
@@ -41,6 +50,8 @@ import {
   type DexOrderRecord,
   type DexOrderType,
   type DexSide,
+  type SecureSigner,
+  type SessionContext,
   type DexSignerIdentity,
   type DexSnapshot,
   type DexTimeInForce,
@@ -79,6 +90,20 @@ interface SettleResult {
   state?: 'PENDING' | 'LOCKED' | 'RELEASED' | 'FAILED';
   reason?: string;
 }
+
+export interface DexAsiSessionState {
+  enabled: boolean;
+  active: boolean;
+  sessionId: string;
+  expiresAt: number;
+  signerMode: 'session' | 'root';
+  policyRef: string;
+  consumedRWAD: number;
+  remainingRWAD: number;
+  reason?: string;
+}
+
+type DexAsiSessionListener = (state: DexAsiSessionState) => void;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -158,6 +183,11 @@ class DexSyncService {
   };
   private recentMatchConfirmLatencies: number[] = [];
   private c2cBridge = new DexC2CBridgeService();
+  private asiSessionEnabled = false;
+  private asiSessionContext: SessionContext | null = null;
+  private asiPolicyRef = '';
+  private asiSigner: MemorySecureSigner | null = null;
+  private asiListeners = new Set<DexAsiSessionListener>();
 
   subscribe(listener: DexListener): () => void {
     this.listeners.add(listener);
@@ -178,6 +208,80 @@ class DexSyncService {
     };
   }
 
+  subscribeAsiSession(listener: DexAsiSessionListener): () => void {
+    this.asiListeners.add(listener);
+    listener(this.getAsiSessionState());
+    return () => {
+      this.asiListeners.delete(listener);
+    };
+  }
+
+  getAsiSessionState(): DexAsiSessionState {
+    if (!this.asiSessionEnabled || !this.asiSessionContext) {
+      return {
+        enabled: this.asiSessionEnabled,
+        active: false,
+        sessionId: '',
+        expiresAt: 0,
+        signerMode: 'root',
+        policyRef: '',
+        consumedRWAD: 0,
+        remainingRWAD: 500,
+      };
+    }
+    const exposure = getSessionPolicyExposure(this.asiSessionContext);
+    return {
+      enabled: this.asiSessionEnabled,
+      active: this.asiSessionContext.policy.expiresAt > Date.now(),
+      sessionId: this.asiSessionContext.policy.sessionId,
+      expiresAt: this.asiSessionContext.policy.expiresAt,
+      signerMode: this.asiSessionContext.signerMode,
+      policyRef: this.asiPolicyRef,
+      consumedRWAD: exposure.consumedRWAD,
+      remainingRWAD: exposure.remainingRWAD,
+    };
+  }
+
+  private emitAsiState(reason?: string): void {
+    const next = this.getAsiSessionState();
+    const payload = reason ? { ...next, reason } : next;
+    for (const listener of this.asiListeners) {
+      listener(payload);
+    }
+    metric('asi_session_state', {
+      enabled: payload.enabled ? 1 : 0,
+      active: payload.active ? 1 : 0,
+      sessionId: payload.sessionId,
+      expiresAt: payload.expiresAt,
+      consumed: payload.consumedRWAD,
+      remaining: payload.remainingRWAD,
+      reason: payload.reason ?? '',
+    });
+  }
+
+  private resolveAsiSigner(signer: DexSignerIdentity): MemorySecureSigner {
+    if (this.asiSigner) {
+      return this.asiSigner;
+    }
+    this.asiSigner = createMemorySecureSigner(signer.privateKeyPkcs8, signer.address);
+    return this.asiSigner;
+  }
+
+  private restoreAsiSessionIfNeeded(): void {
+    const restored = loadSessionVault();
+    if (!restored || !this.defaultSigner) {
+      return;
+    }
+    if (restored.sessionContext.policy.walletId !== this.defaultSigner.address) {
+      clearSessionVault();
+      return;
+    }
+    this.asiSessionContext = restored.sessionContext;
+    this.asiPolicyRef = restored.policyHash || computeSessionPolicyRef(restored.sessionContext.policy);
+    this.asiSessionEnabled = true;
+    this.emitAsiState('session_restored');
+  }
+
   async start(): Promise<boolean> {
     if (this.started) {
       return true;
@@ -195,6 +299,7 @@ class DexSyncService {
     }
 
     await this.ensureDefaultSigner();
+    this.restoreAsiSessionIfNeeded();
     this.subscribeTopics();
     await this.refreshFeedSnapshot();
     await this.refreshDiscovery();
@@ -266,7 +371,97 @@ class DexSyncService {
   }
 
   setDefaultSigner(signer: DexSignerIdentity | null): void {
+    const prevAddress = this.defaultSigner?.address ?? '';
     this.defaultSigner = signer;
+    this.asiSigner = null;
+    if (!signer) {
+      this.disableAsiSession('signer_cleared');
+      return;
+    }
+    if (this.asiSessionContext && this.asiSessionContext.policy.walletId !== signer.address) {
+      this.disableAsiSession('wallet_changed');
+      return;
+    }
+    if (!this.asiSessionContext && prevAddress !== signer.address) {
+      this.restoreAsiSessionIfNeeded();
+    }
+  }
+
+  async enableAsiSession(): Promise<{ ok: boolean; reason?: string; state?: DexAsiSessionState }> {
+    const signer = this.defaultSigner;
+    if (!signer) {
+      return { ok: false, reason: 'missing_signer' };
+    }
+    const secureSigner = this.resolveAsiSigner(signer);
+    try {
+      const issued = await secureSigner.issueSession(signer.address);
+      this.asiSessionContext = issued.sessionContext;
+      this.asiPolicyRef = issued.policyRef;
+      this.asiSessionEnabled = true;
+      saveSessionVault({
+        sessionContext: issued.sessionContext,
+        policyHash: issued.policyRef,
+      });
+      this.emitAsiState('session_enabled');
+      metric('asi_session_start_count', { value: 1, signer: signer.address, sessionId: issued.sessionContext.policy.sessionId });
+      return {
+        ok: true,
+        state: this.getAsiSessionState(),
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'session_issue_failed';
+      this.emitAsiState(reason);
+      return { ok: false, reason };
+    }
+  }
+
+  disableAsiSession(reason = 'session_disabled'): void {
+    const sessionId = this.asiSessionContext?.policy.sessionId ?? '';
+    if (sessionId && this.asiSigner) {
+      void this.asiSigner.destroySession(sessionId);
+    }
+    this.asiSessionEnabled = false;
+    this.asiSessionContext = null;
+    this.asiPolicyRef = '';
+    clearSessionVault();
+    this.emitAsiState(reason);
+  }
+
+  private ensureSessionActive(signer: DexSignerIdentity): { ok: boolean; reason?: string } {
+    if (!this.asiSessionEnabled) {
+      return { ok: true };
+    }
+    if (!this.asiSessionContext) {
+      return { ok: false, reason: 'asi_session_missing' };
+    }
+    if (this.asiSessionContext.policy.walletId !== signer.address) {
+      return { ok: false, reason: 'asi_wallet_mismatch' };
+    }
+    if (this.asiSessionContext.policy.expiresAt <= Date.now()) {
+      this.disableAsiSession('session_expired');
+      metric('asi_session_expiry_count', { value: 1, signer: signer.address });
+      return { ok: false, reason: 'asi_session_expired' };
+    }
+    return { ok: true };
+  }
+
+  private activeSessionContext(signer: DexSignerIdentity): SessionContext | null {
+    const ready = this.ensureSessionActive(signer);
+    if (!ready.ok) {
+      return null;
+    }
+    return this.asiSessionEnabled ? this.asiSessionContext : null;
+  }
+
+  private resolveSessionSigner(): SecureSigner | null {
+    if (this.asiSigner) {
+      return this.asiSigner;
+    }
+    if (!this.defaultSigner) {
+      return null;
+    }
+    this.asiSigner = createMemorySecureSigner(this.defaultSigner.privateKeyPkcs8, this.defaultSigner.address);
+    return this.asiSigner;
   }
 
   async submitOrder(input: SubmitDexOrderInput, signerOverride?: DexSignerIdentity): Promise<SubmitDexOrderResult> {
@@ -278,6 +473,15 @@ class DexSyncService {
     const signer = signerOverride ?? this.defaultSigner;
     if (!signer) {
       return { ok: false, reason: 'missing_signer' };
+    }
+    const sessionReady = this.ensureSessionActive(signer);
+    if (!sessionReady.ok) {
+      return { ok: false, reason: sessionReady.reason ?? 'asi_session_unavailable' };
+    }
+    const sessionContext = this.activeSessionContext(signer);
+    const sessionSigner = this.resolveSessionSigner();
+    if (sessionContext && !sessionSigner) {
+      return { ok: false, reason: 'asi_session_signer_unavailable' };
     }
 
     const market = getDexMarketConfigById(input.marketId);
@@ -325,6 +529,53 @@ class DexSyncService {
       ? quotePriceWithSpread(mid, input.side, spread.effectiveSpreadBps)
       : input.price ?? quotePriceWithSpread(mid || 1, input.side, spread.effectiveSpreadBps);
     const price = derivedPrice > 0 ? roundToTick(derivedPrice, market.tickSize) : undefined;
+    const estimatedNotionalRWAD = Number((qty * Math.max(0, price ?? mid ?? 0)).toFixed(8));
+
+    if (sessionContext) {
+      if (estimatedNotionalRWAD <= 0) {
+        metric('asi_policy_reject_count', {
+          value: 1,
+          reason: 'POLICY_DENIED_AMOUNT',
+          action: 'placeLimitOrder',
+          marketId: input.marketId,
+        });
+        metric('asi_reject_reason_rate', {
+          reason: 'POLICY_DENIED_AMOUNT',
+          action: 'placeLimitOrder',
+          marketId: input.marketId,
+          value: 1,
+        });
+        return {
+          ok: false,
+          reason: 'POLICY_DENIED_AMOUNT',
+        };
+      }
+      const policyCheck = policyGateCanExecute({
+        sessionContext,
+        contract: 'unimaker.dex',
+        method: 'placeLimitOrder',
+        txKind: 'order',
+        amountRWAD: estimatedNotionalRWAD,
+      });
+      if (!policyCheck.ok) {
+        metric('asi_policy_reject_count', {
+          value: 1,
+          reason: policyCheck.code ?? policyCheck.reason ?? 'POLICY_DENIED_INVALID_POLICY',
+          action: 'placeLimitOrder',
+          marketId: input.marketId,
+        });
+        metric('asi_reject_reason_rate', {
+          reason: policyCheck.code ?? policyCheck.reason ?? 'POLICY_DENIED_INVALID_POLICY',
+          action: 'placeLimitOrder',
+          marketId: input.marketId,
+          value: 1,
+        });
+        return {
+          ok: false,
+          reason: policyCheck.code ?? policyCheck.reason ?? 'POLICY_DENIED_INVALID_POLICY',
+        };
+      }
+    }
 
     const now = Date.now();
     const orderPayload: DexOrderRecord = {
@@ -348,7 +599,7 @@ class DexSyncService {
       source: 'local',
     };
 
-    const published = await this.publishOrder(orderPayload, signer);
+    const published = await this.publishOrder(orderPayload, signer, sessionContext, sessionSigner);
     if (!published) {
       return {
         ok: false,
@@ -373,9 +624,36 @@ class DexSyncService {
       };
     }
 
+    if (sessionContext) {
+      const consumedSession = consumeSessionPolicyExposure(sessionContext, estimatedNotionalRWAD);
+      if (!consumedSession.ok) {
+        dexOrderbookStore.patchOrder(orderPayload.orderId, {
+          status: 'REJECTED',
+          settlementState: 'FAILED',
+        });
+        metric('asi_policy_reject_count', {
+          value: 1,
+          reason: consumedSession.code ?? consumedSession.reason ?? 'POLICY_DENIED_LIMIT',
+          action: 'placeLimitOrder',
+          marketId: input.marketId,
+        });
+        metric('asi_reject_reason_rate', {
+          reason: consumedSession.code ?? consumedSession.reason ?? 'POLICY_DENIED_LIMIT',
+          action: 'placeLimitOrder',
+          marketId: input.marketId,
+          value: 1,
+        });
+        return {
+          ok: false,
+          reason: consumedSession.code ?? consumedSession.reason ?? 'POLICY_DENIED_LIMIT',
+        };
+      }
+      this.emitAsiState('session_exposure_consumed');
+    }
+
     metric('dex_order_submit_total', { marketId: input.marketId, side: input.side, type: input.type, tif: timeInForce });
 
-    const matchResult = await this.tryMatch(orderPayload.orderId, signer);
+    const matchResult = await this.tryMatch(orderPayload.orderId, signer, sessionContext, sessionSigner);
     await this.publishDepthFromOpenOrders(input.marketId, signer);
 
     if (matchResult.filledQty <= 0 && getFeatureFlag('dex_c2c_bridge_v1', true) && shouldAllowFallback(input)) {
@@ -537,39 +815,61 @@ class DexSyncService {
     return next;
   }
 
-  private async publishOrder(order: DexOrderRecord, signer: DexSignerIdentity): Promise<boolean> {
-    const envelope = await signDexEnvelopePayload({
-      schema: DEX_TOPICS.order,
-      topic: DEX_TOPICS.order,
-      signer: signer.address,
-      privateKeyPkcs8: signer.privateKeyPkcs8,
-      payload: {
-        orderId: order.orderId,
-        clientOrderId: order.clientOrderId,
-        marketId: order.marketId,
-        side: order.side,
-        type: order.type,
-        timeInForce: order.timeInForce,
-        price: order.price,
-        qty: order.qty,
-        remainingQty: order.remainingQty,
-        makerAddress: order.makerAddress,
-        makerPeerId: order.makerPeerId,
-        createdAtMs: order.createdAtMs,
-        expiresAtMs: order.expiresAtMs,
-        metadata: order.metadata,
-      } as unknown as JsonValue,
-    });
-    dexOrderbookStore.applyVerifiedEnvelope(envelope, 'local');
-    const published = await this.runtime.publish(DEX_TOPICS.order, envelope as unknown as JsonValue);
-    if (!published) {
-      dexOrderbookStore.patchOrder(order.orderId, {
-        status: 'REJECTED',
-        settlementState: 'FAILED',
+  private async publishOrder(
+    order: DexOrderRecord,
+    signer: DexSignerIdentity,
+    sessionContext: SessionContext | null,
+    sessionSigner: SecureSigner | null,
+  ): Promise<boolean> {
+    try {
+      const usingSession = Boolean(sessionContext && sessionSigner);
+      const policyRef = sessionContext ? computeSessionPolicyRef(sessionContext.policy) : undefined;
+      const envelope = await signDexEnvelopePayload({
+        schema: DEX_TOPICS.order,
+        topic: DEX_TOPICS.order,
+        signer: usingSession ? sessionContext!.policy.sessionPubKey : signer.address,
+        privateKeyPkcs8: usingSession ? undefined : signer.privateKeyPkcs8,
+        signBytes: usingSession
+          ? (payload) => sessionSigner!.signEnvelope(sessionContext!, payload)
+          : undefined,
+        sessionContext: usingSession ? sessionContext! : undefined,
+        policyRef: usingSession ? policyRef : undefined,
+        payload: {
+          orderId: order.orderId,
+          clientOrderId: order.clientOrderId,
+          marketId: order.marketId,
+          side: order.side,
+          type: order.type,
+          timeInForce: order.timeInForce,
+          price: order.price,
+          qty: order.qty,
+          remainingQty: order.remainingQty,
+          makerAddress: order.makerAddress,
+          makerPeerId: order.makerPeerId,
+          createdAtMs: order.createdAtMs,
+          expiresAtMs: order.expiresAtMs,
+          metadata: order.metadata,
+        } as unknown as JsonValue,
       });
+      if (usingSession) {
+        const policy = validatePolicy(sessionContext!, envelope);
+        if (!policy.ok) {
+          return false;
+        }
+      }
+      dexOrderbookStore.applyVerifiedEnvelope(envelope, 'local');
+      const published = await this.runtime.publish(DEX_TOPICS.order, envelope as unknown as JsonValue);
+      if (!published) {
+        dexOrderbookStore.patchOrder(order.orderId, {
+          status: 'REJECTED',
+          settlementState: 'FAILED',
+        });
+        return false;
+      }
+      return true;
+    } catch {
       return false;
     }
-    return true;
   }
 
   private sortedRestingOpposites(order: DexOrderRecord): DexOrderRecord[] {
@@ -625,7 +925,12 @@ class DexSyncService {
     return normalizeQty(order.qty - remaining);
   }
 
-  private async tryMatch(orderId: string, signer: DexSignerIdentity): Promise<{ filledQty: number }> {
+  private async tryMatch(
+    orderId: string,
+    signer: DexSignerIdentity,
+    sessionContext: SessionContext | null,
+    sessionSigner: SecureSigner | null,
+  ): Promise<{ filledQty: number }> {
     let taker = dexOrderbookStore.getSnapshot().orders.find((item) => item.orderId === orderId);
     if (!taker) {
       return { filledQty: 0 };
@@ -679,13 +984,29 @@ class DexSyncService {
       };
       const takerOrder = taker;
 
-      const matchEnvelope = await signDexEnvelopePayload({
-        schema: DEX_TOPICS.match,
-        topic: DEX_TOPICS.match,
-        signer: signer.address,
-        privateKeyPkcs8: signer.privateKeyPkcs8,
-        payload: match as unknown as JsonValue,
-      });
+      let matchEnvelope: Awaited<ReturnType<typeof signDexEnvelopePayload>> | null = null;
+      try {
+        matchEnvelope = await signDexEnvelopePayload({
+          schema: DEX_TOPICS.match,
+          topic: DEX_TOPICS.match,
+          signer: sessionContext && sessionSigner ? sessionContext.policy.sessionPubKey : signer.address,
+          privateKeyPkcs8: sessionContext && sessionSigner ? undefined : signer.privateKeyPkcs8,
+          signBytes: sessionContext && sessionSigner
+            ? (payload) => sessionSigner.signEnvelope(sessionContext, payload)
+            : undefined,
+          sessionContext: sessionContext ?? undefined,
+          policyRef: sessionContext ? computeSessionPolicyRef(sessionContext.policy) : undefined,
+          payload: match as unknown as JsonValue,
+        });
+      } catch {
+        break;
+      }
+      if (sessionContext) {
+        const policy = validatePolicy(sessionContext, matchEnvelope);
+        if (!policy.ok) {
+          return { filledQty: taker.filledQty };
+        }
+      }
       dexOrderbookStore.applyVerifiedEnvelope(matchEnvelope, 'local');
       await this.runtime.publish(DEX_TOPICS.match, matchEnvelope as unknown as JsonValue);
       metric('dex_match_total', {
@@ -694,7 +1015,7 @@ class DexSyncService {
       });
 
       const updatedTaker = dexOrderbookStore.getSnapshot().orders.find((item) => item.orderId === takerOrder.orderId);
-      const settled = await this.settleMatch(match, takerOrder, maker, signer);
+      const settled = await this.settleMatch(match, takerOrder, maker, signer, sessionContext, sessionSigner);
       if (!settled.ok) {
         metric('dex_settle_failed_total', {
           marketId: takerOrder.marketId,
@@ -737,6 +1058,8 @@ class DexSyncService {
     taker: DexOrderRecord,
     maker: DexOrderRecord,
     signer: DexSignerIdentity,
+    sessionContext: SessionContext | null,
+    sessionSigner: SecureSigner | null,
   ): Promise<SettleResult> {
     if (signer.address !== taker.makerAddress && signer.address !== maker.makerAddress) {
       return { ok: true };
@@ -754,10 +1077,37 @@ class DexSyncService {
 
     // Buyer side signs escrow lock.
     if (signer.address === buyOrder.makerAddress || buyOrder.makerAddress === sellOrder.makerAddress) {
+      if (sessionContext) {
+        const settlePolicy = policyGateCanExecute({
+          sessionContext,
+          contract: 'unimaker.dex',
+          method: 'settleMatch',
+          txKind: 'settle',
+          amountRWAD: match.notionalQuote,
+        });
+        if (!settlePolicy.ok) {
+          metric('asi_policy_reject_count', {
+            value: 1,
+            reason: settlePolicy.code ?? settlePolicy.reason ?? 'POLICY_DENIED_INVALID_POLICY',
+            action: 'settleMatch',
+            marketId: match.marketId,
+          });
+          metric('asi_reject_reason_rate', {
+            reason: settlePolicy.code ?? settlePolicy.reason ?? 'POLICY_DENIED_INVALID_POLICY',
+            action: 'settleMatch',
+            marketId: match.marketId,
+            value: 1,
+          });
+          return { ok: false, reason: settlePolicy.code ?? settlePolicy.reason ?? 'POLICY_DENIED_INVALID_POLICY' };
+        }
+      }
       const lock = await submitSignedTx({
         chainId: 'rwad-main',
         sender: signer.address,
         privateKeyPkcs8: signer.privateKeyPkcs8,
+        sessionContext: sessionContext ?? undefined,
+        secureSigner: sessionContext ? sessionSigner ?? undefined : undefined,
+        policyRef: sessionContext ? computeSessionPolicyRef(sessionContext.policy) : undefined,
         txType: 'rwad_escrow_lock',
         payload: {
           escrow_id: escrowId,
@@ -967,6 +1317,22 @@ export function setDexDefaultSigner(signer: DexSignerIdentity | null): void {
 
 export function getDexDefaultSigner(): DexSignerIdentity | null {
   return dexSync.getDefaultSigner();
+}
+
+export function enableDexAsiSession(): Promise<{ ok: boolean; reason?: string; state?: DexAsiSessionState }> {
+  return dexSync.enableAsiSession();
+}
+
+export function disableDexAsiSession(reason?: string): void {
+  dexSync.disableAsiSession(reason);
+}
+
+export function getDexAsiSessionState(): DexAsiSessionState {
+  return dexSync.getAsiSessionState();
+}
+
+export function subscribeDexAsiSessionState(listener: (state: DexAsiSessionState) => void): () => void {
+  return dexSync.subscribeAsiSession(listener);
 }
 
 export function getDexOrderbookStore(): DexOrderbookStore {

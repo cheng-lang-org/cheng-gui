@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 #if defined(__GNUC__)
-#define CHENG_WEAK __attribute__((weak))
+#define WEAK __attribute__((weak))
 #else
-#define CHENG_WEAK
+#define WEAK
 #endif
 
 #include <stdio.h>
@@ -14,6 +14,20 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <stdint.h>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#endif
+
+typedef struct ChengStrHeaderCompat {
+    int32_t len;
+    int32_t cap;
+    const char* buffer;
+} ChengStrHeaderCompat;
+
+typedef struct ChengStrView {
+    const char* ptr;
+    size_t len;
+} ChengStrView;
 
 static inline const char* cheng_recover_cstr(const char* s) {
     uintptr_t raw = (uintptr_t)s;
@@ -27,145 +41,260 @@ static inline const char* cheng_recover_cstr(const char* s) {
     return (const char*)raw;
 }
 
-// Compatibility entrypoints expected by generated MVP runtime objects.
-CHENG_WEAK int __cheng_str_eq(const char* lhs, const char* rhs) {
-    lhs = cheng_recover_cstr(lhs);
-    rhs = cheng_recover_cstr(rhs);
-    if (lhs == rhs) {
-        return 1;
+static ChengStrView cheng_view_string(const char* s) {
+    ChengStrView v;
+    v.ptr = "";
+    v.len = 0u;
+    const char* raw = cheng_recover_cstr(s);
+    if (raw == NULL) {
+        return v;
     }
-    if (lhs == NULL || rhs == NULL) {
-        return 0;
-    }
-    return strcmp(lhs, rhs) == 0 ? 1 : 0;
+    // Current bridge path uses cstring lowering; treating every incoming `str`
+    // as C string avoids probing past short getenv() buffers.
+    v.ptr = raw;
+    v.len = strlen(raw);
+    return v;
 }
 
-CHENG_WEAK const char* __cheng_sym_2b(const char* lhs, const char* rhs) {
-    lhs = cheng_recover_cstr(lhs);
-    rhs = cheng_recover_cstr(rhs);
-    if (lhs == NULL) {
-        lhs = "";
-    }
-    if (rhs == NULL) {
-        rhs = "";
-    }
-    size_t lhs_len = strlen(lhs);
-    size_t rhs_len = strlen(rhs);
-    size_t total = lhs_len + rhs_len + 1u;
-    char* out = (char*)malloc(total);
+static char* cheng_copy_cstr(const char* s) {
+    ChengStrView v = cheng_view_string(s);
+    char* out = (char*)malloc(v.len + 1u);
     if (out == NULL) {
-        return lhs;
+        return NULL;
     }
-    if (lhs_len > 0u) {
-        memcpy(out, lhs, lhs_len);
+    if (v.len > 0u && v.ptr != NULL) {
+        memcpy(out, v.ptr, v.len);
     }
-    if (rhs_len > 0u) {
-        memcpy(out + lhs_len, rhs, rhs_len);
-    }
-    out[lhs_len + rhs_len] = '\0';
+    out[v.len] = '\0';
     return out;
 }
 
-CHENG_WEAK int len(const char* value) {
-    value = cheng_recover_cstr(value);
-    if (value == NULL) {
+// Compatibility entrypoints expected by generated MVP runtime objects.
+WEAK int __cheng_str_eq(const char* lhs, const char* rhs) {
+    ChengStrView a = cheng_view_string(lhs);
+    ChengStrView b = cheng_view_string(rhs);
+    if (a.len != b.len) {
         return 0;
     }
-    return (int)strlen(value);
+    if (a.len == 0u) {
+        return 1;
+    }
+    return memcmp(a.ptr, b.ptr, a.len) == 0 ? 1 : 0;
 }
 
-CHENG_WEAK int32_t cheng_strlen(char* s) {
-    const char* value = cheng_recover_cstr((const char*)s);
-    if (value == NULL) {
-        return 0;
+WEAK const char* __cheng_sym_2b(const char* lhs, const char* rhs) {
+    ChengStrView a = cheng_view_string(lhs);
+    ChengStrView b = cheng_view_string(rhs);
+    size_t total = a.len + b.len + 1u;
+    char* out = (char*)malloc(total);
+    if (out == NULL) {
+        return a.ptr != NULL ? a.ptr : "";
     }
-    return (int32_t)strlen(value);
+    if (a.len > 0u && a.ptr != NULL) {
+        memcpy(out, a.ptr, a.len);
+    }
+    if (b.len > 0u && b.ptr != NULL) {
+        memcpy(out + a.len, b.ptr, b.len);
+    }
+    out[a.len + b.len] = '\0';
+    return out;
 }
 
-CHENG_WEAK int32_t cheng_strcmp(const char* a, const char* b) {
-    a = cheng_recover_cstr(a);
-    b = cheng_recover_cstr(b);
-    if (a == b) {
-        return 0;
+WEAK int len(const char* value) {
+    ChengStrView v = cheng_view_string(value);
+    return (int)v.len;
+}
+
+WEAK int32_t cheng_strlen(char* s) {
+    ChengStrView v = cheng_view_string((const char*)s);
+    return (int32_t)v.len;
+}
+
+WEAK int32_t cheng_strcmp(const char* a, const char* b) {
+    ChengStrView av = cheng_view_string(a);
+    ChengStrView bv = cheng_view_string(b);
+    size_t min_len = av.len < bv.len ? av.len : bv.len;
+    if (min_len > 0u) {
+        int c = memcmp(av.ptr, bv.ptr, min_len);
+        if (c != 0) {
+            return (int32_t)c;
+        }
     }
-    if (a == NULL) {
+    if (av.len < bv.len) {
         return -1;
     }
-    if (b == NULL) {
-        return 1;
-    }
-    return (int32_t)strcmp(a, b);
-}
-
-CHENG_WEAK const char* getEnv(const char* key) {
-    key = cheng_recover_cstr(key);
-    if (key == NULL) {
-        return NULL;
-    }
-    return getenv(key);
-}
-
-CHENG_WEAK int dirExists(const char* path) {
-    path = cheng_recover_cstr(path);
-    if (path == NULL || path[0] == '\0') {
-        return 0;
-    }
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        return 0;
-    }
-    return S_ISDIR(st.st_mode) ? 1 : 0;
-}
-
-CHENG_WEAK int fileExists(const char* path) {
-    path = cheng_recover_cstr(path);
-    if (path == NULL || path[0] == '\0') {
-        return 0;
-    }
-    struct stat st;
-    return (stat(path, &st) == 0) ? 1 : 0;
-}
-
-CHENG_WEAK int createDir(const char* path) {
-    path = cheng_recover_cstr(path);
-    if (path == NULL || path[0] == '\0') {
-        return 0;
-    }
-    if (dirExists(path)) {
-        return 1;
-    }
-    if (mkdir(path, 0755) == 0) {
-        return 1;
-    }
-    if (errno == EEXIST) {
+    if (av.len > bv.len) {
         return 1;
     }
     return 0;
 }
 
-CHENG_WEAK int writeFile(const char* path, const char* content) {
-    path = cheng_recover_cstr(path);
-    content = cheng_recover_cstr(content);
-    if (path == NULL || content == NULL) {
+WEAK const char* getEnv(const char* key) {
+    char* name = cheng_copy_cstr(key);
+    if (name == NULL) {
+        return NULL;
+    }
+    const char* value = getenv(name);
+    free(name);
+    return value;
+}
+
+WEAK const char* libc_getenv(const char* key) {
+    return getEnv(key);
+}
+
+WEAK int libc_remove(const char* path) {
+    char* p = cheng_copy_cstr(path);
+    if (p == NULL || p[0] == '\0') {
+        free(p);
+        return -1;
+    }
+    int rc = remove(p);
+    free(p);
+    return rc;
+}
+
+WEAK int libc_rename(const char* old_path, const char* new_path) {
+    char* a = cheng_copy_cstr(old_path);
+    char* b = cheng_copy_cstr(new_path);
+    if (a == NULL || b == NULL || a[0] == '\0' || b[0] == '\0') {
+        free(a);
+        free(b);
+        return -1;
+    }
+    int rc = rename(a, b);
+    free(a);
+    free(b);
+    return rc;
+}
+
+WEAK int dirExists(const char* path) {
+    char* p = cheng_copy_cstr(path);
+    if (p == NULL || p[0] == '\0') {
+        free(p);
         return 0;
     }
-    FILE* f = fopen(path, "wb");
+    struct stat st;
+    int ok = (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+    free(p);
+    return ok;
+}
+
+WEAK int fileExists(const char* path) {
+    char* p = cheng_copy_cstr(path);
+    if (p == NULL || p[0] == '\0') {
+        free(p);
+        return 0;
+    }
+    struct stat st;
+    int ok = (stat(p, &st) == 0) ? 1 : 0;
+    free(p);
+    return ok;
+}
+
+WEAK int createDir(const char* path) {
+    char* p = cheng_copy_cstr(path);
+    if (p == NULL || p[0] == '\0') {
+        free(p);
+        return 0;
+    }
+    if (dirExists(path)) {
+        free(p);
+        return 1;
+    }
+    int rc = mkdir(p, 0755);
+    int ok = (rc == 0 || errno == EEXIST) ? 1 : 0;
+    free(p);
+    return ok;
+}
+
+WEAK int writeFile(const char* path, const char* content) {
+    ChengStrView c = cheng_view_string(content);
+    char* p = cheng_copy_cstr(path);
+    if (p == NULL) {
+        return 0;
+    }
+    FILE* f = fopen(p, "wb");
+    free(p);
     if (!f) {
         return 0;
     }
-    const char* p = content;
-    size_t len = strlen(content);
-    size_t n = fwrite(p, 1, len, f);
-    int ok = (n == len);
-    if (ok) {
-        fputc('\n', f);
-        fflush(f);
+    size_t n = 0u;
+    if (c.len > 0u && c.ptr != NULL) {
+        n = fwrite(c.ptr, 1, c.len, f);
     }
+    int ok = (c.len == 0u) || (n == c.len);
+    fflush(f);
     fclose(f);
     return ok;
 }
 
-CHENG_WEAK const char* charToStr(char ch) {
+WEAK int32_t cheng_write_bytes(const char* path, const char* data, int32_t len) {
+    char* p = cheng_copy_cstr(path);
+    ChengStrView d = cheng_view_string(data);
+    if (p == NULL || len < 0) {
+        free(p);
+        return 0;
+    }
+    FILE* f = fopen(p, "wb");
+    free(p);
+    if (f == NULL) {
+        return 0;
+    }
+    size_t wrote = 0;
+    if (len > 0) {
+        if (d.ptr == NULL) {
+            fclose(f);
+            return 0;
+        }
+        size_t cap = d.len < (size_t)len ? d.len : (size_t)len;
+        wrote = fwrite(d.ptr, 1, cap, f);
+        if (cap != (size_t)len) {
+            fclose(f);
+            return 0;
+        }
+    }
+    int ok = (len == 0) || ((int32_t)wrote == len);
+    fclose(f);
+    return ok ? 1 : 0;
+}
+
+WEAK int32_t cw_utfzh_bridge_enabled(void) {
+    return 0;
+}
+
+WEAK const char* cw_utfzh_bridge_in(void) {
+    return "";
+}
+
+WEAK const char* cw_utfzh_bridge_out(void) {
+    return "";
+}
+
+WEAK const char* cw_utfzh_bridge_from(void) {
+    return "";
+}
+
+WEAK const char* cw_utfzh_bridge_report(void) {
+    return "";
+}
+
+WEAK const char* cw_utfzh_bridge_data_root(void) {
+    return "";
+}
+
+WEAK int32_t cw_utfzh_bridge_len(int32_t slot) {
+    (void)slot;
+    return 0;
+}
+
+WEAK int32_t cw_utfzh_bridge_byte(int32_t slot, int32_t idx) {
+    (void)slot;
+    (void)idx;
+    return -1;
+}
+
+WEAK const char* charToStr(char ch) {
     static char ring[16][2];
     static unsigned int idx = 0;
     unsigned int slot = idx & 15u;
@@ -175,7 +304,7 @@ CHENG_WEAK const char* charToStr(char ch) {
     return ring[slot];
 }
 
-CHENG_WEAK const char* intToStr(int value) {
+WEAK const char* intToStr(int value) {
     static char ring[16][32];
     static unsigned int idx = 0;
     unsigned int slot = idx & 15u;
@@ -184,53 +313,112 @@ CHENG_WEAK const char* intToStr(int value) {
     return ring[slot];
 }
 
-CHENG_WEAK int streq(const char* a, const char* b) {
-    a = cheng_recover_cstr(a);
-    b = cheng_recover_cstr(b);
-    if (a == b) {
-        return 1;
-    }
-    if (a == NULL || b == NULL) {
+WEAK int streq(const char* a, const char* b) {
+    ChengStrView av = cheng_view_string(a);
+    ChengStrView bv = cheng_view_string(b);
+    if (av.len != bv.len) {
         return 0;
     }
-    while (*a != '\0' && *b != '\0') {
-        if (*a != *b) {
-            return 0;
-        }
-        ++a;
-        ++b;
+    if (av.len == 0u) {
+        return 1;
     }
-    return *a == *b;
+    return memcmp(av.ptr, bv.ptr, av.len) == 0 ? 1 : 0;
 }
 
-CHENG_WEAK void* alloc(size_t size) {
+WEAK int32_t cheng_compat_argc(void) {
+#if defined(__APPLE__)
+    int* argc_ptr = _NSGetArgc();
+    if (argc_ptr == NULL) {
+        return 0;
+    }
+    int argc = *argc_ptr;
+    if (argc <= 0 || argc > 4096) {
+        return 0;
+    }
+    return (int32_t)argc;
+#else
+    return 0;
+#endif
+}
+
+WEAK void* cheng_compat_argv(void) {
+#if defined(__APPLE__)
+    char*** argv_ptr = _NSGetArgv();
+    if (argv_ptr == NULL || *argv_ptr == NULL) {
+        return NULL;
+    }
+    return (void*)(*argv_ptr);
+#else
+    return NULL;
+#endif
+}
+
+WEAK int32_t cheng_cli_arg_count(void) {
+#if defined(__APPLE__)
+    int* argc_ptr = _NSGetArgc();
+    if (argc_ptr == NULL) {
+        return 0;
+    }
+    int argc = *argc_ptr;
+    if (argc <= 0 || argc > 4096) {
+        return 0;
+    }
+    return (int32_t)(argc - 1);
+#else
+    return 0;
+#endif
+}
+
+WEAK const char* cheng_cli_arg_at(int32_t i) {
+#if defined(__APPLE__)
+    if (i < 0) {
+        return "";
+    }
+    int* argc_ptr = _NSGetArgc();
+    char*** argv_ptr = _NSGetArgv();
+    if (argc_ptr == NULL || argv_ptr == NULL || *argv_ptr == NULL) {
+        return "";
+    }
+    int argc = *argc_ptr;
+    if (argc <= 0 || argc > 4096 || i >= argc) {
+        return "";
+    }
+    char* s = (*argv_ptr)[i];
+    return s != NULL ? s : "";
+#else
+    (void)i;
+    return "";
+#endif
+}
+
+WEAK void* alloc(size_t size) {
     if (size == 0) {
         size = 1;
     }
     return malloc(size);
 }
 
-CHENG_WEAK void dealloc(void* ptr) {
+WEAK void dealloc(void* ptr) {
     if (ptr != NULL) {
         free(ptr);
     }
 }
 
-CHENG_WEAK void* copyMem(void* dst, const void* src, size_t size) {
+WEAK void* copyMem(void* dst, const void* src, size_t size) {
     if (dst == NULL || src == NULL || size == 0) {
         return dst;
     }
     return memcpy(dst, src, size);
 }
 
-CHENG_WEAK void* setMem(void* dst, int value, size_t size) {
+WEAK void* setMem(void* dst, int value, size_t size) {
     if (dst == NULL || size == 0) {
         return dst;
     }
     return memset(dst, value, size);
 }
 
-CHENG_WEAK void* zeroMem(void* dst, size_t size) {
+WEAK void* zeroMem(void* dst, size_t size) {
     if (dst == NULL || size == 0) {
         return dst;
     }
@@ -261,7 +449,7 @@ static int32_t chengCompatNextCap(int32_t curCap, int32_t need) {
     return cap;
 }
 
-CHENG_WEAK void reserve(void* seq, int32_t newCap) {
+WEAK void reserve(void* seq, int32_t newCap) {
     if (seq == NULL || newCap < 0) {
         return;
     }
@@ -284,7 +472,7 @@ CHENG_WEAK void reserve(void* seq, int32_t newCap) {
     hdr->cap = targetCap;
 }
 
-CHENG_WEAK void setLen(void* seq, int32_t newLen) {
+WEAK void setLen(void* seq, int32_t newLen) {
     if (seq == NULL) {
         return;
     }
@@ -315,16 +503,16 @@ typedef struct {
     int strideBytes;
 } ChengGuiMacPresentPayloadCompat;
 
-CHENG_WEAK void chengGuiMacInitialize(void) {}
-CHENG_WEAK void chengGuiMacShutdown(void) {}
+WEAK void chengGuiMacInitialize(void) {}
+WEAK void chengGuiMacShutdown(void) {}
 
-CHENG_WEAK void* chengGuiMacCreateDefaultWindow(const char* title) {
+WEAK void* chengGuiMacCreateDefaultWindow(const char* title) {
     static unsigned char window_token = 2;
     (void)title;
     return &window_token;
 }
 
-CHENG_WEAK void* chengGuiMacCreateWindow(const char* title, double x, double y, double width, double height, bool resizable, bool highDpi) {
+WEAK void* chengGuiMacCreateWindow(const char* title, double x, double y, double width, double height, bool resizable, bool highDpi) {
     static unsigned char window_token = 1;
     (void)title;
     (void)x;
@@ -336,38 +524,38 @@ CHENG_WEAK void* chengGuiMacCreateWindow(const char* title, double x, double y, 
     return &window_token;
 }
 
-CHENG_WEAK void chengGuiMacDestroyWindow(void* handle) {
+WEAK void chengGuiMacDestroyWindow(void* handle) {
     (void)handle;
 }
 
-CHENG_WEAK int chengGuiMacPollEvents(void* events, int maxEvents, int timeoutMs) {
+WEAK int chengGuiMacPollEvents(void* events, int maxEvents, int timeoutMs) {
     (void)events;
     (void)maxEvents;
     (void)timeoutMs;
     return 0;
 }
 
-CHENG_WEAK void* chengGuiMacCreateSurface(void* window) {
+WEAK void* chengGuiMacCreateSurface(void* window) {
     static unsigned char surface_token = 1;
     (void)window;
     return &surface_token;
 }
 
-CHENG_WEAK void chengGuiMacDestroySurface(void* surface) {
+WEAK void chengGuiMacDestroySurface(void* surface) {
     (void)surface;
 }
 
-CHENG_WEAK int chengGuiMacBeginFrame(void* surface) {
-    (void)surface;
-    return 0;
-}
-
-CHENG_WEAK int chengGuiMacEndFrame(void* surface) {
+WEAK int chengGuiMacBeginFrame(void* surface) {
     (void)surface;
     return 0;
 }
 
-CHENG_WEAK int chengGuiMacGetSurfaceInfo(void* surface, ChengGuiMacSurfaceInfoCompat* info) {
+WEAK int chengGuiMacEndFrame(void* surface) {
+    (void)surface;
+    return 0;
+}
+
+WEAK int chengGuiMacGetSurfaceInfo(void* surface, ChengGuiMacSurfaceInfoCompat* info) {
     (void)surface;
     if (info != NULL) {
         info->logicalWidth = 1280.0;
@@ -380,7 +568,7 @@ CHENG_WEAK int chengGuiMacGetSurfaceInfo(void* surface, ChengGuiMacSurfaceInfoCo
     return 0;
 }
 
-CHENG_WEAK int chengGuiMacPresentPixels(void* surface, void* pixels, int width, int height, int strideBytes) {
+WEAK int chengGuiMacPresentPixels(void* surface, void* pixels, int width, int height, int strideBytes) {
     (void)surface;
     (void)pixels;
     (void)width;
@@ -389,23 +577,23 @@ CHENG_WEAK int chengGuiMacPresentPixels(void* surface, void* pixels, int width, 
     return 0;
 }
 
-CHENG_WEAK int chengGuiMacPresentPixelsPayload(void* surface, const ChengGuiMacPresentPayloadCompat* payload) {
+WEAK int chengGuiMacPresentPixelsPayload(void* surface, const ChengGuiMacPresentPayloadCompat* payload) {
     if (payload == NULL) {
         return -1;
     }
     return chengGuiMacPresentPixels(surface, (void*)payload->pixels, payload->width, payload->height, payload->strideBytes);
 }
 
-CHENG_WEAK int chengGuiMacSurfaceReadbackRgba(void* surface, const char* outPath) {
+WEAK int chengGuiMacSurfaceReadbackRgba(void* surface, const char* outPath) {
     (void)surface;
     (void)outPath;
     return -1;
 }
 
-CHENG_WEAK size_t chengGuiMacEventStructSize(void) {
+WEAK size_t chengGuiMacEventStructSize(void) {
     return 0;
 }
 
-CHENG_WEAK size_t chengGuiMacSurfaceInfoStructSize(void) {
+WEAK size_t chengGuiMacSurfaceInfoStructSize(void) {
     return sizeof(ChengGuiMacSurfaceInfoCompat);
 }
