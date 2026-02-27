@@ -1,5 +1,5 @@
-import cheng/gui/platform/types
-import cheng/gui/render/backend as renderBackend
+import gui/platform/types
+import gui/render/backend as renderBackend
 type
     SceneLayerKind = enum
         slBackg

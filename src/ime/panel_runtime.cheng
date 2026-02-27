@@ -1,11 +1,11 @@
 import std/os
-import cheng/gui/ime/cangwu_assets_loader
-import cheng/gui/ime/cangwu_engine
-import cheng/gui/ime/cangwu_rules
-import cheng/gui/ime/panel_state
-import cheng/gui/ime/panel_render
-import cheng/gui/ime/panel_bridge_cabi
-import cheng/gui/ime/legacy_types
+import gui/ime/cangwu_assets_loader
+import gui/ime/cangwu_engine
+import gui/ime/cangwu_rules
+import gui/ime/panel_state
+import gui/ime/panel_render
+import gui/ime/panel_bridge_cabi
+import gui/ime/legacy_types
 
 fn cwParseIntEnv(text: str, fallback: int32): int32 =
     if len(text) == 0:

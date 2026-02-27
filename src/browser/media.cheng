@@ -1,6 +1,6 @@
-import cheng/gui/core/component
-import cheng/gui/browser/types
-import cheng/gui/browser/web
+import gui/core/component
+import gui/browser/types
+import gui/browser/web
 
 type
     MediaPlayer = ref

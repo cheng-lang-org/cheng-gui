@@ -1,4 +1,4 @@
-import cheng/gui/ime/cangwu_types
+import gui/ime/cangwu_types
 
 const UtfZhReplacement = int32(0xFFFD)
 const UtfZhUtf8PackShift = int32(21)

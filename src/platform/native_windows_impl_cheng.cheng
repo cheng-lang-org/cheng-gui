@@ -1,5 +1,5 @@
 import std/tables
-import cheng/gui/platform/types
+import gui/platform/types
 
 type
     WinCInt = int32

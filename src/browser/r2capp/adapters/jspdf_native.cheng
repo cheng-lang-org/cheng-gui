@@ -1,0 +1,27 @@
+type
+    JsPdfDoc = ref
+        title: str
+        lines: str[]
+
+fn adapterId(): str =
+    return "jspdf"
+
+fn create(title: str): JsPdfDoc =
+    var out: JsPdfDoc
+    new(out)
+    out.title = title
+    setLen[str](&out.lines, 0)
+    return out
+
+fn addText(doc: JsPdfDoc, line: str) =
+    if doc == nil:
+        return
+    let idx = len(doc.lines)
+    setLen[str](&doc.lines, idx + 1)
+    doc.lines[idx] = line
+
+fn outputDataUrl(doc: JsPdfDoc): str =
+    if doc == nil:
+        return "data:application/pdf;base64,"
+    return "data:application/pdf;base64,UEZERkFLRQ=="
+

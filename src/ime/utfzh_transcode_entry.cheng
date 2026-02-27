@@ -1,10 +1,10 @@
 import std/os
-import cheng/gui/ime/cangwu_assets_loader
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/legacy_assets_loader
-import cheng/gui/ime/legacy_codec
-import cheng/gui/ime/legacy_types
-import cheng/gui/ime/utfzh_codec
+import gui/ime/cangwu_assets_loader
+import gui/ime/cangwu_types
+import gui/ime/legacy_assets_loader
+import gui/ime/legacy_codec
+import gui/ime/legacy_types
+import gui/ime/utfzh_codec
 
 fn utfzhByte(ch: char): int32 =
     var b: int32 = int32(ch)

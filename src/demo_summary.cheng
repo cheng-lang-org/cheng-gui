@@ -5,16 +5,16 @@ import std/json as stdjson
 import std/os
 import cheng/runtime/json_compat
 import cheng/runtime/json_runtime as runtimeJson
-import cheng/gui/platform
-import cheng/gui/render/Backend
-import cheng/gui/widgets/codeview
-import cheng/gui/widgets/logpanel
-import cheng/gui/widgets/visualization
-import cheng/gui/widgets/terminal
-import cheng/gui/widgets/debugger
-import cheng/gui/widgets/perf_panel
-import cheng/gui/widgets/task_monitor
-import cheng/gui/widgets/language_panel
+import gui/platform
+import gui/render/Backend
+import gui/widgets/codeview
+import gui/widgets/logpanel
+import gui/widgets/visualization
+import gui/widgets/terminal
+import gui/widgets/debugger
+import gui/widgets/perf_panel
+import gui/widgets/task_monitor
+import gui/widgets/language_panel
 fn makeCaptureContext(width, height: float): RenderContext =
     initRenderBackend(SurfaceHandle(nil), makeSize(width, height), rbSkiaCpuFallback)
 fn makeCursor(line: int, column: int): CursorPosition =

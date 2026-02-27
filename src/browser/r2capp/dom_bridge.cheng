@@ -1,5 +1,5 @@
-import cheng/gui/browser/engine/dom/model as domModel
-import cheng/gui/browser/r2capp/react_compat
+import gui/browser/engine/dom/model as domModel
+import gui/browser/r2capp/react_compat
 
 fn appendDomChildren(parent: domModel.DomNode, nodes: react_compat.ReactNode[]) =
     if parent == nil:

@@ -1,6 +1,6 @@
-import cheng/gui/platform/ipc/messages_v2
-import cheng/gui/platform/ipc/shared_ring
-import cheng/gui/platform/ipc/serializer
+import gui/platform/ipc/messages_v2
+import gui/platform/ipc/shared_ring
+import gui/platform/ipc/serializer
 
 type
     IpcRouter = ref

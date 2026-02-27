@@ -1,9 +1,9 @@
 import std/strformat
 import std/strutils
 import std/times
-import cheng/gui/platform
-import cheng/gui/render/Backend
-import cheng/gui/widgets/base
+import gui/platform
+import gui/render/Backend
+import gui/widgets/base
 const
     DefaultLogCapacity = 2000
     DefaultLogLineHeight = 17.0

@@ -1,4 +1,4 @@
-import cheng/gui/mobile/core/types
+import gui/mobile/core/types
 
 var
     gLayoutPassCount: int32 = 0

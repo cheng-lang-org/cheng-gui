@@ -1,5 +1,5 @@
-import cheng/gui/examples_games/common/protocol
-import cheng/gui/examples_games/werewolf/state as ww
+import gui/examples_games/common/protocol
+import gui/examples_games/werewolf/state as ww
 
 fn makeReq(seat: int32, kind: str, args: str): ActionRequest =
     var req: ActionRequest = initActionRequest()

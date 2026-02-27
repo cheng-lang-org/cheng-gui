@@ -1,9 +1,9 @@
 import std/os
-import cheng/gui/platform/types_v1
-import cheng/gui/platform/native_sys_impl as sysplat
-import cheng/gui/render/drawlist_ir as drawir
-import cheng/gui/render/text_bitmap
-import cheng/gui/render/text_native
+import gui/platform/types_v1
+import gui/platform/native_sys_impl as sysplat
+import gui/render/drawlist_ir as drawir
+import gui/render/text_bitmap
+import gui/render/text_native
 
 fn envIs(name: str, expected: str): bool =
     return os.getEnv(name) == expected

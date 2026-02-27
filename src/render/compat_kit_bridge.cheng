@@ -1,5 +1,5 @@
-import cheng/gui/kit
-import cheng/gui/core/component
+import gui/kit
+import gui/core/component
 
 type
     LegacyUiBuilder = fn (ctx: component.UiContext): component.Node

@@ -1,4 +1,4 @@
-import cheng/gui/ime/panel_state
+import gui/ime/panel_state
 
 fn main(): int32 =
     return cwRunImeSelfTests("src/ime/data")

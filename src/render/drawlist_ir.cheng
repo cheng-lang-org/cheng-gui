@@ -1,5 +1,5 @@
-import cheng/gui/core/component
-import cheng/gui/platform/types_v1
+import gui/core/component
+import gui/platform/types_v1
 
 type
     DrawCommandKind = enum

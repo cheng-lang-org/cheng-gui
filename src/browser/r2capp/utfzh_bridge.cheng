@@ -1,6 +1,6 @@
-import cheng/gui/ime/cangwu_assets_loader as cwAssets
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/utfzh_codec as utfzh
+import gui/ime/cangwu_assets_loader as cwAssets
+import gui/ime/cangwu_types
+import gui/ime/utfzh_codec as utfzh
 
 type
     UtfZhRoundtripResult =

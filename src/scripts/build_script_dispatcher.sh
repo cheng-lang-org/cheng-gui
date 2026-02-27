@@ -7,6 +7,14 @@ SRC_NATIVE_ANDROID_GATE="$ROOT/tools/native_verify_android_claude_1to1_gate.c"
 SRC_NATIVE_R2C_COMPILE="$ROOT/tools/native_r2c_compile_react_project.c"
 SRC_NATIVE_ANDROID_FULLROUTE="$ROOT/tools/native_verify_android_fullroute_visual_pixel.c"
 SRC_NATIVE_MOBILE_RUN_ANDROID="$ROOT/tools/native_mobile_run_android.c"
+SRC_NATIVE_MOBILE_RUN_IOS="$ROOT/tools/native_mobile_run_ios.c"
+SRC_NATIVE_MOBILE_RUN_HARMONY="$ROOT/tools/native_mobile_run_harmony.c"
+SRC_NATIVE_REPORT_VALIDATE="$ROOT/tools/native_r2c_report_validate.c"
+SRC_NATIVE_EQ_ANDROID="$ROOT/tools/native_verify_r2c_equivalence_android_native.c"
+SRC_NATIVE_EQ_IOS="$ROOT/tools/native_verify_r2c_equivalence_ios_native.c"
+SRC_NATIVE_EQ_HARMONY="$ROOT/tools/native_verify_r2c_equivalence_harmony_native.c"
+SRC_NATIVE_EQ_ALL="$ROOT/tools/native_verify_r2c_equivalence_all_native.c"
+SRC_NATIVE_PROD_CLOSED_LOOP="$ROOT/tools/native_verify_production_closed_loop.c"
 SCRIPTS_DIR="$ROOT/scripts"
 OUT_DIR="$ROOT/bin"
 BIN_NAME="${CHENG_GUI_SCRIPTS_BIN_NAME:-cheng_gui_scripts}"
@@ -19,8 +27,8 @@ usage() {
 Usage:
   build_script_dispatcher.sh [--out-dir <abs_path>] [--bin-name <name>] [--link-mode <symlink|hardlink|copy>] [--no-links]
 
-Builds a multicall binary that dispatches to src/scripts/*.sh and *.py.
-By default it also creates hardlink command entries in the same output directory.
+Builds a multicall binary with native command handlers.
+Default mode is zero-script (native-only command aliases).
 EOF
 }
 
@@ -76,6 +84,38 @@ if [ ! -f "$SRC_NATIVE_MOBILE_RUN_ANDROID" ]; then
   echo "[build-script-dispatcher] missing source: $SRC_NATIVE_MOBILE_RUN_ANDROID" >&2
   exit 1
 fi
+if [ ! -f "$SRC_NATIVE_MOBILE_RUN_IOS" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_MOBILE_RUN_IOS" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_MOBILE_RUN_HARMONY" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_MOBILE_RUN_HARMONY" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_REPORT_VALIDATE" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_REPORT_VALIDATE" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_EQ_ANDROID" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_EQ_ANDROID" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_EQ_IOS" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_EQ_IOS" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_EQ_HARMONY" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_EQ_HARMONY" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_EQ_ALL" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_EQ_ALL" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_PROD_CLOSED_LOOP" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_PROD_CLOSED_LOOP" >&2
+  exit 1
+fi
 if [ ! -d "$SCRIPTS_DIR" ]; then
   echo "[build-script-dispatcher] missing scripts dir: $SCRIPTS_DIR" >&2
   exit 1
@@ -106,6 +146,14 @@ BIN_PATH="$OUT_DIR/$BIN_NAME"
   "$SRC_NATIVE_R2C_COMPILE" \
   "$SRC_NATIVE_ANDROID_FULLROUTE" \
   "$SRC_NATIVE_MOBILE_RUN_ANDROID" \
+  "$SRC_NATIVE_MOBILE_RUN_IOS" \
+  "$SRC_NATIVE_MOBILE_RUN_HARMONY" \
+  "$SRC_NATIVE_REPORT_VALIDATE" \
+  "$SRC_NATIVE_EQ_ANDROID" \
+  "$SRC_NATIVE_EQ_IOS" \
+  "$SRC_NATIVE_EQ_HARMONY" \
+  "$SRC_NATIVE_EQ_ALL" \
+  "$SRC_NATIVE_PROD_CLOSED_LOOP" \
   -o "$BIN_PATH"
 
 chmod +x "$BIN_PATH"
@@ -131,32 +179,67 @@ if [ "$create_links" = "1" ]; then
         ;;
     esac
   }
-  while IFS= read -r path; do
-    file="$(basename "$path")"
-    base="$file"
-    base="${base%.sh}"
-    base="${base%.py}"
-    if [ -z "$base" ]; then
-      continue
-    fi
-    if [ "$base" = "$BIN_NAME" ]; then
-      continue
-    fi
-    if grep -Fxq -- "$base" "$seen_file"; then
-      continue
-    fi
-    printf '%s\n' "$base" >> "$seen_file"
-    create_alias_link "$base"
-  done < <(find "$SCRIPTS_DIR" -maxdepth 1 -type f \( -name '*.sh' -o -name '*.py' \) | sort)
+  native_cmds=(
+    "mobile_run_android"
+    "mobile_run_ios"
+    "mobile_run_harmony"
+    "r2c_compile_react_project"
+    "verify_android_claude_1to1_gate"
+    "verify_android_fullroute_visual_pixel"
+    "verify_r2c_equivalence_android_native"
+    "verify_r2c_equivalence_ios_native"
+    "verify_r2c_equivalence_harmony_native"
+    "verify_r2c_equivalence_all_native"
+    "verify_production_closed_loop"
+  )
 
-  # Native-only subcommands that do not have script files.
-  for native_cmd in mobile_run_android; do
-    if grep -Fxq -- "$native_cmd" "$seen_file"; then
-      continue
-    fi
-    printf '%s\n' "$native_cmd" >> "$seen_file"
-    create_alias_link "$native_cmd"
-  done
+  if [ "${CHENG_GUI_ZERO_SCRIPT:-1}" = "1" ]; then
+    while IFS= read -r path; do
+      base="$(basename "$path")"
+      if [ -z "$base" ] || [ "$base" = "$BIN_NAME" ]; then
+        continue
+      fi
+      if grep -Fxq -- "$base" "$seen_file"; then
+        continue
+      fi
+      printf '%s\n' "$base" >> "$seen_file"
+      create_alias_link "$base"
+    done < <(find "$OUT_DIR" -maxdepth 1 -type f | sort)
+
+    for base in "${native_cmds[@]}"; do
+      if grep -Fxq -- "$base" "$seen_file"; then
+        continue
+      fi
+      printf '%s\n' "$base" >> "$seen_file"
+      create_alias_link "$base"
+    done
+  else
+    while IFS= read -r path; do
+      file="$(basename "$path")"
+      base="$file"
+      base="${base%.sh}"
+      base="${base%.py}"
+      if [ -z "$base" ]; then
+        continue
+      fi
+      if [ "$base" = "$BIN_NAME" ]; then
+        continue
+      fi
+      if grep -Fxq -- "$base" "$seen_file"; then
+        continue
+      fi
+      printf '%s\n' "$base" >> "$seen_file"
+      create_alias_link "$base"
+    done < <(find "$SCRIPTS_DIR" -maxdepth 1 -type f \( -name '*.sh' -o -name '*.py' \) | sort)
+
+    for base in "${native_cmds[@]}"; do
+      if grep -Fxq -- "$base" "$seen_file"; then
+        continue
+      fi
+      printf '%s\n' "$base" >> "$seen_file"
+      create_alias_link "$base"
+    done
+  fi
 
   rm -f "$seen_file"
   trap - EXIT

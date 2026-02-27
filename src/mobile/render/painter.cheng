@@ -1,5 +1,5 @@
-import cheng/gui/mobile/core/types
-import cheng/gui/mobile/render/display_list as display_list
+import gui/mobile/core/types
+import gui/mobile/render/display_list as display_list
 
 fn uiDefaultTextColor(node: types.UiNode): uint32 =
     if node == nil:

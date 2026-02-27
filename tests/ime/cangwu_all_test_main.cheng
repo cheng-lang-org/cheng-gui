@@ -1,10 +1,10 @@
 import std/os
-import cheng/gui/ime/cangwu_engine
-import cheng/gui/ime/cangwu_reverse
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/utfzh_codec
-import cheng/gui/ime/panel_state
-import cheng/gui/ime/legacy_codec
+import gui/ime/cangwu_engine
+import gui/ime/cangwu_reverse
+import gui/ime/cangwu_types
+import gui/ime/utfzh_codec
+import gui/ime/panel_state
+import gui/ime/legacy_codec
 
 fn miniDict(): UtfZhDict =
     var dict: UtfZhDict

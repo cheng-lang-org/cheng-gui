@@ -7,7 +7,7 @@ export GUI_ROOT="$ROOT"
 project="${R2C_REAL_PROJECT:-/Users/lbcheng/UniMaker/ClaudeDesign}"
 entry="${R2C_REAL_ENTRY:-/app/main.tsx}"
 out_dir="${R2C_EQ_ALL_OUT:-$ROOT/build/r2c_equivalence_all_native}"
-android_fullroute="${CHENG_ANDROID_EQ_ENABLE_FULLROUTE:-1}"
+android_fullroute="${CHENG_ANDROID_EQ_ENABLE_FULLROUTE:-0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in

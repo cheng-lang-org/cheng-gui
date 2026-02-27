@@ -39,12 +39,12 @@ fn mgIsIdentCont(ch: char): bool =
 
 fn mgAppendString(items: var str[], item: str) =
     let idx = len(items)
-    setLen[str](&items, idx + 1)
+    setLen(items, idx + 1)
     items[idx] = item
 
 fn mgAppendIssue(items: var R2cSyntaxIssue[], kind, moduleId, symbol, reason: str) =
     let idx = len(items)
-    setLen[R2cSyntaxIssue](&items, idx + 1)
+    setLen(items, idx + 1)
     var item: R2cSyntaxIssue
     new(item)
     item.kind = kind
@@ -163,7 +163,7 @@ fn mgParseImportSpecFromStmt(stmt: str): str =
 
 fn parseStaticImportSpecs(text: str): str[] =
     var out: str[]
-    setLen[str](&out, 0)
+    setLen(out, 0)
     if mgSafeLen(text) <= int32(0):
         return out
     var idx: int32 = int32(0)
@@ -218,7 +218,7 @@ fn parseStaticImportSpecs(text: str): str[] =
 
 fn parseDynamicImportSpecs(text: str): str[] =
     var out: str[]
-    setLen[str](&out, 0)
+    setLen(out, 0)
     if mgSafeLen(text) <= int32(0):
         return out
     var idx: int32 = int32(0)
@@ -275,7 +275,7 @@ fn parseDynamicImportSpecs(text: str): str[] =
 
 fn scanUnsupportedSyntax(moduleId, text: str): R2cSyntaxIssue[] =
     var out: R2cSyntaxIssue[]
-    setLen[R2cSyntaxIssue](&out, 0)
+    setLen(out, 0)
     if mgSafeLen(text) <= int32(0):
         return out
     var idx: int32 = int32(0)

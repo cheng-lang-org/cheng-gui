@@ -1,5 +1,5 @@
-import cheng/gui/examples_games/common/protocol as proto
-import cheng/gui/examples_games/doudizhu/state as ddz
+import gui/examples_games/common/protocol as proto
+import gui/examples_games/doudizhu/state as ddz
 
 fn makeReq(seat: int32, kind: str, args: str, seq: int64): proto.ActionRequest =
     var req: proto.ActionRequest = proto.initActionRequest()

@@ -1,6 +1,6 @@
 import std/os
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/cangwu_rules
+import gui/ime/cangwu_types
+import gui/ime/cangwu_rules
 
 fn cwParseInt64(text: str): int64 =
     if len(text) == 0:

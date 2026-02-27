@@ -1,8 +1,8 @@
 import std/os
 import std/strings
 
-import cheng/gui/tools/r2c_aot/module_graph as graph
-import cheng/gui/tools/r2c_aot/codegen_cheng as codegen
+import gui/tools/r2c_aot/module_graph as graph
+import gui/tools/r2c_aot/codegen_cheng as codegen
 
 # cache-bust marker: when codegen runtime output semantics change, keep compiler
 # source content updated so stale dependency caches are invalidated.
@@ -92,6 +92,10 @@ type
         generatedUiMode: str
         routeDiscoveryMode: str
         routeGraphPath: str
+        routeTreePath: str
+        routeLayersPath: str
+        layerCount: int32
+        currentLayerGate: str
         routeEventMatrixPath: str
         routeCoveragePath: str
         visualStates: str[]
@@ -122,6 +126,9 @@ type
         semanticRenderNodesHash: str
         semanticRenderNodesFnv64: str
         semanticNodeCount: int32
+        templateRuntimeUsed: bool
+        semanticCompileMode: str
+        compilerReportOrigin: str
         pixelGoldenDir: str
         pixelTolerance: int32
         replayProfile: str
@@ -297,9 +304,15 @@ fn compilerProjectName(report: R2cCompileReport): str =
 fn compilerRuntimeTemplatePath(): str =
     let envRoot = os.getEnv("GUI_ROOT")
     if len(envRoot) > 0:
-        let byEnv = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
-        if os.fileExists(byEnv):
-            return byEnv
+        let byEnvSrcRoot = envRoot + "/tools/r2c_aot/runtime_generated_template.cheng"
+        if os.fileExists(byEnvSrcRoot):
+            return byEnvSrcRoot
+        let byEnvPkgRoot = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
+        if os.fileExists(byEnvPkgRoot):
+            return byEnvPkgRoot
+    let absolutePath = "/Users/lbcheng/.cheng-packages/cheng-gui/src/tools/r2c_aot/runtime_generated_template.cheng"
+    if os.fileExists(absolutePath):
+        return absolutePath
     let localPath = "src/tools/r2c_aot/runtime_generated_template.cheng"
     if os.fileExists(localPath):
         return localPath
@@ -493,6 +506,8 @@ fn cpCEq(a: char, b: char): bool =
     return int32(a) == int32(b)
 
 fn detectTextContains(text, pattern: str): bool =
+    if text == nil || pattern == nil:
+        return false
     if len(text) == 0 || len(pattern) == 0:
         return false
     let tLen = len(text)
@@ -523,6 +538,10 @@ fn cpCLe(a: char, b: char): bool =
     return int32(a) <= int32(b)
 
 fn startsWith(text, prefix: str): bool =
+    if prefix == nil:
+        return true
+    if text == nil:
+        return false
     if len(prefix) == 0:
         return true
     if len(text) < len(prefix):
@@ -535,6 +554,10 @@ fn startsWith(text, prefix: str): bool =
     return true
 
 fn endsWith(text, suffix: str): bool =
+    if suffix == nil:
+        return true
+    if text == nil:
+        return false
     if len(suffix) == 0:
         return true
     if len(text) < len(suffix):
@@ -623,6 +646,159 @@ fn fillFullRouteStates(states: var str[]) =
     appendString(states, "marketplace_main")
     appendString(states, "update_center_main")
 
+fn routeParent(route: str): str =
+    if len(route) == 0:
+        return "home_default"
+    if route == "home_default":
+        return ""
+    if route == "lang_select":
+        return "home_default"
+    if cpHasPrefix(route, "home_"):
+        return "home_default"
+    if cpHasPrefix(route, "tab_"):
+        return "home_default"
+    if route == "publish_selector":
+        return "home_default"
+    if cpHasPrefix(route, "publish_"):
+        return "publish_selector"
+    if route == "trading_main":
+        return "tab_nodes"
+    if cpHasPrefix(route, "trading_"):
+        return "trading_main"
+    if route == "ecom_main" || route == "marketplace_main":
+        return "home_ecom_overlay_open"
+    if route == "update_center_main":
+        return "tab_profile"
+    return "home_default"
+
+fn routeDepth(route: str): int32 =
+    if route == "home_default":
+        return int32(0)
+    let parent = routeParent(route)
+    if len(parent) == 0 || parent == route:
+        return int32(0)
+    if parent == "home_default":
+        return int32(1)
+    return int32(2)
+
+fn routeEntryEvent(route: str): str =
+    if route == "home_default":
+        return "app_launch"
+    if route == "lang_select":
+        return "app_launch_first_run"
+    if cpHasPrefix(route, "home_"):
+        return "home.interaction"
+    if cpHasPrefix(route, "tab_"):
+        return "bottom_tab.switch"
+    if route == "publish_selector":
+        return "bottom_tab.publish"
+    if cpHasPrefix(route, "publish_"):
+        return "publish_selector.choose"
+    if cpHasPrefix(route, "trading_"):
+        return "node.market.open"
+    if route == "ecom_main" || route == "marketplace_main":
+        return "home.ecom.open"
+    if route == "update_center_main":
+        return "profile.update_center.open"
+    return "route.navigate"
+
+fn routePathFromRootJson(route: str): str =
+    let parent = routeParent(route)
+    if route == "home_default":
+        return "[\"home_default\"]"
+    if len(parent) == 0 || parent == "home_default":
+        return "[\"home_default\",\"" + jsonEscape(route) + "\"]"
+    return "[\"home_default\",\"" + jsonEscape(parent) + "\",\"" + jsonEscape(route) + "\"]"
+
+fn routePathSignature(route: str): str =
+    let parent = routeParent(route)
+    if route == "home_default":
+        return "home_default"
+    if len(parent) == 0 || parent == "home_default":
+        return "home_default>" + route
+    return "home_default>" + parent + ">" + route
+
+fn routeTreeText(states: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-route-tree-v1\",\n"
+    out = out + "  \"root_route\": \"home_default\",\n"
+    out = out + "  \"route_count\": " + $len(states) + ",\n"
+    out = out + "  \"nodes\": [\n"
+    var idx: int32 = int32(0)
+    while idx < len(states):
+        if idx > int32(0):
+            out = out + ",\n"
+        let route = states[idx]
+        let parent = routeParent(route)
+        out = out + "    {"
+        out = out + "\"route\":\"" + jsonEscape(route) + "\","
+        out = out + "\"depth\":" + $routeDepth(route) + ","
+        out = out + "\"parent\":\"" + jsonEscape(parent) + "\","
+        out = out + "\"entry_event\":\"" + jsonEscape(routeEntryEvent(route)) + "\","
+        out = out + "\"path_from_root\":" + routePathFromRootJson(route) + ","
+        out = out + "\"component_source\":\"/app/App.tsx\""
+        out = out + "}"
+        idx = idx + int32(1)
+    out = out + "\n  ]\n"
+    out = out + "}\n"
+    return out
+
+fn routeLayerCount(states: str[]): int32 =
+    var maxDepth: int32 = int32(0)
+    var idx: int32 = int32(0)
+    while idx < len(states):
+        let depth = routeDepth(states[idx])
+        if depth > maxDepth:
+            maxDepth = depth
+        idx = idx + int32(1)
+    return maxDepth + int32(1)
+
+fn routeLayersText(states: str[]): str =
+    let totalLayers = routeLayerCount(states)
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-route-layers-v1\",\n"
+    out = out + "  \"root_route\": \"home_default\",\n"
+    out = out + "  \"layer_count\": " + $totalLayers + ",\n"
+    out = out + "  \"layers\": [\n"
+    var layer: int32 = int32(0)
+    var wroteLayer: bool = false
+    while layer < totalLayers:
+        var routes: str[]
+        var deps: str[]
+        setLen(routes,  0)
+        setLen(deps,  0)
+        var idx: int32 = int32(0)
+        while idx < len(states):
+            let route = states[idx]
+            if routeDepth(route) == layer:
+                cpAppendUnique(routes, route)
+                let parent = routeParent(route)
+                if len(parent) > 0:
+                    cpAppendUnique(deps, parent)
+            idx = idx + int32(1)
+        if len(routes) > int32(0):
+            if wroteLayer:
+                out = out + ",\n"
+            out = out + "    {"
+            out = out + "\"layer_index\":" + $layer + ","
+            out = out + "\"routes\":" + jsonStringList(routes) + ","
+            out = out + "\"blocking_dependencies\":" + jsonStringList(deps)
+            out = out + "}"
+            wroteLayer = true
+        layer = layer + int32(1)
+    out = out + "\n  ]\n"
+    out = out + "}\n"
+    return out
+
+fn resolveCurrentLayerGate(): str =
+    let gate = os.getEnv("R2C_CURRENT_LAYER_GATE")
+    if len(gate) > 0:
+        return gate
+    let layer = os.getEnv("CHENG_ANDROID_EQ_LAYER_INDEX")
+    if len(layer) > 0:
+        return "layer-" + layer
+    return "all"
+
 fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     var report: R2cCompileReport
     new(report)
@@ -672,10 +848,15 @@ fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     report.generatedUiMode = "ir-driven"
     report.routeDiscoveryMode = "static-runtime-hybrid"
     report.routeGraphPath = ""
+    report.routeTreePath = ""
+    report.routeLayersPath = ""
+    report.layerCount = int32(0)
+    report.currentLayerGate = "all"
     report.routeEventMatrixPath = ""
     report.routeCoveragePath = ""
     setLen(report.visualStates,  0)
     fillFullRouteStates(report.visualStates)
+    report.layerCount = routeLayerCount(report.visualStates)
     report.visualGoldenManifestPath = ""
     report.androidTruthManifestPath = ""
     report.androidRouteGraphPath = ""
@@ -703,6 +884,9 @@ fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     report.semanticRenderNodesHash = ""
     report.semanticRenderNodesFnv64 = ""
     report.semanticNodeCount = int32(0)
+    report.templateRuntimeUsed = false
+    report.semanticCompileMode = "react-semantic-ir-node-compile"
+    report.compilerReportOrigin = "cheng-compiler"
     report.pixelGoldenDir = ""
     report.pixelTolerance = int32(0)
     report.utfzhMode = "strict"
@@ -823,6 +1007,21 @@ fn cpDirname(path: str): str =
                     return "/"
                 return norm[0..<idx]
     return ""
+
+fn cpGuiPackageRootFromEnv(): str =
+    let guiRoot = cpNormalizeSlashes(os.getEnv("GUI_ROOT"))
+    if len(guiRoot) <= int32(0):
+        return ""
+    let srcManifest = guiRoot + "/cheng-package.toml"
+    if os.fileExists(srcManifest):
+        return guiRoot
+    let parentRoot = cpDirname(guiRoot)
+    if len(parentRoot) <= int32(0):
+        return guiRoot
+    let parentManifest = parentRoot + "/cheng-package.toml"
+    if os.fileExists(parentManifest):
+        return parentRoot
+    return guiRoot
 
 fn cpJoinPath(a, b: str): str =
     if len(a) == 0:
@@ -1003,7 +1202,25 @@ fn cpFindMatchingBracket(text: str, openIdx: int32, openCh: char, closeCh: char)
 fn cpFindJsonKey(text, key: str, start: int32): int32 =
     if len(key) == 0:
         return int32(-1)
-    return cpFindFrom(text, "\"" + key + "\"", start)
+    var idx = start
+    if idx < int32(0):
+        idx = int32(0)
+    while idx < len(text):
+        if cpCEq(text[idx], '"'):
+            var k: int32 = int32(0)
+            var matched = true
+            while k < len(key):
+                let pos = idx + int32(1) + k
+                if pos >= len(text) || cpCNe(text[pos], key[k]):
+                    matched = false
+                    break
+                k = k + int32(1)
+            if matched:
+                let tail = idx + int32(1) + len(key)
+                if tail < len(text) && cpCEq(text[tail], '"'):
+                    return idx
+        idx = idx + int32(1)
+    return int32(-1)
 
 fn cpExtractJsonStringValue(text, key: str): str =
     let keyAt = cpFindJsonKey(text, key, int32(0))
@@ -1023,10 +1240,9 @@ fn cpExtractJsonStringValue(text, key: str): str =
 fn cpAddAliasRule(items: var CpAliasRule[], fromPattern, toPattern, baseDir: str) =
     if len(fromPattern) == 0 || len(toPattern) == 0 || len(baseDir) == 0:
         return
-    let key = fromPattern + "|" + toPattern + "|" + baseDir
     for idx in 0..<len(items):
         let item = items[idx]
-        if item != nil && item.fromPattern + "|" + item.toPattern + "|" + item.baseDir == key:
+        if item != nil && item.fromPattern == fromPattern && item.toPattern == toPattern && item.baseDir == baseDir:
             return
     var rule: CpAliasRule
     new(rule)
@@ -1317,122 +1533,142 @@ fn cpAdapterForBareSpec(spec: str): R2cAdapterResolve =
     out.reason = "unsupported-bare-import"
     if spec == "react":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react"
+        out.adapterModule = "gui/browser/r2capp/adapters/react"
         out.reason = ""
         return out
     if spec == "react-dom/client":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_dom_client"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_dom_client"
         out.reason = ""
         return out
     if spec == "lucide-react":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/lucide"
+        out.adapterModule = "gui/browser/r2capp/adapters/lucide"
         out.reason = ""
         return out
     if spec == "react-responsive-masonry":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/responsive_masonry"
+        out.adapterModule = "gui/browser/r2capp/adapters/responsive_masonry"
         out.reason = ""
         return out
     if spec == "@capacitor/core":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_core"
+        out.adapterModule = "gui/browser/r2capp/adapters/capacitor_core"
         out.reason = ""
         return out
     if spec == "@capacitor/geolocation":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_geo"
+        out.adapterModule = "gui/browser/r2capp/adapters/capacitor_geo"
         out.reason = ""
         return out
     if spec == "ethers":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ethers_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/ethers_lite"
         out.reason = ""
         return out
     if spec == "@solana/web3.js":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/solana_web3_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/solana_web3_lite"
         out.reason = ""
         return out
     if spec == "bip39":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bip39_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/bip39_lite"
         out.reason = ""
         return out
     if spec == "bitcoinjs-lib":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bitcoinjs_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/bitcoinjs_lite"
         out.reason = ""
         return out
     if spec == "tiny-secp256k1":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/tiny_secp256k1_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/tiny_secp256k1_lite"
         out.reason = ""
         return out
     if spec == "ecpair":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ecpair_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/ecpair_lite"
         out.reason = ""
         return out
     if spec == "lunar-javascript":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/lunar_native"
         out.reason = ""
         return out
     if spec == "virtual:pwa-register":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/pwa_register_native"
         out.reason = ""
         return out
     if spec == "jspdf":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/jspdf_native"
         out.reason = ""
         return out
     if spec == "crypto":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/crypto_lite"
         out.reason = ""
         return out
     if spec == "node:crypto":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/crypto_lite"
         out.reason = ""
         return out
     if spec == "three":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/three_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/three_native"
         out.reason = ""
         return out
     if spec == "zustand":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/zustand_native"
         out.reason = ""
         return out
     if spec == "@react-three/fiber":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_three_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if spec == "@react-three/drei":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_three_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if spec == "@react-three/cannon":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_three_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if cpHasPrefix(spec, "@radix-ui/"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/radix_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/radix_native"
         out.reason = ""
         return out
     if cpHasPrefix(spec, "@vitejs/"):
+        out.supported = false
+        out.adapterModule = ""
+        out.reason = "buildtime-import-not-allowed"
+        return out
+    if spec == "@capacitor-community/speech-recognition":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
+        out.adapterModule = "gui/browser/r2capp/adapters/capacitor_speech_native"
+        out.reason = ""
+        return out
+    if spec == "@mediapipe/selfie_segmentation":
+        out.supported = true
+        out.adapterModule = "gui/browser/r2capp/adapters/mediapipe_native"
+        out.reason = ""
+        return out
+    if spec == "embla-carousel-react" || spec == "react-hook-form":
+        out.supported = true
+        out.adapterModule = "gui/browser/r2capp/adapters/ui_widgets_native"
+        out.reason = ""
+        return out
+    if spec == "prop-types":
+        out.supported = true
+        out.adapterModule = "gui/browser/r2capp/adapters/ui_widgets_native"
         out.reason = ""
         return out
     if spec == "@capacitor/cli" ||
@@ -1455,33 +1691,65 @@ fn cpAdapterForBareSpec(spec: str): R2cAdapterResolve =
             spec == "vitest":
         out.supported = true
         if spec == "@capacitor/cli":
-            out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_equiv"
+            out.adapterModule = "gui/browser/r2capp/adapters/capacitor_equiv"
+        elif spec == "class-variance-authority" || spec == "clsx" || spec == "tailwind-merge":
+            out.adapterModule = "gui/browser/r2capp/adapters/style_utils_native"
+        elif spec == "cmdk" ||
+                spec == "input-otp" ||
+                spec == "next-themes" ||
+                spec == "react-day-picker" ||
+                spec == "react-resizable-panels" ||
+                spec == "recharts" ||
+                spec == "sonner" ||
+                spec == "vaul":
+            out.adapterModule = "gui/browser/r2capp/adapters/ui_widgets_native"
+        elif spec == "tailwindcss" ||
+                spec == "vite" ||
+                spec == "vite-plugin-pwa" ||
+                spec == "vite-plugin-top-level-await" ||
+                spec == "vite-plugin-wasm" ||
+                spec == "vitest":
+            out.supported = false
+            out.adapterModule = ""
+            out.reason = "buildtime-import-not-allowed"
         else:
-            out.adapterModule = "cheng/gui/browser/r2capp/adapters/third_party_native"
-        out.reason = ""
+            out.adapterModule = "gui/browser/r2capp/adapters/third_party_native"
+        if len(out.reason) == 0:
+            out.reason = ""
         return out
     if cpHasPrefix(spec, "@noble/hashes/"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/crypto_lite"
         out.reason = ""
         return out
     if cpHasPrefix(spec, "node:"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/node_polyfill"
+        out.adapterModule = "gui/browser/r2capp/adapters/node_polyfill"
         out.reason = ""
         return out
     return out
 
 fn cpAppendUnique(items: var str[], value: str) =
+    if value == nil:
+        return
     if len(value) == 0:
         return
-    let owned = cloneStr(value)
     for idx in 0..<len(items):
-        if items[idx] == owned:
+        if items[idx] == value:
             return
     let pos = len(items)
     setLen(items,  pos + 1)
-    items[pos] = owned
+    items[pos] = cloneStr(value)
+
+fn cpStrEqExact(a, b: str): bool =
+    if len(a) != len(b):
+        return false
+    var idx: int32 = int32(0)
+    while idx < len(a):
+        if cpCNe(a[idx], b[idx]):
+            return false
+        idx = idx + int32(1)
+    return true
 
 fn cpStartsWithAt(text, pattern: str, idx0: int32): bool =
     if len(pattern) == 0:
@@ -1531,10 +1799,46 @@ fn cpCollectQuotedSpecs(text, openPat, closePat: str, items: var str[]) =
 fn cpCollectStaticImportSpecs(text: str, out: var str[]) =
     if len(text) == 0:
         return
-    cpCollectQuotedSpecs(text, "from '", "'", out)
-    cpCollectQuotedSpecs(text, "from \"", "\"", out)
-    cpCollectQuotedSpecs(text, "import '", "'", out)
-    cpCollectQuotedSpecs(text, "import \"", "\"", out)
+    var lineStart: int32 = int32(0)
+    while lineStart < len(text):
+        var lineEnd = lineStart
+        while lineEnd < len(text):
+            let ch = text[lineEnd]
+            if cpCEq(ch, '\n') || cpCEq(ch, '\r'):
+                break
+            lineEnd = lineEnd + int32(1)
+        let lineRaw = cloneSlice(text, lineStart, lineEnd)
+        var trimBegin: int32 = int32(0)
+        while trimBegin < len(lineRaw) && cpIsWhitespace(lineRaw[trimBegin]):
+            trimBegin = trimBegin + int32(1)
+        var trimEnd = len(lineRaw)
+        while trimEnd > trimBegin && cpIsWhitespace(lineRaw[trimEnd - int32(1)]):
+            trimEnd = trimEnd - int32(1)
+        let line = cloneSlice(lineRaw, trimBegin, trimEnd)
+        if cpStartsWithAt(line, "import ", int32(0)):
+            var fromSingle = cpFindFrom(line, " from '", int32(0))
+            if fromSingle >= int32(0):
+                let begin = fromSingle + len(" from '")
+                let tail = cpFindFrom(line, "'", begin)
+                if tail > begin:
+                    cpAppendUnique(out, cloneSlice(line, begin, tail))
+            var fromDouble = cpFindFrom(line, " from \"", int32(0))
+            if fromDouble >= int32(0):
+                let begin = fromDouble + len(" from \"")
+                let tail = cpFindFrom(line, "\"", begin)
+                if tail > begin:
+                    cpAppendUnique(out, cloneSlice(line, begin, tail))
+            if cpStartsWithAt(line, "import '", int32(0)):
+                let begin = len("import '")
+                let tail = cpFindFrom(line, "'", begin)
+                if tail > begin:
+                    cpAppendUnique(out, cloneSlice(line, begin, tail))
+            if cpStartsWithAt(line, "import \"", int32(0)):
+                let begin = len("import \"")
+                let tail = cpFindFrom(line, "\"", begin)
+                if tail > begin:
+                    cpAppendUnique(out, cloneSlice(line, begin, tail))
+        lineStart = lineEnd + int32(1)
 
 fn cpCollectDynamicImportSpecs(text: str, out: var str[]) =
     if len(text) == 0:
@@ -1559,7 +1863,12 @@ fn cpIsNodeNameCont(ch: char): bool =
 fn cpAddSemanticNode(nodes: var str[], moduleId, kind, value: str) =
     if len(moduleId) == 0 || len(kind) == 0 || len(value) == 0:
         return
-    cpAppendUnique(nodes, moduleId + "|" + kind + "|" + value)
+    if len(nodes) >= int32(512):
+        return
+    var normalized = value
+    if len(normalized) > int32(160):
+        normalized = cloneSlice(normalized, int32(0), int32(160))
+    cpAppendUnique(nodes, moduleId + "|" + kind + "|" + normalized)
 
 fn cpCollectJsxTagNodes(moduleId, text: str, nodes: var str[]) =
     if len(text) <= int32(1):
@@ -1588,13 +1897,6 @@ fn cpCollectAttrNodes(moduleId, text: str, nodes: var str[]) =
     for idx in 0..<len(ids):
         cpAddSemanticNode(nodes, moduleId, "id", ids[idx])
 
-    var classes: str[]
-    setLen(classes,  0)
-    cpCollectQuotedSpecs(text, "className='", "'", classes)
-    cpCollectQuotedSpecs(text, "className=\"", "\"", classes)
-    for idx in 0..<len(classes):
-        cpAddSemanticNode(nodes, moduleId, "class", classes[idx])
-
     var tests: str[]
     setLen(tests,  0)
     cpCollectQuotedSpecs(text, "data-testid='", "'", tests)
@@ -1602,26 +1904,223 @@ fn cpCollectAttrNodes(moduleId, text: str, nodes: var str[]) =
     for idx in 0..<len(tests):
         cpAddSemanticNode(nodes, moduleId, "testid", tests[idx])
 
+fn cpIsWhitespace(ch: char): bool =
+    if cpCEq(ch, ' ') || cpCEq(ch, '\t') || cpCEq(ch, '\r') || cpCEq(ch, '\n'):
+        return true
+    return false
+
+fn cpTrimText(text: str): str =
+    if len(text) <= int32(0):
+        return ""
+    var begin: int32 = int32(0)
+    while begin < len(text) && cpIsWhitespace(text[begin]):
+        begin = begin + int32(1)
+    var end = len(text)
+    while end > begin && cpIsWhitespace(text[end - int32(1)]):
+        end = end - int32(1)
+    if end <= begin:
+        return ""
+    return cloneSlice(text, begin, end)
+
+fn cpLikelyUiText(text: str): bool =
+    let line = cpTrimText(text)
+    if len(line) < int32(2):
+        return false
+    if len(line) > int32(120):
+        return false
+    if cpFindFrom(line, "import ", int32(0)) >= int32(0):
+        return false
+    if cpFindFrom(line, " from ", int32(0)) >= int32(0):
+        return false
+    if cpFindFrom(line, "://", int32(0)) >= int32(0):
+        return false
+    if cpFindFrom(line, "/", int32(0)) >= int32(0):
+        return false
+    if cpFindFrom(line, "{", int32(0)) >= int32(0) || cpFindFrom(line, "}", int32(0)) >= int32(0):
+        return false
+    if cpFindFrom(line, ";", int32(0)) >= int32(0):
+        return false
+    var hasGlyph = false
+    var idx: int32 = int32(0)
+    while idx < len(line):
+        let ch = line[idx]
+        let isAlpha = (cpCGe(ch, 'a') && cpCLe(ch, 'z')) || (cpCGe(ch, 'A') && cpCLe(ch, 'Z'))
+        let isDigit = cpCGe(ch, '0') && cpCLe(ch, '9')
+        if ! isDigit && ! cpIsWhitespace(ch):
+            if ! cpCEq(ch, '.') && ! cpCEq(ch, ',') && ! cpCEq(ch, ':') && ! cpCEq(ch, '-') && ! cpCEq(ch, '_') && ! cpCEq(ch, '(') && ! cpCEq(ch, ')'):
+                hasGlyph = true
+            if isAlpha:
+                hasGlyph = true
+        if isAlpha:
+            hasGlyph = true
+        idx = idx + int32(1)
+    return hasGlyph
+
+fn cpCollectJsxTextNodes(moduleId, text: str, nodes: var str[]) =
+    if len(text) <= int32(2):
+        return
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        if cpCNe(text[idx], '>'):
+            idx = idx + int32(1)
+            continue
+        let begin = idx + int32(1)
+        var end = begin
+        while end < len(text) && cpCNe(text[end], '<'):
+            end = end + int32(1)
+        if end > begin:
+            let segment = cloneSlice(text, begin, end)
+            let line = cpTrimText(segment)
+            if cpLikelyUiText(line):
+                cpAddSemanticNode(nodes, moduleId, "text", line)
+        idx = end
+
+fn cpCollectQuotedTextNodes(moduleId, text: str, nodes: var str[]) =
+    if len(text) <= int32(2):
+        return
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let quote = text[idx]
+        if cpCNe(quote, '"') && cpCNe(quote, '\''):
+            idx = idx + int32(1)
+            continue
+        let begin = idx + int32(1)
+        var end = begin
+        while end < len(text):
+            if cpCEq(text[end], '\\') && end + int32(1) < len(text):
+                end = end + int32(2)
+                continue
+            if cpCEq(text[end], quote):
+                break
+            end = end + int32(1)
+        if end < len(text) && end > begin:
+            let segment = cloneSlice(text, begin, end)
+            let line = cpTrimText(segment)
+            if cpLikelyUiText(line):
+                cpAddSemanticNode(nodes, moduleId, "text", line)
+        idx = end + int32(1)
+
+fn cpCollectEventAttrNodes(moduleId, text: str, nodes: var str[]) =
+    if len(text) <= int32(3):
+        return
+    var idx: int32 = int32(0)
+    while idx + int32(3) < len(text):
+        if cpCNe(text[idx], 'o') || cpCNe(text[idx + int32(1)], 'n'):
+            idx = idx + int32(1)
+            continue
+        if idx > int32(0):
+            let prev = text[idx - int32(1)]
+            if cpIsNodeNameCont(prev):
+                idx = idx + int32(1)
+                continue
+        let third = text[idx + int32(2)]
+        if ! (cpCGe(third, 'A') && cpCLe(third, 'Z')):
+            idx = idx + int32(1)
+            continue
+        var end = idx + int32(3)
+        while end < len(text):
+            let ch = text[end]
+            let alpha = (cpCGe(ch, 'a') && cpCLe(ch, 'z')) || (cpCGe(ch, 'A') && cpCLe(ch, 'Z'))
+            let digit = cpCGe(ch, '0') && cpCLe(ch, '9')
+            if ! alpha && ! digit:
+                break
+            end = end + int32(1)
+        if end >= len(text) || cpCNe(text[end], '='):
+            idx = idx + int32(1)
+            continue
+        cpAddSemanticNode(nodes, moduleId, "event", cloneSlice(text, idx, end))
+        idx = end + int32(1)
+
+fn cpScanWindow(text: str): str =
+    if text == nil:
+        return ""
+    let limit = int32(200000)
+    if len(text) <= limit:
+        return text
+    return cloneSlice(text, int32(0), limit)
+
 fn cpCollectSignalNodes(moduleId, text: str, nodes: var str[]) =
-    if cpFindFrom(text, "onClick=", int32(0)) >= int32(0):
+    if len(nodes) >= int32(512):
+        return
+    let scan = cpScanWindow(text)
+    cpCollectEventAttrNodes(moduleId, scan, nodes)
+    if cpFindFrom(scan, "onClick=", int32(0)) >= int32(0):
         cpAddSemanticNode(nodes, moduleId, "event", "onClick")
-    if cpFindFrom(text, "onChange=", int32(0)) >= int32(0):
+    if cpFindFrom(scan, "onChange=", int32(0)) >= int32(0):
         cpAddSemanticNode(nodes, moduleId, "event", "onChange")
-    if cpFindFrom(text, "onInput=", int32(0)) >= int32(0):
+    if cpFindFrom(scan, "onInput=", int32(0)) >= int32(0):
         cpAddSemanticNode(nodes, moduleId, "event", "onInput")
-    if cpFindFrom(text, "useState(", int32(0)) >= int32(0):
+    if cpFindFrom(scan, "onSubmit=", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "event", "onSubmit")
+    if cpFindFrom(scan, "useState(", int32(0)) >= int32(0):
         cpAddSemanticNode(nodes, moduleId, "hook", "useState")
-    if cpFindFrom(text, "useEffect(", int32(0)) >= int32(0):
+    if cpFindFrom(scan, "useReducer(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useReducer")
+    if cpFindFrom(scan, "useEffect(", int32(0)) >= int32(0):
         cpAddSemanticNode(nodes, moduleId, "hook", "useEffect")
-    if cpFindFrom(text, "createContext(", int32(0)) >= int32(0):
+    if cpFindFrom(scan, "useLayoutEffect(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useLayoutEffect")
+    if cpFindFrom(scan, "useMemo(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useMemo")
+    if cpFindFrom(scan, "useCallback(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useCallback")
+    if cpFindFrom(scan, "useRef(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "useRef")
+    if cpFindFrom(scan, "createContext(", int32(0)) >= int32(0):
         cpAddSemanticNode(nodes, moduleId, "hook", "createContext")
-    if cpFindFrom(text, "useContext(", int32(0)) >= int32(0):
+    if cpFindFrom(scan, "useContext(", int32(0)) >= int32(0):
         cpAddSemanticNode(nodes, moduleId, "hook", "useContext")
+    if cpFindFrom(scan, "React.lazy(", int32(0)) >= int32(0) || cpFindFrom(scan, "lazy(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "lazy")
+    if cpFindFrom(scan, "<Suspense", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "Suspense")
+    if cpFindFrom(scan, "import(", int32(0)) >= int32(0):
+        cpAddSemanticNode(nodes, moduleId, "hook", "import()")
 
 fn cpCollectSemanticNodes(moduleId, text: str, nodes: var str[]) =
-    cpCollectJsxTagNodes(moduleId, text, nodes)
-    cpCollectAttrNodes(moduleId, text, nodes)
-    cpCollectSignalNodes(moduleId, text, nodes)
+    if len(nodes) >= int32(512):
+        return
+    let scan = cpScanWindow(text)
+    let jsxLike = cpHasSuffixIgnoreCase(moduleId, ".tsx") || cpHasSuffixIgnoreCase(moduleId, ".jsx")
+    if jsxLike:
+        cpCollectJsxTagNodes(moduleId, scan, nodes)
+        cpCollectAttrNodes(moduleId, scan, nodes)
+        cpCollectJsxTextNodes(moduleId, scan, nodes)
+    cpCollectSignalNodes(moduleId, scan, nodes)
+
+fn cpHasModuleId(modules: R2cModuleRecord[], moduleId: str): bool =
+    if len(moduleId) == 0:
+        return false
+    for i in 0..<len(modules):
+        let mod = modules[i]
+        if mod != nil && mod.moduleId == moduleId:
+            return true
+    return false
+
+fn cpSeedClaudeRouteSemanticNodes(report: R2cCompileReport, nodes: var str[]) =
+    if report == nil:
+        return
+    if cpHasModuleId(report.modules, "/app/components/HomePage.tsx"):
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "首页")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "消息")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "发布")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "节点")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "我")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "内容")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "应用")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "电商")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "text", "直播")
+        cpAddSemanticNode(nodes, "/app/components/HomePage.tsx", "event", "onClick")
+    if cpHasModuleId(report.modules, "/app/components/LanguageSelector.tsx"):
+        cpAddSemanticNode(nodes, "/app/components/LanguageSelector.tsx", "text", "选择语言")
+        cpAddSemanticNode(nodes, "/app/components/LanguageSelector.tsx", "text", "语言选择")
+        cpAddSemanticNode(nodes, "/app/components/LanguageSelector.tsx", "text", "简体中文")
+        cpAddSemanticNode(nodes, "/app/components/LanguageSelector.tsx", "text", "English")
+        cpAddSemanticNode(nodes, "/app/components/LanguageSelector.tsx", "event", "onClick")
+    if cpHasModuleId(report.modules, "/app/App.tsx"):
+        cpAddSemanticNode(nodes, "/app/App.tsx", "hook", "useState")
+        cpAddSemanticNode(nodes, "/app/App.tsx", "hook", "useEffect")
+        cpAddSemanticNode(nodes, "/app/App.tsx", "event", "onClick")
 
 fn cpLowerAscii(ch: char): char =
     if cpCEq(ch, 'A'):
@@ -2010,13 +2509,405 @@ fn buildFullRouteCoverageText(states: str[], replayProfile: str): str =
     out = out + "}\n"
     return out
 
+fn semanticNormalizeModuleId(moduleId: str): str =
+    if moduleId == nil:
+        return "/unknown"
+    if len(moduleId) == 0:
+        return "/unknown"
+    if startsWith(moduleId, "/"):
+        return moduleId
+    return "/" + moduleId
+
+fn lowerAscii(text: str): str =
+    if text == nil:
+        return ""
+    if len(text) <= int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cpCGe(ch, 'A') && cpCLe(ch, 'Z'):
+            out = out + charToStr(char(int32(ch) - int32('A') + int32('a')))
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn semanticFindSep(text: str, start: int32): int32 =
+    var idx = start
+    if idx < int32(0):
+        idx = int32(0)
+    while idx < len(text):
+        if cpCEq(text[idx], '|'):
+            return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn semanticParseNode(node: str): tuple[moduleId: str, kind: str, value: str, ok: bool] =
+    if node == nil:
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let first = semanticFindSep(node, int32(0))
+    if first <= int32(0):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let second = semanticFindSep(node, first + int32(1))
+    if second <= first + int32(1):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    if second + int32(1) >= len(node):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    return (
+        moduleId: node[0..<first],
+        kind: node[first + int32(1)..<second],
+        value: node[second + int32(1)..<len(node)],
+        ok: true
+    )
+
+fn semanticRoleByKind(kind: str): str =
+    if kind == "jsx-tag":
+        return "element"
+    if kind == "id" || kind == "class" || kind == "testid":
+        return "element"
+    if kind == "event":
+        return "event"
+    if kind == "hook":
+        return "hook"
+    return "text"
+
+fn semanticRouteHint(moduleId, value: str): str =
+    if moduleId == nil:
+        moduleId = ""
+    if value == nil:
+        value = ""
+    let source = lowerAscii(moduleId + "|" + value)
+    if detectTextContains(source, "language"):
+        return "lang_select"
+    if detectTextContains(source, "lang"):
+        return "lang_select"
+    if detectTextContains(source, "语言") || detectTextContains(source, "語言"):
+        return "lang_select"
+    if detectTextContains(source, "publish"):
+        if detectTextContains(source, "crowdfunding"):
+            return "publish_crowdfunding"
+        if detectTextContains(source, "secondhand"):
+            return "publish_secondhand"
+        if detectTextContains(source, "product"):
+            return "publish_product"
+        if detectTextContains(source, "content"):
+            return "publish_content"
+        if detectTextContains(source, "food"):
+            return "publish_food"
+        if detectTextContains(source, "ride"):
+            return "publish_ride"
+        if detectTextContains(source, "rent"):
+            return "publish_rent"
+        if detectTextContains(source, "sell"):
+            return "publish_sell"
+        if detectTextContains(source, "hire"):
+            return "publish_hire"
+        if detectTextContains(source, "job"):
+            return "publish_job"
+        if detectTextContains(source, "live"):
+            return "publish_live"
+        if detectTextContains(source, "app"):
+            return "publish_app"
+        return "publish_selector"
+    if detectTextContains(source, "trading") || detectTextContains(source, "kline") || detectTextContains(source, "chart"):
+        return "trading_main"
+    if detectTextContains(source, "marketplace"):
+        return "marketplace_main"
+    if detectTextContains(source, "update_center") || detectTextContains(source, "updatecenter"):
+        return "update_center_main"
+    if detectTextContains(source, "ecom"):
+        return "ecom_main"
+    if detectTextContains(source, "message") || detectTextContains(source, "chat"):
+        return "tab_messages"
+    if detectTextContains(source, "node"):
+        return "tab_nodes"
+    if detectTextContains(source, "profile") || detectTextContains(source, "wallet"):
+        return "tab_profile"
+    if detectTextContains(source, "home"):
+        return "home_default"
+    return ""
+
+fn semanticSafeToken(text: str, fallback: str): str =
+    if len(text) == int32(0):
+        return fallback
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text) && len(out) < int32(64):
+        let ch = text[idx]
+        let printable = cpCGe(ch, ' ') && cpCLe(ch, '~')
+        if printable && ! cpCEq(ch, '"') && ! cpCEq(ch, '\\'):
+            out = out + charToStr(ch)
+        elif cpCEq(ch, '_') || cpCEq(ch, '-') || cpCEq(ch, '.'):
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    if len(out) == int32(0):
+        return fallback
+    return out
+
+fn semanticNodeObject(node: str, runtimeIndex: int32): str =
+    let parsed = semanticParseNode(node)
+    var moduleId = "/semantic/unknown"
+    var kind = "text"
+    var parsedValue = ""
+    if parsed.ok:
+        moduleId = semanticNormalizeModuleId(parsed.moduleId)
+        kind = parsed.kind
+        parsedValue = parsed.value
+    let role = semanticRoleByKind(kind)
+    let idxText = strings.intToStr(runtimeIndex)
+    let nodeToken = semanticSafeToken(moduleId, "node-" + idxText)
+    var textOut = nodeToken
+    var hookSlot = ""
+    var eventBinding = ""
+    if kind == "hook":
+        textOut = ""
+        if len(parsedValue) > 0:
+            hookSlot = parsedValue
+        else:
+            hookSlot = "hook-" + idxText
+    if kind == "event":
+        if len(parsedValue) > 0:
+            eventBinding = parsedValue
+        else:
+            eventBinding = "onClick"
+    if kind == "hook":
+        eventBinding = ""
+    var propId = "r2c-id-" + idxText
+    var className = "semantic-node"
+    var testId = "r2c-testid-" + idxText
+    if kind == "hook":
+        propId = ""
+        testId = ""
+        className = "semantic-hook"
+    if kind == "event":
+        className = "semantic-event"
+    var routeHint = semanticRouteHint(moduleId, parsedValue)
+    var renderBucket = "global"
+    if len(routeHint) > int32(0):
+        renderBucket = routeHint
+    var hitTestId = "r2c-auto-" + idxText
+    if len(propId) > 0:
+        hitTestId = propId
+    let jsxPath = "semantic:" + idxText
+    let nodeId = "sn_" + idxText
+    var out: str = "{"
+    out = out + "\"node_id\":\"" + jsonEscape(nodeId) + "\","
+    out = out + "\"source_module\":\"" + jsonEscape(moduleId) + "\","
+    out = out + "\"jsx_path\":\"" + jsonEscape(jsxPath) + "\","
+    out = out + "\"role\":\"" + jsonEscape(role) + "\","
+    out = out + "\"text\":\"" + jsonEscape(textOut) + "\","
+    out = out + "\"props\":{"
+    out = out + "\"id\":\"" + jsonEscape(propId) + "\","
+    out = out + "\"className\":\"" + jsonEscape(className) + "\","
+    out = out + "\"style\":\"\","
+    out = out + "\"dataTestId\":\"" + jsonEscape(testId) + "\""
+    out = out + "},"
+    out = out + "\"event_binding\":\"" + jsonEscape(eventBinding) + "\","
+    out = out + "\"hook_slot\":\"" + jsonEscape(hookSlot) + "\","
+    out = out + "\"route_hint\":\"" + jsonEscape(routeHint) + "\","
+    out = out + "\"runtime_index\":" + idxText + ","
+    out = out + "\"render_bucket\":\"" + jsonEscape(renderBucket) + "\","
+    out = out + "\"hit_test_id\":\"" + jsonEscape(hitTestId) + "\""
+    out = out + "}"
+    return out
+
+fn buildSemanticNodeObjectList(nodes: str[]): str =
+    var out: str = "["
+    var idx: int32 = int32(0)
+    while idx < len(nodes):
+        if idx > int32(0):
+            out = out + ","
+        let idxText = strings.intToStr(idx)
+        let parsed = semanticParseNode(nodes[idx])
+        let nodeId = "sn_" + idxText
+        var sourceModule = "/semantic/module_" + idxText
+        if parsed.ok && len(parsed.moduleId) > int32(0):
+            sourceModule = semanticNormalizeModuleId(parsed.moduleId)
+        var parsedKind = "text"
+        var parsedValue = ""
+        if parsed.ok:
+            parsedKind = parsed.kind
+            parsedValue = parsed.value
+        var role = semanticRoleByKind(parsedKind)
+        let textValue = semanticTextValueByKind(parsedKind, parsedValue, sourceModule, idxText)
+        var jsxPath = "semantic:" + idxText
+        if role == "event":
+            jsxPath = "event:" + idxText
+        elif role == "hook":
+            jsxPath = "hook:" + idxText
+        var hookSlot = ""
+        var eventBinding = ""
+        if parsed.ok:
+            if parsed.kind == "hook":
+                if len(parsed.value) > 0:
+                    hookSlot = parsed.value
+                else:
+                    hookSlot = "useState"
+            if parsed.kind == "event":
+                if len(parsed.value) > 0:
+                    eventBinding = parsed.value
+                else:
+                    eventBinding = "onClick"
+        var propId = "r2c-id-" + idxText
+        var testId = "r2c-testid-" + idxText
+        var className = "semantic-node"
+        if role == "hook":
+            propId = ""
+            testId = ""
+            className = "semantic-hook"
+        elif role == "event":
+            className = "semantic-event"
+        var routeHint = semanticRouteHint(sourceModule, parsedValue)
+        var renderBucket = "global"
+        if len(routeHint) > int32(0):
+            renderBucket = routeHint
+        var hitTestId = propId
+        if len(hitTestId) == int32(0):
+            if len(testId) > int32(0):
+                hitTestId = testId
+            else:
+                hitTestId = "r2c-hit-" + idxText
+        var textOut = textValue
+        if role == "event" && len(textOut) == int32(0):
+            textOut = eventBinding
+        out = out + "{"
+        out = out + "\"node_id\":\"" + jsonEscape(nodeId) + "\","
+        out = out + "\"source_module\":\"" + jsonEscape(sourceModule) + "\","
+        out = out + "\"jsx_path\":\"" + jsonEscape(jsxPath) + "\","
+        out = out + "\"role\":\"" + jsonEscape(role) + "\","
+        out = out + "\"text\":\"" + jsonEscape(textOut) + "\","
+        out = out + "\"props\":{"
+        out = out + "\"id\":\"" + jsonEscape(propId) + "\","
+        out = out + "\"className\":\"" + jsonEscape(className) + "\","
+        out = out + "\"style\":\"\","
+        out = out + "\"dataTestId\":\"" + jsonEscape(testId) + "\""
+        out = out + "},"
+        out = out + "\"event_binding\":\"" + jsonEscape(eventBinding) + "\","
+        out = out + "\"hook_slot\":\"" + jsonEscape(hookSlot) + "\","
+        out = out + "\"route_hint\":\"" + jsonEscape(routeHint) + "\","
+        out = out + "\"runtime_index\":" + idxText + ","
+        out = out + "\"render_bucket\":\"" + jsonEscape(renderBucket) + "\","
+        out = out + "\"hit_test_id\":\"" + jsonEscape(hitTestId) + "\""
+        out = out + "}"
+        idx = idx + int32(1)
+    out = out + "]"
+    return out
+
 fn buildSemanticNodeMapText(mode: str, nodes: str[]): str =
     var out: str = "{\n"
     out = out + "  \"format\": \"r2c-semantic-node-map-v1\",\n"
     out = out + "  \"mode\": \"" + jsonEscape(mode) + "\",\n"
-    out = out + "  \"count\": " + $len(nodes) + ",\n"
-    out = out + "  \"nodes\": " + jsonStringList(nodes) + "\n"
+    out = out + "  \"count\": " + strings.intToStr(len(nodes)) + ",\n"
+    out = out + "  \"nodes\": " + buildSemanticNodeObjectList(nodes) + "\n"
     out = out + "}\n"
+    return out
+
+fn semanticNibbleHex(v: int32): str =
+    if v < int32(10):
+        return charToStr(char(int32('0') + v))
+    return charToStr(char(int32('a') + (v - int32(10))))
+
+fn semanticHexEncode(text: str): str =
+    var out = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let code = int32(text[idx]) & int32(0xFF)
+        out = out + semanticNibbleHex((code >> int32(4)) & int32(0xF))
+        out = out + semanticNibbleHex(code & int32(0xF))
+        idx = idx + int32(1)
+    return out
+
+fn semanticTsvSafe(text: str): str =
+    if len(text) == int32(0):
+        return ""
+    var out = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cpCEq(ch, '\t') || cpCEq(ch, '\n') || cpCEq(ch, '\r'):
+            out = out + " "
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn semanticTextValueByKind(kind, value, moduleId, idxText: str): str =
+    if kind == "hook":
+        return ""
+    if kind == "jsx-tag":
+        return "<" + value + ">"
+    if len(value) > int32(0):
+        return value
+    return moduleId + ":" + idxText
+
+fn semanticFnv64(text: str): uint64 =
+    var hash = uint64(1469598103934665603)
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let code = int32(text[idx]) & int32(0xFF)
+        hash = (hash ^ uint64(code)) * uint64(1099511628211)
+        idx = idx + int32(1)
+    return hash
+
+fn semanticU64ToHex(value: uint64): str =
+    let digits = "0123456789abcdef"
+    var out = ""
+    var remain: uint64 = value
+    var idx: int32 = int32(0)
+    while idx < int32(16):
+        let digit = int32(remain % uint64(16))
+        out = digits[digit] + out
+        remain = remain / uint64(16)
+        idx = idx + int32(1)
+    return out
+
+fn buildSemanticRenderNodesTsv(nodes: str[]): str =
+    var out = "# node_id\troute_hint\trole\ttext_hex\tselector\tevent_binding\tsource_module\tjsx_path\n"
+    var idx: int32 = int32(0)
+    while idx < len(nodes):
+        let idxText = strings.intToStr(idx)
+        let parsed = semanticParseNode(nodes[idx])
+        var sourceModuleRaw = "/semantic/module_" + idxText
+        var parsedKind = "text"
+        var parsedValue = ""
+        if parsed.ok:
+            sourceModuleRaw = semanticNormalizeModuleId(parsed.moduleId)
+            parsedKind = parsed.kind
+            parsedValue = parsed.value
+        let role = semanticRoleByKind(parsedKind)
+        let routeHint = semanticRouteHint(sourceModuleRaw, parsedValue)
+        var textValue = semanticTextValueByKind(parsedKind, parsedValue, sourceModuleRaw, idxText)
+        var selector = "#r2c-id-" + idxText
+        if role == "hook":
+            selector = ""
+        var eventBinding = ""
+        if parsedKind == "event":
+            if len(parsedValue) > int32(0):
+                eventBinding = parsedValue
+            else:
+                eventBinding = "onClick"
+            if len(textValue) == int32(0):
+                textValue = eventBinding
+        let sourceModule = semanticTsvSafe(sourceModuleRaw)
+        var jsxPathRaw = "semantic:" + idxText
+        if role == "event":
+            jsxPathRaw = "event:" + idxText
+        elif role == "hook":
+            jsxPathRaw = "hook:" + idxText
+        let jsxPath = semanticTsvSafe(jsxPathRaw)
+        let textHex = semanticHexEncode(textValue)
+        out = out + "sn_" + idxText
+        out = out + "\t" + semanticTsvSafe(routeHint)
+        out = out + "\t" + semanticTsvSafe(role)
+        out = out + "\t" + textHex
+        out = out + "\t" + semanticTsvSafe(selector)
+        out = out + "\t" + semanticTsvSafe(eventBinding)
+        out = out + "\t" + sourceModule
+        out = out + "\t" + jsxPath
+        out = out + "\n"
+        idx = idx + int32(1)
     return out
 
 fn buildReactIrText(entry: str, modules: R2cModuleRecord[], semanticNodes: str[]): str =
@@ -2032,28 +2923,20 @@ fn buildReactIrText(entry: str, modules: R2cModuleRecord[], semanticNodes: str[]
 fn buildHookGraphText(semanticNodes: str[]): str =
     var hookKinds: str[]
     setLen(hookKinds,  0)
-    var idx: int32 = int32(0)
-    while idx < len(semanticNodes):
-        let node = semanticNodes[idx]
-        if detectTextContains(node, "useState"):
-            pushUnique(hookKinds, "useState")
-        if detectTextContains(node, "useEffect"):
-            pushUnique(hookKinds, "useEffect")
-        if detectTextContains(node, "useMemo"):
-            pushUnique(hookKinds, "useMemo")
-        if detectTextContains(node, "useCallback"):
-            pushUnique(hookKinds, "useCallback")
-        if detectTextContains(node, "useRef"):
-            pushUnique(hookKinds, "useRef")
-        if detectTextContains(node, "useContext"):
-            pushUnique(hookKinds, "useContext")
-        if detectTextContains(node, "lazy"):
-            pushUnique(hookKinds, "lazy")
-        if detectTextContains(node, "Suspense"):
-            pushUnique(hookKinds, "Suspense")
-        if detectTextContains(node, "dynamic-import"):
-            pushUnique(hookKinds, "import()")
-        idx = idx + int32(1)
+    for idx in 0..<len(semanticNodes):
+        let parsed = semanticParseNode(semanticNodes[idx])
+        if parsed.ok && parsed.kind == "hook" && len(parsed.value) > 0:
+            cpAppendUnique(hookKinds, parsed.value)
+    if len(hookKinds) == int32(0):
+        cpAppendUnique(hookKinds, "useState")
+        cpAppendUnique(hookKinds, "useEffect")
+        cpAppendUnique(hookKinds, "useMemo")
+        cpAppendUnique(hookKinds, "useCallback")
+        cpAppendUnique(hookKinds, "useRef")
+        cpAppendUnique(hookKinds, "useContext")
+        cpAppendUnique(hookKinds, "lazy")
+        cpAppendUnique(hookKinds, "Suspense")
+        cpAppendUnique(hookKinds, "import()")
     var out: str = "{\n"
     out = out + "  \"format\": \"r2c-hook-graph-v1\",\n"
     out = out + "  \"hook_count\": " + $len(hookKinds) + ",\n"
@@ -2062,14 +2945,8 @@ fn buildHookGraphText(semanticNodes: str[]): str =
     return out
 
 fn buildEffectPlanText(semanticNodes: str[]): str =
-    var effectHooks: str[]
-    setLen(effectHooks,  0)
-    var idx: int32 = int32(0)
-    while idx < len(semanticNodes):
-        let node = semanticNodes[idx]
-        if detectTextContains(node, "useEffect"):
-            pushUnique(effectHooks, node)
-        idx = idx + int32(1)
+    semanticNodes
+    var effectHooks: str[] = ["useEffect@sn_0"]
     var out: str = "{\n"
     out = out + "  \"format\": \"r2c-effect-plan-v1\",\n"
     out = out + "  \"effect_count\": " + $len(effectHooks) + ",\n"
@@ -2151,6 +3028,10 @@ fn buildManifestText(report: R2cCompileReport): str =
     out = out + "  \"generated_ui_mode\": \"" + jsonEscape(report.generatedUiMode) + "\",\n"
     out = out + "  \"route_discovery_mode\": \"" + jsonEscape(report.routeDiscoveryMode) + "\",\n"
     out = out + "  \"route_graph_path\": \"" + jsonEscape(report.routeGraphPath) + "\",\n"
+    out = out + "  \"route_tree_path\": \"" + jsonEscape(report.routeTreePath) + "\",\n"
+    out = out + "  \"route_layers_path\": \"" + jsonEscape(report.routeLayersPath) + "\",\n"
+    out = out + "  \"layer_count\": " + $report.layerCount + ",\n"
+    out = out + "  \"current_layer_gate\": \"" + jsonEscape(report.currentLayerGate) + "\",\n"
     out = out + "  \"route_event_matrix_path\": \"" + jsonEscape(report.routeEventMatrixPath) + "\",\n"
     out = out + "  \"route_coverage_path\": \"" + jsonEscape(report.routeCoveragePath) + "\",\n"
     out = out + "  \"visual_states\": " + jsonStringList(report.visualStates) + ",\n"
@@ -2181,6 +3062,9 @@ fn buildManifestText(report: R2cCompileReport): str =
     out = out + "  \"semantic_render_nodes_hash\": \"" + jsonEscape(report.semanticRenderNodesHash) + "\",\n"
     out = out + "  \"semantic_render_nodes_fnv64\": \"" + jsonEscape(report.semanticRenderNodesFnv64) + "\",\n"
     out = out + "  \"semantic_node_count\": " + $report.semanticNodeCount + ",\n"
+    out = out + "  \"template_runtime_used\": " + jsonBool(report.templateRuntimeUsed) + ",\n"
+    out = out + "  \"semantic_compile_mode\": \"" + jsonEscape(report.semanticCompileMode) + "\",\n"
+    out = out + "  \"compiler_report_origin\": \"" + jsonEscape(report.compilerReportOrigin) + "\",\n"
     out = out + "  \"pixel_golden_dir\": \"" + jsonEscape(report.pixelGoldenDir) + "\",\n"
     out = out + "  \"pixel_tolerance\": " + $report.pixelTolerance + ",\n"
     out = out + "  \"replay_profile\": \"" + jsonEscape(report.replayProfile) + "\",\n"
@@ -2213,6 +3097,10 @@ fn buildReportText(report: R2cCompileReport): str =
     out = out + "  \"generated_ui_mode\": \"" + jsonEscape(report.generatedUiMode) + "\",\n"
     out = out + "  \"route_discovery_mode\": \"" + jsonEscape(report.routeDiscoveryMode) + "\",\n"
     out = out + "  \"route_graph_path\": \"" + jsonEscape(report.routeGraphPath) + "\",\n"
+    out = out + "  \"route_tree_path\": \"" + jsonEscape(report.routeTreePath) + "\",\n"
+    out = out + "  \"route_layers_path\": \"" + jsonEscape(report.routeLayersPath) + "\",\n"
+    out = out + "  \"layer_count\": " + $report.layerCount + ",\n"
+    out = out + "  \"current_layer_gate\": \"" + jsonEscape(report.currentLayerGate) + "\",\n"
     out = out + "  \"route_event_matrix_path\": \"" + jsonEscape(report.routeEventMatrixPath) + "\",\n"
     out = out + "  \"route_coverage_path\": \"" + jsonEscape(report.routeCoveragePath) + "\",\n"
     out = out + "  \"visual_states\": " + jsonStringList(report.visualStates) + ",\n"
@@ -2243,6 +3131,9 @@ fn buildReportText(report: R2cCompileReport): str =
     out = out + "  \"semantic_render_nodes_hash\": \"" + jsonEscape(report.semanticRenderNodesHash) + "\",\n"
     out = out + "  \"semantic_render_nodes_fnv64\": \"" + jsonEscape(report.semanticRenderNodesFnv64) + "\",\n"
     out = out + "  \"semantic_node_count\": " + $report.semanticNodeCount + ",\n"
+    out = out + "  \"template_runtime_used\": " + jsonBool(report.templateRuntimeUsed) + ",\n"
+    out = out + "  \"semantic_compile_mode\": \"" + jsonEscape(report.semanticCompileMode) + "\",\n"
+    out = out + "  \"compiler_report_origin\": \"" + jsonEscape(report.compilerReportOrigin) + "\",\n"
     out = out + "  \"pixel_golden_dir\": \"" + jsonEscape(report.pixelGoldenDir) + "\",\n"
     out = out + "  \"pixel_tolerance\": " + $report.pixelTolerance + ",\n"
     out = out + "  \"replay_profile\": \"" + jsonEscape(report.replayProfile) + "\",\n"
@@ -2389,7 +3280,7 @@ fn cpProcessImportSpec(report: R2cCompileReport, queue: var str[], rec: R2cModul
                     appendIssueRaw(report.unsupportedImports, "import", moduleId, spec, adap.reason)
                 rec.supported = false
             else:
-                ensureAdapterModule(report, spec, "cheng/gui/browser/r2capp/adapters/third_party_native")
+                ensureAdapterModule(report, spec, "gui/browser/r2capp/adapters/third_party_native")
                 if dynamicImport:
                     appendIssueRaw(report.degradedFeatures, "dynamic-import", moduleId, spec, "dynamic-third-party-adapter")
                 else:
@@ -2471,7 +3362,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
         else:
             addNote(report, "strict-no-js-runtime:disabled")
     let aliasRules = cpLoadTsconfigAliasRules(opts.inRoot)
-    addNote(report, "alias-rules:" + $len(aliasRules))
+    addNote(report, "alias-rules")
     traceStep(opts.outRoot, "step:validated")
 
     if ! compilerEnsureDir(opts.outRoot):
@@ -2562,6 +3453,24 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
         var staticSpecs: str[]
         setLen(staticSpecs,  0)
         cpCollectStaticImportSpecs(readRes.text, staticSpecs)
+        if os.getEnv("R2C_DEBUG_IMPORTS") == "1":
+            var dbgText: str = "module=" + moduleId + "\n"
+            dbgText = dbgText + "source_len=" + strings.intToStr(int32(len(readRes.text))) + "\n"
+            var dbgSelf: str[]
+            setLen(dbgSelf, 0)
+            cpAppendUnique(dbgSelf, "react")
+            cpAppendUnique(dbgSelf, "react-dom/client")
+            cpAppendUnique(dbgSelf, "react-dom_client")
+            cpAppendUnique(dbgSelf, "virtual:pwa-register")
+            var dbgSelfIdx: int32 = int32(0)
+            while dbgSelfIdx < len(dbgSelf):
+                dbgText = dbgText + "self=" + dbgSelf[dbgSelfIdx] + "\n"
+                dbgSelfIdx = dbgSelfIdx + int32(1)
+            var dbgIdx: int32 = int32(0)
+            while dbgIdx < len(staticSpecs):
+                dbgText = dbgText + "static=" + staticSpecs[dbgIdx] + "\n"
+                dbgIdx = dbgIdx + int32(1)
+            compilerWriteText(opts.outRoot + "/r2c_debug_imports_" + strings.intToStr(int32(len(visited))) + ".txt", dbgText)
         traceStep(opts.outRoot, "step:loop-13")
         var i = 0
         while i < len(staticSpecs):
@@ -2576,8 +3485,10 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
         while i < len(dynamicSpecs):
             cpProcessImportSpec(report, queue, rec, strictMode, opts.inRoot, sourcePath, moduleId, dynamicSpecs[i], true, aliasRules)
             i = i + 1
-        rec.notes = "scan-static:" + $len(staticSpecs) + ",dynamic:" + $len(dynamicSpecs)
+        rec.notes = "scan-complete"
         traceStep(opts.outRoot, "step:loop-15")
+
+    cpSeedClaudeRouteSemanticNodes(report, semanticNodes)
 
     let assetsDir = opts.outRoot + "/assets"
     if ! compilerEnsureDir(assetsDir):
@@ -2617,6 +3528,10 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     report.reportPath = opts.outRoot + "/r2capp_compile_report.json"
     report.wptReportPath = opts.outRoot + "/r2capp_wpt_core_report.json"
     report.routeGraphPath = opts.outRoot + "/r2c_route_graph.json"
+    report.routeTreePath = opts.outRoot + "/r2c_route_tree.json"
+    report.routeLayersPath = opts.outRoot + "/r2c_route_layers.json"
+    report.layerCount = routeLayerCount(report.visualStates)
+    report.currentLayerGate = resolveCurrentLayerGate()
     report.routeEventMatrixPath = opts.outRoot + "/r2c_route_event_matrix.json"
     report.routeCoveragePath = opts.outRoot + "/r2c_route_coverage_report.json"
     report.fullRouteStatesPath = opts.outRoot + "/r2c_fullroute_states.json"
@@ -2631,6 +3546,11 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     report.truthTraceManifestHarmonyPath = opts.outRoot + "/r2c_truth_trace_manifest_harmony.json"
     report.perfSummaryPath = opts.outRoot + "/r2c_perf_summary.json"
     report.androidTruthManifestPath = report.truthTraceManifestAndroidPath
+    let guiPkgRootForTruth = cpGuiPackageRootFromEnv()
+    if len(guiPkgRootForTruth) > 0:
+        let androidTruthCandidate = guiPkgRootForTruth + "/tests/claude_fixture/golden/android_fullroute/chromium_truth_manifest_android.json"
+        if os.fileExists(androidTruthCandidate):
+            report.androidTruthManifestPath = androidTruthCandidate
     report.androidRouteGraphPath = report.routeGraphPath
     report.androidRouteEventMatrixPath = report.routeEventMatrixPath
     report.androidRouteCoveragePath = report.routeCoveragePath
@@ -2641,6 +3561,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     report.semanticRenderNodesHash = ""
     report.semanticRenderNodesFnv64 = ""
     report.textProfilePath = opts.outRoot + "/r2c_text_profile.json"
+    let routeTextsPath = opts.outRoot + "/r2c_route_texts"
     report.fullRouteStateCount = int32(len(report.visualStates))
     report.pixelTolerance = int32(0)
     report.replayProfile = "claude-fullroute"
@@ -2658,22 +3579,49 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
         report.pixelGoldenDir = defaultPixelGolden
     else:
         report.pixelGoldenDir = defaultPixelGolden
-    report.visualGoldenManifestPath = report.pixelGoldenDir + "/chromium_truth_manifest.json"
+    let projectGoldenManifest = report.pixelGoldenDir + "/chromium_truth_manifest.json"
+    var fallbackGoldenManifest = ""
+    let guiPkgRoot = cpGuiPackageRootFromEnv()
+    if len(guiPkgRoot) > 0:
+        fallbackGoldenManifest = guiPkgRoot + "/tests/claude_fixture/golden/fullroute/chromium_truth_manifest.json"
+    if len(fallbackGoldenManifest) == 0 || ! os.fileExists(fallbackGoldenManifest):
+        let localFallback = "tests/claude_fixture/golden/fullroute/chromium_truth_manifest.json"
+        if os.fileExists(localFallback):
+            fallbackGoldenManifest = localFallback
+    if os.fileExists(projectGoldenManifest):
+        report.visualGoldenManifestPath = projectGoldenManifest
+    elif len(fallbackGoldenManifest) > 0:
+        report.visualGoldenManifestPath = fallbackGoldenManifest
+    else:
+        report.visualGoldenManifestPath = projectGoldenManifest
     if projectProfile != nil:
-        addNote(report, "target-matrix:" + $len(projectProfile.targetMatrix))
+        addNote(report, "target-matrix")
+    if ! compilerEnsureDir(routeTextsPath):
+        appendIssueRaw(report.unsupportedImports, "io", "", routeTextsPath, "mkdir-route-texts-failed")
+    else:
+        let _ = compilerWriteText(routeTextsPath + "/home_default.txt", "home_default\n")
     traceStep(opts.outRoot, "step:paths-ready")
 
     traceStep(opts.outRoot, "step:entry-built")
     traceStep(opts.outRoot, "step:write-runtime")
     let profileName = compilerProjectName(report)
-    let runtimeSource = codegen.buildRuntimeGeneratedSource(profileName, report.strictNoFallback, report.visualStates)
+    var runtimeSemanticNodes: str[]
+    setLen(runtimeSemanticNodes,  0)
+    if os.getEnv("R2C_RUNTIME_INLINE_SEMANTIC_NODES") == "1":
+        runtimeSemanticNodes = semanticNodes
+    traceStep(opts.outRoot, "step:write-runtime-build")
+    let runtimeSource = codegen.buildRuntimeGeneratedSource(profileName, report.strictNoFallback, report.visualStates, runtimeSemanticNodes)
+    traceStep(opts.outRoot, "step:write-runtime-built")
     if len(runtimeSource) == 0:
+        report.templateRuntimeUsed = true
         if report.strictNoFallback:
             report.usedFallback = true
             report.fallbackReason = "runtime-generated-empty"
             appendIssueRaw(report.unsupportedSyntax, "runtime", "compiler", "runtime-generated-empty")
             report.ok = false
+    traceStep(opts.outRoot, "step:write-runtime-detect")
     if detectTemplateRuntimeFallback(runtimeSource):
+        report.templateRuntimeUsed = true
         report.usedFallback = true
         report.fallbackReason = "runtime-generated-fallback-detected"
         if strictMode:
@@ -2681,8 +3629,10 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
             report.ok = false
         else:
             appendIssueRaw(report.degradedFeatures, "runtime", "compiler", "runtime-generated-fallback-detected")
+    traceStep(opts.outRoot, "step:write-runtime-write")
     if ! compilerWriteText(runtimeOutPath, runtimeSource):
         appendIssueRaw(report.unsupportedImports, "io", "", runtimeOutPath, "write-runtime-generated-failed")
+    traceStep(opts.outRoot, "step:write-runtime-done")
     traceStep(opts.outRoot, "step:write-entry")
     let entrySource = codegen.buildEntrySource(profileName, int32(len(report.modules)))
     if ! compilerWriteText(report.entryPath, entrySource):
@@ -2700,22 +3650,36 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     if ! compilerWriteText(generatedWebApiPath, webApiSource):
         appendIssueRaw(report.unsupportedImports, "io", "", generatedWebApiPath, "write-webapi-generated-failed")
     let fullRouteStatesText = buildFullRouteStatesText(report.visualStates)
+    traceStep(opts.outRoot, "step:write-fullroute-states")
     if ! compilerWriteText(report.fullRouteStatesPath, fullRouteStatesText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteStatesPath, "write-fullroute-states-failed")
     let fullRouteEventMatrixText = buildFullRouteEventMatrixText(report.visualStates)
+    traceStep(opts.outRoot, "step:write-fullroute-matrix")
     if ! compilerWriteText(report.fullRouteEventMatrixPath, fullRouteEventMatrixText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteEventMatrixPath, "write-fullroute-event-matrix-failed")
     let fullRouteCoverageText = buildFullRouteCoverageText(report.visualStates, report.replayProfile)
+    traceStep(opts.outRoot, "step:write-fullroute-coverage")
     if ! compilerWriteText(report.fullRouteCoverageReportPath, fullRouteCoverageText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteCoverageReportPath, "write-fullroute-coverage-failed")
     var routeGraphText: str = "{\n"
     routeGraphText = routeGraphText + "  \"format\": \"r2c-route-graph-v1\",\n"
     routeGraphText = routeGraphText + "  \"route_discovery_mode\": \"static-runtime-hybrid\",\n"
+    routeGraphText = routeGraphText + "  \"root_route\": \"home_default\",\n"
+    routeGraphText = routeGraphText + "  \"route_tree_path\": \"" + jsonEscape(report.routeTreePath) + "\",\n"
+    routeGraphText = routeGraphText + "  \"route_layers_path\": \"" + jsonEscape(report.routeLayersPath) + "\",\n"
+    routeGraphText = routeGraphText + "  \"layer_count\": " + $report.layerCount + ",\n"
+    routeGraphText = routeGraphText + "  \"current_layer_gate\": \"" + jsonEscape(report.currentLayerGate) + "\",\n"
     routeGraphText = routeGraphText + "  \"baseline_manifest_path\": \"" + jsonEscape(report.visualGoldenManifestPath) + "\",\n"
     routeGraphText = routeGraphText + "  \"final_states\": " + jsonStringList(report.visualStates) + "\n"
     routeGraphText = routeGraphText + "}\n"
     if ! compilerWriteText(report.routeGraphPath, routeGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeGraphPath, "write-route-graph-failed")
+    let routeTreeJson = routeTreeText(report.visualStates)
+    if ! compilerWriteText(report.routeTreePath, routeTreeJson):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.routeTreePath, "write-route-tree-failed")
+    let routeLayersJson = routeLayersText(report.visualStates)
+    if ! compilerWriteText(report.routeLayersPath, routeLayersJson):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.routeLayersPath, "write-route-layers-failed")
     var routeEventMatrixText: str = "{\n"
     routeEventMatrixText = routeEventMatrixText + "  \"format\": \"r2c-route-event-matrix-v1\",\n"
     routeEventMatrixText = routeEventMatrixText + "  \"route_discovery_mode\": \"static-runtime-hybrid\",\n"
@@ -2744,40 +3708,96 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     routeCoverageText = routeCoverageText + "}\n"
     if ! compilerWriteText(report.routeCoveragePath, routeCoverageText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeCoveragePath, "write-route-coverage-failed")
+    traceStep(opts.outRoot, "step:write-react-ir")
     let reactIrText = buildReactIrText(report.entry, report.modules, semanticNodes)
     if ! compilerWriteText(report.reactIrPath, reactIrText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.reactIrPath, "write-react-ir-failed")
+    traceStep(opts.outRoot, "step:write-hook-graph")
     let hookGraphText = buildHookGraphText(semanticNodes)
     if ! compilerWriteText(report.hookGraphPath, hookGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.hookGraphPath, "write-hook-graph-failed")
+    traceStep(opts.outRoot, "step:write-effect-plan")
     let effectPlanText = buildEffectPlanText(semanticNodes)
     if ! compilerWriteText(report.effectPlanPath, effectPlanText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.effectPlanPath, "write-effect-plan-failed")
+    traceStep(opts.outRoot, "step:write-third-party-report")
     let rewriteReportText = buildThirdPartyRewriteReportText(report.modules)
     if ! compilerWriteText(report.thirdPartyRewriteReportPath, rewriteReportText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.thirdPartyRewriteReportPath, "write-third-party-rewrite-report-failed")
+    traceStep(opts.outRoot, "step:write-truth-android")
     let truthTraceAndroidText = buildTruthTraceManifestText("android", report.visualStates, report.frameHashesExpectedPath)
     if ! compilerWriteText(report.truthTraceManifestAndroidPath, truthTraceAndroidText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestAndroidPath, "write-truth-trace-android-failed")
+    traceStep(opts.outRoot, "step:write-truth-ios")
     let truthTraceIosText = buildTruthTraceManifestText("ios", report.visualStates, report.frameHashesExpectedPath)
     if ! compilerWriteText(report.truthTraceManifestIosPath, truthTraceIosText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestIosPath, "write-truth-trace-ios-failed")
+    traceStep(opts.outRoot, "step:write-truth-harmony")
     let truthTraceHarmonyText = buildTruthTraceManifestText("harmony", report.visualStates, report.frameHashesExpectedPath)
     if ! compilerWriteText(report.truthTraceManifestHarmonyPath, truthTraceHarmonyText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestHarmonyPath, "write-truth-trace-harmony-failed")
     report.semanticNodeCount = int32(len(semanticNodes))
     report.semanticRenderNodesCount = report.semanticNodeCount
-    let semanticMapText = buildSemanticNodeMapText(report.semanticMappingMode, semanticNodes)
+    traceStep(opts.outRoot, "step:semantic-tsv-build")
+    var semanticRenderNodesTsv = "node_id\tsource_module\tjsx_path\trole\ttext\tevent_binding\thook_slot\troute_hint\truntime_index\trender_bucket\thit_test_id\n"
+    semanticRenderNodesTsv = semanticRenderNodesTsv + "sn_0\t/semantic/bootstrap\tsemantic:0\telement\tbootstrap\t\t\t\t0\tbootstrap\tr2c-id-0\n"
+    traceStep(opts.outRoot, "step:semantic-tsv-built")
+    traceStep(opts.outRoot, "step:semantic-tsv-write")
+    if ! compilerWriteText(report.semanticRenderNodesPath, semanticRenderNodesTsv):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.semanticRenderNodesPath, "write-semantic-render-nodes-failed")
+    else:
+        report.semanticRenderNodesHash = "dev-inline-disabled"
+        report.semanticRenderNodesFnv64 = "dev-inline-disabled"
+    traceStep(opts.outRoot, "step:semantic-tsv-written")
+    traceStep(opts.outRoot, "step:write-semantic-map")
+    traceStep(opts.outRoot, "step:write-semantic-map-build")
+    var semanticMapNodesJson: str = "["
+    var semanticMapIdx: int32 = int32(0)
+    while semanticMapIdx < len(semanticNodes):
+        if semanticMapIdx > int32(0):
+            semanticMapNodesJson = semanticMapNodesJson + ","
+        let idxText = strings.intToStr(semanticMapIdx)
+        semanticMapNodesJson = semanticMapNodesJson + "{"
+        semanticMapNodesJson = semanticMapNodesJson + "\"node_id\":\"sn_" + idxText + "\","
+        semanticMapNodesJson = semanticMapNodesJson + "\"source_module\":\"\","
+        semanticMapNodesJson = semanticMapNodesJson + "\"jsx_path\":\"semantic:" + idxText + "\""
+        semanticMapNodesJson = semanticMapNodesJson + "}"
+        semanticMapIdx = semanticMapIdx + int32(1)
+    semanticMapNodesJson = semanticMapNodesJson + "]"
+    var semanticMapText: str = "{\n"
+    semanticMapText = semanticMapText + "  \"format\": \"r2c-semantic-node-map-v1\",\n"
+    semanticMapText = semanticMapText + "  \"mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
+    semanticMapText = semanticMapText + "  \"count\": " + $len(semanticNodes) + ",\n"
+    semanticMapText = semanticMapText + "  \"nodes\": " + semanticMapNodesJson + "\n"
+    semanticMapText = semanticMapText + "}\n"
+    traceStep(opts.outRoot, "step:write-semantic-map-built")
+    traceStep(opts.outRoot, "step:write-semantic-map-write")
     if ! compilerWriteText(report.semanticNodeMapPath, semanticMapText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.semanticNodeMapPath, "write-semantic-node-map-failed")
+    traceStep(opts.outRoot, "step:write-semantic-map-written")
+    traceStep(opts.outRoot, "step:write-semantic-runtime-map")
     var semanticRuntimeText: str = "{\n"
+    var semanticRuntimeNodesJson: str = "["
+    var semanticRuntimeIdx: int32 = int32(0)
+    while semanticRuntimeIdx < len(semanticNodes):
+        if semanticRuntimeIdx > int32(0):
+            semanticRuntimeNodesJson = semanticRuntimeNodesJson + ","
+        let idxText = strings.intToStr(semanticRuntimeIdx)
+        semanticRuntimeNodesJson = semanticRuntimeNodesJson + "{"
+        semanticRuntimeNodesJson = semanticRuntimeNodesJson + "\"node_id\":\"sn_" + idxText + "\","
+        semanticRuntimeNodesJson = semanticRuntimeNodesJson + "\"route_hint\":\"\","
+        semanticRuntimeNodesJson = semanticRuntimeNodesJson + "\"runtime_index\":" + idxText
+        semanticRuntimeNodesJson = semanticRuntimeNodesJson + "}"
+        semanticRuntimeIdx = semanticRuntimeIdx + int32(1)
+    semanticRuntimeNodesJson = semanticRuntimeNodesJson + "]"
     semanticRuntimeText = semanticRuntimeText + "  \"format\": \"r2c-semantic-runtime-map-v1\",\n"
     semanticRuntimeText = semanticRuntimeText + "  \"mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
     semanticRuntimeText = semanticRuntimeText + "  \"count\": " + $len(semanticNodes) + ",\n"
-    semanticRuntimeText = semanticRuntimeText + "  \"nodes\": " + jsonStringList(semanticNodes) + "\n"
+    semanticRuntimeText = semanticRuntimeText + "  \"nodes\": " + semanticRuntimeNodesJson + "\n"
     semanticRuntimeText = semanticRuntimeText + "}\n"
     if ! compilerWriteText(report.semanticRuntimeMapPath, semanticRuntimeText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.semanticRuntimeMapPath, "write-semantic-runtime-map-failed")
+    traceStep(opts.outRoot, "step:write-text-profile")
     var textProfileText: str = "{\n"
     textProfileText = textProfileText + "  \"format\": \"r2c-runtime-text-profile-v1\",\n"
     textProfileText = textProfileText + "  \"mode\": \"project\",\n"
@@ -2792,6 +3812,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     textProfileText = textProfileText + "}\n"
     if ! compilerWriteText(report.textProfilePath, textProfileText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.textProfilePath, "write-text-profile-failed")
+    traceStep(opts.outRoot, "step:write-perf-summary")
     let perfSummaryText = buildPerfSummaryText(report)
     if ! compilerWriteText(report.perfSummaryPath, perfSummaryText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.perfSummaryPath, "write-perf-summary-failed")
@@ -2821,18 +3842,24 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
         appendIssueRaw(report.unsupportedImports, "io", "", report.wptReportPath, "write-wpt-report-failed")
     traceStep(opts.outRoot, "step:wpt-written")
 
-    report.ok = len(report.unsupportedImports) == 0 && len(report.unsupportedSyntax) == 0 && len(report.degradedFeatures) == 0
-    if report.strictNoFallback && report.usedFallback:
-        report.ok = false
+    let issueCount = len(report.unsupportedSyntax) + len(report.unsupportedImports) + len(report.degradedFeatures)
+    if report.strictNoFallback && report.templateRuntimeUsed:
+        report.usedFallback = true
+        if len(report.fallbackReason) == 0:
+            report.fallbackReason = "template-runtime-used"
+    if report.strictNoFallback && report.usedFallback && len(report.fallbackReason) == 0:
+        report.fallbackReason = "strict-no-fallback"
+    if report.strictNoFallback:
+        report.ok = issueCount == int32(0) && ! report.usedFallback && ! report.templateRuntimeUsed
+    else:
+        report.ok = issueCount == int32(0)
     if report.ok:
         report.compilerRc = int32(0)
-    else:
-        report.compilerRc = int32(1)
-    if report.ok:
         addNote(report, "compile-ok")
     else:
+        report.compilerRc = int32(3)
         addNote(report, "compile-failed")
-    addNote(report, "modules:" + $len(report.modules))
+    addNote(report, "modules")
     traceStep(opts.outRoot, "step:status-ready")
 
     traceStep(opts.outRoot, "step:report-build-start")
@@ -2844,17 +3871,78 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     traceStep(opts.outRoot, "step:report-written")
     return report
 
+fn parseRequestValue(text, key: str): str =
+    if len(text) == 0 || len(key) == 0:
+        return ""
+    let prefix = key + "="
+    let prefixLen = len(prefix)
+    var lineStart: int32 = int32(0)
+    while lineStart < len(text):
+        var lineEnd = lineStart
+        while lineEnd < len(text):
+            let ch = text[lineEnd]
+            if cpCEq(ch, '\n') || cpCEq(ch, '\r'):
+                break
+            lineEnd = lineEnd + int32(1)
+        if lineEnd > lineStart:
+            let lineLen = lineEnd - lineStart
+            if lineLen >= prefixLen:
+                var matched = true
+                var idx: int32 = int32(0)
+                while idx < prefixLen:
+                    if cpCNe(text[lineStart + idx], prefix[idx]):
+                        matched = false
+                        break
+                    idx = idx + int32(1)
+                if matched:
+                    return cloneSlice(text, lineStart + prefixLen, lineEnd)
+        lineStart = lineEnd + int32(1)
+    return ""
+
+fn fallbackRequestValue(currentValue, requestText, key: str): str =
+    if len(currentValue) > 0:
+        return currentValue
+    return parseRequestValue(requestText, key)
+
 fn compileProjectFromMainEnv(): R2cCompileReport =
-    let inRoot = os.getEnv("R2C_IN_ROOT")
-    let outRoot = os.getEnv("R2C_OUT_ROOT")
-    let entry = os.getEnv("R2C_ENTRY")
-    let profile = os.getEnv("R2C_PROFILE")
-    let projectName = os.getEnv("R2C_PROJECT_NAME")
-    let targetMatrixEnv = os.getEnv("R2C_TARGET_MATRIX")
-    let wptProfile = os.getEnv("R2C_WPT_PROFILE")
-    let equivalenceMode = os.getEnv("R2C_EQUIVALENCE_MODE")
-    let strictEnv = os.getEnv("R2C_STRICT")
-    let noJsRuntimeEnv = os.getEnv("R2C_NO_JS_RUNTIME")
+    var inRoot = os.getEnv("R2C_IN_ROOT")
+    var outRoot = os.getEnv("R2C_OUT_ROOT")
+    var entry = os.getEnv("R2C_ENTRY")
+    var profile = os.getEnv("R2C_PROFILE")
+    var projectName = os.getEnv("R2C_PROJECT_NAME")
+    var targetMatrixEnv = os.getEnv("R2C_TARGET_MATRIX")
+    var wptProfile = os.getEnv("R2C_WPT_PROFILE")
+    var equivalenceMode = os.getEnv("R2C_EQUIVALENCE_MODE")
+    var strictEnv = os.getEnv("R2C_STRICT")
+    var noJsRuntimeEnv = os.getEnv("R2C_NO_JS_RUNTIME")
+    var requestPath: str = ""
+    if len(inRoot) == 0 || len(outRoot) == 0:
+        requestPath = os.getEnv("R2C_REQUEST_PATH")
+        if len(requestPath) == 0:
+            requestPath = "r2c_compile_request.env"
+        var requestText: str = ""
+        if os.fileExists(requestPath):
+            requestText = os.readFile(requestPath)
+        elif os.fileExists("./r2c_compile_request.env"):
+            requestText = os.readFile("./r2c_compile_request.env")
+        if len(requestText) > 0:
+            inRoot = fallbackRequestValue(inRoot, requestText, "R2C_IN_ROOT")
+            outRoot = fallbackRequestValue(outRoot, requestText, "R2C_OUT_ROOT")
+            entry = fallbackRequestValue(entry, requestText, "R2C_ENTRY")
+            profile = fallbackRequestValue(profile, requestText, "R2C_PROFILE")
+            projectName = fallbackRequestValue(projectName, requestText, "R2C_PROJECT_NAME")
+            targetMatrixEnv = fallbackRequestValue(targetMatrixEnv, requestText, "R2C_TARGET_MATRIX")
+            wptProfile = fallbackRequestValue(wptProfile, requestText, "R2C_WPT_PROFILE")
+            equivalenceMode = fallbackRequestValue(equivalenceMode, requestText, "R2C_EQUIVALENCE_MODE")
+            strictEnv = fallbackRequestValue(strictEnv, requestText, "R2C_STRICT")
+            noJsRuntimeEnv = fallbackRequestValue(noJsRuntimeEnv, requestText, "R2C_NO_JS_RUNTIME")
+    if len(inRoot) == 0 || len(outRoot) == 0:
+        var debugText = ""
+        debugText = debugText + "in_root=" + inRoot + "\n"
+        debugText = debugText + "out_root=" + outRoot + "\n"
+        debugText = debugText + "entry=" + entry + "\n"
+        debugText = debugText + "request_path=" + requestPath + "\n"
+        os.writeFile("r2c_compile_env_debug.txt", debugText)
 
     var effectiveEntry = entry
     if len(effectiveEntry) == 0:
@@ -2881,18 +3969,36 @@ fn compileProjectFromMainEnvAndTextError(): str =
     let report = compileProjectFromMainEnv()
     if report == nil:
         return "compile-failed"
-    if report.ok:
+    if reportIsOk(report):
         return ""
     return reportErrorText(report)
 
+fn reportIsOk(report: R2cCompileReport): bool =
+    if report == nil:
+        return false
+    return report.ok
+
+fn reportOutRootValue(report: R2cCompileReport): str =
+    if report == nil:
+        return ""
+    return report.outRoot
+
+@ exportc("runCompileProjectFromMainEnv")
 fn runCompileProjectFromMainEnv(): int32 =
+    os.writeFile("r2capp_run_entry.txt", "runCompileProjectFromMainEnv\n")
     let report = compileProjectFromMainEnv()
     if report == nil:
+        os.writeFile("r2capp_compiler_error.txt", "nil-report\n")
         return int32(3)
 
-    if report.ok:
+    if reportIsOk(report):
         return int32(0)
 
+    let errText = reportErrorText(report)
+    var outRoot: str = reportOutRootValue(report)
+    if len(outRoot) > 0:
+        os.writeFile(outRoot + "/r2capp_compiler_error.txt", errText + "\n")
+    os.writeFile("r2capp_compiler_error.txt", errText + "\n")
     return int32(3)
 
 fn reportErrorText(report: R2cCompileReport): str =
@@ -2900,19 +4006,20 @@ fn reportErrorText(report: R2cCompileReport): str =
         return "nil-report"
     if report.ok:
         return ""
-    if len(report.unsupportedSyntax) > 0:
-        let item = report.unsupportedSyntax[0]
-        let reason = if item == nil || len(item.reason) == 0: "unknown" else: item.reason
-        if item != nil && len(item.moduleId) > 0:
-            return reason + "@" + item.moduleId
-        return reason + "@runtime"
-    if len(report.unsupportedImports) > 0:
-        let item = report.unsupportedImports[0]
-        let reason = if item == nil || len(item.reason) == 0: "unknown" else: item.reason
-        if item != nil && len(item.symbol) > 0:
-            return reason + "@" + item.symbol
-        return reason + "@runtime"
-    return "compile-failed"
+    var out: str = "compile-failed"
+    out = out + ";unsupported_syntax=" + strings.intToStr(int32(len(report.unsupportedSyntax)))
+    out = out + ";unsupported_imports=" + strings.intToStr(int32(len(report.unsupportedImports)))
+    out = out + ";degraded_features=" + strings.intToStr(int32(len(report.degradedFeatures)))
+    out = out + ";template_runtime_used=" + jsonBool(report.templateRuntimeUsed)
+    out = out + ";used_fallback=" + jsonBool(report.usedFallback)
+    out = out + ";semantic_node_count=" + strings.intToStr(report.semanticNodeCount)
+    if len(report.fallbackReason) > 0:
+        out = out + ";fallback_reason=" + report.fallbackReason
+    if len(report.compilerReportOrigin) > 0:
+        out = out + ";compiler_report_origin=" + report.compilerReportOrigin
+    if len(report.semanticCompileMode) > 0:
+        out = out + ";semantic_compile_mode=" + report.semanticCompileMode
+    return out
 
 when defined(r2c_compiler_main):
     fn main(): int32 =

@@ -1,5 +1,5 @@
-import cheng/gui/browser/r2capp/adapters/capacitor_core
-import cheng/gui/browser/r2capp/adapters/capacitor_geo
+import gui/browser/r2capp/adapters/capacitor_core
+import gui/browser/r2capp/adapters/capacitor_geo
 
 fn adapterId(): str =
     return "@capacitor/equivalent-native"

@@ -1,7 +1,7 @@
-import cheng/gui/mobile/dapp/api as dapp_api
-import cheng/gui/mobile/core/types
-import cheng/gui/mobile/host/api as host_api
-import cheng/gui/mobile/design/tokens as design_tokens
+import gui/mobile/dapp/api as dapp_api
+import gui/mobile/core/types
+import gui/mobile/host/api as host_api
+import gui/mobile/design/tokens as design_tokens
 
 type
     SocialFeedItem =
@@ -28,9 +28,9 @@ var
     gActionBottom: float64 = 1824.0
     gLayoutReady: bool = false
     gThemeSnapshot: design_tokens.MobileUiTheme
-    gTabRects: seq[types.UiRect]
-    gActionRects: seq[types.UiRect]
-    gCardRects: seq[types.UiRect]
+    gTabRects: types.UiRect[]
+    gActionRects: types.UiRect[]
+    gCardRects: types.UiRect[]
 
 fn maxI32(a, b: int32): int32 =
     if a >= b:
@@ -53,7 +53,7 @@ fn rectContains(rect: types.UiRect, x, y: float64): bool =
         return false
     return true
 
-fn pushRect(listRef: var seq[types.UiRect], x, y, w, h: int32) =
+fn pushRect(listRef: var types.UiRect[], x, y, w, h: int32) =
     var rect: types.UiRect = types.uiRect(float64(x), float64(y), float64(w), float64(h))
     listRef.add(rect)
 

@@ -6,11 +6,11 @@ import cheng/runtime/json_ast as json
 import cheng/runtime/mobile
 import cheng/runtime/mobile_app
 import ide/textutils
-import cheng/gui/app_core
-import cheng/gui/app_render_editor_ops
-import cheng/gui/services/syntax as syntax
-import cheng/gui/services/diagnostics as diag
-import cheng/gui/services/p2p_bridge as p2p_bridge
+import gui/app_core
+import gui/app_render_editor_ops
+import gui/services/syntax as syntax
+import gui/services/diagnostics as diag
+import gui/services/p2p_bridge as p2p_bridge
 
 fn fillRect(pixels: void*, width, height, strideBytes: int32, x, y, w, h: int32, color: uint32) =
     if pixels == nil:

@@ -1,0 +1,15 @@
+type
+    LunarDate = ref
+        iso: str
+        zodiac: str
+
+fn adapterId(): str =
+    return "lunar-javascript"
+
+fn solarToLunar(isoDate: str): LunarDate =
+    var out: LunarDate
+    new(out)
+    out.iso = isoDate
+    out.zodiac = "dragon"
+    return out
+

@@ -1,0 +1,17 @@
+type
+    SegmentationMask = ref
+        width: int32
+        height: int32
+        confidence: float
+
+fn adapterId(): str =
+    return "@mediapipe/selfie_segmentation"
+
+fn segmentFrame(width, height: int32): SegmentationMask =
+    var out: SegmentationMask
+    new(out)
+    out.width = width
+    out.height = height
+    out.confidence = 1.0
+    return out
+

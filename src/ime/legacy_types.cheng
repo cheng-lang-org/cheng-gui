@@ -1,4 +1,4 @@
-import cheng/gui/ime/cangwu_types
+import gui/ime/cangwu_types
 
 fn legacyToLowerChar(ch: char): char =
     let code = int32(ch)

@@ -1,5 +1,5 @@
-import cheng/gui/browser/types
-import cheng/gui/browser/web
+import gui/browser/types
+import gui/browser/web
 
 fn main(): int32 =
     var config = types.defaultBrowserEngineConfig()

@@ -1,7 +1,7 @@
 import std/os
-import cheng/gui/ime/cangwu_engine
-import cheng/gui/ime/panel_state
-import cheng/gui/ime/cangwu_types
+import gui/ime/cangwu_engine
+import gui/ime/panel_state
+import gui/ime/cangwu_types
 
 fn miniAssets(): CwAssets =
     var assets: CwAssets

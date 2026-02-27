@@ -1,4 +1,4 @@
-import cheng/gui/examples_games/mahjong4/app
+import gui/examples_games/mahjong4/app
 
 fn main(): int32 =
     return runMahjong4Example()

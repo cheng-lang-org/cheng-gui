@@ -1,7 +1,7 @@
 import std/os
 import ide/textutils
-import cheng/gui/platform/types
-import cheng/gui/platform/native as nativePlat
+import gui/platform/types
+import gui/platform/native as nativePlat
 
 type
     GuiPlatform = enum

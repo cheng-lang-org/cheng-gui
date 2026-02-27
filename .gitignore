@@ -12,3 +12,5 @@ bin/
 *.py
 claude_fixture/
 *.json
+chengcache/
+*.txt

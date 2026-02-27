@@ -1,4 +1,4 @@
-import cheng/gui/platform/types_v1
+import gui/platform/types_v1
 
 when defined(macosx) || defined(macos):
     type

@@ -1,0 +1,17 @@
+type
+    UiWidgetResolve = ref
+        spec: str
+        supported: bool
+        bridge: str
+
+fn adapterId(): str =
+    return "ui-widgets-native"
+
+fn resolve(spec: str): UiWidgetResolve =
+    var out: UiWidgetResolve
+    new(out)
+    out.spec = spec
+    out.supported = true
+    out.bridge = "native"
+    return out
+

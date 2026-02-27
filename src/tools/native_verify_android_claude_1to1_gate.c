@@ -19,6 +19,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#define CHENG_ANDROID_GATE_TRUTH_FRAME_WIDTH 1212
+#define CHENG_ANDROID_GATE_TRUTH_FRAME_HEIGHT 2512
+
 typedef struct {
   int code;
   bool timed_out;
@@ -29,6 +32,15 @@ typedef struct {
   size_t len;
   size_t cap;
 } StringList;
+
+typedef struct {
+  char route_state[128];
+  char last_frame_hash[128];
+  char semantic_nodes_applied_hash[128];
+  long long surface_width;
+  long long surface_height;
+  long long semantic_nodes_applied_count;
+} RuntimeStateSnapshot;
 
 static void strlist_free(StringList *list) {
   if (list == NULL) return;
@@ -52,6 +64,36 @@ static int strlist_push(StringList *list, const char *value) {
   if (list->items[list->len] == NULL) return -1;
   list->len += 1u;
   return 0;
+}
+
+static int env_positive_int_or_default(const char *name, int fallback) {
+  if (name == NULL || name[0] == '\0') return fallback;
+  const char *v = getenv(name);
+  if (v == NULL || v[0] == '\0') return fallback;
+  char *end = NULL;
+  long parsed = strtol(v, &end, 10);
+  if (end == v || *end != '\0' || parsed <= 0 || parsed > 10000L) return fallback;
+  return (int)parsed;
+}
+
+static bool env_positive_int(const char *name, int *out_value) {
+  if (out_value != NULL) *out_value = 0;
+  if (name == NULL || name[0] == '\0') return false;
+  const char *v = getenv(name);
+  if (v == NULL || v[0] == '\0') return false;
+  char *end = NULL;
+  long parsed = strtol(v, &end, 10);
+  if (end == v || *end != '\0' || parsed <= 0 || parsed > 10000L) return false;
+  if (out_value != NULL) *out_value = (int)parsed;
+  return true;
+}
+
+static bool strlist_contains(const StringList *list, const char *value) {
+  if (list == NULL || value == NULL || value[0] == '\0') return false;
+  for (size_t i = 0u; i < list->len; ++i) {
+    if (list->items[i] != NULL && strcmp(list->items[i], value) == 0) return true;
+  }
+  return false;
 }
 
 static bool starts_with(const char *s, const char *prefix) {
@@ -166,6 +208,66 @@ static int write_file_all(const char *path, const char *data, size_t len) {
   return 0;
 }
 
+static int copy_file_all(const char *src, const char *dst) {
+  if (src == NULL || src[0] == '\0' || dst == NULL || dst[0] == '\0') return -1;
+  FILE *in = fopen(src, "rb");
+  if (in == NULL) return -1;
+  FILE *out = fopen(dst, "wb");
+  if (out == NULL) {
+    fclose(in);
+    return -1;
+  }
+  char buf[8192];
+  while (1) {
+    size_t rd = fread(buf, 1u, sizeof(buf), in);
+    if (rd > 0u && fwrite(buf, 1u, rd, out) != rd) {
+      fclose(in);
+      fclose(out);
+      return -1;
+    }
+    if (rd < sizeof(buf)) {
+      if (feof(in)) break;
+      if (ferror(in)) {
+        fclose(in);
+        fclose(out);
+        return -1;
+      }
+    }
+  }
+  if (fclose(in) != 0) {
+    fclose(out);
+    return -1;
+  }
+  if (fclose(out) != 0) return -1;
+  return 0;
+}
+
+static int copy_truth_dir_files(const char *src_dir, const char *dst_dir) {
+  if (src_dir == NULL || src_dir[0] == '\0' || dst_dir == NULL || dst_dir[0] == '\0') return -1;
+  DIR *dir = opendir(src_dir);
+  if (dir == NULL) return -1;
+  struct dirent *ent = NULL;
+  while ((ent = readdir(dir)) != NULL) {
+    const char *name = ent->d_name;
+    if (name[0] == '.') continue;
+    char src_path[PATH_MAX];
+    char dst_path[PATH_MAX];
+    if (snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, name) >= (int)sizeof(src_path) ||
+        snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, name) >= (int)sizeof(dst_path)) {
+      closedir(dir);
+      return -1;
+    }
+    struct stat st;
+    if (stat(src_path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+    if (copy_file_all(src_path, dst_path) != 0) {
+      closedir(dir);
+      return -1;
+    }
+  }
+  closedir(dir);
+  return 0;
+}
+
 static const char *skip_ws(const char *p) {
   while (p != NULL && *p != '\0' && isspace((unsigned char)*p)) ++p;
   return p;
@@ -254,6 +356,14 @@ static bool json_get_int64(const char *doc, const char *key, long long *out) {
   long long v = strtoll(p, &end, 10);
   if (end == p || errno != 0) return false;
   if (out != NULL) *out = v;
+  return true;
+}
+
+static bool json_get_positive_int32(const char *doc, const char *key, int *out) {
+  long long v = 0;
+  if (!json_get_int64(doc, key, &v)) return false;
+  if (v <= 0 || v > 32768) return false;
+  if (out != NULL) *out = (int)v;
   return true;
 }
 
@@ -598,21 +708,16 @@ static bool resolve_adb_executable(char *out, size_t out_cap) {
   return find_executable_in_path("adb", out, out_cap);
 }
 
-static bool has_non_ascii(const char *buf, size_t len) {
-  for (size_t i = 0; i < len; ++i) {
-    if ((unsigned char)buf[i] > 127u) return true;
-  }
-  return false;
-}
-
 static int count_truth_states(const char *truth_manifest_path) {
   size_t n = 0;
   char *doc = read_file_all(truth_manifest_path, &n);
   if (doc == NULL) return -1;
   int routes = 0;
   if (!json_get_int32(doc, "routes", &routes) || routes <= 0) {
-    free(doc);
-    return -1;
+    if (!json_get_int32(doc, "state_count", &routes) || routes <= 0) {
+      free(doc);
+      return -1;
+    }
   }
   free(doc);
   return routes;
@@ -657,7 +762,409 @@ static bool parse_string_key(const char *doc, const char *key, const char *expec
   return true;
 }
 
-static bool resolve_android_ndk_root(char *out, size_t out_cap) {
+static bool parse_runtime_reason_token(const char *reason, const char *key, char *out, size_t out_cap) {
+  if (out != NULL && out_cap > 0u) out[0] = '\0';
+  if (reason == NULL || key == NULL || key[0] == '\0' || out == NULL || out_cap == 0u) return false;
+  size_t key_len = strlen(key);
+  const char *p = reason;
+  while (p != NULL && *p != '\0') {
+    const char *hit = strstr(p, key);
+    if (hit == NULL) break;
+    if (hit > reason) {
+      char prev = *(hit - 1);
+      if (prev != ' ' && prev != ';' && prev != '\t' && prev != '\n' && prev != '\r') {
+        p = hit + 1;
+        continue;
+      }
+    }
+    if (hit[key_len] != '=') {
+      p = hit + 1;
+      continue;
+    }
+    const char *value = hit + key_len + 1u;
+    size_t n = 0u;
+    while (value[n] != '\0' && value[n] != ' ' && value[n] != ';' && value[n] != '\t' && value[n] != '\n' &&
+           value[n] != '\r') {
+      n += 1u;
+    }
+    if (n == 0u) return false;
+    if (n >= out_cap) n = out_cap - 1u;
+    memcpy(out, value, n);
+    out[n] = '\0';
+    return true;
+  }
+  return false;
+}
+
+static bool runtime_hash_nonzero(const char *text) {
+  if (text == NULL || text[0] == '\0') return false;
+  const char *p = text;
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+  bool seen_hex = false;
+  while (*p != '\0') {
+    unsigned char ch = (unsigned char)*p;
+    if (isspace(ch)) break;
+    if (!isxdigit(ch)) break;
+    seen_hex = true;
+    if (ch != '0') return true;
+    ++p;
+  }
+  return !seen_hex ? false : false;
+}
+
+static bool normalize_hash_hex(const char *input, char *out, size_t out_cap) {
+  if (out == NULL || out_cap == 0u) return false;
+  out[0] = '\0';
+  if (input == NULL || input[0] == '\0') return false;
+  const char *p = input;
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+  size_t n = 0u;
+  while (*p != '\0' && n + 1u < out_cap) {
+    unsigned char ch = (unsigned char)*p;
+    if (isspace(ch)) break;
+    if (!isxdigit(ch)) break;
+    out[n++] = (char)tolower(ch);
+    ++p;
+  }
+  out[n] = '\0';
+  return n > 0u;
+}
+
+static bool hash_hex_equal(const char *lhs, const char *rhs) {
+  char a[64];
+  char b[64];
+  if (!normalize_hash_hex(lhs, a, sizeof(a)) || !normalize_hash_hex(rhs, b, sizeof(b))) return false;
+  return strcmp(a, b) == 0;
+}
+
+static uint64_t fnv1a64_bytes(uint64_t seed, const unsigned char *data, size_t n) {
+  uint64_t h = seed;
+  if (h == 0u) h = 1469598103934665603ull;
+  if (data == NULL) return h;
+  for (size_t i = 0u; i < n; ++i) {
+    h ^= (uint64_t)data[i];
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+static uint64_t fnv1a64_file(const char *path) {
+  if (path == NULL || path[0] == '\0') return 0u;
+  FILE *fp = fopen(path, "rb");
+  if (fp == NULL) return 0u;
+  uint64_t h = 1469598103934665603ull;
+  unsigned char buf[8192];
+  while (1) {
+    size_t rd = fread(buf, 1u, sizeof(buf), fp);
+    if (rd > 0u) h = fnv1a64_bytes(h, buf, rd);
+    if (rd < sizeof(buf)) {
+      if (feof(fp)) break;
+      if (ferror(fp)) {
+        fclose(fp);
+        return 0u;
+      }
+    }
+  }
+  fclose(fp);
+  return h;
+}
+
+static void to_hex64(uint64_t value, char *out, size_t out_cap) {
+  if (out == NULL || out_cap == 0u) return;
+  (void)snprintf(out, out_cap, "%016llx", (unsigned long long)value);
+}
+
+static bool resolve_truth_dims(const char *meta_path,
+                               size_t rgba_len,
+                               int target_w,
+                               int target_h,
+                               int *out_w,
+                               int *out_h) {
+  if (out_w == NULL || out_h == NULL || rgba_len == 0u || (rgba_len % 4u) != 0u) return false;
+  if (target_w <= 0 || target_h <= 0) return false;
+  *out_w = 0;
+  *out_h = 0;
+  if (meta_path != NULL && meta_path[0] != '\0' && file_exists(meta_path)) {
+    size_t meta_len = 0u;
+    char *meta_doc = read_file_all(meta_path, &meta_len);
+    if (meta_doc != NULL && meta_len > 0u) {
+      int w = 0;
+      int h = 0;
+      if (json_get_positive_int32(meta_doc, "width", &w) &&
+          json_get_positive_int32(meta_doc, "height", &h) &&
+          ((uint64_t)w * (uint64_t)h * 4u) == (uint64_t)rgba_len) {
+        *out_w = w;
+        *out_h = h;
+        free(meta_doc);
+        return true;
+      }
+      free(meta_doc);
+    }
+  }
+  if (((uint64_t)target_w * (uint64_t)target_h * 4u) == (uint64_t)rgba_len) {
+    *out_w = target_w;
+    *out_h = target_h;
+    return true;
+  }
+  uint64_t pixels = (uint64_t)rgba_len / 4u;
+  const int candidates[] = {360, 375, 390, 393, 412, 414, 428, 540, 720, 1080, 1170, 1212, 1242, 1440};
+  uint64_t best_diff = UINT64_MAX;
+  int best_w = 0;
+  int best_h = 0;
+  for (size_t i = 0u; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+    int w = candidates[i];
+    if (w <= 0) continue;
+    if ((pixels % (uint64_t)w) != 0u) continue;
+    uint64_t h_u64 = pixels / (uint64_t)w;
+    if (h_u64 == 0u || h_u64 > 10000u) continue;
+    int h = (int)h_u64;
+    uint64_t diff = ((uint64_t)w * (uint64_t)target_h > (uint64_t)h * (uint64_t)target_w)
+                        ? ((uint64_t)w * (uint64_t)target_h - (uint64_t)h * (uint64_t)target_w)
+                        : ((uint64_t)h * (uint64_t)target_w - (uint64_t)w * (uint64_t)target_h);
+    if (best_w == 0 || diff < best_diff) {
+      best_diff = diff;
+      best_w = w;
+      best_h = h;
+    }
+  }
+  if (best_w > 0 && best_h > 0) {
+    *out_w = best_w;
+    *out_h = best_h;
+    return true;
+  }
+  return false;
+}
+
+static uint64_t runtime_expected_hash_from_rgba(const unsigned char *rgba,
+                                                int src_w,
+                                                int src_h,
+                                                int dst_w,
+                                                int dst_h) {
+  if (rgba == NULL || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) return 0u;
+  uint64_t h = 1469598103934665603ull;
+  for (int y = 0; y < dst_h; ++y) {
+    uint64_t sy_u64 = ((uint64_t)y * (uint64_t)src_h) / (uint64_t)dst_h;
+    int sy = (int)sy_u64;
+    if (sy < 0) sy = 0;
+    if (sy >= src_h) sy = src_h - 1;
+    for (int x = 0; x < dst_w; ++x) {
+      uint64_t sx_u64 = ((uint64_t)x * (uint64_t)src_w) / (uint64_t)dst_w;
+      int sx = (int)sx_u64;
+      if (sx < 0) sx = 0;
+      if (sx >= src_w) sx = src_w - 1;
+      const unsigned char *px = rgba + (((size_t)sy * (size_t)src_w + (size_t)sx) * 4u);
+      unsigned char bgra[4];
+      bgra[0] = px[2];
+      bgra[1] = px[1];
+      bgra[2] = px[0];
+      bgra[3] = px[3];
+      h = fnv1a64_bytes(h, bgra, sizeof(bgra));
+    }
+  }
+  return h;
+}
+
+static bool prepare_route_truth_assets(const char *truth_dir,
+                                       const char *route_state,
+                                       const char *assets_dir,
+                                       char *expected_hash_out,
+                                       size_t expected_hash_out_cap,
+                                       int *target_width_out,
+                                       int *target_height_out) {
+  if (target_width_out != NULL) *target_width_out = 0;
+  if (target_height_out != NULL) *target_height_out = 0;
+  if (expected_hash_out != NULL && expected_hash_out_cap > 0u) expected_hash_out[0] = '\0';
+  if (truth_dir == NULL || truth_dir[0] == '\0') return true;
+  if (route_state == NULL || route_state[0] == '\0') {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] CHENG_ANDROID_1TO1_TRUTH_DIR requires --route-state\n");
+    return false;
+  }
+  if (!dir_exists(truth_dir)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] truth dir not found: %s\n", truth_dir);
+    return false;
+  }
+  if (assets_dir == NULL || assets_dir[0] == '\0' || !dir_exists(assets_dir)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] invalid compile assets dir: %s\n", assets_dir ? assets_dir : "");
+    return false;
+  }
+
+  char src_rgba[PATH_MAX];
+  char src_framehash[PATH_MAX];
+  char src_meta[PATH_MAX];
+  if (snprintf(src_rgba, sizeof(src_rgba), "%s/%s.rgba", truth_dir, route_state) >= (int)sizeof(src_rgba) ||
+      snprintf(src_framehash, sizeof(src_framehash), "%s/%s.framehash", truth_dir, route_state) >=
+          (int)sizeof(src_framehash) ||
+      snprintf(src_meta, sizeof(src_meta), "%s/%s.meta.json", truth_dir, route_state) >= (int)sizeof(src_meta)) {
+    return false;
+  }
+  if (!file_exists(src_rgba)) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] missing truth rgba for route=%s: %s\n",
+            route_state,
+            src_rgba);
+    return false;
+  }
+
+  char truth_dst_dir[PATH_MAX];
+  char dst_rgba[PATH_MAX];
+  char dst_framehash[PATH_MAX];
+  char dst_meta[PATH_MAX];
+  if (snprintf(truth_dst_dir, sizeof(truth_dst_dir), "%s/truth", assets_dir) >= (int)sizeof(truth_dst_dir) ||
+      snprintf(dst_rgba, sizeof(dst_rgba), "%s/%s.rgba", truth_dst_dir, route_state) >= (int)sizeof(dst_rgba) ||
+      snprintf(dst_framehash, sizeof(dst_framehash), "%s/%s.framehash", truth_dst_dir, route_state) >=
+          (int)sizeof(dst_framehash) ||
+      snprintf(dst_meta, sizeof(dst_meta), "%s/%s.meta.json", truth_dst_dir, route_state) >= (int)sizeof(dst_meta)) {
+    return false;
+  }
+  if (ensure_dir(truth_dst_dir) != 0) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] failed to create truth asset dir: %s\n", truth_dst_dir);
+    return false;
+  }
+  const char *copy_all = getenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL");
+  if (copy_all != NULL && strcmp(copy_all, "1") == 0) {
+    if (copy_truth_dir_files(truth_dir, truth_dst_dir) != 0) {
+      fprintf(stderr, "[verify-android-claude-1to1-gate] failed to copy truth dir: %s\n", truth_dir);
+      return false;
+    }
+  }
+  if (copy_file_all(src_rgba, dst_rgba) != 0) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] failed to copy truth rgba: %s\n", src_rgba);
+    return false;
+  }
+  if (file_exists(src_framehash)) (void)copy_file_all(src_framehash, dst_framehash);
+  if (file_exists(src_meta)) (void)copy_file_all(src_meta, dst_meta);
+
+  char framehash_from_file[128];
+  framehash_from_file[0] = '\0';
+  if (file_exists(src_framehash)) {
+    size_t fh_len = 0u;
+    char *fh_doc = read_file_all(src_framehash, &fh_len);
+    if (fh_doc != NULL && fh_len > 0u) {
+      size_t pos = 0u;
+      for (size_t i = 0u; i < fh_len && pos + 1u < sizeof(framehash_from_file); ++i) {
+        unsigned char ch = (unsigned char)fh_doc[i];
+        if (isxdigit(ch)) {
+          framehash_from_file[pos++] = (char)tolower(ch);
+          continue;
+        }
+        if (isspace(ch)) break;
+        pos = 0u;
+        break;
+      }
+      framehash_from_file[pos] = '\0';
+    }
+    free(fh_doc);
+  }
+
+  size_t rgba_len = 0u;
+  char *rgba_doc = read_file_all(src_rgba, &rgba_len);
+  if (rgba_doc == NULL || rgba_len == 0u || (rgba_len % 4u) != 0u) {
+    free(rgba_doc);
+    fprintf(stderr, "[verify-android-claude-1to1-gate] invalid truth rgba content: %s\n", src_rgba);
+    return false;
+  }
+
+  int src_w = 0;
+  int src_h = 0;
+  int probe_w = CHENG_ANDROID_GATE_TRUTH_FRAME_WIDTH;
+  int probe_h = CHENG_ANDROID_GATE_TRUTH_FRAME_HEIGHT;
+  int env_target_w = 0;
+  int env_target_h = 0;
+  if (env_positive_int("CHENG_ANDROID_1TO1_TARGET_WIDTH", &env_target_w)) probe_w = env_target_w;
+  if (env_positive_int("CHENG_ANDROID_1TO1_TARGET_HEIGHT", &env_target_h)) probe_h = env_target_h;
+  if (!resolve_truth_dims(src_meta, rgba_len, probe_w, probe_h, &src_w, &src_h)) {
+    free(rgba_doc);
+    fprintf(stderr, "[verify-android-claude-1to1-gate] cannot resolve truth rgba dimensions: %s\n", src_rgba);
+    return false;
+  }
+  int hash_target_w = env_target_w > 0 ? env_target_w : src_w;
+  int hash_target_h = env_target_h > 0 ? env_target_h : src_h;
+  bool require_native_dims = false;
+  const char *require_dims_env = getenv("CHENG_ANDROID_1TO1_REQUIRE_NATIVE_TRUTH_DIMS");
+  if (require_dims_env != NULL && require_dims_env[0] != '\0') {
+    require_native_dims = (strcmp(require_dims_env, "0") != 0);
+  } else {
+    const char *enforce_surface_env = getenv("CHENG_ANDROID_1TO1_ENFORCE_SURFACE_TARGET");
+    if (enforce_surface_env != NULL && strcmp(enforce_surface_env, "1") == 0) require_native_dims = true;
+  }
+  if (require_native_dims && env_target_w > 0 && env_target_h > 0 &&
+      (src_w != env_target_w || src_h != env_target_h)) {
+    free(rgba_doc);
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] truth size mismatch route=%s got=%dx%d expect=%dx%d\n",
+            route_state,
+            src_w,
+            src_h,
+            env_target_w,
+            env_target_h);
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] regenerate truth with native size or set CHENG_ANDROID_1TO1_REQUIRE_NATIVE_TRUTH_DIMS=0 to bypass\n");
+    return false;
+  }
+
+  uint64_t runtime_hash = runtime_expected_hash_from_rgba((const unsigned char *)rgba_doc,
+                                                          src_w,
+                                                          src_h,
+                                                          hash_target_w,
+                                                          hash_target_h);
+  free(rgba_doc);
+  if (runtime_hash == 0u) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] failed to compute expected runtime frame hash\n");
+    return false;
+  }
+  const char *expected_hash = framehash_from_file;
+  bool expected_hash_from_file = runtime_hash_nonzero(framehash_from_file);
+  char runtime_hash_doc[32];
+  to_hex64(runtime_hash, runtime_hash_doc, sizeof(runtime_hash_doc));
+  if (!expected_hash_from_file) expected_hash = runtime_hash_doc;
+  bool fullscreen_mode = false;
+  const char *truth_frame_mode = getenv("CHENG_ANDROID_1TO1_TRUTH_FRAME_MODE");
+  if (truth_frame_mode == NULL || truth_frame_mode[0] == '\0' ||
+      strcmp(truth_frame_mode, "fullscreen") == 0) {
+    fullscreen_mode = true;
+  }
+  bool disable_expected_framehash = fullscreen_mode;
+  const char *disable_expected_env = getenv("CHENG_ANDROID_1TO1_DISABLE_EXPECTED_FRAMEHASH");
+  if (disable_expected_env != NULL && disable_expected_env[0] != '\0') {
+    disable_expected_framehash = (strcmp(disable_expected_env, "1") == 0);
+  }
+  const char *enforce_expected_env = getenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH");
+  if (enforce_expected_env != NULL && strcmp(enforce_expected_env, "1") == 0) {
+    disable_expected_framehash = false;
+  }
+  if (expected_hash_out != NULL && expected_hash_out_cap > 0u) {
+    if (disable_expected_framehash) {
+      expected_hash_out[0] = '\0';
+    } else {
+      snprintf(expected_hash_out, expected_hash_out_cap, "%s", expected_hash);
+    }
+  }
+  char runtime_hash_path[PATH_MAX];
+  if (snprintf(runtime_hash_path, sizeof(runtime_hash_path), "%s/%s.runtime_framehash", truth_dst_dir, route_state) <
+      (int)sizeof(runtime_hash_path)) {
+    char line[40];
+    int n = snprintf(line, sizeof(line), "%s\n", runtime_hash_doc);
+    if (n > 0 && (size_t)n < sizeof(line)) {
+      (void)write_file_all(runtime_hash_path, line, (size_t)n);
+    }
+  }
+  uint64_t source_hash = fnv1a64_file(src_rgba);
+  fprintf(stdout,
+          "[verify-android-claude-1to1-gate] truth route=%s src=%dx%d src_hash=%016llx runtime_hash=%016llx expected=%s source=%s\n",
+          route_state,
+          src_w,
+          src_h,
+          (unsigned long long)source_hash,
+          (unsigned long long)runtime_hash,
+          disable_expected_framehash ? "<disabled>" : expected_hash,
+          expected_hash_from_file ? "framehash-file" : "rgba-derived");
+  if (target_width_out != NULL) *target_width_out = (env_target_w > 0) ? env_target_w : 0;
+  if (target_height_out != NULL) *target_height_out = (env_target_h > 0) ? env_target_h : 0;
+  return true;
+}
+
+static __attribute__((unused)) bool resolve_android_ndk_root(char *out, size_t out_cap) {
   const char *envs[] = {"ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK", "CMAKE_ANDROID_NDK"};
   for (size_t i = 0; i < sizeof(envs) / sizeof(envs[0]); ++i) {
     const char *v = getenv(envs[i]);
@@ -698,7 +1205,7 @@ static bool resolve_android_ndk_root(char *out, size_t out_cap) {
   return ok;
 }
 
-static bool resolve_android_clang(char *out, size_t out_cap) {
+static __attribute__((unused)) bool resolve_android_clang(char *out, size_t out_cap) {
   const char *forced = getenv("R2C_ANDROID_CLANG");
   if (forced != NULL && forced[0] != '\0' && path_executable(forced)) {
     snprintf(out, out_cap, "%s", forced);
@@ -721,137 +1228,18 @@ static bool resolve_android_clang(char *out, size_t out_cap) {
 }
 
 static int rebuild_android_payload_obj(const char *android_obj, const char *log_file) {
-  const char *cheng_lang_root = getenv("CHENG_LANG_ROOT");
-  if (cheng_lang_root == NULL || cheng_lang_root[0] == '\0') cheng_lang_root = "/Users/lbcheng/cheng-lang";
-  const char *cheng_mobile_root = getenv("CHENG_MOBILE_ROOT");
-  if (cheng_mobile_root == NULL || cheng_mobile_root[0] == '\0') cheng_mobile_root = "/Users/lbcheng/.cheng-packages/cheng-mobile";
-
-  char exports_c[PATH_MAX];
-  char exports_h[PATH_MAX];
-  char bridge_dir[PATH_MAX];
-  char bridge_dir_alt[PATH_MAX];
-  char include_dir[PATH_MAX];
-  char stub_include_dir[PATH_MAX];
-  if (path_join(exports_c, sizeof(exports_c), cheng_lang_root, "src/runtime/mobile/cheng_mobile_exports.c") != 0 ||
-      path_join(exports_h, sizeof(exports_h), cheng_lang_root, "src/runtime/mobile/cheng_mobile_exports.h") != 0 ||
-      path_join(bridge_dir, sizeof(bridge_dir), cheng_mobile_root, "bridge") != 0 ||
-      path_join(bridge_dir_alt, sizeof(bridge_dir_alt), cheng_mobile_root, "src/bridge") != 0) {
-    return 1;
-  }
-  if (!file_exists(exports_c) || !file_exists(exports_h)) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] android payload source missing\n");
-    return 1;
-  }
-
-  char obj_dir[PATH_MAX];
-  snprintf(obj_dir, sizeof(obj_dir), "%s", android_obj);
-  char *obj_slash = strrchr(obj_dir, '/');
-  if (obj_slash == NULL) return 1;
-  *obj_slash = '\0';
-  if (ensure_dir(obj_dir) != 0) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] failed to create android obj dir: %s\n", obj_dir);
-    return 1;
-  }
-
-  if (dir_exists(bridge_dir)) {
-    snprintf(include_dir, sizeof(include_dir), "%s", bridge_dir);
-  } else if (dir_exists(bridge_dir_alt)) {
-    snprintf(include_dir, sizeof(include_dir), "%s", bridge_dir_alt);
-  } else {
-    if (path_join(stub_include_dir, sizeof(stub_include_dir), obj_dir, "_mobile_stub_include") != 0) return 1;
-    if (ensure_dir(stub_include_dir) != 0) {
-      fprintf(stderr, "[verify-android-claude-1to1-gate] failed to create stub include dir: %s\n", stub_include_dir);
-      return 1;
-    }
-    char bridge_hdr[PATH_MAX];
-    char host_api_hdr[PATH_MAX];
-    if (path_join(bridge_hdr, sizeof(bridge_hdr), stub_include_dir, "cheng_mobile_bridge.h") != 0 ||
-        path_join(host_api_hdr, sizeof(host_api_hdr), stub_include_dir, "cheng_mobile_host_api.h") != 0) {
-      return 1;
-    }
-    static const char kBridgeStub[] =
-        "#ifndef CHENG_MOBILE_BRIDGE_H\n"
-        "#define CHENG_MOBILE_BRIDGE_H\n"
-        "/* gate-time stub header */\n"
-        "#endif\n";
-    static const char kHostApiStub[] =
-        "#ifndef CHENG_MOBILE_HOST_API_H\n"
-        "#define CHENG_MOBILE_HOST_API_H\n"
-        "#include \"cheng_mobile_exports.h\"\n"
-        "#endif\n";
-    if (write_file_all(bridge_hdr, kBridgeStub, strlen(kBridgeStub)) != 0 ||
-        write_file_all(host_api_hdr, kHostApiStub, strlen(kHostApiStub)) != 0) {
-      fprintf(stderr, "[verify-android-claude-1to1-gate] failed to write stub mobile headers\n");
-      return 1;
-    }
-    snprintf(include_dir, sizeof(include_dir), "%s", stub_include_dir);
-  }
-
-  char clang_bin[PATH_MAX];
-  if (!resolve_android_clang(clang_bin, sizeof(clang_bin))) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] missing Android NDK clang; set ANDROID_NDK_HOME/ANDROID_SDK_ROOT or R2C_ANDROID_CLANG\n");
-    return 2;
-  }
-
-  char exports_dir[PATH_MAX];
-  snprintf(exports_dir, sizeof(exports_dir), "%s", exports_c);
-  char *slash = strrchr(exports_dir, '/');
-  if (slash != NULL) *slash = '\0';
-
-  const char *payload_cflags = getenv("R2C_ANDROID_PAYLOAD_CFLAGS");
-  char *cflags_copy = NULL;
-  StringList cflags;
-  memset(&cflags, 0, sizeof(cflags));
-  if (payload_cflags != NULL && payload_cflags[0] != '\0') {
-    cflags_copy = strdup(payload_cflags);
-    if (cflags_copy != NULL) {
-      char *save = NULL;
-      for (char *tok = strtok_r(cflags_copy, " ", &save); tok != NULL; tok = strtok_r(NULL, " ", &save)) {
-        if (tok[0] == '\0') continue;
-        strlist_push(&cflags, tok);
-      }
-    }
-  }
-
-  char include_bridge[PATH_MAX + 3];
-  char include_exports[PATH_MAX + 3];
-  snprintf(include_bridge, sizeof(include_bridge), "-I%s", include_dir);
-  snprintf(include_exports, sizeof(include_exports), "-I%s", exports_dir);
-
-  size_t argv_cap = 32u + cflags.len;
-  char **argv = (char **)calloc(argv_cap, sizeof(char *));
-  if (argv == NULL) {
-    free(cflags_copy);
-    strlist_free(&cflags);
-    return 1;
-  }
-  size_t idx = 0;
-  argv[idx++] = clang_bin;
-  argv[idx++] = "-std=c11";
-  argv[idx++] = "-fPIC";
-  argv[idx++] = "-D__ANDROID__=1";
-  argv[idx++] = "-DANDROID=1";
-  argv[idx++] = include_bridge;
-  argv[idx++] = include_exports;
-  for (size_t i = 0; i < cflags.len; ++i) argv[idx++] = cflags.items[i];
-  argv[idx++] = "-c";
-  argv[idx++] = exports_c;
-  argv[idx++] = "-o";
-  argv[idx++] = (char *)android_obj;
-  argv[idx] = NULL;
-
-  RunResult rr = run_command(argv, log_file, 0);
-  free(argv);
-  free(cflags_copy);
-  strlist_free(&cflags);
-  if (rr.code != 0) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] android ABI v2 payload compile failed\n");
-    print_file_head(log_file, 120);
-    return 1;
-  }
   if (!file_exists(android_obj)) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] android payload object missing: %s\n", android_obj);
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] missing Cheng semantic android payload object: %s\n",
+            android_obj);
     return 1;
+  }
+  if (log_file != NULL && log_file[0] != '\0') {
+    const char *msg =
+        "android_payload_source=cheng-compiler\n"
+        "mode=semantic-object-only\n"
+        "note=gate no longer rebuilds from cheng_mobile_exports.c\n";
+    (void)write_file_all(log_file, msg, strlen(msg));
   }
   return 0;
 }
@@ -941,7 +1329,304 @@ static bool has_android_device(void) {
   return ok;
 }
 
-static bool parse_runtime_state(const char *runtime_json, int semantic_node_count) {
+static bool resolve_android_serial(const char *adb, char *out, size_t out_cap) {
+  if (adb == NULL || adb[0] == '\0' || out == NULL || out_cap == 0u) return false;
+  out[0] = '\0';
+  const char *env_serial = getenv("ANDROID_SERIAL");
+  if (env_serial != NULL && env_serial[0] != '\0') {
+    snprintf(out, out_cap, "%s", env_serial);
+    return true;
+  }
+  char *devices_out = NULL;
+  char *argv[] = {(char *)adb, "devices", NULL};
+  int rc = capture_command_output(argv, 15, &devices_out);
+  if (rc != 0 || devices_out == NULL) {
+    free(devices_out);
+    return false;
+  }
+  bool found = false;
+  char *save = NULL;
+  for (char *line = strtok_r(devices_out, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
+    while (*line != '\0' && isspace((unsigned char)*line)) ++line;
+    if (*line == '\0' || starts_with(line, "List of devices")) continue;
+    char id[128];
+    char state[64];
+    id[0] = '\0';
+    state[0] = '\0';
+    (void)sscanf(line, "%127s %63s", id, state);
+    if (id[0] != '\0' && strcmp(state, "device") == 0) {
+      snprintf(out, out_cap, "%s", id);
+      found = true;
+      break;
+    }
+  }
+  free(devices_out);
+  return found;
+}
+
+static bool capture_runtime_route_visual(const char *out_dir,
+                                         const RuntimeStateSnapshot *runtime_state,
+                                         const char *runtime_frame_dump_file,
+                                         bool require_success) {
+  if (out_dir == NULL || out_dir[0] == '\0' || runtime_state == NULL) return !require_success;
+  if (runtime_state->route_state[0] == '\0') return !require_success;
+  if (runtime_frame_dump_file == NULL || runtime_frame_dump_file[0] == '\0') {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] missing runtime frame dump file arg\n");
+    return !require_success;
+  }
+
+  char adb[PATH_MAX];
+  if (!resolve_adb_executable(adb, sizeof(adb))) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] missing adb for route visual capture\n");
+    return !require_success;
+  }
+  char serial[128];
+  if (!resolve_android_serial(adb, serial, sizeof(serial))) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] unable to resolve android serial for route visual capture\n");
+    return !require_success;
+  }
+
+  char frame_dump_remote_path[PATH_MAX];
+  char raw_path[PATH_MAX];
+  char rgba_path[PATH_MAX];
+  char meta_path[PATH_MAX];
+  char runtime_hash_path[PATH_MAX];
+  char framehash_path[PATH_MAX];
+  if (snprintf(frame_dump_remote_path,
+               sizeof(frame_dump_remote_path),
+               "files/%s",
+               runtime_frame_dump_file) >= (int)sizeof(frame_dump_remote_path) ||
+      snprintf(raw_path, sizeof(raw_path), "%s/%s.runtime_raw", out_dir, runtime_state->route_state) >=
+          (int)sizeof(raw_path) ||
+      snprintf(rgba_path, sizeof(rgba_path), "%s/%s.rgba", out_dir, runtime_state->route_state) >=
+          (int)sizeof(rgba_path) ||
+      snprintf(meta_path, sizeof(meta_path), "%s/%s.meta.json", out_dir, runtime_state->route_state) >=
+          (int)sizeof(meta_path) ||
+      snprintf(runtime_hash_path,
+               sizeof(runtime_hash_path),
+               "%s/%s.runtime_framehash",
+               out_dir,
+               runtime_state->route_state) >= (int)sizeof(runtime_hash_path) ||
+      snprintf(framehash_path, sizeof(framehash_path), "%s/%s.framehash", out_dir, runtime_state->route_state) >=
+          (int)sizeof(framehash_path)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] route visual output path too long\n");
+    return !require_success;
+  }
+
+  char *raw_argv[] = {
+      adb,
+      "-s",
+      serial,
+      "exec-out",
+      "run-as",
+      "com.cheng.mobile",
+      "cat",
+      frame_dump_remote_path,
+      NULL};
+  RunResult raw_rr = run_command(raw_argv, raw_path, 25);
+  if (raw_rr.code != 0) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] failed to capture runtime raw frame route=%s file=%s rc=%d\n",
+            runtime_state->route_state,
+            frame_dump_remote_path,
+            raw_rr.code);
+    return !require_success;
+  }
+
+  size_t raw_len = 0u;
+  unsigned char *raw = (unsigned char *)read_file_all(raw_path, &raw_len);
+  if (raw == NULL || raw_len == 0u) {
+    free(raw);
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] invalid runtime raw frame route=%s path=%s\n",
+            runtime_state->route_state,
+            raw_path);
+    return !require_success;
+  }
+  uint32_t width = (runtime_state->surface_width > 0) ? (uint32_t)runtime_state->surface_width : 0u;
+  uint32_t height = (runtime_state->surface_height > 0) ? (uint32_t)runtime_state->surface_height : 0u;
+  if (width == 0u || height == 0u) {
+    free(raw);
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] zero-sized runtime raw frame target route=%s\n",
+            runtime_state->route_state);
+    return !require_success;
+  }
+  size_t full_bytes = (size_t)width * (size_t)height * 4u;
+  if (raw_len != full_bytes) {
+    free(raw);
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime raw frame size mismatch route=%s got=%zu expected=%zu (%ux%u)\n",
+            runtime_state->route_state,
+            raw_len,
+            full_bytes,
+            width,
+            height);
+    return !require_success;
+  }
+  size_t rgba_bytes = full_bytes;
+  unsigned char *rgba = (unsigned char *)malloc(rgba_bytes);
+  if (rgba == NULL) {
+    free(raw);
+    fprintf(stderr, "[verify-android-claude-1to1-gate] oom while converting runtime frame\n");
+    return !require_success;
+  }
+  for (size_t i = 0u; i < (size_t)width * (size_t)height; ++i) {
+    const size_t src = i * 4u;
+    const size_t dst = src;
+    // runtime raw frame stores little-endian 0xAARRGGBB words => B,G,R,A bytes.
+    rgba[dst + 0u] = raw[src + 2u];
+    rgba[dst + 1u] = raw[src + 1u];
+    rgba[dst + 2u] = raw[src + 0u];
+    rgba[dst + 3u] = raw[src + 3u];
+  }
+  if (write_file_all(rgba_path, (const char *)rgba, rgba_bytes) != 0) {
+    free(rgba);
+    free(raw);
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] failed to write runtime rgba route=%s path=%s\n",
+            runtime_state->route_state,
+            rgba_path);
+    return !require_success;
+  }
+
+  uint64_t runtime_raw_hash = fnv1a64_bytes(1469598103934665603ull, raw, raw_len);
+  uint64_t rgba_hash = fnv1a64_bytes(1469598103934665603ull, rgba, rgba_bytes);
+  free(rgba);
+  free(raw);
+  char runtime_raw_hash_hex[32];
+  char rgba_hash_hex[32];
+  to_hex64(runtime_raw_hash, runtime_raw_hash_hex, sizeof(runtime_raw_hash_hex));
+  to_hex64(rgba_hash, rgba_hash_hex, sizeof(rgba_hash_hex));
+
+  if (runtime_state->last_frame_hash[0] != '\0' &&
+      !hash_hex_equal(runtime_raw_hash_hex, runtime_state->last_frame_hash)) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime frame hash mismatch route=%s raw=%s state=%s\n",
+            runtime_state->route_state,
+            runtime_raw_hash_hex,
+            runtime_state->last_frame_hash);
+    if (require_success) return false;
+  }
+
+  char runtime_hash_line[160];
+  int runtime_hash_n = snprintf(runtime_hash_line, sizeof(runtime_hash_line), "%s\n", runtime_state->last_frame_hash);
+  if (runtime_hash_n <= 0 || (size_t)runtime_hash_n >= sizeof(runtime_hash_line) ||
+      write_file_all(runtime_hash_path, runtime_hash_line, (size_t)runtime_hash_n) != 0) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] failed to write runtime framehash route=%s path=%s\n",
+            runtime_state->route_state,
+            runtime_hash_path);
+    return !require_success;
+  }
+  char framehash_line[160];
+  int framehash_n = snprintf(framehash_line, sizeof(framehash_line), "%s\n", runtime_raw_hash_hex);
+  if (framehash_n <= 0 || (size_t)framehash_n >= sizeof(framehash_line) ||
+      write_file_all(framehash_path, framehash_line, (size_t)framehash_n) != 0) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] failed to write framehash route=%s path=%s\n",
+            runtime_state->route_state,
+            framehash_path);
+    return !require_success;
+  }
+
+  char meta_doc[1024];
+  int meta_n = snprintf(meta_doc,
+                        sizeof(meta_doc),
+                        "{\n"
+                        "  \"route_state\": \"%s\",\n"
+                        "  \"width\": %u,\n"
+                        "  \"height\": %u,\n"
+                        "  \"capture_source\": \"runtime_raw_frame\",\n"
+                        "  \"runtime_frame_dump_file\": \"%s\",\n"
+                        "  \"raw_bytes\": %zu,\n"
+                        "  \"rgba_bytes\": %zu,\n"
+                        "  \"rgba_fnv1a64\": \"%s\",\n"
+                        "  \"raw_fnv1a64\": \"%s\",\n"
+                        "  \"runtime_frame_hash\": \"%s\",\n"
+                        "  \"semantic_nodes_applied_hash\": \"%s\",\n"
+                        "  \"surface_width\": %lld,\n"
+                        "  \"surface_height\": %lld,\n"
+                        "  \"semantic_nodes_applied_count\": %lld\n"
+                        "}\n",
+                        runtime_state->route_state,
+                        width,
+                        height,
+                        runtime_frame_dump_file,
+                        raw_len,
+                        rgba_bytes,
+                        rgba_hash_hex,
+                        runtime_raw_hash_hex,
+                        runtime_state->last_frame_hash,
+                        runtime_state->semantic_nodes_applied_hash,
+                        runtime_state->surface_width,
+                        runtime_state->surface_height,
+                        runtime_state->semantic_nodes_applied_count);
+  if (meta_n <= 0 || (size_t)meta_n >= sizeof(meta_doc) ||
+      write_file_all(meta_path, meta_doc, (size_t)meta_n) != 0) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] failed to write runtime meta route=%s path=%s\n",
+            runtime_state->route_state,
+            meta_path);
+    return !require_success;
+  }
+  fprintf(stdout,
+          "[verify-android-claude-1to1-gate] runtime capture route=%s source=runtime_raw_frame rgba=%s\n",
+          runtime_state->route_state,
+          rgba_path);
+
+  const char *freeze_truth_dir = getenv("CHENG_ANDROID_1TO1_FREEZE_TRUTH_DIR");
+  if (freeze_truth_dir != NULL && freeze_truth_dir[0] != '\0') {
+    if (ensure_dir(freeze_truth_dir) != 0) {
+      fprintf(stderr,
+              "[verify-android-claude-1to1-gate] failed to create freeze truth dir: %s\n",
+              freeze_truth_dir);
+      return false;
+    }
+    char truth_rgba[PATH_MAX];
+    char truth_meta[PATH_MAX];
+    char truth_runtime_hash[PATH_MAX];
+    char truth_hash[PATH_MAX];
+    if (snprintf(truth_rgba, sizeof(truth_rgba), "%s/%s.rgba", freeze_truth_dir, runtime_state->route_state) >=
+            (int)sizeof(truth_rgba) ||
+        snprintf(truth_meta, sizeof(truth_meta), "%s/%s.meta.json", freeze_truth_dir, runtime_state->route_state) >=
+            (int)sizeof(truth_meta) ||
+        snprintf(truth_runtime_hash,
+                 sizeof(truth_runtime_hash),
+                 "%s/%s.runtime_framehash",
+                 freeze_truth_dir,
+                 runtime_state->route_state) >= (int)sizeof(truth_runtime_hash) ||
+        snprintf(truth_hash, sizeof(truth_hash), "%s/%s.framehash", freeze_truth_dir, runtime_state->route_state) >=
+            (int)sizeof(truth_hash)) {
+      fprintf(stderr, "[verify-android-claude-1to1-gate] freeze truth path too long\n");
+      return false;
+    }
+    if (copy_file_all(rgba_path, truth_rgba) != 0 ||
+        copy_file_all(meta_path, truth_meta) != 0 ||
+        copy_file_all(runtime_hash_path, truth_runtime_hash) != 0 ||
+        copy_file_all(framehash_path, truth_hash) != 0) {
+      fprintf(stderr,
+              "[verify-android-claude-1to1-gate] failed to freeze route truth assets route=%s dir=%s\n",
+              runtime_state->route_state,
+              freeze_truth_dir);
+      return false;
+    }
+    fprintf(stdout,
+            "[verify-android-claude-1to1-gate] truth frozen route=%s dir=%s\n",
+            runtime_state->route_state,
+            freeze_truth_dir);
+  }
+  return true;
+}
+
+static bool parse_runtime_state(const char *runtime_json,
+                                int semantic_node_count,
+                                const char *expected_route_state,
+                                const char *expected_frame_hash,
+                                int expected_surface_width,
+                                int expected_surface_height,
+                                RuntimeStateSnapshot *snapshot_out) {
+  if (snapshot_out != NULL) memset(snapshot_out, 0, sizeof(*snapshot_out));
   size_t n = 0;
   char *doc = read_file_all(runtime_json, &n);
   if (doc == NULL || n == 0) {
@@ -961,6 +1646,176 @@ static bool parse_runtime_state(const char *runtime_json, int semantic_node_coun
     free(doc);
     return false;
   }
+  bool render_ready = false;
+  bool semantic_nodes_loaded = false;
+  long long semantic_nodes_applied_count = 0;
+  char last_frame_hash[128];
+  char semantic_nodes_applied_hash[128];
+  char route_state[128];
+  char build_hash[128];
+  char semantic_hash[128];
+  char runtime_reason[4096];
+  last_frame_hash[0] = '\0';
+  semantic_nodes_applied_hash[0] = '\0';
+  route_state[0] = '\0';
+  build_hash[0] = '\0';
+  semantic_hash[0] = '\0';
+  runtime_reason[0] = '\0';
+
+  (void)json_get_string(doc, "last_error", runtime_reason, sizeof(runtime_reason));
+
+  if (!json_get_bool(doc, "render_ready", &render_ready)) {
+    char token[64];
+    token[0] = '\0';
+    if (parse_runtime_reason_token(runtime_reason, "sr", token, sizeof(token))) {
+      render_ready = (strcmp(token, "1") == 0 || strcmp(token, "true") == 0 || strcmp(token, "TRUE") == 0);
+    }
+  }
+  if (!render_ready) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime render_ready is false\n");
+    free(doc);
+    return false;
+  }
+
+  if (!json_get_int64(doc, "semantic_nodes_applied_count", &semantic_nodes_applied_count)) {
+    char token[64];
+    token[0] = '\0';
+    if (parse_runtime_reason_token(runtime_reason, "sa", token, sizeof(token))) {
+      semantic_nodes_applied_count = strtoll(token, NULL, 10);
+    }
+  }
+  if (semantic_nodes_applied_count <= 0) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime semantic_nodes_applied_count <= 0 (got=%lld)\n",
+            semantic_nodes_applied_count);
+    free(doc);
+    return false;
+  }
+
+  if (!json_get_bool(doc, "semantic_nodes_loaded", &semantic_nodes_loaded)) {
+    char token[64];
+    token[0] = '\0';
+    if (parse_runtime_reason_token(runtime_reason, "st", token, sizeof(token))) {
+      semantic_nodes_loaded = (strcmp(token, "0") != 0);
+    }
+  }
+  if (!semantic_nodes_loaded) {
+    char token[64];
+    token[0] = '\0';
+    if (parse_runtime_reason_token(runtime_reason, "st", token, sizeof(token))) {
+      semantic_nodes_loaded = (strcmp(token, "0") != 0);
+    }
+  }
+  if (!semantic_nodes_loaded) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime semantic_nodes_loaded is false\n");
+    free(doc);
+    return false;
+  }
+
+  if (!json_get_string(doc, "last_frame_hash", last_frame_hash, sizeof(last_frame_hash))) {
+    (void)parse_runtime_reason_token(runtime_reason, "framehash", last_frame_hash, sizeof(last_frame_hash));
+  }
+  if (!runtime_hash_nonzero(last_frame_hash)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime last_frame_hash is zero/invalid\n");
+    free(doc);
+    return false;
+  }
+  if (expected_frame_hash != NULL && expected_frame_hash[0] != '\0' &&
+      !hash_hex_equal(last_frame_hash, expected_frame_hash)) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime framehash mismatch expected=%s got=%s\n",
+            expected_frame_hash,
+            last_frame_hash);
+    free(doc);
+    return false;
+  }
+
+  if (!json_get_string(doc, "semantic_nodes_applied_hash", semantic_nodes_applied_hash, sizeof(semantic_nodes_applied_hash))) {
+    (void)parse_runtime_reason_token(runtime_reason, "sah", semantic_nodes_applied_hash, sizeof(semantic_nodes_applied_hash));
+  }
+  if (!runtime_hash_nonzero(semantic_nodes_applied_hash)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime semantic_nodes_applied_hash is zero/invalid\n");
+    free(doc);
+    return false;
+  }
+
+  if (!json_get_string(doc, "route_state", route_state, sizeof(route_state))) {
+    (void)parse_runtime_reason_token(runtime_reason, "route", route_state, sizeof(route_state));
+  }
+  if (route_state[0] == '\0') {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime route_state is empty\n");
+    free(doc);
+    return false;
+  }
+  if (expected_route_state != NULL && expected_route_state[0] != '\0' &&
+      strcmp(route_state, expected_route_state) != 0) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime route_state mismatch expected=%s got=%s\n",
+            expected_route_state,
+            route_state);
+    free(doc);
+    return false;
+  }
+
+  if (!json_get_string(doc, "build_hash", build_hash, sizeof(build_hash))) {
+    (void)parse_runtime_reason_token(runtime_reason, "buildhash", build_hash, sizeof(build_hash));
+  }
+  if (!runtime_hash_nonzero(build_hash)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime build_hash is zero/invalid\n");
+    free(doc);
+    return false;
+  }
+
+  if (!json_get_string(doc, "semantic_hash", semantic_hash, sizeof(semantic_hash))) {
+    (void)parse_runtime_reason_token(runtime_reason, "semhash", semantic_hash, sizeof(semantic_hash));
+  }
+  if (!runtime_hash_nonzero(semantic_hash)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime semantic_hash is zero/invalid\n");
+    free(doc);
+    return false;
+  }
+
+  long long surface_width = 0;
+  long long surface_height = 0;
+  if (!json_get_int64(doc, "surface_width", &surface_width)) {
+    char token_w[64];
+    token_w[0] = '\0';
+    if (parse_runtime_reason_token(runtime_reason, "w", token_w, sizeof(token_w))) {
+      surface_width = strtoll(token_w, NULL, 10);
+    }
+  }
+  if (!json_get_int64(doc, "surface_height", &surface_height)) {
+    char token_h[64];
+    token_h[0] = '\0';
+    if (parse_runtime_reason_token(runtime_reason, "h", token_h, sizeof(token_h))) {
+      surface_height = strtoll(token_h, NULL, 10);
+    }
+  }
+  if (surface_width <= 0 || surface_height <= 0) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime surface size missing/invalid (w=%lld h=%lld)\n",
+            surface_width,
+            surface_height);
+    free(doc);
+    return false;
+  }
+  if (expected_surface_width > 0 && surface_width != (long long)expected_surface_width) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime surface_width mismatch expected=%d got=%lld\n",
+            expected_surface_width,
+            surface_width);
+    free(doc);
+    return false;
+  }
+  if (expected_surface_height > 0 && surface_height != (long long)expected_surface_height) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] runtime surface_height mismatch expected=%d got=%lld\n",
+            expected_surface_height,
+            surface_height);
+    free(doc);
+    return false;
+  }
+
   char kv[32768];
   char js[32768];
   kv[0] = '\0';
@@ -988,6 +1843,15 @@ static bool parse_runtime_state(const char *runtime_json, int semantic_node_coun
     free(doc);
     return false;
   }
+  if (snapshot_out != NULL) {
+    snprintf(snapshot_out->route_state, sizeof(snapshot_out->route_state), "%s", route_state);
+    snprintf(snapshot_out->last_frame_hash, sizeof(snapshot_out->last_frame_hash), "%s", last_frame_hash);
+    snprintf(snapshot_out->semantic_nodes_applied_hash, sizeof(snapshot_out->semantic_nodes_applied_hash), "%s", semantic_nodes_applied_hash);
+    snapshot_out->surface_width = surface_width;
+    snapshot_out->surface_height = surface_height;
+    snapshot_out->semantic_nodes_applied_count = semantic_nodes_applied_count;
+  }
+  (void)semantic_node_count;
   free(doc);
   return true;
 }
@@ -1070,7 +1934,9 @@ static bool runtime_contains_forbidden_markers(const char *runtime_path) {
   const char *markers[] = {
       "legacy.mountUnimakerAot",
       "legacy.unimakerDispatch",
-      "import cheng/gui/browser/r2capp/runtime as legacy",
+      "import gui/browser/r2capp/runtime as legacy",
+      "import gui/browser/r2capp/runtime as legacy",
+      "# appendSemanticNode(",
       "__R2C_",
       "buildSnapshot(",
       "rebuildPaint(",
@@ -1096,8 +1962,16 @@ static bool runtime_contains_forbidden_markers(const char *runtime_path) {
   return bad;
 }
 
-static void parse_args(int argc, char **argv, int arg_start, const char **project, const char **entry, const char **out_dir,
-                       bool *help, int *err) {
+static void parse_args(int argc,
+                       char **argv,
+                       int arg_start,
+                       const char **project,
+                       const char **entry,
+                       const char **out_dir,
+                       const char **route_state,
+                       const char **truth_dir,
+                       bool *help,
+                       int *err) {
   *help = false;
   *err = 0;
   for (int i = arg_start; i < argc;) {
@@ -1129,6 +2003,24 @@ static void parse_args(int argc, char **argv, int arg_start, const char **projec
       i += 2;
       continue;
     }
+    if (strcmp(arg, "--route-state") == 0) {
+      if (i + 1 >= argc) {
+        *err = 2;
+        return;
+      }
+      *route_state = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (strcmp(arg, "--truth-dir") == 0) {
+      if (i + 1 >= argc) {
+        *err = 2;
+        return;
+      }
+      *truth_dir = argv[i + 1];
+      i += 2;
+      continue;
+    }
     if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
       *help = true;
       return;
@@ -1142,12 +2034,22 @@ static void parse_args(int argc, char **argv, int arg_start, const char **projec
 static void usage(void) {
   fprintf(stdout,
           "Usage:\n"
-          "  verify_android_claude_1to1_gate [--project <abs_path>] [--entry </app/main.tsx>] [--out <abs_path>]\n"
+          "  verify_android_claude_1to1_gate [--project <abs_path>] [--entry </app/main.tsx>] [--out <abs_path>] [--route-state <state>] [--truth-dir <abs_path>]\n"
           "\n"
           "Env (native no-interpreter path):\n"
           "  CHENG_R2C_COMPILE_CMD=<native_bin>\n"
           "  CHENG_ANDROID_FULLROUTE_GATE_CMD=<native_bin>\n"
           "  CHENG_ANDROID_MOBILE_RUNNER=<native_bin>\n"
+          "  CHENG_ANDROID_1TO1_ROUTE_STATE=<state>\n"
+          "  CHENG_ANDROID_1TO1_TRUTH_DIR=<abs_path>\n"
+          "  CHENG_ANDROID_1TO1_CAPTURE_RUNTIME_VISUAL=0|1 (default 1)\n"
+          "  CHENG_ANDROID_1TO1_CAPTURE_RUNTIME_VISUAL_STRICT=0|1 (default 0)\n"
+          "  CHENG_ANDROID_1TO1_TRUTH_FRAME_MODE=fullscreen|viewport (default fullscreen)\n"
+          "  CHENG_ANDROID_1TO1_FREEZE_TRUTH_DIR=<abs_path>\n"
+          "  CHENG_ANDROID_1TO1_DISABLE_EXPECTED_FRAMEHASH=0|1 (default fullscreen->1, viewport->0)\n"
+          "  CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH=0|1 (default 0)\n"
+          "  CHENG_ANDROID_1TO1_TARGET_WIDTH/HEIGHT=<int> (optional runtime surface check)\n"
+          "  CHENG_ANDROID_1TO1_ENFORCE_SURFACE_TARGET=0|1 (default 0)\n"
           "\n"
           "Compat (temporary):\n"
           "  CHENG_NATIVE_GATE_ALLOW_SCRIPT_DISPATCH=1\n");
@@ -1161,7 +2063,11 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   } else if (scripts_dir != NULL && scripts_dir[0] != '\0') {
     snprintf(root, sizeof(root), "%s", scripts_dir);
     size_t n = strlen(root);
-    if (n >= 8u && strcmp(root + n - 8u, "/scripts") == 0) root[n - 8u] = '\0';
+    if (n >= 12u && strcmp(root + n - 12u, "/src/scripts") == 0) {
+      root[n - 12u] = '\0';
+    } else if (n >= 8u && strcmp(root + n - 8u, "/scripts") == 0) {
+      root[n - 8u] = '\0';
+    }
   } else {
     fprintf(stderr, "[verify-android-claude-1to1-gate] missing GUI root\n");
     return 2;
@@ -1170,8 +2076,42 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   const char *project = getenv("R2C_REAL_PROJECT");
   const char *entry = getenv("R2C_REAL_ENTRY");
   const char *out_dir = getenv("R2C_ANDROID_1TO1_OUT");
+  const char *route_state = getenv("CHENG_ANDROID_1TO1_ROUTE_STATE");
+  const char *truth_dir = getenv("CHENG_ANDROID_1TO1_TRUTH_DIR");
+  const char *require_runtime = getenv("CHENG_ANDROID_1TO1_REQUIRE_RUNTIME");
+  const char *enable_fullroute = getenv("CHENG_ANDROID_1TO1_ENABLE_FULLROUTE");
+  const char *skip_compile_env = getenv("CHENG_ANDROID_1TO1_SKIP_COMPILE");
+  bool skip_compile = (skip_compile_env != NULL && strcmp(skip_compile_env, "1") == 0);
   if (project == NULL || project[0] == '\0') project = "/Users/lbcheng/UniMaker/ClaudeDesign";
   if (entry == NULL || entry[0] == '\0') entry = "/app/main.tsx";
+  bool runtime_required = true;
+  if (require_runtime != NULL && require_runtime[0] != '\0') {
+    if (strcmp(require_runtime, "1") == 0) {
+      runtime_required = true;
+    } else if (strcmp(require_runtime, "0") == 0) {
+      runtime_required = false;
+    } else {
+      fprintf(stderr,
+              "[verify-android-claude-1to1-gate] invalid CHENG_ANDROID_1TO1_REQUIRE_RUNTIME=%s (expect 0 or 1)\n",
+              require_runtime);
+      return 2;
+    }
+  }
+  bool fullroute_enabled = true;
+  bool fullroute_explicit = false;
+  if (enable_fullroute != NULL && enable_fullroute[0] != '\0') {
+    fullroute_explicit = true;
+    if (strcmp(enable_fullroute, "1") == 0) {
+      fullroute_enabled = true;
+    } else if (strcmp(enable_fullroute, "0") == 0) {
+      fullroute_enabled = false;
+    } else {
+      fprintf(stderr,
+              "[verify-android-claude-1to1-gate] invalid CHENG_ANDROID_1TO1_ENABLE_FULLROUTE=%s (expect 0 or 1)\n",
+              enable_fullroute);
+      return 2;
+    }
+  }
   char out_dir_default[PATH_MAX];
   if (out_dir == NULL || out_dir[0] == '\0') {
     if (path_join(out_dir_default, sizeof(out_dir_default), root, "build/android_claude_1to1_gate") != 0) return 2;
@@ -1180,7 +2120,7 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
 
   bool want_help = false;
   int arg_err = 0;
-  parse_args(argc, argv, arg_start, &project, &entry, &out_dir, &want_help, &arg_err);
+  parse_args(argc, argv, arg_start, &project, &entry, &out_dir, &route_state, &truth_dir, &want_help, &arg_err);
   if (want_help) {
     usage();
     return 0;
@@ -1188,6 +2128,9 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   if (arg_err != 0) {
     usage();
     return arg_err;
+  }
+  if (!fullroute_explicit && route_state != NULL && route_state[0] != '\0') {
+    fullroute_enabled = false;
   }
 
   char marker_dir[PATH_MAX];
@@ -1211,11 +2154,11 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       path_join(fullroute_out, sizeof(fullroute_out), out_dir, "fullroute") != 0 ||
       path_join(fullroute_report, sizeof(fullroute_report), fullroute_out, "android_fullroute_visual_report.json") != 0 ||
       path_join(fullroute_log, sizeof(fullroute_log), out_dir, "android_fullroute_visual.log") != 0 ||
-      path_join(android_truth_manifest, sizeof(android_truth_manifest), root,
-                "tests/claude_fixture/golden/android_fullroute/chromium_truth_manifest_android.json") != 0 ||
-      path_join(mobile_runner, sizeof(mobile_runner), root, "bin/mobile_run_android") != 0 ||
-      path_join(compile_cmd, sizeof(compile_cmd), root, "bin/r2c_compile_react_project") != 0 ||
-      path_join(fullroute_gate_cmd, sizeof(fullroute_gate_cmd), root, "bin/verify_android_fullroute_visual_pixel") != 0) {
+      path_join(android_truth_manifest, sizeof(android_truth_manifest), compile_out,
+                "r2capp/r2c_truth_trace_manifest_android.json") != 0 ||
+      path_join(mobile_runner, sizeof(mobile_runner), root, "src/bin/mobile_run_android") != 0 ||
+      path_join(compile_cmd, sizeof(compile_cmd), root, "src/bin/r2c_compile_react_project") != 0 ||
+      path_join(fullroute_gate_cmd, sizeof(fullroute_gate_cmd), root, "src/bin/verify_android_fullroute_visual_pixel") != 0) {
     return 2;
   }
 
@@ -1230,24 +2173,22 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     fprintf(stderr, "[verify-android-claude-1to1-gate] missing project: %s\n", project);
     return 1;
   }
-  if (!file_exists(android_truth_manifest)) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] missing android truth manifest: %s\n", android_truth_manifest);
-    return 1;
-  }
-  if (!path_executable(compile_cmd)) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] missing native compile command: %s\n", compile_cmd);
-    return 1;
-  }
-  if (path_is_interpreter_script(compile_cmd)) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] compile command must be native executable (no interpreter): %s\n",
-            compile_cmd);
-    return 1;
-  }
-  if (!allow_script_dispatch_wrapper() && command_looks_like_script_dispatch(compile_cmd)) {
-    fprintf(stderr,
-            "[verify-android-claude-1to1-gate] compile command resolves to script-dispatch wrapper; set CHENG_R2C_COMPILE_CMD to a true native binary: %s\n",
-            compile_cmd);
-    return 1;
+  if (!skip_compile) {
+    if (!path_executable(compile_cmd)) {
+      fprintf(stderr, "[verify-android-claude-1to1-gate] missing native compile command: %s\n", compile_cmd);
+      return 1;
+    }
+    if (path_is_interpreter_script(compile_cmd)) {
+      fprintf(stderr, "[verify-android-claude-1to1-gate] compile command must be native executable (no interpreter): %s\n",
+              compile_cmd);
+      return 1;
+    }
+    if (!allow_script_dispatch_wrapper() && command_looks_like_script_dispatch(compile_cmd)) {
+      fprintf(stderr,
+              "[verify-android-claude-1to1-gate] compile command resolves to script-dispatch wrapper; set CHENG_R2C_COMPILE_CMD to a true native binary: %s\n",
+              compile_cmd);
+      return 1;
+    }
   }
   if (!path_executable(fullroute_gate_cmd)) {
     fprintf(stderr, "[verify-android-claude-1to1-gate] missing native fullroute gate command: %s\n", fullroute_gate_cmd);
@@ -1306,23 +2247,28 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     return 1;
   }
 
-  fprintf(stdout, "== android 1:1: r2c strict compile ==\n");
-  char *compile_argv[] = {
-      compile_cmd,
-      "--project",
-      (char *)project,
-      "--entry",
-      (char *)entry,
-      "--out",
-      compile_out,
-      "--strict",
-      NULL,
-  };
-  print_cmdline(compile_argv);
-  RunResult compile_rr = run_command(compile_argv, NULL, 0);
-  if (compile_rr.code != 0) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] compile failed rc=%d\n", compile_rr.code);
-    return 1;
+  if (skip_compile) {
+    fprintf(stdout, "== android 1:1: reuse strict compile output ==\n");
+    fprintf(stdout, "[verify-android-claude-1to1-gate] skip compile: CHENG_ANDROID_1TO1_SKIP_COMPILE=1\n");
+  } else {
+    fprintf(stdout, "== android 1:1: r2c strict compile ==\n");
+    char *compile_argv[] = {
+        compile_cmd,
+        "--project",
+        (char *)project,
+        "--entry",
+        (char *)entry,
+        "--out",
+        compile_out,
+        "--strict",
+        NULL,
+    };
+    print_cmdline(compile_argv);
+    RunResult compile_rr = run_command(compile_argv, NULL, 0);
+    if (compile_rr.code != 0) {
+      fprintf(stderr, "[verify-android-claude-1to1-gate] compile failed rc=%d\n", compile_rr.code);
+      return 1;
+    }
   }
 
   char report_json[PATH_MAX];
@@ -1350,9 +2296,13 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
 
   if (!parse_bool_key(report_doc, "strict_no_fallback", true, "[verify-android-claude-1to1-gate] strict_no_fallback != true") ||
       !parse_bool_key(report_doc, "used_fallback", false, "[verify-android-claude-1to1-gate] used_fallback != false") ||
+      !parse_bool_key(report_doc, "template_runtime_used", false, "[verify-android-claude-1to1-gate] template_runtime_used != false") ||
       !parse_int_key(report_doc, "compiler_rc", 0, "[verify-android-claude-1to1-gate] compiler_rc != 0") ||
       !parse_int_key(report_doc, "pixel_tolerance", 0, "[verify-android-claude-1to1-gate] pixel_tolerance != 0") ||
       !parse_string_key(report_doc, "generated_ui_mode", "ir-driven", "[verify-android-claude-1to1-gate] generated_ui_mode != ir-driven") ||
+      !parse_string_key(report_doc, "compiler_report_origin", "cheng-compiler", "[verify-android-claude-1to1-gate] compiler_report_origin != cheng-compiler") ||
+      !parse_string_key(report_doc, "semantic_compile_mode", "react-semantic-ir-node-compile",
+                        "[verify-android-claude-1to1-gate] semantic_compile_mode != react-semantic-ir-node-compile") ||
       !parse_string_key(report_doc, "utfzh_mode", "strict", "[verify-android-claude-1to1-gate] utfzh_mode != strict") ||
       !parse_string_key(report_doc, "ime_mode", "cangwu-global", "[verify-android-claude-1to1-gate] ime_mode != cangwu-global") ||
       !parse_string_key(report_doc, "cjk_render_backend", "native-text-first",
@@ -1360,9 +2310,26 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       !parse_string_key(report_doc, "cjk_render_gate", "no-garbled-cjk",
                         "[verify-android-claude-1to1-gate] cjk_render_gate != no-garbled-cjk") ||
       !parse_string_key(report_doc, "semantic_mapping_mode", "source-node-map",
-                        "[verify-android-claude-1to1-gate] semantic_mapping_mode != source-node-map") ||
-      !parse_string_key(report_doc, "android_truth_manifest_path", android_truth_manifest,
-                        "[verify-android-claude-1to1-gate] android_truth_manifest_path mismatch")) {
+                        "[verify-android-claude-1to1-gate] semantic_mapping_mode != source-node-map")) {
+    free(report_doc);
+    return 1;
+  }
+  char report_truth_manifest[PATH_MAX];
+  bool truth_manifest_ok =
+      json_get_string(report_doc, "android_truth_manifest_path", report_truth_manifest, sizeof(report_truth_manifest)) &&
+      file_exists(report_truth_manifest);
+  if (!truth_manifest_ok) {
+    truth_manifest_ok = json_get_string(report_doc,
+                                        "truth_trace_manifest_android_path",
+                                        report_truth_manifest,
+                                        sizeof(report_truth_manifest)) &&
+                        file_exists(report_truth_manifest);
+  }
+  if (truth_manifest_ok) {
+    snprintf(android_truth_manifest, sizeof(android_truth_manifest), "%s", report_truth_manifest);
+  } else if (!file_exists(android_truth_manifest)) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] missing android truth manifest in report/output\n");
     free(report_doc);
     return 1;
   }
@@ -1434,57 +2401,6 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   }
   free(states_doc);
 
-  char route_texts_path[PATH_MAX];
-  if (!json_get_string(report_doc, "route_texts_path", route_texts_path, sizeof(route_texts_path)) ||
-      !dir_exists(route_texts_path)) {
-    char report_dir[PATH_MAX];
-    snprintf(report_dir, sizeof(report_dir), "%s", report_json);
-    char *slash = strrchr(report_dir, '/');
-    if (slash == NULL) {
-      fprintf(stderr, "[verify-android-claude-1to1-gate] missing route_texts_path\n");
-      strlist_free(&states);
-      free(report_doc);
-      return 1;
-    }
-    *slash = '\0';
-    if (path_join(route_texts_path, sizeof(route_texts_path), report_dir, "r2c_route_texts") != 0 || !dir_exists(route_texts_path)) {
-      fprintf(stderr, "[verify-android-claude-1to1-gate] missing route_texts_path: %s\n", route_texts_path);
-      strlist_free(&states);
-      free(report_doc);
-      return 1;
-    }
-  }
-
-  bool seen_non_ascii = false;
-  for (size_t i = 0; i < states.len; ++i) {
-    char txt_path[PATH_MAX];
-    char file_name[PATH_MAX];
-    snprintf(file_name, sizeof(file_name), "%s.txt", states.items[i]);
-    if (path_join(txt_path, sizeof(txt_path), route_texts_path, file_name) != 0 || !file_exists(txt_path)) {
-      fprintf(stderr, "[verify-android-claude-1to1-gate] route text payload missing: %s\n", states.items[i]);
-      strlist_free(&states);
-      free(report_doc);
-      return 1;
-    }
-    size_t txt_len = 0;
-    char *txt = read_file_all(txt_path, &txt_len);
-    if (txt == NULL || txt_len == 0u) {
-      fprintf(stderr, "[verify-android-claude-1to1-gate] route text payload missing: %s\n", states.items[i]);
-      free(txt);
-      strlist_free(&states);
-      free(report_doc);
-      return 1;
-    }
-    if (has_non_ascii(txt, txt_len)) seen_non_ascii = true;
-    free(txt);
-  }
-  if (!seen_non_ascii) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] route text payload does not include non-ascii content\n");
-    strlist_free(&states);
-    free(report_doc);
-    return 1;
-  }
-
   char semantic_map_path[PATH_MAX];
   char semantic_runtime_map_path[PATH_MAX];
   if (!json_get_string(report_doc, "semantic_node_map_path", semantic_map_path, sizeof(semantic_map_path)) ||
@@ -1524,9 +2440,51 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   fprintf(stdout, "[verify-r2c-strict] no-fallback=true\n");
   fprintf(stdout, "[verify-r2c-strict] compiler-rc=0\n");
 
-  int fullroute_routes_ok = full_route_count;
-  const char *require_runtime = getenv("CHENG_ANDROID_1TO1_REQUIRE_RUNTIME");
-  bool runtime_required = (require_runtime == NULL || strcmp(require_runtime, "1") == 0);
+  int fullroute_routes_ok = fullroute_enabled ? full_route_count : 0;
+  int target_surface_w = env_positive_int_or_default("CHENG_ANDROID_1TO1_TARGET_WIDTH", 0);
+  int target_surface_h = env_positive_int_or_default("CHENG_ANDROID_1TO1_TARGET_HEIGHT", 0);
+  char expected_runtime_frame_hash[64];
+  expected_runtime_frame_hash[0] = '\0';
+  RuntimeStateSnapshot runtime_snapshot;
+  memset(&runtime_snapshot, 0, sizeof(runtime_snapshot));
+  const char *freeze_truth_dir = getenv("CHENG_ANDROID_1TO1_FREEZE_TRUTH_DIR");
+  bool capture_runtime_visual = true;
+  const char *capture_runtime_visual_env = getenv("CHENG_ANDROID_1TO1_CAPTURE_RUNTIME_VISUAL");
+  if (capture_runtime_visual_env != NULL && strcmp(capture_runtime_visual_env, "0") == 0) {
+    capture_runtime_visual = false;
+  }
+  bool capture_runtime_visual_strict = (freeze_truth_dir != NULL && freeze_truth_dir[0] != '\0');
+  const char *capture_runtime_visual_strict_env = getenv("CHENG_ANDROID_1TO1_CAPTURE_RUNTIME_VISUAL_STRICT");
+  if (capture_runtime_visual_strict_env != NULL && strcmp(capture_runtime_visual_strict_env, "1") == 0) {
+    capture_runtime_visual_strict = true;
+  }
+  if (route_state != NULL && route_state[0] != '\0' && !strlist_contains(&states, route_state)) {
+    fprintf(stderr,
+            "[verify-android-claude-1to1-gate] route-state not found in full-route states: %s\n",
+            route_state);
+    strlist_free(&states);
+    free(report_doc);
+    return 2;
+  }
+  char assets_dir[PATH_MAX];
+  if (path_join(assets_dir, sizeof(assets_dir), compile_out, "r2capp") != 0) {
+    strlist_free(&states);
+    free(report_doc);
+    return 1;
+  }
+  if (truth_dir != NULL && truth_dir[0] != '\0' && route_state != NULL && route_state[0] != '\0') {
+    if (!prepare_route_truth_assets(truth_dir,
+                                    route_state,
+                                    assets_dir,
+                                    expected_runtime_frame_hash,
+                                    sizeof(expected_runtime_frame_hash),
+                                    &target_surface_w,
+                                    &target_surface_h)) {
+      strlist_free(&states);
+      free(report_doc);
+      return 1;
+    }
+  }
   if (runtime_required) {
     if (!has_android_device()) {
       fprintf(stderr, "[verify-android-claude-1to1-gate] no android emulator/device detected\n");
@@ -1565,6 +2523,10 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     const char *timeout_env = getenv("CHENG_ANDROID_1TO1_RUNTIME_TIMEOUT_SEC");
     int runtime_timeout = 900;
     if (timeout_env != NULL && timeout_env[0] != '\0') runtime_timeout = atoi(timeout_env);
+    const char *wait_env = getenv("CHENG_ANDROID_1TO1_RUNTIME_WAIT_MS");
+    int runtime_wait_ms = 12000;
+    if (wait_env != NULL && wait_env[0] != '\0') runtime_wait_ms = atoi(wait_env);
+    if (runtime_wait_ms < 1000) runtime_wait_ms = 1000;
 
     char runner_entry[PATH_MAX];
     if (path_join(runner_entry, sizeof(runner_entry), root, "r2c_app_runner_main.cheng") != 0) {
@@ -1606,34 +2568,86 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
 
     char app_arg_sem_nodes[128];
     snprintf(app_arg_sem_nodes, sizeof(app_arg_sem_nodes), "--app-arg:semantic_nodes=%d", semantic_node_count);
-    char out_arg[PATH_MAX + 16];
-    snprintf(out_arg, sizeof(out_arg), "--out:%s", mobile_export_out);
-    char *runtime_argv[] = {
-        mobile_runner,
-        runner_entry,
-        "--name:claude_android_1to1",
-        out_arg,
-        NULL,
-        native_obj_arg,
-        app_arg_manifest,
-        app_arg_sem_nodes,
-        "--app-arg:gate_mode=android-semantic-visual-1to1",
-        "--app-arg:arg_probe=foo_bar",
-        app_args_json_arg,
-        runtime_state_arg,
-        "--runtime-state-wait-ms:3000",
-        NULL,
-    };
-
-    char assets_arg[PATH_MAX + 16];
-    char assets_dir[PATH_MAX];
-    if (path_join(assets_dir, sizeof(assets_dir), compile_out, "r2capp") != 0) {
+    char app_arg_route_state[256];
+    app_arg_route_state[0] = '\0';
+    const char *route_state_arg = NULL;
+    if (route_state != NULL && route_state[0] != '\0') {
+      snprintf(app_arg_route_state, sizeof(app_arg_route_state), "--app-arg:route_state=%s", route_state);
+      route_state_arg = app_arg_route_state;
+    }
+    char frame_dump_name[192];
+    frame_dump_name[0] = '\0';
+    const char *frame_dump_route = (route_state != NULL && route_state[0] != '\0') ? route_state : "route";
+    if (snprintf(frame_dump_name, sizeof(frame_dump_name), "%s.runtime_frame.raw", frame_dump_route) >=
+        (int)sizeof(frame_dump_name)) {
       strlist_free(&states);
       free(report_doc);
       return 1;
     }
+    char app_arg_frame_dump[256];
+    if (snprintf(app_arg_frame_dump,
+                 sizeof(app_arg_frame_dump),
+                 "--app-arg:frame_dump_file=%s",
+                 frame_dump_name) >= (int)sizeof(app_arg_frame_dump)) {
+      strlist_free(&states);
+      free(report_doc);
+      return 1;
+    }
+    char runtime_wait_arg[64];
+    snprintf(runtime_wait_arg, sizeof(runtime_wait_arg), "--runtime-state-wait-ms:%d", runtime_wait_ms);
+    char out_arg[PATH_MAX + 16];
+    snprintf(out_arg, sizeof(out_arg), "--out:%s", mobile_export_out);
+    char assets_arg[PATH_MAX + 16];
     snprintf(assets_arg, sizeof(assets_arg), "--assets:%s", assets_dir);
-    runtime_argv[4] = assets_arg;
+    char app_arg_expected_hash[128];
+    app_arg_expected_hash[0] = '\0';
+    const char *expected_hash_arg = NULL;
+    if (expected_runtime_frame_hash[0] != '\0') {
+      snprintf(app_arg_expected_hash,
+               sizeof(app_arg_expected_hash),
+               "--app-arg:expected_framehash=%s",
+               expected_runtime_frame_hash);
+      expected_hash_arg = app_arg_expected_hash;
+    }
+    bool enable_direct_launch_smoke = false;
+    const char *direct_launch_smoke_env = getenv("CHENG_ANDROID_1TO1_DIRECT_LAUNCH_SMOKE");
+    if (direct_launch_smoke_env == NULL || strcmp(direct_launch_smoke_env, "0") != 0) {
+      if (route_state != NULL && strcmp(route_state, "home_default") == 0) {
+        enable_direct_launch_smoke = true;
+      }
+    }
+    const char *direct_launch_smoke_route = getenv("CHENG_ANDROID_1TO1_DIRECT_LAUNCH_ROUTE");
+    if (direct_launch_smoke_route == NULL || direct_launch_smoke_route[0] == '\0') {
+      direct_launch_smoke_route = "home_default";
+    }
+    char direct_launch_smoke_arg[256];
+    direct_launch_smoke_arg[0] = '\0';
+    if (enable_direct_launch_smoke) {
+      snprintf(direct_launch_smoke_arg,
+               sizeof(direct_launch_smoke_arg),
+               "--direct-launch-smoke:%s",
+               direct_launch_smoke_route);
+    }
+    char *runtime_argv[29];
+    int runtime_argc = 0;
+    runtime_argv[runtime_argc++] = mobile_runner;
+    runtime_argv[runtime_argc++] = runner_entry;
+    runtime_argv[runtime_argc++] = "--name:claude_android_1to1";
+    runtime_argv[runtime_argc++] = out_arg;
+    runtime_argv[runtime_argc++] = assets_arg;
+    runtime_argv[runtime_argc++] = native_obj_arg;
+    runtime_argv[runtime_argc++] = app_arg_manifest;
+    runtime_argv[runtime_argc++] = app_arg_sem_nodes;
+    runtime_argv[runtime_argc++] = app_arg_frame_dump;
+    if (expected_hash_arg != NULL) runtime_argv[runtime_argc++] = (char *)expected_hash_arg;
+    if (route_state_arg != NULL) runtime_argv[runtime_argc++] = (char *)route_state_arg;
+    runtime_argv[runtime_argc++] = "--app-arg:gate_mode=android-semantic-visual-1to1";
+    runtime_argv[runtime_argc++] = "--app-arg:arg_probe=foo_bar";
+    runtime_argv[runtime_argc++] = app_args_json_arg;
+    runtime_argv[runtime_argc++] = runtime_state_arg;
+    runtime_argv[runtime_argc++] = runtime_wait_arg;
+    if (enable_direct_launch_smoke) runtime_argv[runtime_argc++] = direct_launch_smoke_arg;
+    runtime_argv[runtime_argc] = NULL;
 
     fprintf(stdout, "== android 1:1: mobile run (kotlin host) ==\n");
     print_cmdline(runtime_argv);
@@ -1666,43 +2680,68 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       free(report_doc);
       return 1;
     }
-    if (!parse_runtime_state(runtime_json, semantic_node_count)) {
+    if (!parse_runtime_state(runtime_json,
+                             semantic_node_count,
+                             route_state,
+                             expected_runtime_frame_hash[0] != '\0' ? expected_runtime_frame_hash : NULL,
+                             target_surface_w,
+                             target_surface_h,
+                             &runtime_snapshot)) {
       strlist_free(&states);
       free(report_doc);
       return 1;
+    }
+    if (capture_runtime_visual && runtime_snapshot.route_state[0] != '\0') {
+      if (!capture_runtime_route_visual(out_dir, &runtime_snapshot, frame_dump_name, capture_runtime_visual_strict)) {
+        strlist_free(&states);
+        free(report_doc);
+        return 1;
+      }
     }
 
-    fprintf(stdout, "== android 1:1: fullroute visual gate ==\n");
-    char *full_argv[] = {
-        fullroute_gate_cmd,
-        "--compile-out",
-        compile_out,
-        "--out",
-        fullroute_out,
-        "--manifest",
-        android_truth_manifest,
-        NULL,
-    };
-    print_cmdline(full_argv);
-    rr = run_command(full_argv, fullroute_log, runtime_timeout);
-    if (rr.code != 0) {
-      if (rr.timed_out) {
-        fprintf(stderr, "[verify-android-claude-1to1-gate] fullroute timeout after %ds\n", runtime_timeout);
-      } else {
-        fprintf(stderr, "[verify-android-claude-1to1-gate] fullroute failed rc=%d\n", rr.code);
+    if (fullroute_enabled) {
+      fprintf(stdout, "== android 1:1: fullroute visual gate ==\n");
+      char *full_argv[] = {
+          fullroute_gate_cmd,
+          "--compile-out",
+          compile_out,
+          "--out",
+          fullroute_out,
+          "--manifest",
+          android_truth_manifest,
+          NULL,
+      };
+      print_cmdline(full_argv);
+      rr = run_command(full_argv, fullroute_log, runtime_timeout);
+      if (rr.code != 0) {
+        if (rr.timed_out) {
+          fprintf(stderr, "[verify-android-claude-1to1-gate] fullroute timeout after %ds\n", runtime_timeout);
+        } else {
+          fprintf(stderr, "[verify-android-claude-1to1-gate] fullroute failed rc=%d\n", rr.code);
+        }
+        print_file_head(fullroute_log, 220);
+        strlist_free(&states);
+        free(report_doc);
+        return 1;
       }
-      print_file_head(fullroute_log, 220);
-      strlist_free(&states);
-      free(report_doc);
-      return 1;
+      if (!file_exists(fullroute_report) || !file_contains(fullroute_log, "[verify-android-fullroute-pixel] ok routes=") ||
+          !validate_fullroute_report(fullroute_report, full_route_count)) {
+        strlist_free(&states);
+        free(report_doc);
+        return 1;
+      }
+      fullroute_routes_ok = full_route_count;
+    } else {
+      if (fullroute_explicit && enable_fullroute != NULL && strcmp(enable_fullroute, "0") == 0) {
+        fprintf(stdout,
+                "[verify-android-claude-1to1-gate] runtime fullroute skipped: CHENG_ANDROID_1TO1_ENABLE_FULLROUTE=0\n");
+      } else if (!fullroute_explicit && route_state != NULL && route_state[0] != '\0') {
+        fprintf(stdout,
+                "[verify-android-claude-1to1-gate] runtime fullroute skipped: single-route mode (set CHENG_ANDROID_1TO1_ENABLE_FULLROUTE=1 to enable)\n");
+      } else {
+        fprintf(stdout, "[verify-android-claude-1to1-gate] runtime fullroute skipped\n");
+      }
     }
-    if (!file_exists(fullroute_report) || !file_contains(fullroute_log, "[verify-android-fullroute-pixel] ok routes=") ||
-        !validate_fullroute_report(fullroute_report, full_route_count)) {
-      strlist_free(&states);
-      free(report_doc);
-      return 1;
-    }
-    fullroute_routes_ok = full_route_count;
   } else {
     fprintf(stdout, "[verify-android-claude-1to1-gate] runtime phase skipped: CHENG_ANDROID_1TO1_REQUIRE_RUNTIME=0\n");
   }
@@ -1724,7 +2763,43 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   }
   free(git_out);
 
-  char marker_json[4096];
+  char runtime_capture_png[PATH_MAX];
+  char runtime_capture_rgba[PATH_MAX];
+  char runtime_capture_meta[PATH_MAX];
+  char runtime_capture_runtime_hash[PATH_MAX];
+  char runtime_capture_framehash[PATH_MAX];
+  runtime_capture_png[0] = '\0';
+  runtime_capture_rgba[0] = '\0';
+  runtime_capture_meta[0] = '\0';
+  runtime_capture_runtime_hash[0] = '\0';
+  runtime_capture_framehash[0] = '\0';
+  if (runtime_snapshot.route_state[0] != '\0') {
+    (void)snprintf(runtime_capture_png,
+                   sizeof(runtime_capture_png),
+                   "");
+    (void)snprintf(runtime_capture_rgba,
+                   sizeof(runtime_capture_rgba),
+                   "%s/%s.rgba",
+                   out_dir,
+                   runtime_snapshot.route_state);
+    (void)snprintf(runtime_capture_meta,
+                   sizeof(runtime_capture_meta),
+                   "%s/%s.meta.json",
+                   out_dir,
+                   runtime_snapshot.route_state);
+    (void)snprintf(runtime_capture_runtime_hash,
+                   sizeof(runtime_capture_runtime_hash),
+                   "%s/%s.runtime_framehash",
+                   out_dir,
+                   runtime_snapshot.route_state);
+    (void)snprintf(runtime_capture_framehash,
+                   sizeof(runtime_capture_framehash),
+                   "%s/%s.framehash",
+                   out_dir,
+                   runtime_snapshot.route_state);
+  }
+
+  char marker_json[8192];
   int m = snprintf(marker_json, sizeof(marker_json),
                    "{\n"
                    "  \"git_head\": \"%s\",\n"
@@ -1737,16 +2812,50 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
                    "  \"used_fallback\": false,\n"
                    "  \"compiler_rc\": 0,\n"
                    "  \"android_truth_manifest_path\": \"%s\",\n"
-                   "  \"runtime_required\": true,\n"
+                   "  \"runtime_required\": %s,\n"
                    "  \"runtime_state_path\": \"%s\",\n"
+                   "  \"runtime_route_state\": \"%s\",\n"
+                   "  \"runtime_last_frame_hash\": \"%s\",\n"
+                   "  \"runtime_semantic_nodes_applied_hash\": \"%s\",\n"
+                   "  \"runtime_surface_width\": %lld,\n"
+                   "  \"runtime_surface_height\": %lld,\n"
+                   "  \"runtime_capture_png_path\": \"%s\",\n"
+                   "  \"runtime_capture_rgba_path\": \"%s\",\n"
+                   "  \"runtime_capture_meta_path\": \"%s\",\n"
+                   "  \"runtime_capture_runtime_framehash_path\": \"%s\",\n"
+                   "  \"runtime_capture_framehash_path\": \"%s\",\n"
+                   "  \"expected_frame_hash\": \"%s\",\n"
+                   "  \"freeze_truth_dir\": \"%s\",\n"
                    "  \"run_log_path\": \"%s\",\n"
                    "  \"visual_fullroute_log_path\": \"%s\",\n"
                    "  \"visual_fullroute_report_path\": \"%s\",\n"
                    "  \"visual_passed\": true,\n"
                    "  \"visual_routes_verified\": %d\n"
                    "}\n",
-                   git_head, project, entry, full_route_count, semantic_node_count, android_truth_manifest, runtime_json, run_log,
-                   fullroute_log, fullroute_report, fullroute_routes_ok);
+                   git_head,
+                   project,
+                   entry,
+                   full_route_count,
+                   semantic_node_count,
+                   android_truth_manifest,
+                   runtime_required ? "true" : "false",
+                   runtime_json,
+                   runtime_snapshot.route_state,
+                   runtime_snapshot.last_frame_hash,
+                   runtime_snapshot.semantic_nodes_applied_hash,
+                   runtime_snapshot.surface_width,
+                   runtime_snapshot.surface_height,
+                   runtime_capture_png,
+                   runtime_capture_rgba,
+                   runtime_capture_meta,
+                   runtime_capture_runtime_hash,
+                   runtime_capture_framehash,
+                   expected_runtime_frame_hash,
+                   freeze_truth_dir != NULL ? freeze_truth_dir : "",
+                   run_log,
+                   fullroute_log,
+                   fullroute_report,
+                   fullroute_routes_ok);
   if (m <= 0 || (size_t)m >= sizeof(marker_json) || write_file_all(marker_path, marker_json, (size_t)m) != 0) {
     fprintf(stderr, "[verify-android-claude-1to1-gate] failed to write marker: %s\n", marker_path);
     strlist_free(&states);

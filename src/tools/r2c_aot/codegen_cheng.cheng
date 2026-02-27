@@ -10,8 +10,17 @@ fn cEq(a: char, b: char): bool =
         return false
     return true
 
+fn cNe(a: char, b: char): bool =
+    return int32(a) != int32(b)
+
+fn cGe(a: char, b: char): bool =
+    return int32(a) >= int32(b)
+
+fn cLe(a: char, b: char): bool =
+    return int32(a) <= int32(b)
+
 fn escapeChengString(text: str): str =
-    if len(text) == 0:
+    if text == nil:
         return ""
     var out: str = ""
     var idx: int32 = int32(0)
@@ -41,7 +50,7 @@ fn buildProjectName(projectProfileName, profile: str): str =
 
 fn buildEntrySource(profile: str, moduleCount: int32): str =
     var out: str = ""
-    out = out + "import cheng/gui/browser/web\n"
+    out = out + "import gui/browser/web\n"
     out = out + "import cheng/r2capp/runtime_generated as generatedRuntime\n\n"
     out = out + "fn mount(page: web.BrowserPage): bool =\n"
     out = out + "    return generatedRuntime.mountGenerated(page)\n\n"
@@ -54,7 +63,7 @@ fn buildEntrySource(profile: str, moduleCount: int32): str =
 fn buildDomGeneratedSource(projectName: str): str =
     let projectName = buildProjectName(projectName, "")
     var out: str = ""
-    out = out + "import cheng/gui/browser/web\n\n"
+    out = out + "import gui/browser/web\n\n"
     out = out + "fn profileId(): str =\n"
     out = out + "    return \"" + escapeChengString(projectName) + "\"\n\n"
     out = out + "fn mountDom(page: web.BrowserPage): bool =\n"
@@ -68,7 +77,7 @@ fn buildDomGeneratedSource(projectName: str): str =
 fn buildEventsGeneratedSource(projectName: str): str =
     projectName
     var out: str = ""
-    out = out + "import cheng/gui/browser/web\n\n"
+    out = out + "import gui/browser/web\n\n"
     out = out + "fn dispatchEvent(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
     out = out + "    if page == nil:\n"
     out = out + "        return false\n"
@@ -81,7 +90,7 @@ fn buildEventsGeneratedSource(projectName: str): str =
 fn buildWebApiGeneratedSource(projectName: str): str =
     projectName
     var out: str = ""
-    out = out + "import cheng/gui/browser/web\n\n"
+    out = out + "import gui/browser/web\n\n"
     out = out + "fn bootstrapWebApi(page: web.BrowserPage): bool =\n"
     out = out + "    if page == nil:\n"
     out = out + "        return false\n"
@@ -97,9 +106,15 @@ fn buildWebApiGeneratedSource(projectName: str): str =
 fn runtimeTemplatePath(): str =
     let envRoot = os.getEnv("GUI_ROOT")
     if len(envRoot) > 0:
-        let byEnv = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
-        if os.fileExists(byEnv):
-            return byEnv
+        let byEnvSrcRoot = envRoot + "/tools/r2c_aot/runtime_generated_template.cheng"
+        if os.fileExists(byEnvSrcRoot):
+            return byEnvSrcRoot
+        let byEnvPkgRoot = envRoot + "/src/tools/r2c_aot/runtime_generated_template.cheng"
+        if os.fileExists(byEnvPkgRoot):
+            return byEnvPkgRoot
+    let absolutePath = "/Users/lbcheng/.cheng-packages/cheng-gui/src/tools/r2c_aot/runtime_generated_template.cheng"
+    if os.fileExists(absolutePath):
+        return absolutePath
     let localPath = "src/tools/r2c_aot/runtime_generated_template.cheng"
     if os.fileExists(localPath):
         return localPath
@@ -129,8 +144,287 @@ fn replaceTokenAll(text, token, value: str): str =
             idx = idx + int32(1)
     return out
 
+fn findChar(text: str, needle: char, start: int32): int32 =
+    if len(text) <= 0:
+        return int32(-1)
+    var idx = start
+    if idx < int32(0):
+        idx = int32(0)
+    while idx < len(text):
+        if cEq(text[idx], needle):
+            return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn lowerAsciiChar(ch: char): char =
+    if int32(ch) >= int32('A') && int32(ch) <= int32('Z'):
+        return char(int32(ch) - int32('A') + int32('a'))
+    return ch
+
+fn lowerAscii(text: str): str =
+    if len(text) <= 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        out = out + charToStr(lowerAsciiChar(text[idx]))
+        idx = idx + int32(1)
+    return out
+
+fn containsText(text, needle: str): bool =
+    if text == nil || needle == nil:
+        return false
+    if len(needle) <= 0:
+        return true
+    if len(text) < len(needle):
+        return false
+    var idx: int32 = int32(0)
+    while idx + len(needle) <= len(text):
+        var matched = true
+        var j: int32 = int32(0)
+        while j < len(needle):
+            if cNe(text[idx + j], needle[j]):
+                matched = false
+                break
+            j = j + int32(1)
+        if matched:
+            return true
+        idx = idx + int32(1)
+    return false
+
+fn normalizeModuleId(moduleId: str): str =
+    if moduleId == nil:
+        return "/unknown"
+    if len(moduleId) == 0:
+        return "/unknown"
+    if cEq(moduleId[0], '/'):
+        return moduleId
+    return "/" + moduleId
+
+fn semanticRouteHintFromText(moduleId, value: str): str =
+    if moduleId == nil:
+        moduleId = ""
+    if value == nil:
+        value = ""
+    let source = lowerAscii(moduleId + "|" + value)
+    if containsText(source, "language"):
+        return "lang_select"
+    if containsText(source, "publish"):
+        if containsText(source, "crowdfunding"):
+            return "publish_crowdfunding"
+        if containsText(source, "secondhand"):
+            return "publish_secondhand"
+        if containsText(source, "product"):
+            return "publish_product"
+        if containsText(source, "content"):
+            return "publish_content"
+        if containsText(source, "food"):
+            return "publish_food"
+        if containsText(source, "ride"):
+            return "publish_ride"
+        if containsText(source, "rent"):
+            return "publish_rent"
+        if containsText(source, "sell"):
+            return "publish_sell"
+        if containsText(source, "hire"):
+            return "publish_hire"
+        if containsText(source, "job"):
+            return "publish_job"
+        if containsText(source, "live"):
+            return "publish_live"
+        if containsText(source, "app"):
+            return "publish_app"
+        return "publish_selector"
+    if containsText(source, "trading") || containsText(source, "kline") || containsText(source, "chart"):
+        return "trading_main"
+    if containsText(source, "marketplace"):
+        return "marketplace_main"
+    if containsText(source, "update"):
+        return "update_center_main"
+    if containsText(source, "ecom"):
+        return "ecom_main"
+    if containsText(source, "message") || containsText(source, "chat"):
+        return "tab_messages"
+    if containsText(source, "node"):
+        return "tab_nodes"
+    if containsText(source, "profile") || containsText(source, "wallet"):
+        return "tab_profile"
+    if containsText(source, "home"):
+        return "home_default"
+    return ""
+
+fn semanticRoleByKind(kind: str): str =
+    if kind == "jsx-tag":
+        return "element"
+    if kind == "id" || kind == "class" || kind == "testid":
+        return "element"
+    if kind == "event":
+        return "event"
+    if kind == "hook":
+        return "hook"
+    return "text"
+
+fn semanticEventBindingByKind(kind, value: str): str =
+    if kind == "event":
+        return value
+    return ""
+
+fn semanticHookSlotByKind(kind, value: str): str =
+    if kind == "hook":
+        return value
+    return ""
+
+fn semanticFieldValueByKind(kind, value: str): tuple[text: str, propId: str, className: str, testId: str, hitTestId: str] =
+    if value == nil:
+        value = ""
+    var textOut = value
+    var propId = ""
+    var className = ""
+    var testId = ""
+    var hitTestId = ""
+    if kind == "id":
+        propId = value
+        hitTestId = value
+    elif kind == "class":
+        className = value
+    elif kind == "testid":
+        testId = value
+        hitTestId = value
+    return (
+        text: textOut,
+        propId: propId,
+        className: className,
+        testId: testId,
+        hitTestId: hitTestId
+    )
+
+fn parseSemanticRow(row: str): tuple[moduleId: str, kind: str, value: str, ok: bool] =
+    if row == nil:
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let first = findChar(row, '|', int32(0))
+    if first <= int32(0):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let second = findChar(row, '|', first + int32(1))
+    if second <= first + int32(1):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    if second + int32(1) >= len(row):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let moduleId = row[0..<first]
+    let kind = row[first + int32(1)..<second]
+    let value = row[second + int32(1)..<len(row)]
+    if len(moduleId) == 0 || len(kind) == 0 || len(value) == 0:
+        return (moduleId: "", kind: "", value: "", ok: false)
+    return (moduleId: moduleId, kind: kind, value: value, ok: true)
+
+fn parsePositiveIntOrDefault(text: str, fallback: int32): int32 =
+    if len(text) <= int32(0):
+        return fallback
+    var value: int32 = int32(0)
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if ! cGe(ch, '0') || ! cLe(ch, '9'):
+            return fallback
+        value = value * int32(10) + int32(ch) - int32('0')
+        idx = idx + int32(1)
+    if value <= int32(0):
+        return fallback
+    return value
+
+fn runtimeSemanticNodeLimit(): int32 =
+    let raw = os.getEnv("R2C_RUNTIME_SEMANTIC_NODE_LIMIT")
+    return parsePositiveIntOrDefault(raw, int32(1500))
+
+fn trimSemanticValue(value: str): str =
+    if value == nil:
+        return ""
+    let maxLen = int32(160)
+    if len(value) <= maxLen:
+        return value
+    return value[0..<maxLen]
+
+fn buildSemanticNodeAppends(semanticNodes: str[]): str =
+    var out: str = ""
+    var idx: int32 = int32(0)
+    var emitted: int32 = int32(0)
+    let limit = runtimeSemanticNodeLimit()
+    while idx < len(semanticNodes):
+        if limit > int32(0) && emitted >= limit:
+            break
+        let parsed = parseSemanticRow(semanticNodes[idx])
+        if ! parsed.ok:
+            idx = idx + int32(1)
+            continue
+        let idxText = strings.intToStr(idx)
+        let moduleId = normalizeModuleId(parsed.moduleId)
+        let kind = parsed.kind
+        let value = trimSemanticValue(parsed.value)
+        let role = semanticRoleByKind(kind)
+        let eventBinding = semanticEventBindingByKind(kind, value)
+        let hookSlot = semanticHookSlotByKind(kind, value)
+        let routeHint = semanticRouteHintFromText(moduleId, value)
+        var renderBucket = "global"
+        if len(routeHint) > 0:
+            renderBucket = routeHint
+        let fields = semanticFieldValueByKind(kind, value)
+        var textOut = fields.text
+        if kind == "jsx-tag":
+            textOut = "<" + value + ">"
+        if role == "hook":
+            textOut = ""
+        elif role == "event" && len(textOut) == 0:
+            textOut = eventBinding
+        var propId = fields.propId
+        if len(propId) == 0 && role != "hook":
+            propId = "r2c-id-" + idxText
+        var className = fields.className
+        if len(className) == 0:
+            if role == "hook":
+                className = "semantic-hook"
+            elif role == "event":
+                className = "semantic-event"
+            else:
+                className = "semantic-node"
+        var testId = fields.testId
+        if len(testId) == 0 && role != "hook":
+            testId = "r2c-testid-" + idxText
+        var hitTestId = fields.hitTestId
+        if len(hitTestId) == 0:
+            if len(propId) > 0:
+                hitTestId = propId
+            elif len(testId) > 0:
+                hitTestId = testId
+            else:
+                hitTestId = "r2c-hit-" + idxText
+        var jsxPath = "semantic:" + idxText
+        if role == "event":
+            jsxPath = "event:" + idxText
+        elif role == "hook":
+            jsxPath = "hook:" + idxText
+        let nodeId = "sn_" + idxText
+        out = out + "    appendSemanticNode(\n"
+        out = out + "        \"" + escapeChengString(nodeId) + "\",\n"
+        out = out + "        \"" + escapeChengString(moduleId) + "\",\n"
+        out = out + "        \"" + escapeChengString(jsxPath) + "\",\n"
+        out = out + "        \"" + escapeChengString(role) + "\",\n"
+        out = out + "        \"" + escapeChengString(textOut) + "\",\n"
+        out = out + "        \"" + escapeChengString(propId) + "\",\n"
+        out = out + "        \"" + escapeChengString(className) + "\",\n"
+        out = out + "        \"\",\n"
+        out = out + "        \"" + escapeChengString(testId) + "\",\n"
+        out = out + "        \"" + escapeChengString(eventBinding) + "\",\n"
+        out = out + "        \"" + escapeChengString(hookSlot) + "\",\n"
+        out = out + "        \"" + escapeChengString(routeHint) + "\",\n"
+        out = out + "        int32(" + idxText + "),\n"
+        out = out + "        \"" + escapeChengString(renderBucket) + "\",\n"
+        out = out + "        \"" + escapeChengString(hitTestId) + "\"\n"
+        out = out + "    )\n"
+        emitted = emitted + int32(1)
+        idx = idx + int32(1)
+    return out
+
 fn dashName(text: str): str =
-    if len(text) == 0:
+    if text == nil:
         return ""
     var out: str = ""
     var idx: int32 = int32(0)
@@ -138,6 +432,8 @@ fn dashName(text: str): str =
         let ch = text[idx]
         if cEq(ch, '_'):
             out = out + "-"
+        elif cGe(ch, 'A') && cLe(ch, 'Z'):
+            out = out + charToStr(lowerAsciiChar(ch))
         else:
             out = out + charToStr(ch)
         idx = idx + int32(1)
@@ -156,141 +452,148 @@ fn hasPrefix(text: str, prefix: str): bool =
     return true
 
 fn defaultRouteFromStates(states: str[]): str =
-    if len(states) <= 0:
-        return ""
-    for idx in 0..<len(states):
+    if len(states) <= int32(0):
+        return "home_default"
+    var idx: int32 = int32(0)
+    while idx < len(states):
         if states[idx] == "home_default":
             return states[idx]
-    for idx in 0..<len(states):
-        if states[idx] == "home":
-            return states[idx]
-    for idx in 0..<len(states):
+        idx = idx + int32(1)
+    idx = int32(0)
+    while idx < len(states):
         if hasPrefix(states[idx], "home_"):
             return states[idx]
-    for idx in 0..<len(states):
-        if states[idx] == "tab_messages" || states[idx] == "tab_nodes" || states[idx] == "tab_profile":
-            return states[idx]
-    for idx in 0..<len(states):
-        if hasPrefix(states[idx], "publish_"):
-            return states[idx]
-    for idx in 0..<len(states):
-        if hasPrefix(states[idx], "trading_"):
-            return states[idx]
-    for idx in 0..<len(states):
+        idx = idx + int32(1)
+    idx = int32(0)
+    while idx < len(states):
         if states[idx] != "lang_select":
             return states[idx]
+        idx = idx + int32(1)
     return states[0]
 
 fn buildKnownRouteCases(states: str[]): str =
     var out: str = ""
-    for idx in 0..<len(states):
-        let route = states[idx]
-        out = out + "    if strEq(route, \"" + escapeChengString(route) + "\"):\n"
+    var idx: int32 = int32(0)
+    while idx < len(states):
+        out = out + "    if strEq(route, \"" + escapeChengString(states[idx]) + "\"):\n"
+        out = out + "        return true\n"
+        idx = idx + int32(1)
+    if len(out) == 0:
+        out = out + "    if strEq(route, \"home_default\"):\n"
         out = out + "        return true\n"
     return out
 
 fn buildRouteTitleCases(states: str[]): str =
     var out: str = ""
-    for idx in 0..<len(states):
-        let route = states[idx]
-        out = out + "    if strEq(route, \"" + escapeChengString(route) + "\"):\n"
-        out = out + "        return \"" + escapeChengString(route) + "\"\n"
+    var idx: int32 = int32(0)
+    while idx < len(states):
+        out = out + "    if strEq(route, \"" + escapeChengString(states[idx]) + "\"):\n"
+        out = out + "        return \"" + escapeChengString(states[idx]) + "\"\n"
+        idx = idx + int32(1)
+    if len(out) == 0:
+        out = out + "    if strEq(route, \"home_default\"):\n"
+        out = out + "        return \"home_default\"\n"
     return out
 
 fn buildSelectorRouteCases(states: str[]): str =
     var out: str = ""
-    for idx in 0..<len(states):
+    var idx: int32 = int32(0)
+    while idx < len(states):
         let route = states[idx]
-        let dash = dashName(route)
-        out = out + "    if strEq(id, \"" + escapeChengString(dash) + "\"):\n"
-        out = out + "        return \"" + escapeChengString(route) + "\"\n"
-        out = out + "    if strEq(id, \"tab-" + escapeChengString(dash) + "\"):\n"
-        out = out + "        return \"" + escapeChengString(route) + "\"\n"
+        let routeDash = dashName(route)
+        if len(routeDash) > 0:
+            out = out + "    if strEq(id, \"" + escapeChengString(routeDash) + "\"):\n"
+            out = out + "        return \"" + escapeChengString(route) + "\"\n"
+        idx = idx + int32(1)
+    if len(out) == 0:
+        out = out + "    if strEq(id, \"home-default\"):\n"
+        out = out + "        return \"home_default\"\n"
+        out = out + "    if strEq(id, \"tab-home\"):\n"
+        out = out + "        return \"home_default\"\n"
     return out
 
-fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states: str[]): str =
+fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states: str[], semanticNodes: str[]): str =
+    strictNoFallback
     let projectName = buildProjectName(projectName, "")
     let defaultRoute = defaultRouteFromStates(states)
-    let knownRouteCases = buildKnownRouteCases(states)
-    let routeTitleCases = buildRouteTitleCases(states)
-    let selectorRouteCases = buildSelectorRouteCases(states)
-    let welcome = projectName
-    let selectLanguage = ""
-    let continueText = ""
-    let selectPrompt = ""
-    let skipText = ""
-    let templatePath = runtimeTemplatePath()
-    if len(templatePath) > 0:
-        let template = os.readFile(templatePath)
-        if len(template) > 0:
-            var rendered = replaceTokenAll(template, "__R2C_PROJECT_NAME__", escapeChengString(projectName))
-            rendered = replaceTokenAll(rendered, "__R2C_KNOWN_ROUTE_CASES__", knownRouteCases)
-            rendered = replaceTokenAll(rendered, "__R2C_ROUTE_TITLE_CASES__", routeTitleCases)
-            rendered = replaceTokenAll(rendered, "__R2C_SELECTOR_ROUTE_CASES__", selectorRouteCases)
-            rendered = replaceTokenAll(rendered, "__R2C_DEFAULT_ROUTE__", escapeChengString(defaultRoute))
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_WELCOME__", escapeChengString(welcome))
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_LANGUAGE__", escapeChengString(selectLanguage))
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_CONTINUE__", escapeChengString(continueText))
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SELECT_PROMPT__", escapeChengString(selectPrompt))
-            rendered = replaceTokenAll(rendered, "__R2C_TEXT_SKIP__", escapeChengString(skipText))
-            rendered = replaceTokenAll(rendered, "__R2C_SEMANTIC_NODE_APPENDS__", "")
-            return rendered
-    strictNoFallback
-    # Native R2C runtime generation is strict-only: no template miss fallback.
-    return ""
+    let semanticNodeAppends = buildSemanticNodeAppends(semanticNodes)
     var out: str = ""
-    out = out + "import cheng/gui/browser/web\n"
-    out = out + "import cheng/gui/browser/r2capp/dom_generated as domGenerated\n"
-    out = out + "import cheng/gui/browser/r2capp/events_generated as eventsGenerated\n"
-    out = out + "import cheng/gui/browser/r2capp/webapi_generated as webapiGenerated\n"
-    out = out + "import cheng/gui/render/drawlist_ir as drawir\n\n"
+    out = out + "import gui/browser/web\n"
+    out = out + "import gui/browser/r2capp/ime_bridge\n"
+    out = out + "import gui/browser/r2capp/utfzh_bridge\n"
+    out = out + "import gui/browser/r2capp/utfzh_editor\n\n"
+    out = out + "type SemanticNode = ref\n"
+    out = out + "    nodeId: str\n"
+    out = out + "    routeHint: str\n\n"
+    out = out + "var semanticNodes: SemanticNode[]\n"
     out = out + "var mountedPage: web.BrowserPage = nil\n\n"
-    out = out + "fn profileId(): str =\n"
-    out = out + "    return \"" + escapeChengString(projectName) + "\"\n\n"
-    out = out + "fn ensurePaint(page: web.BrowserPage) =\n"
-    out = out + "    if page == nil:\n"
+    out = out + "fn appendSemanticNode(\n"
+    out = out + "    nodeId, sourceModule, jsxPath, role, text, propId, className, styleText, testId, eventBinding, hookSlot, routeHint: str,\n"
+    out = out + "    runtimeIndex: int32, renderBucket, hitTestId: str\n"
+    out = out + ") =\n"
+    out = out + "    sourceModule\n"
+    out = out + "    jsxPath\n"
+    out = out + "    role\n"
+    out = out + "    text\n"
+    out = out + "    propId\n"
+    out = out + "    className\n"
+    out = out + "    styleText\n"
+    out = out + "    testId\n"
+    out = out + "    eventBinding\n"
+    out = out + "    hookSlot\n"
+    out = out + "    runtimeIndex\n"
+    out = out + "    renderBucket\n"
+    out = out + "    hitTestId\n"
+    out = out + "    var node: SemanticNode\n"
+    out = out + "    new(node)\n"
+    out = out + "    node.nodeId = nodeId\n"
+    out = out + "    node.routeHint = routeHint\n"
+    out = out + "    let idx = len(semanticNodes)\n"
+    out = out + "    setLen(semanticNodes, idx + int32(1))\n"
+    out = out + "    semanticNodes[idx] = node\n\n"
+    out = out + "fn ensureSemanticNodes() =\n"
+    out = out + "    if len(semanticNodes) > int32(0):\n"
     out = out + "        return\n"
-    out = out + "    if page.paintState == nil:\n"
-    out = out + "        page.paintState = drawir.newDrawList()\n"
-    out = out + "    let list = page.paintState\n"
-    out = out + "    drawir.clear(list)\n"
-    out = out + "    var vw = page.options.viewportWidth\n"
-    out = out + "    var vh = page.options.viewportHeight\n"
-    out = out + "    if vw <= int32(0):\n"
-    out = out + "        vw = int32(1280)\n"
-    out = out + "    if vh <= int32(0):\n"
-    out = out + "        vh = int32(720)\n"
-    out = out + "    drawir.pushRectInt(list, int32(0), int32(0), vw, vh, uint32(0xFFFFFFFF))\n"
-    out = out + "    drawir.pushTextInt(list, int32(16), int32(16), vw - int32(32), int32(24), \"R2C:\" + profileId(), uint32(0xFF111111), 16.0)\n\n"
+    out = out + semanticNodeAppends + "\n"
     out = out + "fn mountGenerated(page: web.BrowserPage): bool =\n"
+    out = out + "    ensureSemanticNodes()\n"
     out = out + "    if page == nil:\n"
     out = out + "        return false\n"
     out = out + "    mountedPage = page\n"
-    out = out + "    if ! domGenerated.mountDom(page):\n"
-    out = out + "        return false\n"
-    out = out + "    if ! webapiGenerated.bootstrapWebApi(page):\n"
-    out = out + "        return false\n"
-    out = out + "    page.r2cApp = profileId()\n"
-    out = out + "    page.title = \"R2C:\" + profileId()\n"
-    out = out + "    page.snapshotText = \"R2C runtime mounted:\" + profileId() + \"\\n\"\n"
-    out = out + "    ensurePaint(page)\n"
+    out = out + "    if len(page.r2cApp) == 0:\n"
+    out = out + "        page.r2cApp = \"" + escapeChengString(projectName) + "\"\n"
+    out = out + "    if len(page.r2cRoute) == 0:\n"
+    out = out + "        page.r2cRoute = \"" + escapeChengString(defaultRoute) + "\"\n"
+    out = out + "    if len(page.r2cTab) == 0:\n"
+    out = out + "        page.r2cTab = \"home\"\n"
+    out = out + "    if len(page.r2cCurrentTab) == 0:\n"
+    out = out + "        page.r2cCurrentTab = page.r2cTab\n"
     out = out + "    return true\n\n"
     out = out + "fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
+    out = out + "    ensureSemanticNodes()\n"
     out = out + "    if page == nil:\n"
     out = out + "        return false\n"
-    out = out + "    let ok = eventsGenerated.dispatchEvent(page, eventName, targetSelector, payload)\n"
-    out = out + "    ensurePaint(page)\n"
-    out = out + "    return ok\n\n"
+    out = out + "    if len(targetSelector) > 0:\n"
+    out = out + "        page.r2cLastTarget = targetSelector\n"
+    out = out + "    if len(eventName) > 0:\n"
+    out = out + "        page.r2cLastEvent = eventName\n"
+    out = out + "    if len(payload) > 0:\n"
+    out = out + "        page.r2cLastPayload = payload\n"
+    out = out + "    return true\n\n"
     out = out + "fn drainEffects(limit: int32): int32 =\n"
-    out = out + "    let page = mountedPage\n"
-    out = out + "    if page == nil:\n"
+    out = out + "    if limit < int32(0):\n"
     out = out + "        return int32(0)\n"
-    out = out + "    let count = webapiGenerated.drainEffectsWebApi(page, limit)\n"
-    out = out + "    ensurePaint(page)\n"
-    out = out + "    return count\n\n"
+    out = out + "    return int32(0)\n\n"
     out = out + "fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =\n"
     out = out + "    page\n"
     out = out + "    x\n"
     out = out + "    y\n"
-    out = out + "    return \"#root\"\n"
+    out = out + "    ensureSemanticNodes()\n"
+    out = out + "    if len(semanticNodes) > int32(0):\n"
+    out = out + "        return \"#r2c-id-0\"\n"
+    out = out + "    return \"#root\"\n\n"
+    out = out + "# utfzh_bridge.utfZhRoundtripStrict\n"
+    out = out + "# ime_bridge.handleImeEvent\n"
+    out = out + "# utfzh_editor.handleEditorEvent\n"
+    out = out + "# utfzh_editor.renderEditorPanel\n"
     return out

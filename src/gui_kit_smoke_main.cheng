@@ -1,6 +1,6 @@
-import cheng/gui/kit
-import cheng/gui/core/component
-import cheng/gui/widgets/v1
+import gui/kit
+import gui/core/component
+import gui/widgets/v1
 
 fn appendNode(items: var component.Node[], item: component.Node) =
     let idx = len(items)

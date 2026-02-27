@@ -1,6 +1,6 @@
-import cheng/gui/platform/types_v1
-import cheng/gui/render/drawlist_ir as drawir
-import cheng/gui/browser/engine/css/cascade as cssCascade
+import gui/platform/types_v1
+import gui/render/drawlist_ir as drawir
+import gui/browser/engine/css/cascade as cssCascade
 
 type
     Canvas2DState =

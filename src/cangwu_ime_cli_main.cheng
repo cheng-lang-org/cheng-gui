@@ -1,11 +1,11 @@
 import std/os
 import std/strings as strings
 import std/cmdline
-import cheng/gui/ime/cangwu_assets_loader
-import cheng/gui/ime/legacy_assets_loader
-import cheng/gui/ime/legacy_codec
-import cheng/gui/ime/legacy_types
-import cheng/gui/ime/utfzh_codec
+import gui/ime/cangwu_assets_loader
+import gui/ime/legacy_assets_loader
+import gui/ime/legacy_codec
+import gui/ime/legacy_types
+import gui/ime/utfzh_codec
 
 @importc("cheng_compat_argc")
 fn chengCompatArgc(): int32

@@ -1,6 +1,6 @@
 import std/os
-import cheng/gui/browser/types
-import cheng/gui/browser/web
+import gui/browser/types
+import gui/browser/web
 
 fn safeLen(text: str): int32 =
     if text == nil:

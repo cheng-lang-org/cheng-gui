@@ -1,5 +1,5 @@
-import cheng/gui/browser/engine/dom/model
-import cheng/gui/platform/types_v1
+import gui/browser/engine/dom/model
+import gui/platform/types_v1
 
 type
     LayoutMetrics = ref

@@ -1,4 +1,4 @@
-import cheng/gui/browser/web
+import gui/browser/web
 import std/os
 import cheng/r2capp/runtime_generated as generated
 

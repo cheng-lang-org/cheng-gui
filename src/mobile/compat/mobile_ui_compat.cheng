@@ -1,10 +1,10 @@
 # Compatibility layer for one minor version.
-# Old call-sites can keep using `cheng/gui/mobile/ui/components_*` semantics
+# Old call-sites can keep using `gui/mobile/ui/components_*` semantics
 # while new code migrates to `mobile_gui/*` pipeline.
 
-import cheng/gui/mobile/ui/tokens_business_cn as old_tokens
-import cheng/gui/mobile/ui/components_form as old_form
-import cheng/gui/mobile/ui/components_nav5 as old_nav
+import gui/mobile/ui/tokens_business_cn as old_tokens
+import gui/mobile/ui/components_form as old_form
+import gui/mobile/ui/components_nav5 as old_nav
 
 fn compatBusinessTheme(scale: float64): old_tokens.MobileUiTheme =
     return old_tokens.mobileBusinessTheme(scale)

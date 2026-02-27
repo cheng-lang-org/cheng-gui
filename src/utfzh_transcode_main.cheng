@@ -1,4 +1,4 @@
-import cheng/gui/ime/utfzh_transcode_entry
+import gui/ime/utfzh_transcode_entry
 
 @importc("__cheng_global_init")
 fn chengGlobalInit()

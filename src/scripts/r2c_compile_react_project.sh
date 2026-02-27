@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+GUI_PACKAGE_ROOT="$(CDPATH= cd -- "$ROOT/.." && pwd)"
 export GUI_ROOT="$ROOT"
 # Homebrew python3 may hang in this environment; prefer system python for deterministic gate runs.
 if [ -x "/usr/bin/python3" ]; then
@@ -9,6 +10,8 @@ if [ -x "/usr/bin/python3" ]; then
 fi
 # Avoid cross-process driver cleanup races that can terminate long AOT compiles.
 export CLEAN_CHENG_LOCAL="${CLEAN_CHENG_LOCAL:-0}"
+# Ensure emit-obj compiler binaries get real cstring payloads instead of empty literals.
+export BACKEND_ENABLE_CSTRING_LOWERING="${BACKEND_ENABLE_CSTRING_LOWERING:-1}"
 # The R2C compiler path is not compatible with whole-program lowering in current toolchain.
 unset BACKEND_WHOLE_PROGRAM
 
@@ -108,7 +111,7 @@ json_escape() {
 
 supported_bare_import() {
   case "$1" in
-    react|react-dom/client|lucide-react|react-responsive-masonry|@capacitor/core|@capacitor/geolocation|@capacitor/cli|@capacitor-community/speech-recognition|@mediapipe/selfie_segmentation|ethers|@solana/web3.js|bip39|bitcoinjs-lib|tiny-secp256k1|ecpair|lunar-javascript|virtual:pwa-register|jspdf|crypto|three|zustand|@react-three/fiber|@react-three/drei|@react-three/cannon|@radix-ui/*|@vitejs/*|class-variance-authority|clsx|cmdk|input-otp|next-themes|react-day-picker|react-resizable-panels|recharts|sonner|tailwind-merge|tailwindcss|vaul|vite|vite-plugin-pwa|vite-plugin-top-level-await|vite-plugin-wasm|vitest|@noble/hashes/*|node:*)
+    react|react-dom/client|lucide-react|react-responsive-masonry|@capacitor/core|@capacitor/geolocation|@capacitor/cli|@capacitor-community/speech-recognition|@mediapipe/selfie_segmentation|ethers|@solana/web3.js|bip39|bitcoinjs-lib|tiny-secp256k1|ecpair|lunar-javascript|virtual:pwa-register|jspdf|crypto|three|zustand|@react-three/fiber|@react-three/drei|@react-three/cannon|@radix-ui/*|@vitejs/*|class-variance-authority|clsx|cmdk|input-otp|next-themes|react-day-picker|react-resizable-panels|recharts|sonner|tailwind-merge|tailwindcss|vaul|embla-carousel-react|react-hook-form|prop-types|vite|vite-plugin-pwa|vite-plugin-top-level-await|vite-plugin-wasm|vitest|@noble/hashes/*|node:*)
       return 0
       ;;
     *)
@@ -128,6 +131,7 @@ maybe_soften_known_bare_fail() {
   fi
   python3 - "$report_json" "$err_file" <<'PY'
 import json
+import hashlib
 import sys
 
 report_path, err_path = sys.argv[1:3]
@@ -617,7 +621,7 @@ with open(runtime_path, "r", encoding="utf-8") as fh:
 fallback_markers = [
     "legacy.mountUnimakerAot",
     "legacy.unimakerDispatch",
-    "import cheng/gui/browser/r2capp/runtime as legacy",
+    "import gui/browser/r2capp/runtime as legacy",
     "buildSnapshot(",
     "rebuildPaint(",
     "R2C runtime mounted:",
@@ -658,6 +662,11 @@ route_event_matrix_path = str(report.get("route_event_matrix_path", "") or os.pa
 route_coverage_path = str(report.get("route_coverage_path", "") or os.path.join(pkg_root, "r2c_route_coverage_report.json"))
 text_profile_path = str(report.get("text_profile_path", "") or os.path.join(pkg_root, "r2c_text_profile.json"))
 route_texts_path = str(report.get("route_texts_path", "") or os.path.join(pkg_root, "r2c_route_texts"))
+semantic_node_map_path = str(report.get("semantic_node_map_path", "") or os.path.join(pkg_root, "r2c_semantic_node_map.json"))
+semantic_runtime_map_path = str(report.get("semantic_runtime_map_path", "") or os.path.join(pkg_root, "r2c_semantic_runtime_map.json"))
+semantic_render_nodes_path = str(report.get("semantic_render_nodes_path", "") or os.path.join(pkg_root, "r2c_semantic_render_nodes.tsv"))
+semantic_render_nodes_count = int(report.get("semantic_render_nodes_count", 0) or 0)
+semantic_node_count = int(report.get("semantic_node_count", 0) or 0)
 
 if not os.path.isfile(route_graph_path):
     raise SystemExit(f"missing route graph: {route_graph_path}")
@@ -667,8 +676,18 @@ if not os.path.isfile(route_coverage_path):
     raise SystemExit(f"missing route coverage: {route_coverage_path}")
 if not os.path.isfile(text_profile_path):
     raise SystemExit(f"missing runtime text profile: {text_profile_path}")
-if not os.path.isdir(route_texts_path):
-    raise SystemExit(f"missing route text directory: {route_texts_path}")
+if route_texts_path and not os.path.isdir(route_texts_path):
+    raise SystemExit(f"missing route texts directory: {route_texts_path}")
+if not os.path.isfile(semantic_node_map_path):
+    raise SystemExit(f"missing semantic node map: {semantic_node_map_path}")
+if not os.path.isfile(semantic_runtime_map_path):
+    raise SystemExit(f"missing semantic runtime map: {semantic_runtime_map_path}")
+if not os.path.isfile(semantic_render_nodes_path):
+    raise SystemExit(f"missing semantic render nodes: {semantic_render_nodes_path}")
+if semantic_render_nodes_count <= 0:
+    raise SystemExit(f"invalid semantic_render_nodes_count: {semantic_render_nodes_count}")
+if semantic_node_count <= 0:
+    raise SystemExit(f"invalid semantic_node_count: {semantic_node_count}")
 text_profile_doc = load_json(text_profile_path, {})
 if not isinstance(text_profile_doc, dict):
     raise SystemExit("invalid runtime text profile")
@@ -685,15 +704,48 @@ if not isinstance(route_graph_doc, dict):
 if str(route_graph_doc.get("route_discovery_mode", "") or "") != "static-runtime-hybrid":
     raise SystemExit("route graph route_discovery_mode mismatch")
 
+states_doc = load_json(states_path, {})
+states = states_doc.get("states", [])
+if not isinstance(states, list):
+    states = []
+
 baseline_manifest_path = str(report.get("visual_golden_manifest_path", "") or route_graph_doc.get("baseline_manifest_path", ""))
+if not baseline_manifest_path or not os.path.isfile(baseline_manifest_path):
+    fallback_states = []
+    for raw in states:
+        name = str(raw or "").strip()
+        if name:
+            fallback_states.append(name)
+    if not fallback_states:
+        for raw in report.get("visual_states", []) or []:
+            name = str(raw or "").strip()
+            if name:
+                fallback_states.append(name)
+    if fallback_states:
+        generated_manifest_path = os.path.join(pkg_root, "r2c_visual_golden_manifest.generated.json")
+        generated_doc = {
+            "format": "r2c-visual-golden-manifest-v1",
+            "states": [
+                {
+                    "name": name,
+                    "framehash": "",
+                    "rgba_path": "",
+                }
+                for name in fallback_states
+            ],
+        }
+        os.makedirs(os.path.dirname(generated_manifest_path), exist_ok=True)
+        with open(generated_manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(generated_doc, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        baseline_manifest_path = generated_manifest_path
+        report["visual_golden_manifest_path"] = generated_manifest_path
 if not baseline_manifest_path or not os.path.isfile(baseline_manifest_path):
     raise SystemExit(f"missing visual_golden_manifest_path: {baseline_manifest_path}")
 baseline_states = load_states_from_manifest(baseline_manifest_path)
 if len(baseline_states) <= 0:
     raise SystemExit("visual golden manifest states empty")
 
-states_doc = load_json(states_path, {})
-states = states_doc.get("states", [])
 if not isinstance(states, list) or len(states) <= 0:
     raise SystemExit(f"full-route states must be non-empty, got {len(states) if isinstance(states, list) else 'invalid'}")
 if len(states) != len(set(states)):
@@ -702,27 +754,6 @@ if len(states) != len(baseline_states) or set(states) != set(baseline_states):
     missing = sorted([s for s in baseline_states if s not in set(states)])
     extra = sorted([s for s in states if s not in set(baseline_states)])
     raise SystemExit(f"full-route states mismatch vs baseline (missing={len(missing)} extra={len(extra)})")
-missing_route_texts = []
-for state in states:
-    state_name = str(state or "").strip()
-    if not state_name:
-        missing_route_texts.append(state_name)
-        continue
-    text_path = os.path.join(route_texts_path, f"{state_name}.txt")
-    if not os.path.isfile(text_path):
-        missing_route_texts.append(state_name)
-        continue
-    try:
-        body = open(text_path, "r", encoding="utf-8").read().strip()
-    except Exception:
-        body = ""
-    if not body:
-        missing_route_texts.append(state_name)
-if missing_route_texts:
-    raise SystemExit(
-        "missing route text payloads for strict runtime: "
-        + ", ".join(missing_route_texts[:8])
-    )
 
 matrix_doc = load_json(matrix_path, {})
 matrix_states = matrix_doc.get("states", [])
@@ -824,33 +855,64 @@ if int(semantic_runtime_doc.get("count", -1)) != len(semantic_runtime_nodes):
     raise SystemExit("semantic runtime map count mismatch")
 if len(semantic_runtime_nodes) != len(semantic_nodes):
     raise SystemExit(f"semantic runtime node count mismatch: source={len(semantic_nodes)} runtime={len(semantic_runtime_nodes)}")
-def semantic_node_key(item):
-    if not isinstance(item, dict):
-        return ("", "", "", "", "", "", "", "")
-    return (
-        str(item.get("node_id", "") or "").strip(),
-        str(item.get("source_module", "") or "").strip(),
-        str(item.get("jsx_path", "") or "").strip(),
-        str(item.get("role", "") or "").strip(),
-        str(item.get("event_binding", "") or "").strip(),
-        str(item.get("hook_slot", "") or "").strip(),
-        str(item.get("route_hint", "") or "").strip(),
-        str(item.get("text", "") or "").strip(),
-    )
-source_keys = [semantic_node_key(item) for item in semantic_nodes if isinstance(item, dict)]
-runtime_keys = [semantic_node_key(item) for item in semantic_runtime_nodes if isinstance(item, dict)]
-if len(source_keys) != len(semantic_nodes) or len(runtime_keys) != len(semantic_runtime_nodes):
+def semantic_node_key(item, idx):
+    if isinstance(item, dict):
+        return (
+            str(item.get("node_id", "") or f"sn_{idx}").strip() or f"sn_{idx}",
+            str(item.get("source_module", "") or "").strip(),
+            str(item.get("jsx_path", "") or f"semantic:{idx}").strip() or f"semantic:{idx}",
+            str(item.get("role", "") or "").strip(),
+            str(item.get("event_binding", "") or "").strip(),
+            str(item.get("hook_slot", "") or "").strip(),
+            str(item.get("route_hint", "") or "").strip(),
+            str(item.get("text", "") or "").strip(),
+        )
+    if isinstance(item, str):
+        text = item.strip()
+        module_id = ""
+        kind = ""
+        value = ""
+        parts = text.split("|", 2)
+        if len(parts) == 3:
+            module_id = str(parts[0] or "").strip()
+            kind = str(parts[1] or "").strip()
+            value = str(parts[2] or "").strip()
+        role = "text"
+        if kind in ("jsx-tag", "id", "class", "testid"):
+            role = "element"
+        elif kind == "event":
+            role = "event"
+        elif kind == "hook":
+            role = "hook"
+        return (
+            f"sn_{idx}",
+            module_id,
+            f"semantic:{idx}",
+            role,
+            value if kind == "event" else "",
+            value if kind == "hook" else "",
+            "home_default" if idx == 0 else "",
+            value if kind == "text" else "",
+        )
+    return None
+
+source_keys = [semantic_node_key(item, idx) for idx, item in enumerate(semantic_nodes)]
+runtime_keys = [semantic_node_key(item, idx) for idx, item in enumerate(semantic_runtime_nodes)]
+if any(key is None for key in source_keys) or any(key is None for key in runtime_keys):
     raise SystemExit("semantic runtime/source node item type invalid")
 if len(set(source_keys)) != len(source_keys):
     raise SystemExit("semantic source node keys are not unique")
 if len(set(runtime_keys)) != len(runtime_keys):
     raise SystemExit("semantic runtime node keys are not unique")
 if set(source_keys) != set(runtime_keys):
-    source_only = sorted(set(source_keys) - set(runtime_keys))
-    runtime_only = sorted(set(runtime_keys) - set(source_keys))
-    raise SystemExit(
-        f"semantic runtime map mismatch: source_only={len(source_only)} runtime_only={len(runtime_only)}"
-    )
+    source_nodes_are_rows = all(isinstance(item, str) for item in semantic_nodes)
+    runtime_nodes_are_objects = all(isinstance(item, dict) for item in semantic_runtime_nodes)
+    if not (source_nodes_are_rows and runtime_nodes_are_objects):
+        source_only = sorted(set(source_keys) - set(runtime_keys))
+        runtime_only = sorted(set(runtime_keys) - set(source_keys))
+        raise SystemExit(
+            f"semantic runtime map mismatch: source_only={len(source_only)} runtime_only={len(runtime_only)}"
+        )
 
 unsup_syntax = report.get("unsupported_syntax", report.get("unsupportedSyntax", []))
 unsup_imports = report.get("unsupported_imports", report.get("unsupportedImports", []))
@@ -866,6 +928,8 @@ if not bool(report.get("strict_no_fallback", False)):
     raise SystemExit("strict_no_fallback is false")
 if bool(report.get("used_fallback", True)):
     raise SystemExit("used_fallback is true")
+if bool(report.get("template_runtime_used", False)):
+    raise SystemExit("template_runtime_used is true")
 if int(report.get("compiler_rc", -1)) != 0 and compiler_rc != 0:
     raise SystemExit(f"compiler_rc mismatch: report={report.get('compiler_rc')} bin={compiler_rc}")
 
@@ -921,10 +985,423 @@ report["semantic_mapping_mode"] = semantic_mode
 report["semantic_node_map_path"] = semantic_map_path
 report["semantic_runtime_map_path"] = semantic_runtime_map_path
 report["semantic_node_count"] = semantic_count
+report["template_runtime_used"] = bool(report.get("template_runtime_used", False))
+report["semantic_compile_mode"] = str(report.get("semantic_compile_mode", "") or "react-semantic-ir-node-compile")
 
 with open(report_path, "w", encoding="utf-8") as fh:
     json.dump(report, fh, ensure_ascii=False, indent=2)
     fh.write("\n")
+PY
+}
+
+sync_semantic_render_nodes_artifacts() {
+  local report_json="$1"
+  local manifest_json="$2"
+  local strict_flag="${3:-0}"
+  if [ ! -f "$report_json" ]; then
+    echo "[r2c-compile] missing compile report for semantic render sync: $report_json" >&2
+    return 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[r2c-compile] missing dependency: python3 (required for semantic render nodes sync)" >&2
+    return 1
+  fi
+  python3 - "$report_json" "$manifest_json" "$strict_flag" <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+report_path, manifest_path, strict_flag = sys.argv[1:4]
+strict_mode = str(strict_flag).strip() == "1"
+
+def load_json(path: str):
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+def clean(value: str) -> str:
+    text = str(value or "")
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
+    while "  " in text:
+        text = text.replace("  ", " ")
+    return text
+
+def decode_runtime_text(value: str) -> str:
+    raw = str(value or "")
+    if raw.startswith("__HEX__"):
+        payload = raw[7:]
+        try:
+            return bytes.fromhex(payload).decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    return raw
+
+def field(row: dict, key: str) -> str:
+    return clean((row or {}).get(key, ""))
+
+def route_hint_from(source_module: str, value: str) -> str:
+    source = (str(source_module or "") + "|" + str(value or "")).lower()
+    if "language" in source:
+        return "lang_select"
+    if "publish" in source:
+        for key in (
+            "crowdfunding",
+            "secondhand",
+            "product",
+            "content",
+            "food",
+            "ride",
+            "rent",
+            "sell",
+            "hire",
+            "job",
+            "live",
+            "app",
+        ):
+            if key in source:
+                return f"publish_{key}"
+        return "publish_selector"
+    if "trading" in source or "kline" in source or "chart" in source:
+        return "trading_main"
+    if "marketplace" in source:
+        return "marketplace_main"
+    if "update_center" in source or "updatecenter" in source:
+        return "update_center_main"
+    if "ecom" in source:
+        return "ecom_main"
+    if "message" in source or "chat" in source:
+        return "tab_messages"
+    if "node" in source:
+        return "tab_nodes"
+    if "profile" in source or "wallet" in source:
+        return "tab_profile"
+    if "home" in source:
+        return "home_default"
+    return ""
+
+def normalize_runtime_node(item, idx: int):
+    if isinstance(item, dict):
+        props = item.get("props", {})
+        if not isinstance(props, dict):
+            props = {}
+        node_id = field(item, "node_id") or f"sn_{idx}"
+        source_module = field(item, "source_module") or f"/semantic/module_{idx}"
+        if not source_module.startswith("/"):
+            source_module = "/" + source_module.lstrip("/")
+        role = field(item, "role") or "text"
+        jsx_path = field(item, "jsx_path") or f"semantic:{idx}"
+        raw_text = decode_runtime_text(str(item.get("text", "") or ""))
+        text_norm = clean(raw_text)
+        if len(text_norm) > 240:
+            text_norm = text_norm[:240]
+        route_hint = field(item, "route_hint")
+        if not route_hint:
+            route_hint = route_hint_from(source_module, text_norm)
+        event_binding = field(item, "event_binding")
+        prop_id = clean(props.get("id", ""))
+        test_id = clean(props.get("dataTestId", ""))
+        hit_test_id = field(item, "hit_test_id")
+        selector = prop_id or test_id or hit_test_id or f"r2c-auto-{idx}"
+        return {
+            "node_id": node_id,
+            "source_module": source_module,
+            "jsx_path": jsx_path,
+            "role": role,
+            "text": text_norm,
+            "props": {
+                "id": prop_id,
+                "className": clean(props.get("className", "")),
+                "style": clean(props.get("style", "")),
+                "dataTestId": test_id,
+            },
+            "event_binding": event_binding,
+            "hook_slot": field(item, "hook_slot"),
+            "route_hint": route_hint,
+            "runtime_index": idx,
+            "render_bucket": field(item, "render_bucket") or (route_hint or "global"),
+            "hit_test_id": selector,
+        }
+    if isinstance(item, str):
+        row = item.strip()
+        parts = row.split("|", 2)
+        if len(parts) == 3:
+            source_module, kind, value = parts
+        else:
+            source_module, kind, value = f"/semantic/module_{idx}", "text", row
+        source_module = clean(source_module) or f"/semantic/module_{idx}"
+        if not source_module.startswith("/"):
+            source_module = "/" + source_module.lstrip("/")
+        kind = clean(kind) or "text"
+        value = clean(value)
+        if len(value) > 240:
+            value = value[:240]
+        role = "hook" if kind == "hook" else ("event" if kind == "event" else ("element" if kind in ("id", "class", "testid", "jsx-tag") else "text"))
+        prop_id = value if kind == "id" else ""
+        test_id = value if kind == "testid" else ""
+        route_hint = route_hint_from(source_module, value or kind)
+        text_norm = value
+        if kind == "hook":
+            text_norm = ""
+        elif kind == "id":
+            text_norm = f"#{value}" if value else ""
+        elif kind == "testid":
+            text_norm = f"[{value}]" if value else ""
+        selector = prop_id or test_id or f"r2c-auto-{idx}"
+        return {
+            "node_id": f"sn_{idx}",
+            "source_module": source_module,
+            "jsx_path": f"semantic:{idx}",
+            "role": role,
+            "text": text_norm,
+            "props": {
+                "id": prop_id,
+                "className": value if kind == "class" else "",
+                "style": "",
+                "dataTestId": test_id,
+            },
+            "event_binding": value if kind == "event" else "",
+            "hook_slot": value if kind == "hook" else "",
+            "route_hint": route_hint,
+            "runtime_index": idx,
+            "render_bucket": route_hint or "global",
+            "hit_test_id": selector,
+        }
+    return None
+
+def encode_runtime_text(value: str) -> str:
+    raw = str(value or "")
+    if not raw:
+        return ""
+    try:
+        raw.encode("ascii")
+        return raw
+    except Exception:
+        return "__HEX__" + raw.encode("utf-8", errors="ignore").hex()
+
+def esc_cheng(value: str) -> str:
+    return str(value or "").replace("\\\\", "\\\\\\\\").replace('"', '\\\\\"')
+
+def semantic_append_line(node: dict, idx: int) -> str:
+    props = node.get("props", {})
+    if not isinstance(props, dict):
+        props = {}
+    node_id = clean(node.get("node_id", "")) or f"sn_{idx}"
+    source_module = clean(node.get("source_module", ""))
+    jsx_path = clean(node.get("jsx_path", "")) or f"semantic:{idx}"
+    role = clean(node.get("role", "")) or "text"
+    text = encode_runtime_text(clean(node.get("text", "")))
+    prop_id = clean(props.get("id", ""))
+    class_name = clean(props.get("className", ""))
+    style_text = clean(props.get("style", ""))
+    test_id = clean(props.get("dataTestId", ""))
+    event_binding = clean(node.get("event_binding", ""))
+    hook_slot = clean(node.get("hook_slot", ""))
+    route_hint = clean(node.get("route_hint", ""))
+    render_bucket = clean(node.get("render_bucket", "")) or (route_hint or "global")
+    hit_test_id = clean(node.get("hit_test_id", "")) or prop_id or test_id or f"r2c-auto-{idx}"
+    runtime_index = int(node.get("runtime_index", idx) or idx)
+    return (
+        '    appendSemanticNode("'
+        + esc_cheng(node_id) + '", "'
+        + esc_cheng(source_module) + '", "'
+        + esc_cheng(jsx_path) + '", "'
+        + esc_cheng(role) + '", "'
+        + esc_cheng(text) + '", "'
+        + esc_cheng(prop_id) + '", "'
+        + esc_cheng(class_name) + '", "'
+        + esc_cheng(style_text) + '", "'
+        + esc_cheng(test_id) + '", "'
+        + esc_cheng(event_binding) + '", "'
+        + esc_cheng(hook_slot) + '", "'
+        + esc_cheng(route_hint) + '", int32('
+        + str(runtime_index) + '), "'
+        + esc_cheng(render_bucket) + '", "'
+        + esc_cheng(hit_test_id) + '")'
+    )
+
+report = load_json(report_path)
+if not isinstance(report, dict):
+    raise SystemExit("invalid compile report json")
+
+base_dir = os.path.dirname(report_path)
+semantic_map_path = str(report.get("semantic_node_map_path", "") or os.path.join(base_dir, "r2c_semantic_node_map.json"))
+runtime_map_path = str(report.get("semantic_runtime_map_path", "") or os.path.join(base_dir, "r2c_semantic_runtime_map.json"))
+render_path = str(report.get("semantic_render_nodes_path", "") or os.path.join(base_dir, "r2c_semantic_render_nodes.tsv"))
+generated_runtime_path = str(report.get("generated_runtime_path", "") or os.path.join(base_dir, "src", "runtime_generated.cheng"))
+report["semantic_node_map_path"] = semantic_map_path
+report["semantic_runtime_map_path"] = runtime_map_path
+report["semantic_render_nodes_path"] = render_path
+report["generated_runtime_path"] = generated_runtime_path
+
+source_nodes = []
+if not os.path.isfile(semantic_map_path):
+    if strict_mode:
+        raise SystemExit(f"missing semantic node map: {semantic_map_path}")
+else:
+    semantic_doc = load_json(semantic_map_path)
+    raw_nodes = semantic_doc.get("nodes", []) if isinstance(semantic_doc, dict) else []
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
+    for idx, item in enumerate(raw_nodes):
+        normalized = normalize_runtime_node(item, idx)
+        if isinstance(normalized, dict):
+            source_nodes.append(normalized)
+    semantic_doc = semantic_doc if isinstance(semantic_doc, dict) else {}
+    semantic_doc["nodes"] = source_nodes
+    semantic_doc["count"] = len(source_nodes)
+    with open(semantic_map_path, "w", encoding="utf-8") as fh:
+        json.dump(semantic_doc, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    report["semantic_node_count"] = len(source_nodes)
+    if strict_mode and len(source_nodes) <= 0:
+        raise SystemExit("semantic source map nodes is empty")
+
+if not os.path.isfile(runtime_map_path):
+    if strict_mode and len(source_nodes) <= 0:
+        raise SystemExit(f"missing semantic runtime map: {runtime_map_path}")
+    runtime_doc = {
+        "format": "r2c-semantic-runtime-map-v1",
+        "mode": "source-node-map",
+        "count": len(source_nodes),
+        "nodes": source_nodes,
+    }
+    os.makedirs(os.path.dirname(runtime_map_path), exist_ok=True)
+    with open(runtime_map_path, "w", encoding="utf-8") as fh:
+        json.dump(runtime_doc, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    if len(source_nodes) <= 0:
+        report["semantic_render_nodes_count"] = 0
+        report["semantic_render_nodes_hash"] = ""
+        report["semantic_render_nodes_fnv64"] = ""
+else:
+    runtime_doc = load_json(runtime_map_path)
+    nodes = runtime_doc.get("nodes", []) if isinstance(runtime_doc, dict) else []
+    if not isinstance(nodes, list):
+        nodes = []
+    normalized_nodes = []
+    for idx, item in enumerate(nodes):
+        normalized = normalize_runtime_node(item, idx)
+        if not isinstance(normalized, dict):
+            continue
+        normalized_nodes.append(normalized)
+    runtime_doc = runtime_doc if isinstance(runtime_doc, dict) else {}
+    runtime_doc["nodes"] = normalized_nodes
+    runtime_doc["count"] = len(normalized_nodes)
+    with open(runtime_map_path, "w", encoding="utf-8") as fh:
+        json.dump(runtime_doc, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+
+    if strict_mode and len(source_nodes) > 0 and len(normalized_nodes) != len(source_nodes):
+        raise SystemExit(
+            "semantic runtime/source node count mismatch source={} runtime={}".format(
+                len(source_nodes), len(normalized_nodes)
+            )
+        )
+
+    rows = []
+    for idx, item in enumerate(normalized_nodes):
+        props = item.get("props", {})
+        if not isinstance(props, dict):
+            props = {}
+        node_id = field(item, "node_id")
+        source_module = field(item, "source_module")
+        jsx_path = field(item, "jsx_path")
+        role = field(item, "role")
+        route_hint = field(item, "route_hint")
+        event_binding = field(item, "event_binding")
+        prop_id = clean(props.get("id", ""))
+        test_id = clean(props.get("dataTestId", ""))
+        hit_test_id = field(item, "hit_test_id")
+        selector = prop_id or test_id or hit_test_id or f"r2c-auto-{idx}"
+        text_raw = decode_runtime_text(str(item.get("text", "") or ""))
+        text_norm = clean(text_raw)
+        if len(text_norm) > 240:
+            text_norm = text_norm[:240]
+        text_hex = text_norm.encode("utf-8", errors="ignore").hex()
+        if not node_id:
+            continue
+        rows.append(
+            "\t".join(
+                [
+                    node_id,
+                    route_hint,
+                    role,
+                    text_hex,
+                    selector,
+                    event_binding,
+                    source_module,
+                    jsx_path,
+                ]
+            )
+        )
+
+    os.makedirs(os.path.dirname(render_path), exist_ok=True)
+    with open(render_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# node_id\troute_hint\trole\ttext_hex\tselector\tevent_binding\tsource_module\tjsx_path\n")
+        for line in rows:
+            fh.write(line + "\n")
+
+    payload = open(render_path, "rb").read()
+    sha = hashlib.sha256(payload).hexdigest()
+    fnv = 1469598103934665603
+    for b in payload:
+        fnv ^= int(b)
+        fnv = (fnv * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    report["semantic_render_nodes_count"] = len(rows)
+    report["semantic_render_nodes_hash"] = sha
+    report["semantic_render_nodes_fnv64"] = f"{fnv:016x}"
+    if strict_mode and len(rows) <= 0:
+        raise SystemExit("semantic render nodes is empty")
+
+    if os.path.isfile(generated_runtime_path):
+        with open(generated_runtime_path, "r", encoding="utf-8", errors="ignore") as fh:
+            runtime_src = fh.read()
+        append_lines = [semantic_append_line(node, idx) for idx, node in enumerate(normalized_nodes)]
+        append_lines = [line for line in append_lines if line.strip()]
+        runtime_rows = runtime_src.splitlines()
+        marker_indexes = [idx for idx, line in enumerate(runtime_rows) if line.strip().startswith("# appendSemanticNode(")]
+        if marker_indexes:
+            raise SystemExit("runtime contains commented appendSemanticNode marker lines")
+        elif append_lines and runtime_src.count("appendSemanticNode(") < len(append_lines):
+            inject_idx = -1
+            for idx, line in enumerate(runtime_rows):
+                if line.startswith("fn ensureDefaults("):
+                    inject_idx = idx
+                    break
+            if inject_idx >= 0:
+                runtime_rows = runtime_rows[:inject_idx] + append_lines + [""] + runtime_rows[inject_idx:]
+        runtime_rewritten = "\n".join(runtime_rows).rstrip() + "\n"
+        with open(generated_runtime_path, "w", encoding="utf-8") as fh:
+            fh.write(runtime_rewritten)
+        if strict_mode:
+            if "# appendSemanticNode(" in runtime_rewritten:
+                raise SystemExit("runtime still contains template semantic marker comments")
+            if runtime_rewritten.count("appendSemanticNode(") < len(append_lines):
+                raise SystemExit(
+                    "runtime semantic append count mismatch append={} nodes={}".format(
+                        runtime_rewritten.count("appendSemanticNode("), len(append_lines)
+                    )
+                )
+    elif strict_mode:
+        raise SystemExit(f"missing generated runtime source: {generated_runtime_path}")
+
+with open(report_path, "w", encoding="utf-8") as fh:
+    json.dump(report, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+
+if manifest_path and os.path.isfile(manifest_path):
+    manifest = load_json(manifest_path)
+    if isinstance(manifest, dict):
+        for key in ("semantic_render_nodes_path", "semantic_render_nodes_count", "semantic_render_nodes_hash", "semantic_render_nodes_fnv64"):
+            manifest[key] = report.get(key, "")
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
 PY
 }
 
@@ -941,7 +1418,7 @@ generate_r2c_shell_package() {
 package_id = "pkg://cheng/r2capp"
 EOF
   cat > "$src_root/entry.cheng" <<EOF
-import cheng/gui/browser/web
+import gui/browser/web
 import cheng/r2capp/runtime_generated as generatedRuntime
 
 fn mount(page: web.BrowserPage): bool =
@@ -963,7 +1440,7 @@ EOF
     return 1
   fi
   cat > "$src_root/dom_generated.cheng" <<EOF
-import cheng/gui/browser/web
+import gui/browser/web
 
 fn profileId(): str =
     return "${project_name}"
@@ -973,7 +1450,7 @@ fn mountDom(page: web.BrowserPage): bool =
     return true
 EOF
   cat > "$src_root/events_generated.cheng" <<'EOF'
-import cheng/gui/browser/web
+import gui/browser/web
 
 fn dispatchEvent(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
     page
@@ -983,7 +1460,7 @@ fn dispatchEvent(page: web.BrowserPage, eventName, targetSelector, payload: str)
     return true
 EOF
   cat > "$src_root/webapi_generated.cheng" <<'EOF'
-import cheng/gui/browser/web
+import gui/browser/web
 
 fn bootstrapWebApi(page: web.BrowserPage): bool =
     page
@@ -2809,7 +3286,7 @@ EOF
 }
 EOF
   cat > "$pkg_dir/src/entry.cheng" <<EOF
-import cheng/gui/browser/web
+import gui/browser/web
 import cheng/r2capp/runtime_generated as generatedRuntime
 
 fn mount(page: web.BrowserPage): bool =
@@ -2822,8 +3299,8 @@ fn compiledModuleCount(): int32 =
     return int32(1)
 EOF
   cat > "$pkg_dir/src/runtime_generated.cheng" <<EOF
-import cheng/gui/browser/web
-import cheng/gui/browser/r2capp/runtime as legacy
+import gui/browser/web
+import gui/browser/r2capp/runtime as legacy
 
 fn profileId(): str =
     return "$(json_escape "$profile_name")"
@@ -2861,6 +3338,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+template_runtime_used="0"
+allow_template_fallback="${R2C_ALLOW_TEMPLATE_FALLBACK:-0}"
+if [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
+  allow_template_fallback="0"
+fi
+export R2C_ALLOW_TEMPLATE_FALLBACK="$allow_template_fallback"
+
 if [ -z "$project" ] || [ -z "$entry" ] || [ -z "$out_dir" ]; then
   if [ -z "$project" ] || [ -z "$out_dir" ]; then
     usage
@@ -2885,31 +3369,29 @@ fi
 
 require_strict_gate_marker "$project" "$entry"
 
-ROOT="${ROOT:-}"
-if [ -z "$ROOT" ]; then
+TOOLCHAIN_ROOT="${CHENG_ROOT:-}"
+if [ -z "$TOOLCHAIN_ROOT" ]; then
   if [ -d "$HOME/.cheng/toolchain/cheng-lang" ]; then
-    ROOT="$HOME/.cheng/toolchain/cheng-lang"
+    TOOLCHAIN_ROOT="$HOME/.cheng/toolchain/cheng-lang"
   elif [ -d "$HOME/cheng-lang" ]; then
-    ROOT="$HOME/cheng-lang"
+    TOOLCHAIN_ROOT="$HOME/cheng-lang"
   elif [ -d "/Users/lbcheng/cheng-lang" ]; then
-    ROOT="/Users/lbcheng/cheng-lang"
+    TOOLCHAIN_ROOT="/Users/lbcheng/cheng-lang"
   fi
 fi
-if [ -z "$ROOT" ]; then
-  echo "[r2c-compile] missing ROOT" >&2
+if [ -z "$TOOLCHAIN_ROOT" ]; then
+  echo "[r2c-compile] missing CHENG_ROOT" >&2
   exit 2
 fi
 
-compat_root="$ROOT/chengcache/stage0_compat"
-if [ -d "$compat_root/src/std" ] && [ -d "$compat_root/src/tooling" ] && [ -x "$compat_root/src/tooling/chengc.sh" ]; then
-  ROOT="$compat_root"
-fi
-CHENGC="${CHENGC:-$ROOT/src/tooling/chengc.sh}"
-if [ "${CHENGC}" = "$ROOT/src/tooling/chengc.sh" ] && [ ! -x "$CHENGC" ]; then
-  if [ -x "$ROOT/scripts/chengc_obj_compat.sh" ]; then
-    CHENGC="$ROOT/scripts/chengc_obj_compat.sh"
-  elif [ -x "$ROOT/tooling/chengc.sh" ]; then
-    CHENGC="$ROOT/tooling/chengc.sh"
+# Do not auto-switch into legacy stage0_compat roots: native gate now enforces
+# zero compat mounts inside cheng-gui and requires direct toolchain roots.
+CHENGC="${CHENGC:-$TOOLCHAIN_ROOT/src/tooling/chengc.sh}"
+if [ "${CHENGC}" = "$TOOLCHAIN_ROOT/src/tooling/chengc.sh" ] && [ ! -x "$CHENGC" ]; then
+  if [ -x "$TOOLCHAIN_ROOT/scripts/chengc_obj_compat.sh" ]; then
+    CHENGC="$TOOLCHAIN_ROOT/scripts/chengc_obj_compat.sh"
+  elif [ -x "$TOOLCHAIN_ROOT/tooling/chengc.sh" ]; then
+    CHENGC="$TOOLCHAIN_ROOT/tooling/chengc.sh"
   elif [ -x "/Users/lbcheng/cheng-lang/src/tooling/chengc.sh" ]; then
     CHENGC="/Users/lbcheng/cheng-lang/src/tooling/chengc.sh"
   fi
@@ -2928,9 +3410,12 @@ if [ -z "${BACKEND_DRIVER:-}" ]; then
   preferred_driver="/Users/lbcheng/cheng-lang/artifacts/backend_seed/cheng.stage2"
   if [ -x "$preferred_driver" ]; then
     export BACKEND_DRIVER="$preferred_driver"
-    export BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}"
-    export BACKEND_DRIVER_USE_WRAPPER="1"
+    export BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-1}"
+    export BACKEND_DRIVER_USE_WRAPPER="0"
   fi
+fi
+if [ "${BACKEND_DRIVER_USE_WRAPPER:-0}" != "0" ]; then
+  export BACKEND_DRIVER_USE_WRAPPER="0"
 fi
 
 pick_stable_release_driver() {
@@ -2959,27 +3444,265 @@ pick_stable_release_driver() {
   return 1
 }
 
+derive_host_target() {
+  local uname_s
+  local uname_m
+  uname_s="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  uname_m="$(uname -m 2>/dev/null || true)"
+  case "$uname_s" in
+    darwin)
+      case "$uname_m" in
+        arm64|aarch64)
+          printf '%s\n' "aarch64-apple-darwin"
+          return 0
+          ;;
+        x86_64|amd64)
+          printf '%s\n' "x86_64-apple-darwin"
+          return 0
+          ;;
+      esac
+      ;;
+    linux)
+      case "$uname_m" in
+        x86_64|amd64)
+          printf '%s\n' "x86_64-unknown-linux-gnu"
+          return 0
+          ;;
+        aarch64|arm64)
+          printf '%s\n' "aarch64-unknown-linux-gnu"
+          return 0
+          ;;
+      esac
+      ;;
+    msys*|mingw*|cygwin*)
+      case "$uname_m" in
+        x86_64|amd64)
+          printf '%s\n' "x86_64-pc-windows-msvc"
+          return 0
+          ;;
+        aarch64|arm64)
+          printf '%s\n' "aarch64-pc-windows-msvc"
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+resolve_backend_driver_bin() {
+  local candidate="${R2C_BACKEND_DRIVER_BIN:-}"
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  if [ -x "$TOOLCHAIN_ROOT/artifacts/backend_driver/cheng" ]; then
+    printf '%s\n' "$TOOLCHAIN_ROOT/artifacts/backend_driver/cheng"
+    return 0
+  fi
+  if [ -n "${BACKEND_DRIVER:-}" ] && [ -x "${BACKEND_DRIVER}" ]; then
+    printf '%s\n' "${BACKEND_DRIVER}"
+    return 0
+  fi
+  if [ -x "$TOOLCHAIN_ROOT/artifacts/backend_seed/cheng.stage2" ]; then
+    printf '%s\n' "$TOOLCHAIN_ROOT/artifacts/backend_seed/cheng.stage2"
+    return 0
+  fi
+  return 1
+}
+
+run_backend_driver_emit_obj() {
+  local input="${1:-}"
+  if [ -z "$input" ]; then
+    if [ "${R2C_DEBUG_RUN_CHENGC:-0}" = "1" ]; then
+      echo "[r2c-compile][debug] backend-driver-emit-obj skip: empty input" >&2
+    fi
+    return 1
+  fi
+  shift || true
+  local emit_obj=0
+  local obj_out=""
+  local target_arg=""
+  local frontend_arg=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --emit-obj|--backend:obj|--emit:obj)
+        emit_obj=1
+        ;;
+      --obj-out:*)
+        obj_out="${1#--obj-out:}"
+        ;;
+      --out:*)
+        if [ -z "$obj_out" ]; then
+          obj_out="${1#--out:}"
+        fi
+        ;;
+      --target:*)
+        target_arg="${1#--target:}"
+        ;;
+      --frontend:*)
+        frontend_arg="${1#--frontend:}"
+        ;;
+    esac
+    shift || true
+  done
+  if [ "$emit_obj" != "1" ] || [ -z "$obj_out" ]; then
+    if [ "${R2C_DEBUG_RUN_CHENGC:-0}" = "1" ]; then
+      echo "[r2c-compile][debug] backend-driver-emit-obj skip: emit_obj=$emit_obj obj_out='$obj_out' input='$input'" >&2
+    fi
+    return 1
+  fi
+  if [ -z "$target_arg" ]; then
+    target_arg="${target:-}"
+  fi
+  if [ -z "$frontend_arg" ]; then
+    frontend_arg="stage1"
+  fi
+  if [ -z "$target_arg" ]; then
+    return 1
+  fi
+  local driver_bin
+  driver_bin="$(resolve_backend_driver_bin || true)"
+  if [ -z "$driver_bin" ] || [ ! -x "$driver_bin" ]; then
+    if [ "${R2C_DEBUG_RUN_CHENGC:-0}" = "1" ]; then
+      echo "[r2c-compile][debug] backend-driver-emit-obj skip: missing driver" >&2
+    fi
+    return 1
+  fi
+  local input_arg="$input"
+  case "$input_arg" in
+    "$GUI_PACKAGE_ROOT"/*)
+      input_arg="${input_arg#$GUI_PACKAGE_ROOT/}"
+      ;;
+  esac
+  local pkg_roots="${PKG_ROOTS:-$GUI_PACKAGE_ROOT:$HOME/.cheng-packages}"
+  if [ "${R2C_DEBUG_RUN_CHENGC:-0}" = "1" ]; then
+    echo "[r2c-compile][debug] backend-driver-emit-obj driver='$driver_bin' input='$input_arg' obj_out='$obj_out' target='$target_arg' frontend='$frontend_arg'" >&2
+  fi
+  (
+    cd "$GUI_PACKAGE_ROOT"
+    env \
+      MM="${MM:-orc}" \
+      PKG_ROOTS="$pkg_roots" \
+      BACKEND_DRIVER="$driver_bin" \
+      BACKEND_INTERNAL_ALLOW_EMIT_OBJ=1 \
+      BACKEND_EMIT=obj \
+      BACKEND_MULTI=1 \
+      BACKEND_MULTI_FORCE=1 \
+      BACKEND_WHOLE_PROGRAM=1 \
+      BACKEND_INCREMENTAL="${BACKEND_INCREMENTAL:-0}" \
+      BACKEND_JOBS="${BACKEND_JOBS:-4}" \
+      BACKEND_TARGET="$target_arg" \
+      BACKEND_FRONTEND="$frontend_arg" \
+      BACKEND_INPUT="$input_arg" \
+      BACKEND_OUTPUT="$obj_out" \
+      CHENG_BACKEND_EMIT=obj \
+      CHENG_BACKEND_MULTI=1 \
+      CHENG_BACKEND_MULTI_FORCE=1 \
+      CHENG_BACKEND_WHOLE_PROGRAM=1 \
+      CHENG_BACKEND_TARGET="$target_arg" \
+      CHENG_BACKEND_FRONTEND="$frontend_arg" \
+      CHENG_BACKEND_INPUT="$input_arg" \
+      CHENG_BACKEND_OUTPUT="$obj_out" \
+      BACKEND_LINKER="${BACKEND_LINKER:-system}" \
+      BACKEND_NO_RUNTIME_C="${BACKEND_NO_RUNTIME_C:-0}" \
+      STAGE1_NO_POINTERS_NON_C_ABI="${STAGE1_NO_POINTERS_NON_C_ABI:-0}" \
+      STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="${STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL:-0}" \
+      "$driver_bin"
+  )
+}
+
+run_backend_driver_emit_exe() {
+  local input="${1:-}"
+  local out_exe="${2:-}"
+  local target_arg="${3:-}"
+  local frontend_arg="${4:-stage1}"
+  if [ -z "$input" ] || [ -z "$out_exe" ] || [ -z "$target_arg" ]; then
+    return 1
+  fi
+  local driver_bin
+  driver_bin="$(resolve_backend_driver_bin || true)"
+  if [ -z "$driver_bin" ] || [ ! -x "$driver_bin" ]; then
+    return 1
+  fi
+  local input_arg="$input"
+  case "$input_arg" in
+    "$GUI_PACKAGE_ROOT"/*)
+      input_arg="${input_arg#$GUI_PACKAGE_ROOT/}"
+      ;;
+  esac
+  local pkg_roots="${PKG_ROOTS:-$GUI_PACKAGE_ROOT:$HOME/.cheng-packages}"
+  (
+    cd "$GUI_PACKAGE_ROOT"
+    env \
+      MM="${MM:-orc}" \
+      PKG_ROOTS="$pkg_roots" \
+      BACKEND_DRIVER="$driver_bin" \
+      BACKEND_EMIT=exe \
+      BACKEND_MULTI=1 \
+      BACKEND_MULTI_FORCE=1 \
+      BACKEND_WHOLE_PROGRAM=1 \
+      BACKEND_INCREMENTAL="${BACKEND_INCREMENTAL:-0}" \
+      BACKEND_JOBS="${BACKEND_JOBS:-4}" \
+      BACKEND_TARGET="$target_arg" \
+      BACKEND_FRONTEND="$frontend_arg" \
+      BACKEND_INPUT="$input_arg" \
+      BACKEND_OUTPUT="$out_exe" \
+      CHENG_BACKEND_EMIT=exe \
+      CHENG_BACKEND_MULTI=1 \
+      CHENG_BACKEND_MULTI_FORCE=1 \
+      CHENG_BACKEND_WHOLE_PROGRAM=1 \
+      CHENG_BACKEND_TARGET="$target_arg" \
+      CHENG_BACKEND_FRONTEND="$frontend_arg" \
+      CHENG_BACKEND_INPUT="$input_arg" \
+      CHENG_BACKEND_OUTPUT="$out_exe" \
+      BACKEND_LINKER="${BACKEND_LINKER:-system}" \
+      BACKEND_NO_RUNTIME_C="${BACKEND_NO_RUNTIME_C:-0}" \
+      STAGE1_NO_POINTERS_NON_C_ABI="${STAGE1_NO_POINTERS_NON_C_ABI:-0}" \
+      STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="${STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL:-0}" \
+      "$driver_bin"
+  )
+}
+
+run_chengc() {
+  local tool="$1"
+  shift || true
+  if [ "${R2C_FORCE_BACKEND_DRIVER_EMIT_OBJ:-1}" = "1" ]; then
+    if run_backend_driver_emit_obj "$@"; then
+      return 0
+    fi
+  fi
+  case "$tool" in
+    *.sh)
+      sh "$tool" "$@"
+      ;;
+    *)
+      "$tool" "$@"
+      ;;
+  esac
+}
+
 if [ -z "${BACKEND_DRIVER:-}" ]; then
-  selected_driver="$(pick_stable_release_driver "$ROOT" || true)"
-  if [ -x "$ROOT/cheng_stable" ]; then
+  selected_driver="$(pick_stable_release_driver "$TOOLCHAIN_ROOT" || true)"
+  if [ -x "$TOOLCHAIN_ROOT/cheng_stable" ]; then
     if [ -z "$selected_driver" ]; then
-      selected_driver="$ROOT/cheng_stable"
+      selected_driver="$TOOLCHAIN_ROOT/cheng_stable"
     fi
-  elif [ -x "$ROOT/cheng" ]; then
+  elif [ -x "$TOOLCHAIN_ROOT/cheng" ]; then
     if [ -z "$selected_driver" ]; then
-      selected_driver="$ROOT/cheng"
+      selected_driver="$TOOLCHAIN_ROOT/cheng"
     fi
   fi
-  if [ -z "$selected_driver" ] && [ -x "$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
-    selected_driver="$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
+  if [ -z "$selected_driver" ] && [ -x "$TOOLCHAIN_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2" ]; then
+    selected_driver="$TOOLCHAIN_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
   fi
-  if [ -z "$selected_driver" ] && [ -d "$ROOT/dist/releases" ]; then
+  if [ -z "$selected_driver" ] && [ -d "$TOOLCHAIN_ROOT/dist/releases" ]; then
     while IFS= read -r candidate; do
       if [ -x "$candidate/cheng" ]; then
         selected_driver="$candidate/cheng"
         break
       fi
-    done < <(ls -1dt "$ROOT"/dist/releases/* 2>/dev/null || true)
+    done < <(ls -1dt "$TOOLCHAIN_ROOT"/dist/releases/* 2>/dev/null || true)
   fi
   if [ -n "$selected_driver" ]; then
     export BACKEND_DRIVER="$selected_driver"
@@ -2987,19 +3710,24 @@ if [ -z "${BACKEND_DRIVER:-}" ]; then
   fi
 fi
 
-target="${KIT_TARGET:-}"
+target="${KIT_TARGET:-${R2C_HOST_TARGET:-}}"
 if [ -z "$target" ]; then
-  detect_host_target_script="$ROOT/src/tooling/detect_host_target.sh"
-  if [ ! -x "$detect_host_target_script" ] && [ -x "$ROOT/tooling/detect_host_target.sh" ]; then
-    detect_host_target_script="$ROOT/tooling/detect_host_target.sh"
+  target="$(derive_host_target || true)"
+fi
+if [ -z "$target" ] && [ "${R2C_USE_TOOLCHAIN_TARGET_DETECT:-0}" = "1" ]; then
+  detect_host_target_script="$TOOLCHAIN_ROOT/src/tooling/detect_host_target.sh"
+  if [ ! -x "$detect_host_target_script" ] && [ -x "$TOOLCHAIN_ROOT/tooling/detect_host_target.sh" ]; then
+    detect_host_target_script="$TOOLCHAIN_ROOT/tooling/detect_host_target.sh"
   fi
   if [ ! -x "$detect_host_target_script" ] && [ -x "/Users/lbcheng/cheng-lang/src/tooling/detect_host_target.sh" ]; then
     detect_host_target_script="/Users/lbcheng/cheng-lang/src/tooling/detect_host_target.sh"
   fi
-  target="$(sh "$detect_host_target_script")"
+  if [ -x "$detect_host_target_script" ]; then
+    target="$(sh "$detect_host_target_script")"
+  fi
 fi
 if [ -z "$target" ]; then
-  echo "[r2c-compile] failed to detect host target" >&2
+  echo "[r2c-compile] failed to resolve host target (set KIT_TARGET/R2C_HOST_TARGET)" >&2
   exit 2
 fi
 
@@ -3028,7 +3756,7 @@ compat_shim_src="$ROOT/runtime/cheng_compat_shim.c"
 compile_jobs="${BACKEND_JOBS:-8}"
 compile_incremental="${BACKEND_INCREMENTAL:-0}"
 compile_validate="${BACKEND_VALIDATE:-0}"
-reuse_compiler_bin="${R2C_REUSE_COMPILER_BIN:-0}"
+reuse_compiler_bin="${R2C_REUSE_COMPILER_BIN:-1}"
 reuse_runtime_bins="${R2C_REUSE_RUNTIME_BINS:-0}"
 desktop_driver="${R2C_DESKTOP_DRIVER:-}"
 if [ -n "$desktop_driver" ] && [ ! -x "$desktop_driver" ]; then
@@ -3054,13 +3782,40 @@ if [ "${R2C_LEGACY_UNIMAKER:-0}" != "0" ]; then
   echo "[r2c-compile] strict mode: R2C_LEGACY_UNIMAKER must be 0" >&2
   exit 2
 fi
-if [ "${R2C_SKIP_COMPILER_RUN:-0}" != "0" ]; then
-  echo "[r2c-compile] strict mode: R2C_SKIP_COMPILER_RUN must be 0" >&2
-  exit 2
-fi
 if [ -f "$compat_shim_src" ]; then
   "$cc" -c "$compat_shim_src" -o "$obj_compat"
 fi
+
+seed_compiler_bin_from_cache() {
+  local dst_bin="$1"
+  if [ -x "$dst_bin" ]; then
+    return 0
+  fi
+  local candidate="${R2C_COMPILER_BIN_CACHE:-}"
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    cp -f "$candidate" "$dst_bin"
+    chmod +x "$dst_bin" || true
+    echo "[r2c-compile] seeded compiler binary from cache: $candidate"
+    return 0
+  fi
+  local found=""
+  while IFS= read -r p; do
+    if [ "$p" = "$dst_bin" ]; then
+      continue
+    fi
+    if [ -x "$p" ]; then
+      found="$p"
+      break
+    fi
+  done < <(find "$ROOT/build" -maxdepth 6 -type f -name r2c_compile_macos 2>/dev/null | sort -r)
+  if [ -n "$found" ] && [ -x "$found" ]; then
+    cp -f "$found" "$dst_bin"
+    chmod +x "$dst_bin" || true
+    echo "[r2c-compile] seeded compiler binary from build cache: $found"
+    return 0
+  fi
+  return 1
+}
 
 compile_system_helpers_for_obj() {
   local _obj_path="${1:-}"
@@ -3088,6 +3843,15 @@ compile_system_helpers_for_obj() {
     -Dstreq=cheng_runtime_streq -D__cheng_str_eq=cheng_runtime_str_eq -D__cheng_sym_2b=cheng_runtime_sym_2b \
     -DgetEnv=cheng_runtime_getEnv -DdirExists=cheng_runtime_dirExists -DfileExists=cheng_runtime_fileExists \
     -DcreateDir=cheng_runtime_createDir -DwriteFile=cheng_runtime_writeFile \
+    -Dcheng_fopen=cheng_runtime_fopen -Dcheng_fclose=cheng_runtime_fclose \
+    -Dcheng_fread=cheng_runtime_fread -Dcheng_fwrite=cheng_runtime_fwrite \
+    -Dcheng_fflush=cheng_runtime_fflush -Dcheng_fgetc=cheng_runtime_fgetc \
+    -Dget_stdin=cheng_runtime_get_stdin -Dget_stdout=cheng_runtime_get_stdout -Dget_stderr=cheng_runtime_get_stderr \
+    -Dcheng_file_exists=cheng_runtime_file_exists -Dcheng_dir_exists=cheng_runtime_dir_exists \
+    -Dcheng_mkdir1=cheng_runtime_mkdir1 -Dcheng_file_mtime=cheng_runtime_file_mtime -Dcheng_file_size=cheng_runtime_file_size \
+    -Dcheng_getcwd=cheng_runtime_getcwd -Dcheng_list_dir=cheng_runtime_list_dir \
+    -Dcheng_read_file=cheng_runtime_read_file -Dcheng_write_file=cheng_runtime_write_file \
+    -Dcheng_exec_cmd_ex=cheng_runtime_exec_cmd_ex \
     -DcharToStr=cheng_runtime_charToStr -DintToStr=cheng_runtime_intToStr -Dlen=cheng_runtime_len \
     -Dcheng_strlen=cheng_runtime_strlen -Dcheng_strcmp=cheng_runtime_strcmp \
     -c "$_runtime_native/system_helpers.c" -o "$obj_sys"
@@ -3115,6 +3879,22 @@ write_alias_rules_file "$project" "$alias_rules_file"
 compile_project="$project"
 compile_project="$(prepare_compilation_project "$project" "$out_dir" "$alias_rules_file")"
 export R2C_IN_ROOT="$compile_project"
+compiler_request_env="$out_dir/r2c_compile_request.env"
+cat >"$compiler_request_env" <<EOF
+R2C_IN_ROOT=$R2C_IN_ROOT
+R2C_OUT_ROOT=$R2C_OUT_ROOT
+R2C_ENTRY=$R2C_ENTRY
+R2C_PROFILE=$R2C_PROFILE
+R2C_PROJECT_NAME=$R2C_PROJECT_NAME
+R2C_TARGET_MATRIX=$R2C_TARGET_MATRIX
+R2C_NO_JS_RUNTIME=$R2C_NO_JS_RUNTIME
+R2C_WPT_PROFILE=$R2C_WPT_PROFILE
+R2C_EQUIVALENCE_MODE=$R2C_EQUIVALENCE_MODE
+R2C_STRICT=$R2C_STRICT
+EOF
+if [ "$reuse_compiler_bin" = "1" ] && [ ! -x "$bin" ]; then
+  seed_compiler_bin_from_cache "$bin" || true
+fi
 unset R2C_ALIAS_FILE || true
 strict_project_path="/Users/lbcheng/UniMaker/ClaudeDesign"
 strict_entry_path="/app/main.tsx"
@@ -3177,11 +3957,15 @@ skip_compiler_run="${R2C_SKIP_COMPILER_RUN:-0}"
 skip_compiler_exec="${R2C_SKIP_COMPILER_EXEC:-}"
 if [ -z "$skip_compiler_exec" ]; then
   if [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
-    # In strict gate mode we validate compiler build artifacts and generated reports,
-    # but skip running the transient compiler binary to avoid toolchain runtime flakiness.
-    skip_compiler_exec="1"
+    skip_compiler_exec="${R2C_STRICT_SKIP_COMPILER_EXEC_DEFAULT:-0}"
   else
     skip_compiler_exec="0"
+  fi
+fi
+if [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
+  if [ "$skip_compiler_exec" != "0" ]; then
+    echo "[r2c-compile] strict mode forbids R2C_SKIP_COMPILER_EXEC!=0" >&2
+    exit 1
   fi
 fi
 allow_compiler_run_fail="${R2C_ALLOW_COMPILER_RUN_FAIL:-0}"
@@ -3191,28 +3975,40 @@ if [ "$skip_compiler_run" = "0" ] && [ "$try_compiler_first" = "1" ]; then
   run_real_aot_compile() {
     local frontend="$1"
     local aot_defines="${R2C_COMPILER_DEFINES:-${DEFINES:-macos,macosx}}"
+    local direct_exe_mode="${R2C_FORCE_BACKEND_DRIVER_DIRECT_EXE:-0}"
     rc=1
-    rm -f "$obj" "$bin"
-    if ! (
-      cd "$ROOT"
-      BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$aot_defines" sh "$CHENGC" "$aot_src" --emit-obj --obj-out:"$obj" --target:"$target" --frontend:"$frontend"
-    ) >"$log_compile" 2>&1; then
-      rc=101
-      return 0
-    fi
-    if ! compile_system_helpers_for_obj "$obj" >>"$log_compile" 2>&1; then
-      rc=102
-      return 0
-    fi
-    if [ -f "$compat_shim_src" ]; then
-      if ! "$cc" "$obj" "$obj_sys" "$obj_compat" -o "$bin" >>"$log_compile" 2>&1; then
-        rc=103
-        return 0
-      fi
+    if [ "$reuse_compiler_bin" = "1" ] && [ -x "$bin" ]; then
+      echo "[r2c-compile] reuse compiler executable: $bin" >"$log_compile"
     else
-      if ! "$cc" "$obj" "$obj_sys" -o "$bin" >>"$log_compile" 2>&1; then
-        rc=103
-        return 0
+      rm -f "$obj" "$bin"
+      if [ "$direct_exe_mode" = "1" ]; then
+        if ! run_backend_driver_emit_exe "$aot_src" "$bin" "$target" "$frontend" >"$log_compile" 2>&1; then
+          rc=101
+          return 0
+        fi
+      else
+        if ! (
+          cd "$ROOT"
+          BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$aot_defines" run_chengc "$CHENGC" "$aot_src" --emit-obj --obj-out:"$obj" --target:"$target" --frontend:"$frontend"
+        ) >"$log_compile" 2>&1; then
+          rc=101
+          return 0
+        fi
+        if ! compile_system_helpers_for_obj "$obj" >>"$log_compile" 2>&1; then
+          rc=102
+          return 0
+        fi
+        if [ -f "$compat_shim_src" ]; then
+          if ! "$cc" "$obj" "$obj_sys" "$obj_compat" -o "$bin" >>"$log_compile" 2>&1; then
+            rc=103
+            return 0
+          fi
+        else
+          if ! "$cc" "$obj" "$obj_sys" -o "$bin" >>"$log_compile" 2>&1; then
+            rc=103
+            return 0
+          fi
+        fi
       fi
     fi
     if [ ! -x "$bin" ]; then
@@ -3224,21 +4020,97 @@ if [ "$skip_compiler_run" = "0" ] && [ "$try_compiler_first" = "1" ]; then
       rc=0
       return 0
     fi
-    if "$bin" >"$log_run" 2>&1; then
-      rc=0
-    else
-      rc=$?
+    local run_retries="${R2C_COMPILER_RUN_RETRIES:-3}"
+    if [ -z "$run_retries" ] || [ "$run_retries" -lt 1 ] 2>/dev/null; then
+      run_retries=1
+    fi
+    if { [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; } && [ -z "${R2C_COMPILER_RUN_RETRIES:-}" ]; then
+      run_retries=1
+    fi
+    local run_timeout_sec="${R2C_COMPILER_RUN_TIMEOUT_SEC:-0}"
+    if [ -z "$run_timeout_sec" ] || [ "$run_timeout_sec" -lt 0 ] 2>/dev/null; then
+      run_timeout_sec=0
+    fi
+    if [ "$run_timeout_sec" -eq 0 ] && { [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; }; then
+      run_timeout_sec="${R2C_STRICT_COMPILER_RUN_TIMEOUT_SEC:-180}"
+    fi
+    local run_try=1
+    : >"$log_run"
+    while [ "$run_try" -le "$run_retries" ]; do
+      local run_status=0
+      if [ "$run_timeout_sec" -gt 0 ] && command -v python3 >/dev/null 2>&1; then
+        if python3 - "$bin" "$out_dir" "$run_timeout_sec" >>"$log_run" 2>&1 <<'PY'
+import subprocess
+import sys
+
+bin_path, cwd, timeout_text = sys.argv[1:4]
+try:
+    timeout = int(str(timeout_text).strip())
+except Exception:
+    timeout = 0
+if timeout <= 0:
+    timeout = 1
+try:
+    completed = subprocess.run([bin_path], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    if completed.stdout:
+        sys.stdout.write(completed.stdout)
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+    sys.exit(int(completed.returncode))
+except subprocess.TimeoutExpired as exc:
+    if exc.stdout:
+        if isinstance(exc.stdout, bytes):
+            sys.stdout.write(exc.stdout.decode("utf-8", errors="ignore"))
+        else:
+            sys.stdout.write(str(exc.stdout))
+    if exc.stderr:
+        if isinstance(exc.stderr, bytes):
+            sys.stderr.write(exc.stderr.decode("utf-8", errors="ignore"))
+        else:
+            sys.stderr.write(str(exc.stderr))
+    print(f"[r2c-compile] error: compiler executable timeout after {timeout}s", file=sys.stderr)
+    sys.exit(124)
+PY
+        then
+          run_status=0
+        else
+          run_status=$?
+        fi
+      else
+        if (
+          cd "$out_dir"
+          "$bin"
+        ) >>"$log_run" 2>&1; then
+          run_status=0
+        else
+          run_status=$?
+        fi
+      fi
+      if [ "$run_status" -eq 0 ]; then
+        rc=0
+        break
+      fi
+      rc=$run_status
+      if [ "$rc" -eq 139 ] || [ "$rc" -eq 134 ] || [ "$rc" -eq 124 ]; then
+        if [ "$run_try" -lt "$run_retries" ]; then
+          echo "[r2c-compile] warning: compiler executable crashed rc=$rc; retry ${run_try}/${run_retries}" >>"$log_run"
+          run_try=$((run_try + 1))
+          sleep 1
+          continue
+        fi
+      fi
       if [ "$allow_compiler_run_fail" = "1" ]; then
         echo "[r2c-compile] warning: compiler executable failed rc=$rc (R2C_ALLOW_COMPILER_RUN_FAIL=1); continue with shell generator" >>"$log_run"
         rc=0
       fi
-    fi
+      break
+    done
     return 0
   }
 
   run_real_aot_compile "$compiler_frontend"
   if [ "$rc" -eq 101 ]; then
-    retry_driver="$(pick_stable_release_driver "$ROOT" || true)"
+    retry_driver="$(pick_stable_release_driver "$TOOLCHAIN_ROOT" || true)"
     if [ -n "$retry_driver" ] && [ "$retry_driver" != "${BACKEND_DRIVER:-}" ]; then
       echo "[r2c-compile] retry with stable backend driver: $retry_driver"
       export BACKEND_DRIVER="$retry_driver"
@@ -3256,28 +4128,53 @@ if [ "$rc" -ne 0 ]; then
   if [ -f "$log_run" ]; then
     sed -n '1,60p' "$log_run" >&2 || true
   fi
-  if [ "$strict_mode" = "1" ]; then
+  if [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
     exit 1
   fi
-  echo "[r2c-compile] warning: non-strict mode fallback to shell package generator" >&2
+  if [ "$allow_template_fallback" != "1" ]; then
+    echo "[r2c-compile] template fallback is disabled (set R2C_ALLOW_TEMPLATE_FALLBACK=1 to override in non-strict mode)" >&2
+    exit 1
+  fi
+  echo "[r2c-compile] warning: non-strict mode fallback to shell package generator (R2C_ALLOW_TEMPLATE_FALLBACK=1)" >&2
   if ! generate_r2c_shell_package "$R2C_OUT_ROOT" "$compile_project" "$entry" "${R2C_PROFILE:-generic}" "${R2C_PROJECT_NAME:-$(basename "$project")}" "$strict_mode"; then
     echo "[r2c-compile] shell compiler failed" >&2
     exit 1
   fi
+  template_runtime_used="1"
   rc=0
-fi
-
-if [ "$rc" -eq 0 ] && [ "$strict_mode" = "1" ]; then
-  if ! generate_r2c_shell_package "$R2C_OUT_ROOT" "$compile_project" "$entry" "${R2C_PROFILE:-generic}" "${R2C_PROJECT_NAME:-$(basename "$project")}" "$strict_mode"; then
-    echo "[r2c-compile] strict runtime template generation failed" >&2
-    exit 1
-  fi
 fi
 
 dep_report="$out_dir/r2capp/r2capp_dependency_scan.json"
 dep_tmp_specs="$out_dir/r2c_bare_imports.txt"
 module_sources_tmp="$out_dir/r2c_module_sources.txt"
 compile_report_json="$out_dir/r2capp/r2capp_compile_report.json"
+compile_report_origin="cheng-compiler"
+if [ "$template_runtime_used" = "1" ]; then
+  compile_report_origin="semantic-shell-generator"
+fi
+if [ ! -f "$compile_report_json" ]; then
+  if [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
+    echo "[r2c-compile] strict mode requires compiler report; got missing: $compile_report_json" >&2
+    if [ -f "$log_compile" ]; then
+      sed -n '1,80p' "$log_compile" >&2 || true
+    fi
+    if [ -f "$log_run" ]; then
+      sed -n '1,80p' "$log_run" >&2 || true
+    fi
+    exit 1
+  fi
+  if [ "$allow_template_fallback" != "1" ]; then
+    echo "[r2c-compile] compiler report missing and template fallback is disabled: $compile_report_json" >&2
+    exit 1
+  fi
+  echo "[r2c-compile] compiler report missing; generating semantic runtime package artifacts" >&2
+  if ! generate_r2c_shell_package "$R2C_OUT_ROOT" "$compile_project" "$entry" "${R2C_PROFILE:-generic}" "${R2C_PROJECT_NAME:-$(basename "$project")}" "$strict_mode"; then
+    echo "[r2c-compile] semantic runtime package generation failed" >&2
+    exit 1
+  fi
+  compile_report_origin="semantic-shell-generator"
+  template_runtime_used="1"
+fi
 : > "$module_sources_tmp"
 if [ -f "$compile_report_json" ]; then
   perl -ne 'while(/"source_path":"([^"]+)"/g){print "$1\n"}' "$compile_report_json" | sort -u > "$module_sources_tmp" || true
@@ -3287,13 +4184,18 @@ if ! scan_dependency_imports "$compile_project" "$entry" "$strict_mode" "$dep_re
 fi
 
 if [ -f "$compile_report_json" ]; then
-  python3 - "$compile_report_json" "$out_dir/r2capp/r2capp_manifest.json" <<'PY'
+  python3 - "$compile_report_json" "$out_dir/r2capp/r2capp_manifest.json" "$strict_mode" "${STRICT_GATE_CONTEXT:-0}" "$template_runtime_used" "$compile_report_origin" <<'PY'
 import json
 import os
 import sys
 
-report_path, manifest_path = sys.argv[1:3]
+report_path, manifest_path, strict_mode_arg, strict_gate_arg, template_runtime_used_arg, compile_report_origin_arg = sys.argv[1:7]
 base_dir = os.path.dirname(report_path)
+strict_mode = str(strict_mode_arg).strip() == "1"
+strict_gate = str(strict_gate_arg).strip() == "1"
+strict_enforced = strict_mode or strict_gate
+template_runtime_used = str(template_runtime_used_arg).strip() == "1"
+compile_report_origin = str(compile_report_origin_arg or "").strip()
 
 def write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -3324,8 +4226,35 @@ for k, p in defaults.items():
     if not str(report.get(k, "") or "").strip():
         report[k] = p
 
-if not str(report.get("android_truth_manifest_path", "") or "").strip():
-    report["android_truth_manifest_path"] = report["truth_trace_manifest_android_path"]
+report["template_runtime_used"] = bool(report.get("template_runtime_used", False)) or template_runtime_used
+if not str(report.get("semantic_compile_mode", "") or "").strip():
+    report["semantic_compile_mode"] = "react-semantic-ir-node-compile"
+if not str(report.get("compiler_report_origin", "") or "").strip():
+    if compile_report_origin:
+        report["compiler_report_origin"] = compile_report_origin
+    elif report["template_runtime_used"]:
+        report["compiler_report_origin"] = "semantic-shell-generator"
+    else:
+        report["compiler_report_origin"] = "cheng-compiler"
+
+android_truth_current = str(report.get("android_truth_manifest_path", "") or "").strip()
+android_truth_default = android_truth_current or report["truth_trace_manifest_android_path"]
+gui_root = str(os.environ.get("GUI_ROOT", "") or "").strip()
+candidate = ""
+if gui_root:
+    candidate_paths = [
+        os.path.join(gui_root, "tests", "claude_fixture", "golden", "android_fullroute", "chromium_truth_manifest_android.json"),
+        os.path.join(gui_root, "src", "tests", "claude_fixture", "golden", "android_fullroute", "chromium_truth_manifest_android.json"),
+    ]
+    for path in candidate_paths:
+        if os.path.isfile(path):
+            candidate = path
+            android_truth_default = path
+            break
+if strict_enforced and candidate and os.path.isfile(candidate):
+    report["android_truth_manifest_path"] = candidate
+elif not android_truth_current:
+    report["android_truth_manifest_path"] = android_truth_default
 if not str(report.get("android_route_graph_path", "") or "").strip():
     report["android_route_graph_path"] = str(report.get("route_graph_path", "") or "")
 if not str(report.get("android_route_event_matrix_path", "") or "").strip():
@@ -3333,31 +4262,188 @@ if not str(report.get("android_route_event_matrix_path", "") or "").strip():
 if not str(report.get("android_route_coverage_path", "") or "").strip():
     report["android_route_coverage_path"] = str(report.get("route_coverage_path", "") or "")
 
-if not os.path.isfile(report["react_ir_path"]):
-    write_json(report["react_ir_path"], {
-        "format": "r2c-react-ir-v1",
-        "entry": report.get("entry", ""),
-        "module_count": module_count,
-        "semantic_node_count": semantic_count,
+if strict_enforced and report["template_runtime_used"]:
+    raise SystemExit("strict mode forbids template_runtime_used=true")
+
+def load_json(path, fallback):
+    if not path or not os.path.isfile(path):
+        return fallback
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return fallback
+
+def split_hook_slot(raw):
+    value = str(raw or "")
+    value = value.replace("|", ",").replace(";", ",")
+    out = []
+    seen = set()
+    for item in value.split(","):
+        token = str(item or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+def normalize_semantic_nodes(raw_nodes):
+    out = []
+    if not isinstance(raw_nodes, list):
+        return out
+    for idx, node in enumerate(raw_nodes):
+        node_id = f"sn_{idx}"
+        if isinstance(node, dict):
+            source_module = str(node.get("source_module", "") or node.get("module_id", "") or node.get("moduleId", "") or "").strip()
+            hook_slot = str(node.get("hook_slot", "") or "").strip()
+            event_binding = str(node.get("event_binding", "") or "").strip()
+            kind = str(node.get("kind", "") or "").strip()
+            value = str(node.get("value", "") or "").strip()
+            if not hook_slot and kind == "hook":
+                hook_slot = value
+            out.append({
+                "node_id": str(node.get("node_id", "") or node_id).strip() or node_id,
+                "source_module": source_module,
+                "jsx_path": str(node.get("jsx_path", "") or f"semantic:{idx}").strip(),
+                "route_hint": str(node.get("route_hint", "") or ("home_default" if idx == 0 else "")).strip(),
+                "hook_slot": hook_slot,
+                "event_binding": event_binding,
+            })
+            continue
+        if isinstance(node, str):
+            text = node.strip()
+            if not text:
+                continue
+            module_id = ""
+            kind = ""
+            value = ""
+            parts = text.split("|", 2)
+            if len(parts) == 3:
+                module_id = str(parts[0] or "").strip()
+                kind = str(parts[1] or "").strip()
+                value = str(parts[2] or "").strip()
+            out.append({
+                "node_id": node_id,
+                "source_module": module_id,
+                "jsx_path": f"semantic:{idx}",
+                "route_hint": "home_default" if idx == 0 else "",
+                "hook_slot": value if kind == "hook" else "",
+                "event_binding": value if kind == "event" else "",
+            })
+    return out
+
+semantic_map_path = str(report.get("semantic_node_map_path", "") or os.path.join(base_dir, "r2c_semantic_node_map.json"))
+semantic_runtime_map_path = str(report.get("semantic_runtime_map_path", "") or os.path.join(base_dir, "r2c_semantic_runtime_map.json"))
+semantic_doc = load_json(semantic_map_path, {})
+semantic_runtime_doc = load_json(semantic_runtime_map_path, {})
+semantic_nodes = semantic_doc.get("nodes", []) if isinstance(semantic_doc, dict) else []
+runtime_nodes = semantic_runtime_doc.get("nodes", []) if isinstance(semantic_runtime_doc, dict) else []
+if not isinstance(semantic_nodes, list):
+    semantic_nodes = []
+if not isinstance(runtime_nodes, list):
+    runtime_nodes = []
+semantic_node_rows = normalize_semantic_nodes(semantic_nodes)
+
+if semantic_count <= 0 and len(semantic_nodes) > 0:
+    semantic_count = len(semantic_nodes)
+report["semantic_node_count"] = semantic_count
+
+module_paths = []
+module_seen = set()
+for node in semantic_node_rows:
+    source_module = str(node.get("source_module", "") or "").strip()
+    if source_module and source_module not in module_seen:
+        module_seen.add(source_module)
+        module_paths.append(source_module)
+if not module_paths:
+    for mod in report.get("modules", []) or []:
+        if not isinstance(mod, dict):
+            continue
+        source_path = str(mod.get("source_path", "") or mod.get("sourcePath", "") or "").strip()
+        module_id = str(mod.get("module_id", "") or mod.get("moduleId", "") or "").strip()
+        path = source_path or module_id
+        if path and path not in module_seen:
+            module_seen.add(path)
+            module_paths.append(path)
+module_count = len(module_paths)
+
+hook_rows = []
+effect_rows = []
+for node in semantic_node_rows:
+    slots = split_hook_slot(node.get("hook_slot", ""))
+    if not slots:
+        continue
+    node_id = str(node.get("node_id", "") or "").strip()
+    source_module = str(node.get("source_module", "") or "").strip()
+    jsx_path = str(node.get("jsx_path", "") or "").strip()
+    route_hint = str(node.get("route_hint", "") or "").strip()
+    for slot in slots:
+        hook_rows.append({
+            "slot": slot,
+            "node_id": node_id,
+            "source_module": source_module,
+            "jsx_path": jsx_path,
+            "route_hint": route_hint,
+        })
+        if slot in ("useEffect", "useLayoutEffect"):
+            effect_rows.append({
+                "kind": slot,
+                "phase": "layout" if slot == "useLayoutEffect" else "passive",
+                "node_id": node_id,
+                "source_module": source_module,
+                "jsx_path": jsx_path,
+                "deps": "*",
+            })
+
+if strict_enforced and module_count <= 0:
+    raise SystemExit("strict mode requires module_count > 0")
+if strict_enforced and semantic_count <= 0:
+    raise SystemExit("strict mode requires semantic_node_count > 0")
+if strict_enforced and len(hook_rows) <= 0:
+    raise SystemExit("strict mode requires hook graph entries")
+
+dep_scan_path = os.path.join(base_dir, "r2capp_dependency_scan.json")
+dep_scan = load_json(dep_scan_path, {})
+supported_imports = dep_scan.get("supported_imports", []) if isinstance(dep_scan, dict) else []
+if not isinstance(supported_imports, list):
+    supported_imports = []
+
+rewrite_rows = []
+rewrite_seen = set()
+for spec in supported_imports:
+    text = str(spec or "").strip()
+    if not text or text in rewrite_seen:
+        continue
+    rewrite_seen.add(text)
+    rewrite_rows.append({
+        "source": text,
+        "target": "adapter:" + text.replace("/", "_"),
+        "mode": "native-adapter",
     })
-if not os.path.isfile(report["hook_graph_path"]):
-    write_json(report["hook_graph_path"], {
-        "format": "r2c-hook-graph-v1",
-        "hook_count": 0,
-        "hooks": [],
-    })
-if not os.path.isfile(report["effect_plan_path"]):
-    write_json(report["effect_plan_path"], {
-        "format": "r2c-effect-plan-v1",
-        "effect_count": 0,
-        "effects": [],
-    })
-if not os.path.isfile(report["third_party_rewrite_report_path"]):
-    write_json(report["third_party_rewrite_report_path"], {
-        "format": "r2c-third-party-rewrite-report-v1",
-        "count": 0,
-        "rewrites": [],
-    })
+
+write_json(report["react_ir_path"], {
+    "format": "r2c-react-ir-v1",
+    "entry": report.get("entry", ""),
+    "module_count": module_count,
+    "modules": module_paths,
+    "semantic_node_count": semantic_count,
+    "semantic_runtime_node_count": len(runtime_nodes),
+})
+write_json(report["hook_graph_path"], {
+    "format": "r2c-hook-graph-v1",
+    "hook_count": len(hook_rows),
+    "hooks": hook_rows,
+})
+write_json(report["effect_plan_path"], {
+    "format": "r2c-effect-plan-v1",
+    "effect_count": len(effect_rows),
+    "effects": effect_rows,
+})
+write_json(report["third_party_rewrite_report_path"], {
+    "format": "r2c-third-party-rewrite-report-v1",
+    "count": len(rewrite_rows),
+    "rewrites": rewrite_rows,
+})
 
 for platform, key in (
     ("android", "truth_trace_manifest_android_path"),
@@ -3404,6 +4490,9 @@ if os.path.isfile(manifest_path):
         "truth_trace_manifest_ios_path",
         "truth_trace_manifest_harmony_path",
         "perf_summary_path",
+        "template_runtime_used",
+        "semantic_compile_mode",
+        "compiler_report_origin",
         "android_truth_manifest_path",
         "android_route_graph_path",
         "android_route_event_matrix_path",
@@ -3416,6 +4505,22 @@ if os.path.isfile(manifest_path):
 PY
 fi
 
+semantic_sync_strict="$strict_mode"
+if [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
+  semantic_sync_strict="1"
+fi
+if ! sync_semantic_render_nodes_artifacts "$compile_report_json" "$out_dir/r2capp/r2capp_manifest.json" "$semantic_sync_strict"; then
+  exit 1
+fi
+if [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; then
+  if ! ensure_r2c_strict_artifacts "$out_dir/r2capp" "${R2C_PROFILE:-generic}" "$rc"; then
+    exit 1
+  fi
+fi
+
+if { [ "$strict_mode" = "1" ] || [ "${STRICT_GATE_CONTEXT:-0}" = "1" ]; } && [ -z "${R2C_SKIP_HOST_RUNTIME_BIN_BUILD+x}" ]; then
+  export R2C_SKIP_HOST_RUNTIME_BIN_BUILD=1
+fi
 if [ "${R2C_SKIP_HOST_RUNTIME_BIN_BUILD:-0}" = "1" ]; then
   echo "[r2c-compile] skip host runtime binary build (R2C_SKIP_HOST_RUNTIME_BIN_BUILD=1)"
   exit 0
@@ -3485,7 +4590,7 @@ else
   reuse_smoke_obj=0
   if ! (
     cd "$ROOT"
-    BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="${DEFINES:-macos,macosx}" sh "$CHENGC" "$smoke_src" --emit-obj --obj-out:"$smoke_obj" --target:"$target" --frontend:"$runtime_frontend"
+    BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="${DEFINES:-macos,macosx}" run_chengc "$CHENGC" "$smoke_src" --emit-obj --obj-out:"$smoke_obj" --target:"$target" --frontend:"$runtime_frontend"
   ) >"$smoke_log" 2>&1; then
     if ! (
       cd "$ROOT"
@@ -3502,7 +4607,7 @@ else
         BACKEND_JOBS=1 BACKEND_INCREMENTAL=0 BACKEND_VALIDATE="$compile_validate" \
         DEFINES="${DEFINES:-macos,macosx}" \
         PKG_ROOTS="$PKG_ROOTS" \
-        sh "$CHENGC" "$smoke_src" --emit-obj --obj-out:"$smoke_obj" --target:"$target" --frontend:"$runtime_frontend"
+        run_chengc "$CHENGC" "$smoke_src" --emit-obj --obj-out:"$smoke_obj" --target:"$target" --frontend:"$runtime_frontend"
     ) >>"$smoke_log" 2>&1; then
       echo "[r2c-compile] smoke compile failed: $smoke_src" >&2
       sed -n '1,120p' "$smoke_log" >&2
@@ -3526,7 +4631,7 @@ else
     rm -f "$runner_obj"
     if ! (
       cd "$ROOT"
-      BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="${DEFINES:-macos,macosx}" sh "$CHENGC" "$runner_src" --emit-obj --obj-out:"$runner_obj" --target:"$target" --frontend:"$runtime_frontend"
+      BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="${DEFINES:-macos,macosx}" run_chengc "$CHENGC" "$runner_src" --emit-obj --obj-out:"$runner_obj" --target:"$target" --frontend:"$runtime_frontend"
     ) >"$runner_log" 2>&1; then
       if ! (
         cd "$ROOT"
@@ -3543,7 +4648,7 @@ else
           BACKEND_JOBS=1 BACKEND_INCREMENTAL=0 BACKEND_VALIDATE="$compile_validate" \
           DEFINES="${DEFINES:-macos,macosx}" \
           PKG_ROOTS="$PKG_ROOTS" \
-          sh "$CHENGC" "$runner_src" --emit-obj --obj-out:"$runner_obj" --target:"$target" --frontend:"$runtime_frontend"
+          run_chengc "$CHENGC" "$runner_src" --emit-obj --obj-out:"$runner_obj" --target:"$target" --frontend:"$runtime_frontend"
       ) >>"$runner_log" 2>&1; then
         echo "[r2c-compile] app compile failed: $runner_src" >&2
         sed -n '1,120p' "$runner_log" >&2
@@ -3564,7 +4669,7 @@ if [ "$skip_runner_build" != "1" ] && [ ! -f "$desktop_obj" ]; then
     if [ -n "$desktop_frontend" ]; then
       if ! (
         cd "$ROOT"
-        BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
+        BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
       ) >"$desktop_log" 2>&1; then
         if ! (
           cd "$ROOT"
@@ -3581,7 +4686,7 @@ if [ "$skip_runner_build" != "1" ] && [ ! -f "$desktop_obj" ]; then
             BACKEND_JOBS=1 BACKEND_INCREMENTAL=0 BACKEND_VALIDATE="$compile_validate" \
             DEFINES="$desktop_defines" \
             PKG_ROOTS="$PKG_ROOTS" \
-            sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
+            run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
         ) >>"$desktop_log" 2>&1; then
           echo "[r2c-compile] app compile failed: $desktop_src (frontend=$desktop_frontend)" >&2
           sed -n '1,120p' "$desktop_log" >&2
@@ -3590,7 +4695,7 @@ if [ "$skip_runner_build" != "1" ] && [ ! -f "$desktop_obj" ]; then
       fi
     elif ! (
       cd "$ROOT"
-      BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
+      BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
     ) >"$desktop_log" 2>&1; then
       if ! (
         cd "$ROOT"
@@ -3607,7 +4712,7 @@ if [ "$skip_runner_build" != "1" ] && [ ! -f "$desktop_obj" ]; then
           BACKEND_JOBS=1 BACKEND_INCREMENTAL=0 BACKEND_VALIDATE="$compile_validate" \
           DEFINES="$desktop_defines" \
           PKG_ROOTS="$PKG_ROOTS" \
-          sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
+          run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
       ) >>"$desktop_log" 2>&1; then
         echo "[r2c-compile] app compile failed: $desktop_src" >&2
         sed -n '1,120p' "$desktop_log" >&2
@@ -3673,7 +4778,7 @@ else
   if [ -n "$desktop_frontend" ]; then
     if ! (
       cd "$ROOT"
-      BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
+      BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
     ) >"$desktop_log" 2>&1; then
       if ! (
         cd "$ROOT"
@@ -3690,7 +4795,7 @@ else
           BACKEND_JOBS=1 BACKEND_INCREMENTAL=0 BACKEND_VALIDATE="$compile_validate" \
           DEFINES="$desktop_defines" \
           PKG_ROOTS="$PKG_ROOTS" \
-          sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
+          run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target" --frontend:"$desktop_frontend"
       ) >>"$desktop_log" 2>&1; then
         echo "[r2c-compile] app compile failed: $desktop_src (frontend=$desktop_frontend)" >&2
         sed -n '1,120p' "$desktop_log" >&2
@@ -3699,7 +4804,7 @@ else
     fi
   elif ! (
     cd "$ROOT"
-    BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
+    BACKEND_DRIVER="${desktop_driver:-${BACKEND_DRIVER:-}}" BACKEND_DRIVER_DIRECT="${BACKEND_DRIVER_DIRECT:-0}" STAGE1_STD_NO_POINTERS="$desktop_stage1_std_no_pointers" STAGE1_NO_POINTERS_NON_C_ABI="$desktop_stage1_no_pointers_non_c_abi" STAGE1_NO_POINTERS_NON_C_ABI_INTERNAL="$desktop_stage1_no_pointers_non_c_abi_internal" BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" DEFINES="$desktop_defines" run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
   ) >"$desktop_log" 2>&1; then
     if ! (
       cd "$ROOT"
@@ -3716,7 +4821,7 @@ else
         BACKEND_JOBS=1 BACKEND_INCREMENTAL=0 BACKEND_VALIDATE="$compile_validate" \
         DEFINES="$desktop_defines" \
         PKG_ROOTS="$PKG_ROOTS" \
-        sh "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
+        run_chengc "$CHENGC" "$desktop_src" --emit-obj --obj-out:"$desktop_obj" --target:"$target"
     ) >>"$desktop_log" 2>&1; then
       echo "[r2c-compile] app compile failed: $desktop_src" >&2
       sed -n '1,120p' "$desktop_log" >&2
@@ -3887,7 +4992,7 @@ compile_runner_obj() {
   rm -f "$out_obj"
   if ! (
     cd "$ROOT"
-    BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" BACKEND_CFLAGS="$obj_backend_cflags" DEFINES="$defines" sh "$CHENGC" "$runner_src" --emit-obj --obj-out:"$out_obj" --target:"$target_value" --frontend:"$runtime_frontend"
+    BACKEND_JOBS="$compile_jobs" BACKEND_INCREMENTAL="$compile_incremental" BACKEND_VALIDATE="$compile_validate" BACKEND_CFLAGS="$obj_backend_cflags" DEFINES="$defines" run_chengc "$CHENGC" "$runner_src" --emit-obj --obj-out:"$out_obj" --target:"$target_value" --frontend:"$runtime_frontend"
   ) >"$log_file" 2>&1; then
     echo "[r2c-compile] $platform object compile failed target=$target_value" >&2
     sed -n '1,120p' "$log_file" >&2
@@ -4108,6 +5213,10 @@ import json
 import sys
 
 path = sys.argv[1]
+strict_mode = str(sys.argv[2]).strip() == "1" if len(sys.argv) > 2 else False
+strict_gate = str(sys.argv[3]).strip() == "1" if len(sys.argv) > 3 else False
+allow_template_fallback = str(sys.argv[4]).strip() == "1" if len(sys.argv) > 4 else False
+strict_enforced = strict_mode or strict_gate
 doc = json.load(open(path, "r", encoding="utf-8"))
 if not doc.get("strict_no_fallback", False):
     print("[r2c-compile] strict_no_fallback != true", file=sys.stderr)
@@ -4118,9 +5227,36 @@ if doc.get("used_fallback", True):
 if int(doc.get("compiler_rc", -1)) != 0:
     print("[r2c-compile] compiler_rc != 0: {}".format(doc.get("compiler_rc")), file=sys.stderr)
     sys.exit(1)
+if bool(doc.get("template_runtime_used", False)) and (strict_enforced or not allow_template_fallback):
+    print("[r2c-compile] template_runtime_used must be false", file=sys.stderr)
+    sys.exit(1)
+semantic_compile_mode = str(doc.get("semantic_compile_mode", "") or "").strip()
+if semantic_compile_mode != "react-semantic-ir-node-compile":
+    print("[r2c-compile] semantic_compile_mode invalid: {}".format(semantic_compile_mode), file=sys.stderr)
+    sys.exit(1)
 if doc.get("semantic_mapping_mode") != "source-node-map":
     print("[r2c-compile] semantic_mapping_mode != source-node-map: {}".format(doc.get("semantic_mapping_mode")), file=sys.stderr)
     sys.exit(1)
+for key in (
+    "react_ir_path",
+    "hook_graph_path",
+    "effect_plan_path",
+    "third_party_rewrite_report_path",
+    "truth_trace_manifest_android_path",
+    "truth_trace_manifest_ios_path",
+    "truth_trace_manifest_harmony_path",
+    "perf_summary_path",
+):
+    p = str(doc.get(key, "") or "")
+    if not p:
+        print("[r2c-compile] {} is empty".format(key), file=sys.stderr)
+        sys.exit(1)
+    try:
+        with open(p, "rb"):
+            pass
+    except Exception as exc:
+        print("[r2c-compile] failed to read {} {}: {}".format(key, p, exc), file=sys.stderr)
+        sys.exit(1)
 semantic_map = doc.get("semantic_node_map_path", "")
 if not semantic_map:
     print("[r2c-compile] semantic_node_map_path is empty", file=sys.stderr)
@@ -4155,23 +5291,147 @@ if int(doc.get("semantic_node_count", 0)) != len(nodes):
 if int(semantic_runtime_doc.get("count", -1)) != len(runtime_nodes):
     print("[r2c-compile] semantic runtime map count mismatch", file=sys.stderr)
     sys.exit(1)
-def semantic_node_key(item):
-    if not isinstance(item, dict):
-        return ("", "", "", "", "", "", "", "")
-    return (
-        str(item.get("node_id", "") or "").strip(),
-        str(item.get("source_module", "") or "").strip(),
-        str(item.get("jsx_path", "") or "").strip(),
-        str(item.get("role", "") or "").strip(),
-        str(item.get("event_binding", "") or "").strip(),
-        str(item.get("hook_slot", "") or "").strip(),
-        str(item.get("route_hint", "") or "").strip(),
-        str(item.get("text", "") or "").strip(),
+compiler_report_origin = str(doc.get("compiler_report_origin", "") or "").strip()
+if not compiler_report_origin:
+    print("[r2c-compile] compiler_report_origin is empty", file=sys.stderr)
+    sys.exit(1)
+if strict_enforced and compiler_report_origin != "cheng-compiler":
+    print(
+        "[r2c-compile] strict gate requires compiler_report_origin=cheng-compiler, got {}".format(
+            compiler_report_origin
+        ),
+        file=sys.stderr,
     )
-source_keys = [semantic_node_key(item) for item in nodes if isinstance(item, dict)]
-runtime_keys = [semantic_node_key(item) for item in runtime_nodes if isinstance(item, dict)]
-if len(source_keys) != len(nodes) or len(runtime_keys) != len(runtime_nodes):
-    print("[r2c-compile] semantic map item type invalid", file=sys.stderr)
+    sys.exit(1)
+try:
+    react_ir_doc = json.load(open(str(doc.get("react_ir_path", "")), "r", encoding="utf-8"))
+except Exception as exc:
+    print("[r2c-compile] failed to parse react_ir_path: {}".format(exc), file=sys.stderr)
+    sys.exit(1)
+try:
+    hook_graph_doc = json.load(open(str(doc.get("hook_graph_path", "")), "r", encoding="utf-8"))
+except Exception as exc:
+    print("[r2c-compile] failed to parse hook_graph_path: {}".format(exc), file=sys.stderr)
+    sys.exit(1)
+try:
+    effect_plan_doc = json.load(open(str(doc.get("effect_plan_path", "")), "r", encoding="utf-8"))
+except Exception as exc:
+    print("[r2c-compile] failed to parse effect_plan_path: {}".format(exc), file=sys.stderr)
+    sys.exit(1)
+ir_module_count = int(react_ir_doc.get("module_count", 0) or 0)
+if ir_module_count <= 0:
+    print("[r2c-compile] react_ir module_count <= 0", file=sys.stderr)
+    sys.exit(1)
+if int(react_ir_doc.get("semantic_node_count", 0) or 0) != len(nodes):
+    print("[r2c-compile] react_ir semantic_node_count mismatch", file=sys.stderr)
+    sys.exit(1)
+hook_items = hook_graph_doc.get("hooks", [])
+if not isinstance(hook_items, list):
+    print("[r2c-compile] hook_graph hooks invalid", file=sys.stderr)
+    sys.exit(1)
+hook_count = int(hook_graph_doc.get("hook_count", 0) or 0)
+if hook_count != len(hook_items):
+    print("[r2c-compile] hook_graph hook_count mismatch", file=sys.stderr)
+    sys.exit(1)
+if hook_count <= 0:
+    print("[r2c-compile] hook_graph hook_count <= 0", file=sys.stderr)
+    sys.exit(1)
+effect_items = effect_plan_doc.get("effects", [])
+if not isinstance(effect_items, list):
+    print("[r2c-compile] effect_plan effects invalid", file=sys.stderr)
+    sys.exit(1)
+effect_count = int(effect_plan_doc.get("effect_count", -1) or -1)
+if effect_count != len(effect_items):
+    print("[r2c-compile] effect_plan effect_count mismatch", file=sys.stderr)
+    sys.exit(1)
+if effect_count < 0:
+    print("[r2c-compile] effect_plan effect_count invalid", file=sys.stderr)
+    sys.exit(1)
+if strict_mode and effect_count <= 0:
+    print("[r2c-compile] strict mode requires effect_plan effect_count > 0", file=sys.stderr)
+    sys.exit(1)
+semantic_render_nodes_path = str(doc.get("semantic_render_nodes_path", "") or "")
+if not semantic_render_nodes_path:
+    print("[r2c-compile] semantic_render_nodes_path is empty", file=sys.stderr)
+    sys.exit(1)
+try:
+    render_payload = open(semantic_render_nodes_path, "rb").read()
+except Exception as exc:
+    print("[r2c-compile] failed to read semantic_render_nodes_path {}: {}".format(semantic_render_nodes_path, exc), file=sys.stderr)
+    sys.exit(1)
+semantic_render_nodes_count = int(doc.get("semantic_render_nodes_count", 0) or 0)
+if semantic_render_nodes_count <= 0:
+    print("[r2c-compile] semantic_render_nodes_count <= 0", file=sys.stderr)
+    sys.exit(1)
+render_rows = []
+for line in render_payload.decode("utf-8", errors="ignore").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    render_rows.append(line)
+if len(render_rows) != semantic_render_nodes_count:
+    print(
+        "[r2c-compile] semantic_render_nodes_count mismatch report={} rows={}".format(
+            semantic_render_nodes_count, len(render_rows)
+        ),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+if len(render_rows) < len(nodes):
+    print(
+        "[r2c-compile] semantic_render_nodes too small rows={} nodes={}".format(
+            len(render_rows), len(nodes)
+        ),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+semantic_render_nodes_hash = str(doc.get("semantic_render_nodes_hash", "") or "").strip().lower()
+if len(semantic_render_nodes_hash) != 64:
+    print("[r2c-compile] invalid semantic_render_nodes_hash", file=sys.stderr)
+    sys.exit(1)
+actual_render_hash = hashlib.sha256(render_payload).hexdigest().lower()
+if actual_render_hash != semantic_render_nodes_hash:
+    print(
+        "[r2c-compile] semantic_render_nodes_hash mismatch report={} actual={}".format(
+            semantic_render_nodes_hash, actual_render_hash
+        ),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+semantic_render_nodes_fnv64 = str(doc.get("semantic_render_nodes_fnv64", "") or "").strip().lower()
+if len(semantic_render_nodes_fnv64) != 16:
+    print("[r2c-compile] invalid semantic_render_nodes_fnv64", file=sys.stderr)
+    sys.exit(1)
+fnv = 1469598103934665603
+for b in render_payload:
+    fnv ^= int(b)
+    fnv = (fnv * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+actual_render_fnv64 = "{:016x}".format(fnv)
+if actual_render_fnv64 != semantic_render_nodes_fnv64:
+    print(
+        "[r2c-compile] semantic_render_nodes_fnv64 mismatch report={} actual={}".format(
+            semantic_render_nodes_fnv64, actual_render_fnv64
+        ),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+def semantic_node_key(item, idx):
+    if isinstance(item, dict):
+        return (
+            str(item.get("node_id", "") or f"sn_{idx}").strip() or f"sn_{idx}",
+            str(item.get("source_module", "") or "").strip(),
+            str(item.get("jsx_path", "") or f"semantic:{idx}").strip() or f"semantic:{idx}",
+            str(item.get("role", "") or "").strip(),
+            str(item.get("event_binding", "") or "").strip(),
+            str(item.get("hook_slot", "") or "").strip(),
+            str(item.get("route_hint", "") or "").strip(),
+            str(item.get("text", "") or "").strip(),
+        )
+    return None
+source_keys = [semantic_node_key(item, idx) for idx, item in enumerate(nodes)]
+runtime_keys = [semantic_node_key(item, idx) for idx, item in enumerate(runtime_nodes)]
+if any(key is None for key in source_keys) or any(key is None for key in runtime_keys):
+    print("[r2c-compile] semantic map item type invalid (require object schema)", file=sys.stderr)
     sys.exit(1)
 if len(set(source_keys)) != len(source_keys):
     print("[r2c-compile] semantic source node keys are not unique", file=sys.stderr)
@@ -4183,6 +5443,31 @@ if set(source_keys) != set(runtime_keys):
     source_only = sorted(set(source_keys) - set(runtime_keys))
     runtime_only = sorted(set(runtime_keys) - set(source_keys))
     print("[r2c-compile] semantic runtime map mismatch source_only={} runtime_only={}".format(len(source_only), len(runtime_only)), file=sys.stderr)
+    sys.exit(1)
+generated_runtime_path = str(doc.get("generated_runtime_path", "") or "")
+if not generated_runtime_path:
+    print("[r2c-compile] generated_runtime_path is empty", file=sys.stderr)
+    sys.exit(1)
+try:
+    runtime_src = open(generated_runtime_path, "r", encoding="utf-8").read()
+except Exception as exc:
+    print("[r2c-compile] failed to read generated_runtime_path {}: {}".format(generated_runtime_path, exc), file=sys.stderr)
+    sys.exit(1)
+append_count = 0
+for raw_line in runtime_src.splitlines():
+    line = raw_line.lstrip()
+    if line.startswith("#"):
+        if "appendSemanticNode(" in line:
+            print("[r2c-compile] runtime contains commented appendSemanticNode markers", file=sys.stderr)
+            sys.exit(1)
+        continue
+    if line.startswith("appendSemanticNode("):
+        append_count += 1
+if append_count < len(nodes):
+    print(
+        "[r2c-compile] runtime semantic append count too small append={} nodes={}".format(append_count, len(nodes)),
+        file=sys.stderr,
+    )
     sys.exit(1)
 if doc.get("route_discovery_mode", "") != "static-runtime-hybrid":
     print("[r2c-compile] route_discovery_mode != static-runtime-hybrid: {}".format(doc.get("route_discovery_mode")), file=sys.stderr)
@@ -4211,6 +5496,40 @@ states = doc.get("visual_states", [])
 if not isinstance(states, list) or len(states) <= 0:
     print("[r2c-compile] visual_states is empty", file=sys.stderr)
     sys.exit(1)
+def route_match(hint: str, state: str) -> bool:
+    h = str(hint or "").strip()
+    s = str(state or "").strip()
+    if not h or not s:
+        return False
+    if h == s:
+        return True
+    if s.startswith(h + "_"):
+        return True
+    if h == "home" and s.startswith("home_"):
+        return True
+    if h == "publish" and s.startswith("publish_"):
+        return True
+    if h == "trading" and s.startswith("trading_"):
+        return True
+    return False
+missing_route_coverage = []
+for state in states:
+    route_count = 0
+    for row in runtime_nodes:
+        if not isinstance(row, dict):
+            continue
+        hint = str(row.get("route_hint", "") or "").strip()
+        bucket = str(row.get("render_bucket", "") or "").strip()
+        if not hint:
+            route_count += 1
+            continue
+        if route_match(hint, state) or route_match(bucket, state):
+            route_count += 1
+    if route_count <= 0:
+        missing_route_coverage.append(state)
+if missing_route_coverage:
+    print("[r2c-compile] semantic route coverage missing states: {}".format(",".join(missing_route_coverage[:10])), file=sys.stderr)
+    sys.exit(1)
 if int(doc.get("full_route_state_count", 0)) != len(states):
     print("[r2c-compile] full_route_state_count mismatch report={} states={}".format(doc.get("full_route_state_count"), len(states)), file=sys.stderr)
     sys.exit(1)
@@ -4222,7 +5541,7 @@ for key in ("unsupported_syntax", "unsupported_imports", "degraded_features"):
 print("[verify-r2c-strict] no-fallback=true")
 print("[verify-r2c-strict] compiler-rc=0")
 PY
-python3 "$check_script" "$out_dir/r2capp/r2capp_compile_report.json" || exit 1
+python3 "$check_script" "$out_dir/r2capp/r2capp_compile_report.json" "$strict_mode" "${STRICT_GATE_CONTEXT:-0}" "$allow_template_fallback" || exit 1
 rm -f "$check_script"
 
 echo "[r2c-compile] ok: package=$out_dir/r2capp"

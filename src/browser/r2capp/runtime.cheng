@@ -1,13 +1,13 @@
-import cheng/gui/browser/web
-import cheng/gui/browser/engine/dom/model as domModel
-import cheng/gui/browser/engine/css/cascade as cssCascade
-import cheng/gui/browser/engine/layout/flow as layoutFlow
-import cheng/gui/browser/engine/paint/display_list as paintList
-import cheng/gui/browser/engine/storage/store as storageStore
-import cheng/gui/browser/r2capp/webapi as r2cWebApi
-import cheng/gui/browser/r2capp/canvas2d as canvas2d
-import cheng/gui/platform/types_v1
-import cheng/gui/render/drawlist_ir as drawir
+import gui/browser/web
+import gui/browser/engine/dom/model as domModel
+import gui/browser/engine/css/cascade as cssCascade
+import gui/browser/engine/layout/flow as layoutFlow
+import gui/browser/engine/paint/display_list as paintList
+import gui/browser/engine/storage/store as storageStore
+import gui/browser/r2capp/webapi as r2cWebApi
+import gui/browser/r2capp/canvas2d as canvas2d
+import gui/platform/types_v1
+import gui/render/drawlist_ir as drawir
 
 fn rtCEq(a: char, b: char): bool =
     let va = int32(a)

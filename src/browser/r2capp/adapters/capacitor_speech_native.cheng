@@ -1,0 +1,26 @@
+type
+    SpeechPermission = ref
+        granted: bool
+        source: str
+
+    SpeechResult = ref
+        text: str
+        done: bool
+
+fn adapterId(): str =
+    return "@capacitor-community/speech-recognition"
+
+fn requestPermissions(): SpeechPermission =
+    var out: SpeechPermission
+    new(out)
+    out.granted = true
+    out.source = "native"
+    return out
+
+fn recognizeOnce(): SpeechResult =
+    var out: SpeechResult
+    new(out)
+    out.text = ""
+    out.done = true
+    return out
+

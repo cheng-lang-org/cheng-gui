@@ -1,9 +1,9 @@
-import cheng/gui/browser/web
-import cheng/gui/browser/r2capp/utfzh_bridge
-import cheng/gui/ime/cangwu_assets_loader as cwAssets
-import cheng/gui/ime/cangwu_engine as cwEngine
-import cheng/gui/ime/cangwu_rules as cwRules
-import cheng/gui/ime/cangwu_types as cwTypes
+import gui/browser/web
+import gui/browser/r2capp/utfzh_bridge
+import gui/ime/cangwu_assets_loader as cwAssets
+import gui/ime/cangwu_engine as cwEngine
+import gui/ime/cangwu_rules as cwRules
+import gui/ime/cangwu_types as cwTypes
 
 var imeBridgeEngine: cwTypes.CwEngine
 var imeBridgeReady = false

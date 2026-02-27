@@ -1,4 +1,4 @@
-import cheng/gui/mobile/design/tokens as design_tokens
+import gui/mobile/design/tokens as design_tokens
 
 type
     UiDirection = enum

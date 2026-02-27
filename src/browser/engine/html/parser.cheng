@@ -1,4 +1,4 @@
-import cheng/gui/browser/engine/dom/model
+import gui/browser/engine/dom/model
 
 fn cEq(a: char, b: char): bool =
     let va = int32(a)

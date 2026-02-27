@@ -1,4 +1,4 @@
-import cheng/gui/ime/cangwu_types
+import gui/ime/cangwu_types
 
 fn cwEq(a: char, b: char): bool =
     return int32(a) == int32(b)

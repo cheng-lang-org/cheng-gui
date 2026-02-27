@@ -4,15 +4,15 @@ import std/tables
 import std/times
 import std/math
 import cheng/runtime/json_compat
-import cheng/gui/platform as gui
-import cheng/gui/platform/native as nativePlat
+import gui/platform as gui
+import gui/platform/native as nativePlat
 for m
-import cheng/gui/render/Backend as renderBackend
-import cheng/gui/runtime
-import cheng/gui/session
-import cheng/gui/diagnostics/input_surface
-import cheng/gui/editor/buffer
-import cheng/gui/services/lsp_adapter
+import gui/render/Backend as renderBackend
+import gui/runtime
+import gui/session
+import gui/diagnostics/input_surface
+import gui/editor/buffer
+import gui/services/lsp_adapter
 fn DescribeEvent(ev: gui.GuiEvent): str
 type
     NativeRunStatus = enum

@@ -3,7 +3,7 @@ import std/strutils
 import std/tables
 import std/times
 import cheng/runtime/json_ast
-import cheng/gui/language_service
+import gui/language_service
 import ide/textutils
 import ide/workspace
 import cheng/parser as chparser

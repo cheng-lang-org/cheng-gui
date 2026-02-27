@@ -1,6 +1,6 @@
 import std/os
 
-import cheng/gui/tools/r2c_aot/types
+import gui/tools/r2c_aot/types
 
 fn safeLen(text: str): int32 =
     if text == nil:
@@ -225,118 +225,132 @@ fn adapterForBareSpec(spec: str): types.R2cAdapterResolve =
     out.reason = "unsupported-bare-import"
     if spec == "react":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react"
+        out.adapterModule = "gui/browser/r2capp/adapters/react"
         out.reason = ""
         return out
     if spec == "react-dom/client":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/react_dom_client"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_dom_client"
         out.reason = ""
         return out
     if spec == "lucide-react":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/lucide"
+        out.adapterModule = "gui/browser/r2capp/adapters/lucide"
         out.reason = ""
         return out
     if spec == "react-responsive-masonry":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/responsive_masonry"
+        out.adapterModule = "gui/browser/r2capp/adapters/responsive_masonry"
         out.reason = ""
         return out
     if spec == "@capacitor/core":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_core"
+        out.adapterModule = "gui/browser/r2capp/adapters/capacitor_core"
         out.reason = ""
         return out
     if spec == "@capacitor/geolocation":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/capacitor_geo"
+        out.adapterModule = "gui/browser/r2capp/adapters/capacitor_geo"
         out.reason = ""
         return out
     if spec == "ethers":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ethers_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/ethers_lite"
         out.reason = ""
         return out
     if spec == "@solana/web3.js":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/solana_web3_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/solana_web3_lite"
         out.reason = ""
         return out
     if spec == "bip39":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bip39_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/bip39_lite"
         out.reason = ""
         return out
     if spec == "bitcoinjs-lib":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/bitcoinjs_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/bitcoinjs_lite"
         out.reason = ""
         return out
     if spec == "tiny-secp256k1":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/tiny_secp256k1_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/tiny_secp256k1_lite"
         out.reason = ""
         return out
     if spec == "ecpair":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/ecpair_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/ecpair_lite"
         out.reason = ""
         return out
     if spec == "lunar-javascript":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/lunar_native"
         out.reason = ""
         return out
     if spec == "virtual:pwa-register":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/pwa_register_native"
         out.reason = ""
         return out
     if spec == "jspdf":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/jspdf_native"
         out.reason = ""
         return out
     if spec == "crypto" || spec == "node:crypto":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/crypto_lite"
+        out.adapterModule = "gui/browser/r2capp/adapters/crypto_lite"
         out.reason = ""
         return out
     if spec == "three":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/three_native"
         out.reason = ""
         return out
     if spec == "zustand":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/zustand_native"
         out.reason = ""
         return out
     if spec == "@react-three/fiber":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if spec == "@react-three/drei":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if spec == "@react-three/cannon":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/react_three_native"
         out.reason = ""
         return out
     if hasPrefix(spec, "@radix-ui/"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/radix_native"
         out.reason = ""
         return out
     if hasPrefix(spec, "@vitejs/"):
+        out.supported = false
+        out.adapterModule = ""
+        out.reason = "buildtime-import-not-allowed"
+        return out
+    if spec == "@capacitor-community/speech-recognition":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/capacitor_speech_native"
         out.reason = ""
+        return out
+    if spec == "@mediapipe/selfie_segmentation":
+        out.supported = true
+        out.adapterModule = "gui/browser/r2capp/adapters/mediapipe_native"
+        out.reason = ""
+        return out
+    if spec == "embla-carousel-react" || spec == "react-hook-form" || spec == "prop-types":
+        out.supported = true
+        out.adapterModule = "gui/browser/r2capp/adapters/ui_widgets_native"
         return out
     if spec == "@capacitor/cli" ||
             spec == "class-variance-authority" ||
@@ -357,17 +371,41 @@ fn adapterForBareSpec(spec: str): types.R2cAdapterResolve =
             spec == "vite-plugin-wasm" ||
             spec == "vitest":
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
-        out.reason = ""
+        if spec == "@capacitor/cli":
+            out.adapterModule = "gui/browser/r2capp/adapters/capacitor_equiv"
+        elif spec == "class-variance-authority" || spec == "clsx" || spec == "tailwind-merge":
+            out.adapterModule = "gui/browser/r2capp/adapters/style_utils_native"
+        elif spec == "cmdk" ||
+                spec == "input-otp" ||
+                spec == "next-themes" ||
+                spec == "react-day-picker" ||
+                spec == "react-resizable-panels" ||
+                spec == "recharts" ||
+                spec == "sonner" ||
+                spec == "vaul":
+            out.adapterModule = "gui/browser/r2capp/adapters/ui_widgets_native"
+        elif spec == "tailwindcss" ||
+                spec == "vite" ||
+                spec == "vite-plugin-pwa" ||
+                spec == "vite-plugin-top-level-await" ||
+                spec == "vite-plugin-wasm" ||
+                spec == "vitest":
+            out.supported = false
+            out.adapterModule = ""
+            out.reason = "buildtime-import-not-allowed"
+        else:
+            out.adapterModule = "gui/browser/r2capp/adapters/third_party_native"
+        if len(out.reason) == 0:
+            out.reason = ""
         return out
     if hasPrefix(spec, "@noble/hashes/"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/crypto_lite"
         out.reason = ""
         return out
     if hasPrefix(spec, "node:"):
         out.supported = true
-        out.adapterModule = "cheng/gui/browser/r2capp/adapters/external_stub"
+        out.adapterModule = "gui/browser/r2capp/adapters/node_polyfill"
         out.reason = ""
         return out
     return out

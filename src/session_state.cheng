@@ -2,7 +2,7 @@ import std/os
 import std/tables
 import cheng/runtime/json_runtime as runtimeJson
 import ide/textutils
-import cheng/gui/editor/buffer
+import gui/editor/buffer
 const
     SessionStateDir = "build/gui"
     SessionStateFile = "session_state.json"

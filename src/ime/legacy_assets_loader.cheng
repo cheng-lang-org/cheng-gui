@@ -1,5 +1,5 @@
 import std/os
-import cheng/gui/ime/cangwu_types
+import gui/ime/cangwu_types
 
 fn legacySliceRange(text: str, start: int32, stopExclusive: int32): str =
     if len(text) <= 0:

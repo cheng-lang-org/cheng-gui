@@ -1,8 +1,8 @@
 import std/os
-import cheng/gui/browser/web
-import cheng/gui/browser/r2capp/utfzh_bridge
-import cheng/gui/browser/r2capp/ime_bridge
-import cheng/gui/render/drawlist_ir as drawir
+import gui/browser/web
+import gui/browser/r2capp/utfzh_bridge
+import gui/browser/r2capp/ime_bridge
+import gui/render/drawlist_ir as drawir
 
 fn cEq(a: char, b: char): bool =
     return int32(a) == int32(b)

@@ -2,7 +2,7 @@ import std/os
 import std/strutils
 except split
 import ide/textutils
-import cheng/gui/i18n
+import gui/i18n
 fn splitLocaleSegments(value: str): str[] =
     var segments: str[] = []
     var current = ""

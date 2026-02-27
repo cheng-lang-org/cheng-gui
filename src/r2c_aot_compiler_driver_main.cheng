@@ -1,4 +1,4 @@
-import cheng/gui/tools/r2c_aot/compiler as r2cCompiler
+import gui/tools/r2c_aot/compiler as r2cCompiler
 
 fn main(): int32 =
     return r2cCompiler.runCompileProjectFromMainEnv()

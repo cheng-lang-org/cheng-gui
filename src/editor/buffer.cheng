@@ -6,9 +6,9 @@ import std/times
 import cheng/runtime/json_ast
 import cheng/runtime/option
 import ide/textutils
-import cheng/gui/widgets/codeview
-import cheng/gui/services/lsp_adapter
-import cheng/gui/language_service
+import gui/widgets/codeview
+import gui/services/lsp_adapter
+import gui/language_service
 const
     DefaultAutosaveDelayMs = int64(2000)
     MaxUndoDepth = 128

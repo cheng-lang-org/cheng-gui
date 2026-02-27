@@ -1,6 +1,6 @@
-import cheng/gui/browser/engine/dom/model
-import cheng/gui/platform/types_v1
-import cheng/gui/render/drawlist_ir as drawir
+import gui/browser/engine/dom/model
+import gui/platform/types_v1
+import gui/render/drawlist_ir as drawir
 
 fn cLt(a: char, b: char): bool =
     return int32(a) < int32(b)

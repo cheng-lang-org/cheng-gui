@@ -1,5 +1,5 @@
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/cangwu_rules
+import gui/ime/cangwu_types
+import gui/ime/cangwu_rules
 
 fn cwReverseCandidatesByKey(engine: CwEngine, mode: str, key: str): CwCandidate[] =
     var out: CwCandidate[]

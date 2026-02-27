@@ -170,7 +170,7 @@ EOF
 }
 EOF
   cat > "$pkg_dir/src/entry.cheng" <<EOF
-import cheng/gui/browser/web
+import gui/browser/web
 import cheng/r2capp/runtime_generated as generatedRuntime
 
 fn mount(page: web.BrowserPage): bool =
@@ -183,8 +183,8 @@ fn compiledModuleCount(): int32 =
     return int32(1)
 EOF
   cat > "$pkg_dir/src/runtime_generated.cheng" <<EOF
-import cheng/gui/browser/web
-import cheng/gui/browser/r2capp/runtime as legacy
+import gui/browser/web
+import gui/browser/r2capp/runtime as legacy
 
 fn profileId(): str =
     return "$profile"

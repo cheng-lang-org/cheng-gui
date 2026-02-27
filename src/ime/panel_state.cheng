@@ -1,13 +1,13 @@
 import std/os
-import cheng/gui/ime/cangwu_assets_loader
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/cangwu_rules
-import cheng/gui/ime/cangwu_engine
-import cheng/gui/ime/cangwu_reverse
-import cheng/gui/ime/utfzh_codec
-import cheng/gui/ime/legacy_types
-import cheng/gui/ime/legacy_assets_loader
-import cheng/gui/ime/legacy_codec
+import gui/ime/cangwu_assets_loader
+import gui/ime/cangwu_types
+import gui/ime/cangwu_rules
+import gui/ime/cangwu_engine
+import gui/ime/cangwu_reverse
+import gui/ime/utfzh_codec
+import gui/ime/legacy_types
+import gui/ime/legacy_assets_loader
+import gui/ime/legacy_codec
 
 type
     CwPanelMode = enum

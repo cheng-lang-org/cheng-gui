@@ -1,0 +1,18 @@
+fn adapterId(): str =
+    return "style-utils-native"
+
+fn clsx(a, b: str): str =
+    if len(a) == 0:
+        return b
+    if len(b) == 0:
+        return a
+    return a + " " + b
+
+fn cva(base, variant: str): str =
+    if len(variant) == 0:
+        return base
+    return clsx(base, variant)
+
+fn tailwindMerge(a, b: str): str =
+    return clsx(a, b)
+

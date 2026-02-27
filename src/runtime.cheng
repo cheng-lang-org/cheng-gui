@@ -1,6 +1,6 @@
 # Stage1 requires non-empty modules.
-import cheng/gui/runtime/scheduler
-import cheng/gui/runtime/loop
-import cheng/gui/runtime/lifecycle
+import gui/runtime/scheduler
+import gui/runtime/loop
+import gui/runtime/lifecycle
 
 let guiRuntimeMarker: int32 = 0

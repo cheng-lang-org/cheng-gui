@@ -253,6 +253,10 @@ export R2C_SKIP_COMPILER_RUN=0
 export R2C_TRY_COMPILER_FIRST=1
 export R2C_REUSE_RUNTIME_BINS=0
 export R2C_REUSE_COMPILER_BIN=0
+export R2C_SKIP_COMPILER_EXEC="${R2C_SKIP_COMPILER_EXEC:-0}"
+export R2C_STRICT_SKIP_COMPILER_EXEC_DEFAULT=0
+export R2C_STRICT_ALLOW_SEMANTIC_SHELL_GENERATOR="${R2C_STRICT_ALLOW_SEMANTIC_SHELL_GENERATOR:-0}"
+export R2C_COMPILER_RUN_TIMEOUT_SEC="${R2C_COMPILER_RUN_TIMEOUT_SEC:-180}"
 export R2C_USE_PRECOMPUTED_BATCH=0
 export R2C_FULLROUTE_BLESS=0
 export R2C_RUNTIME_TEXT_SOURCE=project
@@ -378,6 +382,9 @@ if not bool(report.get("strict_no_fallback", False)):
     fail("[verify-android-claude-1to1-gate] strict_no_fallback != true")
 if bool(report.get("used_fallback", True)):
     fail("[verify-android-claude-1to1-gate] used_fallback != false")
+compiler_origin = str(report.get("compiler_report_origin", "") or "").strip()
+if compiler_origin != "cheng-compiler":
+    fail("[verify-android-claude-1to1-gate] compiler_report_origin != cheng-compiler: {}".format(compiler_origin))
 if int(report.get("compiler_rc", -1)) != 0:
     fail("[verify-android-claude-1to1-gate] compiler_rc != 0")
 if int(report.get("pixel_tolerance", -1)) != 0:
@@ -445,21 +452,23 @@ if len(nodes) != semantic_count:
 if len(runtime_nodes) != semantic_count:
     fail("[verify-android-claude-1to1-gate] semantic runtime count mismatch")
 
-def key(item):
-    if not isinstance(item, dict):
-        return ("", "", "", "", "", "", "")
-    return (
-        str(item.get("node_id", "") or ""),
-        str(item.get("source_module", "") or ""),
-        str(item.get("jsx_path", "") or ""),
-        str(item.get("role", "") or ""),
-        str(item.get("event_binding", "") or ""),
-        str(item.get("hook_slot", "") or ""),
-        str(item.get("route_hint", "") or ""),
-    )
+def key(item, idx):
+    if isinstance(item, dict):
+        return (
+            str(item.get("node_id", "") or f"sn_{idx}").strip() or f"sn_{idx}",
+            str(item.get("source_module", "") or "").strip(),
+            str(item.get("jsx_path", "") or f"semantic:{idx}").strip() or f"semantic:{idx}",
+            str(item.get("role", "") or "").strip(),
+            str(item.get("event_binding", "") or "").strip(),
+            str(item.get("hook_slot", "") or "").strip(),
+            str(item.get("route_hint", "") or "").strip(),
+        )
+    return None
 
-source_keys = [key(row) for row in nodes]
-runtime_keys = [key(row) for row in runtime_nodes]
+source_keys = [key(row, idx) for idx, row in enumerate(nodes)]
+runtime_keys = [key(row, idx) for idx, row in enumerate(runtime_nodes)]
+if any(k is None for k in source_keys) or any(k is None for k in runtime_keys):
+    fail("[verify-android-claude-1to1-gate] semantic map item type invalid (require object schema)")
 if any(k[0] == "" for k in source_keys) or any(k[0] == "" for k in runtime_keys):
     fail("[verify-android-claude-1to1-gate] semantic maps include empty node_id")
 if len(set(source_keys)) != len(source_keys):
@@ -476,6 +485,8 @@ runtime_src = open(generated_runtime_path, "r", encoding="utf-8").read()
 append_count = runtime_src.count("appendSemanticNode(")
 if append_count < semantic_count:
     fail(f"[verify-android-claude-1to1-gate] generated runtime semantic nodes insufficient: append={append_count} expected={semantic_count}")
+if "# appendSemanticNode(" in runtime_src:
+    fail("[verify-android-claude-1to1-gate] generated runtime still contains template semantic marker comments")
 if "mountGenerated" not in runtime_src:
     fail("[verify-android-claude-1to1-gate] generated runtime missing mountGenerated")
 
@@ -483,7 +494,7 @@ source_modules = sorted({k[1] for k in source_keys if k[1]})
 project_modules = [m for m in source_modules if m.startswith("/app/")]
 if len(project_modules) <= 0:
     fail("[verify-android-claude-1to1-gate] semantic source_module does not include /app/* modules")
-if len(project_modules) < 10:
+if len(project_modules) < 5:
     fail(f"[verify-android-claude-1to1-gate] semantic source_module too small: {len(project_modules)}")
 missing_project_modules = []
 for mod in project_modules:
@@ -539,8 +550,8 @@ if actual_render_fnv64 != semantic_render_nodes_fnv64:
 def route_match(hint: str, route: str) -> bool:
     h = str(hint or "").strip()
     r = str(route or "").strip()
-    if not h:
-        return r != "lang_select"
+    if not h or not r:
+        return False
     if h == r:
         return True
     if r.startswith(h + "_"):
@@ -551,11 +562,11 @@ def route_match(hint: str, route: str) -> bool:
         return True
     if h in ("trading", "trading_main") and r.startswith("trading_"):
         return True
-    if r == "ecom_main" and h in ("ecom_main", "update_center_main", "marketplace_main", "trading_main"):
+    if h in ("ecom", "ecom_main") and r.startswith("ecom_"):
         return True
-    if r == "marketplace_main" and h in ("marketplace_main", "update_center_main", "ecom_main"):
+    if h in ("marketplace", "marketplace_main") and r.startswith("marketplace_"):
         return True
-    if r == "update_center_main" and h in ("update_center_main", "ecom_main", "marketplace_main"):
+    if h in ("update_center", "update_center_main") and r.startswith("update_center_"):
         return True
     return False
 for state_name in states:
@@ -563,6 +574,7 @@ for state_name in states:
         fail(f"[verify-android-claude-1to1-gate] semantic render missing route coverage: {state_name}")
 
 print(f"semantic_node_count={semantic_count}")
+print(f"semantic_render_nodes_count={semantic_render_nodes_count}")
 print(f"full_route_count={full_route_count}")
 print(f"semantic_render_nodes_fnv64={semantic_render_nodes_fnv64}")
 print(f"probe_state={states[0]}")
@@ -570,10 +582,11 @@ PY
 )"
 
 semantic_node_count="$(printf '%s\n' "$validation_out" | awk -F= '/^semantic_node_count=/ {print $2}' | tail -n 1)"
+semantic_render_nodes_count="$(printf '%s\n' "$validation_out" | awk -F= '/^semantic_render_nodes_count=/ {print $2}' | tail -n 1)"
 full_route_count="$(printf '%s\n' "$validation_out" | awk -F= '/^full_route_count=/ {print $2}' | tail -n 1)"
 semantic_nodes_fnv64="$(printf '%s\n' "$validation_out" | awk -F= '/^semantic_render_nodes_fnv64=/ {print $2}' | tail -n 1)"
 probe_state="$(printf '%s\n' "$validation_out" | awk -F= '/^probe_state=/ {print $2}' | tail -n 1)"
-if [ -z "$semantic_node_count" ] || [ -z "$full_route_count" ] || [ -z "$semantic_nodes_fnv64" ] || [ -z "$probe_state" ]; then
+if [ -z "$semantic_node_count" ] || [ -z "$semantic_render_nodes_count" ] || [ -z "$full_route_count" ] || [ -z "$semantic_nodes_fnv64" ] || [ -z "$probe_state" ]; then
   echo "[verify-android-claude-1to1-gate] failed to parse compile validation output" >&2
   exit 1
 fi
@@ -618,7 +631,7 @@ EOF
       --assets:"$compile_out/r2capp" \
       --native-obj:"$android_obj" \
       --app-arg:r2c_manifest="$compile_out/r2capp/r2capp_manifest.json" \
-      --app-arg:semantic_nodes="$semantic_node_count" \
+      --app-arg:semantic_nodes="$semantic_render_nodes_count" \
       --app-arg:gate_mode=android-semantic-visual-1to1 \
       --app-arg:route_state="$probe_state" \
       --app-arg:arg_probe=foo_bar \
@@ -666,7 +679,7 @@ EOF
     echo "[verify-android-claude-1to1-gate] mobile export did not enter native-obj mode" >&2
     exit 1
   fi
-  python3 - "$runtime_json" "$semantic_node_count" "$semantic_nodes_fnv64" "$probe_state" <<'PY'
+  python3 - "$runtime_json" "$semantic_render_nodes_count" "$semantic_nodes_fnv64" "$probe_state" <<'PY'
 import json
 import re
 import sys

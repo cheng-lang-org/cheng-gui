@@ -1,7 +1,7 @@
 import std/seqs
-import cheng/gui/platform/types_v1
-import cheng/gui/platform/native_sys_impl as nativePlat
-import cheng/gui/examples_games/common/string_utils as sutil
+import gui/platform/types_v1
+import gui/platform/native_sys_impl as nativePlat
+import gui/examples_games/common/string_utils as sutil
 
 fn chengGuiNativeDrawTextSimple(pixels: void*, width: int32, height: int32, strideBytes: int32, x: int32, y: int32, color: uint32, fontSize: int32, text: cstring): int32 @ importc("chengGuiNativeDrawTextSimple")
 

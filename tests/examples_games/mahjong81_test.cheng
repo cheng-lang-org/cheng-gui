@@ -1,5 +1,5 @@
-import cheng/gui/examples_games/common/protocol
-import cheng/gui/examples_games/mahjong4/state as mj
+import gui/examples_games/common/protocol
+import gui/examples_games/mahjong4/state as mj
 
 fn makeReq(seat: int32, kind: str, args: str): ActionRequest =
     var req: ActionRequest = initActionRequest()

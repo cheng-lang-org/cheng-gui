@@ -1,0 +1,25 @@
+type
+    ZustandStore = ref
+        key: str
+        state: str
+
+fn adapterId(): str =
+    return "zustand"
+
+fn createStore(key, initialState: str): ZustandStore =
+    var out: ZustandStore
+    new(out)
+    out.key = key
+    out.state = initialState
+    return out
+
+fn setState(store: ZustandStore, nextState: str) =
+    if store == nil:
+        return
+    store.state = nextState
+
+fn getState(store: ZustandStore): str =
+    if store == nil:
+        return ""
+    return store.state
+

@@ -1,6 +1,6 @@
-import cheng/gui/mobile/core/types
-import cheng/gui/mobile/host/api as host_api
-import cheng/gui/mobile/design/tokens as design_tokens
+import gui/mobile/core/types
+import gui/mobile/host/api as host_api
+import gui/mobile/design/tokens as design_tokens
 
 type
     UiMsgKind = enum

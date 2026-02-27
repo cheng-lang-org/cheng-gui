@@ -1,4 +1,4 @@
-import cheng/gui/browser/types
+import gui/browser/types
 
 type
     BrowserProcess = ref

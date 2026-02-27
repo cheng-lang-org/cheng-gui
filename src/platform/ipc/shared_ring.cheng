@@ -1,4 +1,4 @@
-import cheng/gui/platform/ipc/messages_v2
+import gui/platform/ipc/messages_v2
 
 type
     SharedRing = ref

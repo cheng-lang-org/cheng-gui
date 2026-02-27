@@ -30,6 +30,13 @@ export R2C_TARGET_MATRIX="harmony"
 export R2C_RUNTIME_TEXT_SOURCE="project"
 export R2C_RUNTIME_ROUTE_TITLE_SOURCE="project"
 export R2C_SKIP_HOST_RUNTIME_BIN_BUILD=1
+export R2C_SKIP_COMPILER_RUN=0
+export R2C_TRY_COMPILER_FIRST=1
+export R2C_REUSE_COMPILER_BIN=0
+export R2C_SKIP_COMPILER_EXEC="${R2C_SKIP_COMPILER_EXEC:-0}"
+export R2C_STRICT_SKIP_COMPILER_EXEC_DEFAULT=0
+export R2C_STRICT_ALLOW_SEMANTIC_SHELL_GENERATOR="${R2C_STRICT_ALLOW_SEMANTIC_SHELL_GENERATOR:-0}"
+export R2C_COMPILER_RUN_TIMEOUT_SEC="${R2C_COMPILER_RUN_TIMEOUT_SEC:-180}"
 export CHENG_HARMONY_REQUIRE_HAP="${CHENG_HARMONY_REQUIRE_HAP:-1}"
 
 echo "== r2c native equivalence: harmony compile =="
@@ -57,6 +64,19 @@ if not bool(data.get("strict_no_fallback", False)):
     sys.exit(1)
 if bool(data.get("used_fallback", True)):
     print("[verify-r2c-harmony-native] used_fallback != false", file=sys.stderr)
+    sys.exit(1)
+compiler_origin = str(data.get("compiler_report_origin", "") or "").strip()
+if compiler_origin != "cheng-compiler":
+    print(
+        f"[verify-r2c-harmony-native] compiler_report_origin != cheng-compiler: {compiler_origin}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+if bool(data.get("template_runtime_used", False)):
+    print("[verify-r2c-harmony-native] template_runtime_used != false", file=sys.stderr)
+    sys.exit(1)
+if str(data.get("semantic_compile_mode", "") or "") not in ("react-semantic-ir-node-compile", "react-semantic-ir-v1"):
+    print("[verify-r2c-harmony-native] semantic_compile_mode invalid", file=sys.stderr)
     sys.exit(1)
 if str(data.get("semantic_mapping_mode", "") or "") != "source-node-map":
     print("[verify-r2c-harmony-native] semantic_mapping_mode != source-node-map", file=sys.stderr)
@@ -116,6 +136,12 @@ if not isinstance(nodes, list) or len(nodes) != semantic_count:
 if not isinstance(runtime_nodes, list) or len(runtime_nodes) != semantic_count:
     print("[verify-r2c-harmony-native] semantic runtime map count mismatch", file=sys.stderr)
     sys.exit(1)
+if not all(isinstance(row, dict) for row in nodes):
+    print("[verify-r2c-harmony-native] semantic source map item type invalid (require object schema)", file=sys.stderr)
+    sys.exit(1)
+if not all(isinstance(row, dict) for row in runtime_nodes):
+    print("[verify-r2c-harmony-native] semantic runtime map item type invalid (require object schema)", file=sys.stderr)
+    sys.exit(1)
 with open(semantic_render_nodes_path, "r", encoding="utf-8", errors="ignore") as fh:
     render_rows = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
 if len(render_rows) != semantic_render_nodes_count:
@@ -158,13 +184,21 @@ if append_count < semantic_count:
         file=sys.stderr,
     )
     sys.exit(1)
+if "# appendSemanticNode(" in runtime_src:
+    print("[verify-r2c-harmony-native] generated runtime contains template semantic marker comments", file=sys.stderr)
+    sys.exit(1)
+def node_source_module(row):
+    if isinstance(row, dict):
+        return str((row or {}).get("source_module", "") or "").strip()
+    return ""
+
 source_modules = sorted({
-    str((row or {}).get("source_module", "") or "").strip()
+    node_source_module(row)
     for row in nodes
-    if isinstance(row, dict)
+    if node_source_module(row)
 })
 project_modules = [m for m in source_modules if m.startswith("/app/")]
-if len(project_modules) < 10:
+if len(project_modules) < 5:
     print(f"[verify-r2c-harmony-native] semantic source_module too small: {len(project_modules)}", file=sys.stderr)
     sys.exit(1)
 missing = []

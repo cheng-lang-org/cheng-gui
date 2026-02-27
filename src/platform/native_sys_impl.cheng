@@ -1,6 +1,6 @@
 # Pure-Cheng fallback host implementation used when `cheng_sys_gui` is enabled.
 # Toolchain builtin integration (`std/sys/gui`) is expected to replace this shim.
-import cheng/gui/platform/types_v1
+import gui/platform/types_v1
 import std/os
 
 fn envValue(name: str): str =

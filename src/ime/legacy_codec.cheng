@@ -1,7 +1,7 @@
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/cangwu_rules
-import cheng/gui/ime/utfzh_codec
-import cheng/gui/ime/legacy_types
+import gui/ime/cangwu_types
+import gui/ime/cangwu_rules
+import gui/ime/utfzh_codec
+import gui/ime/legacy_types
 import std/strings
 
 const LegacyReplacement = int32(0xFFFD)

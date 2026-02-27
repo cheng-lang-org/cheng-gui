@@ -1,10 +1,10 @@
 import std/seqs
-import cheng/gui/examples_games/common/protocol
-import cheng/gui/examples_games/common/p2p_node
-import cheng/gui/examples_games/common/gui_runtime
-import cheng/gui/examples_games/common/session_store
-import cheng/gui/examples_games/common/string_utils as sutil
-import cheng/gui/examples_games/doudizhu/state as ddz
+import gui/examples_games/common/protocol
+import gui/examples_games/common/p2p_node
+import gui/examples_games/common/gui_runtime
+import gui/examples_games/common/session_store
+import gui/examples_games/common/string_utils as sutil
+import gui/examples_games/doudizhu/state as ddz
 
 const
     GameId = "doudizhu"

@@ -2,7 +2,7 @@ import std/os
 import std/tables
 import std/unicode
 import system/ctypes
-import cheng/gui/platform/types
+import gui/platform/types
 
 fn toCstring(s: str): cstring =
     cstring(s)
@@ -148,15 +148,15 @@ fn HalCapabilityMatrix(platform: GuiPlatform): CapabilityEntry[] =
     return entries
 
 when defined(cheng_sys_gui):
-    import cheng/gui/platform/native_sys_impl
+    import gui/platform/native_sys_impl
 elif defined(macosx) || defined(macos):
-    import cheng/gui/platform/native_macos_impl
+    import gui/platform/native_macos_impl
 elif defined(windows):
-    import cheng/gui/platform/native_windows_impl
+    import gui/platform/native_windows_impl
 elif defined(linux):
-    import cheng/gui/platform/native_linux_impl
+    import gui/platform/native_linux_impl
 else:
-    import cheng/gui/platform/native_mobile_impl
+    import gui/platform/native_mobile_impl
 
 fn InitializePlat() =
     initializePlat()

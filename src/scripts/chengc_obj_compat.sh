@@ -183,19 +183,6 @@ if [ -z "$selected_driver" ]; then
 fi
 
 work_root="$caller_pwd"
-if [ "${input#"$gui_pkg_root/"}" != "$input" ] && [ -d "$gui_pkg_root/src" ]; then
-  bridge_root="$gui_pkg_root/build/chengc_obj_compat/root"
-  bridge_src="$bridge_root/src"
-  mkdir -p "$bridge_src"
-  ln -sfn "$cheng_lang_root/src/std" "$bridge_src/std" || true
-  ln -sfn "$cheng_lang_root/src/core" "$bridge_src/core" || true
-  ln -sfn "$cheng_lang_root/src/system" "$bridge_src/system" || true
-  ln -sfn "$gui_pkg_root/src" "$bridge_src/gui" || true
-  if [ -d "/Users/lbcheng/.cheng-packages/cheng-ide/src" ]; then
-    ln -sfn "/Users/lbcheng/.cheng-packages/cheng-ide/src" "$bridge_src/ide" || true
-  fi
-  work_root="$bridge_root"
-fi
 
 (
   cd "$work_root"

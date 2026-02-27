@@ -1,5 +1,5 @@
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/cangwu_rules
+import gui/ime/cangwu_types
+import gui/ime/cangwu_rules
 
 fn cwPrefixKey(code: str, n: int32): str =
     let normalized = cwNormalizeCodeInput(code)

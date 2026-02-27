@@ -1,4 +1,4 @@
-import cheng/gui/browser/r2capp/react_compat
+import gui/browser/r2capp/react_compat
 
 type
     ThreeScene = ref

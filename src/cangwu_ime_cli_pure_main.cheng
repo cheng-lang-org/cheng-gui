@@ -1,4 +1,4 @@
-import cheng/gui/cangwu_ime_cli_main
+import gui/cangwu_ime_cli_main
 
 fn main(): int32 =
     return runCli()

@@ -1,10 +1,10 @@
-import cheng/gui/browser/web
-import cheng/gui/browser/engine/storage/store as storageStore
-import cheng/gui/browser/r2capp/ime_bridge
-import cheng/gui/browser/r2capp/webapi
-import cheng/gui/browser/r2capp/utfzh_editor
-import cheng/gui/browser/r2capp/utfzh_bridge
-import cheng/gui/render/drawlist_ir as drawir
+import gui/browser/web
+import gui/browser/engine/storage/store as storageStore
+import gui/browser/r2capp/ime_bridge
+import gui/browser/r2capp/webapi
+import gui/browser/r2capp/utfzh_editor
+import gui/browser/r2capp/utfzh_bridge
+import gui/render/drawlist_ir as drawir
 
 type
     SemanticNode = ref
@@ -334,10 +334,6 @@ __R2C_SELECTOR_ROUTE_CASES__
     let normalized = dashToUnderscore(id)
     if isKnownRoute(normalized):
         return normalized
-    return ""
-
-fn routeTextPayload(route: str): str =
-__R2C_ROUTE_TEXT_CASES__
     return ""
 
 fn inferRouteHint(node: SemanticNode): str =
@@ -765,12 +761,17 @@ fn rerender(page: web.BrowserPage) =
         idx = idx + int32(1)
 
     if safeLen(visibleText) <= int32(0):
-        let routePayload = strictRoundtripText(page, routeTextPayload(renderRoute))
-        if safeLen(routePayload) > int32(0):
-            drawir.pushTextInt(list, panelX + int32(12), int32(36), panelW - int32(24), vh - int32(52), routePayload, uint32(0xFF1F2937), 14.0)
-            visibleText = visibleText + routePayload + "\n"
-        else:
-            page.r2cUtfZhLastError = "missing-route-text:" + renderRoute
+        page.r2cUtfZhLastError = "semantic-render-empty:" + renderRoute
+        drawir.pushTextInt(
+            list,
+            panelX + int32(12),
+            int32(36),
+            panelW - int32(24),
+            vh - int32(52),
+            "SEMANTIC_RENDER_EMPTY:" + renderRoute,
+            uint32(0xFFB91C1C),
+            14.0
+        )
 
     if safeLen(page.r2cImeCommitted) > int32(0):
         let imeText = "IME:" + strictRoundtripText(page, page.r2cImeCommitted)

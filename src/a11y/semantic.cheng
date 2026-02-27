@@ -1,4 +1,4 @@
-import cheng/gui/core/component
+import gui/core/component
 
 type
     A11yAction = enum

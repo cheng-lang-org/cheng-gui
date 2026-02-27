@@ -1,7 +1,7 @@
 import std/hashes
 import std/math
 import std/times
-import cheng/gui/platform/types
+import gui/platform/types
 type
     SkiaRenderHandle = void*
     SkiaFrameStats =

@@ -2,10 +2,10 @@ import std/strformat
 import std/strutils
 import std/times
 import ide/textutils
-import cheng/gui/platform
-import cheng/gui/render/Backend
-import cheng/gui/widgets/base
-import cheng/gui/ownership/auto_annotate
+import gui/platform
+import gui/render/Backend
+import gui/widgets/base
+import gui/ownership/auto_annotate
 type
     AutoAnnotateDialogTheme =
         background: uint32

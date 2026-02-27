@@ -1,7 +1,7 @@
 import std/os
-import cheng/gui/browser/types
-import cheng/gui/browser/web
-import cheng/gui/browser/r2capp/runtime_generic as r2cRuntime
+import gui/browser/types
+import gui/browser/web
+import gui/browser/r2capp/runtime_generic as r2cRuntime
 
 fn resolveManifestPath(): str =
     let envPath = os.getEnv("R2CAPP_MANIFEST")

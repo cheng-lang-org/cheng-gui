@@ -1,7 +1,7 @@
 when defined(android):
     import std/tables
     import system/ctypes
-    import cheng/gui/platform/types
+    import gui/platform/types
 
     type
         MobileCInt = int32
@@ -365,4 +365,4 @@ when defined(android):
         let stride = if strideBytes <= 0: width * 4 else: strideBytes
         chengGuiNativePresentPixels(surf->handle, void*(pixels), MobileCInt(width), MobileCInt(height), MobileCInt(stride))
 else:
-    import cheng/gui/platform/native_stub_impl
+    import gui/platform/native_stub_impl

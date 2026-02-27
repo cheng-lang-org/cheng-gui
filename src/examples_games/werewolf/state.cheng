@@ -1,6 +1,6 @@
 import std/seqs
-import cheng/gui/examples_games/common/protocol
-import cheng/gui/examples_games/common/string_utils as sutil
+import gui/examples_games/common/protocol
+import gui/examples_games/common/string_utils as sutil
 
 const
     WolfPlayerCount = 12

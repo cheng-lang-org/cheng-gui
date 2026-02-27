@@ -1,12 +1,12 @@
-import cheng/gui/core/component
-import cheng/gui/runtime/scheduler
-import cheng/gui/runtime/loop as runtimeLoop
-import cheng/gui/layout/layout_tree
-import cheng/gui/render/drawlist_ir
-import cheng/gui/render/backend_compat
-import cheng/gui/a11y/semantic
-import cheng/gui/platform/native_sys_impl as nativePlat
-import cheng/gui/platform/types_v1
+import gui/core/component
+import gui/runtime/scheduler
+import gui/runtime/loop as runtimeLoop
+import gui/layout/layout_tree
+import gui/render/drawlist_ir
+import gui/render/backend_compat
+import gui/a11y/semantic
+import gui/platform/native_sys_impl as nativePlat
+import gui/platform/types_v1
 
 type
     UiContext = component.UiContext

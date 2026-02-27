@@ -8,20 +8,20 @@ except JsonNode, JNull, JBool, JInt, JFloat, JString, JArray, JObject, newJArray
 import cheng/runtime/json_compat
 import cheng/runtime/json_runtime as runtimeJson
 import ide/textutils
-import cheng/gui/widgets/codeview
-import cheng/gui/widgets/logpanel
-import cheng/gui/widgets/visualization
-import cheng/gui/widgets/terminal
-import cheng/gui/widgets/debugger
-import cheng/gui/widgets/perf_panel
-import cheng/gui/widgets/task_monitor
-import cheng/gui/widgets/annotate_dialog
-import cheng/gui/widgets/language_panel
-import cheng/gui/widgets/document_tabs
-import cheng/gui/ownership/auto_annotate
+import gui/widgets/codeview
+import gui/widgets/logpanel
+import gui/widgets/visualization
+import gui/widgets/terminal
+import gui/widgets/debugger
+import gui/widgets/perf_panel
+import gui/widgets/task_monitor
+import gui/widgets/annotate_dialog
+import gui/widgets/language_panel
+import gui/widgets/document_tabs
+import gui/ownership/auto_annotate
 import ide/ui
-import cheng/gui/editor/buffer
-import cheng/gui/services/lsp_adapter
+import gui/editor/buffer
+import gui/services/lsp_adapter
 const
     MaxAnalysisNodes = 24
     MaxTimelineNodes = 16

@@ -20,7 +20,9 @@ type
 
     ReactRenderContext = ref
         hookCursor: int32
+        hookKinds: str[]
         stateValues: str[]
+        reducerValues: str[]
         memoKeys: str[]
         memoValues: str[]
         callbackKeys: str[]
@@ -30,7 +32,17 @@ type
         contextValues: str[]
         importKeys: str[]
         importValues: str[]
+        importStates: int32[]
+        effectKeys: str[]
+        effectDeps: str[]
+        effectCleanup: str[]
+        effectLayout: bool[]
+        pendingLayoutKeys: str[]
+        pendingLayoutCleanup: str[]
+        pendingPassiveKeys: str[]
+        pendingPassiveCleanup: str[]
         effectQueue: str[]
+        errorQueue: str[]
 
 fn appendNode(items: var ReactNode[], node: ReactNode) =
     let idx = len(items)
@@ -42,27 +54,15 @@ fn appendString(items: var str[], value: str) =
     setLen[str](&items, idx + 1)
     items[idx] = value
 
-fn newRenderContext(): ReactRenderContext =
-    var ctx: ReactRenderContext
-    new(ctx)
-    ctx.hookCursor = int32(0)
-    setLen[str](&ctx.stateValues, 0)
-    setLen[str](&ctx.memoKeys, 0)
-    setLen[str](&ctx.memoValues, 0)
-    setLen[str](&ctx.callbackKeys, 0)
-    setLen[str](&ctx.callbackValues, 0)
-    setLen[str](&ctx.refValues, 0)
-    setLen[str](&ctx.contextKeys, 0)
-    setLen[str](&ctx.contextValues, 0)
-    setLen[str](&ctx.importKeys, 0)
-    setLen[str](&ctx.importValues, 0)
-    setLen[str](&ctx.effectQueue, 0)
-    return ctx
+fn appendInt(items: var int32[], value: int32) =
+    let idx = len(items)
+    setLen[int32](&items, idx + 1)
+    items[idx] = value
 
-fn resetHooks(ctx: ReactRenderContext) =
-    if ctx == nil:
-        return
-    ctx.hookCursor = int32(0)
+fn appendBool(items: var bool[], value: bool) =
+    let idx = len(items)
+    setLen[bool](&items, idx + 1)
+    items[idx] = value
 
 fn createText(text: str): ReactNode =
     var node: ReactNode
@@ -86,30 +86,45 @@ fn createElement(tag, propsJson: str, children: ReactNode[]): ReactNode =
         appendNode(node.children, children[idx])
     return node
 
-fn useState(ctx: ReactRenderContext, initial: str): tuple[value: str, token: int32] =
-    if ctx == nil:
-        return (value: initial, token: int32(-1))
-    let token = ctx.hookCursor
-    if token < int32(0):
-        return (value: initial, token: int32(-1))
-    if int(token) >= len(ctx.stateValues):
-        appendString(ctx.stateValues, initial)
-    let value = ctx.stateValues[token]
-    ctx.hookCursor = ctx.hookCursor + int32(1)
-    return (value: value, token: token)
-
-fn setState(ctx: ReactRenderContext, token: int32, value: str): bool =
-    if ctx == nil:
-        return false
-    if token < int32(0) || int(token) >= len(ctx.stateValues):
-        return false
-    ctx.stateValues[token] = value
-    return true
+fn newRenderContext(): ReactRenderContext =
+    var ctx: ReactRenderContext
+    new(ctx)
+    ctx.hookCursor = int32(0)
+    setLen[str](&ctx.hookKinds, 0)
+    setLen[str](&ctx.stateValues, 0)
+    setLen[str](&ctx.reducerValues, 0)
+    setLen[str](&ctx.memoKeys, 0)
+    setLen[str](&ctx.memoValues, 0)
+    setLen[str](&ctx.callbackKeys, 0)
+    setLen[str](&ctx.callbackValues, 0)
+    setLen[str](&ctx.refValues, 0)
+    setLen[str](&ctx.contextKeys, 0)
+    setLen[str](&ctx.contextValues, 0)
+    setLen[str](&ctx.importKeys, 0)
+    setLen[str](&ctx.importValues, 0)
+    setLen[int32](&ctx.importStates, 0)
+    setLen[str](&ctx.effectKeys, 0)
+    setLen[str](&ctx.effectDeps, 0)
+    setLen[str](&ctx.effectCleanup, 0)
+    setLen[bool](&ctx.effectLayout, 0)
+    setLen[str](&ctx.pendingLayoutKeys, 0)
+    setLen[str](&ctx.pendingLayoutCleanup, 0)
+    setLen[str](&ctx.pendingPassiveKeys, 0)
+    setLen[str](&ctx.pendingPassiveCleanup, 0)
+    setLen[str](&ctx.effectQueue, 0)
+    setLen[str](&ctx.errorQueue, 0)
+    return ctx
 
 fn queueEffect(ctx: ReactRenderContext, payload: str) =
     if ctx == nil:
         return
     appendString(ctx.effectQueue, payload)
+
+fn queueError(ctx: ReactRenderContext, payload: str) =
+    if ctx == nil:
+        return
+    appendString(ctx.errorQueue, payload)
+    queueEffect(ctx, "runtime-error:" + payload)
 
 fn pullEffect(ctx: ReactRenderContext): str =
     if ctx == nil || len(ctx.effectQueue) == 0:
@@ -122,21 +137,164 @@ fn pullEffect(ctx: ReactRenderContext): str =
     ctx.effectQueue = next
     return value
 
-fn useEffect(ctx: ReactRenderContext, key: str): bool =
-    if ctx == nil:
-        return false
-    queueEffect(ctx, "effect:" + key)
-    ctx.hookCursor = ctx.hookCursor + int32(1)
-    return true
-
 fn findKey(keys: str[], key: str): int32 =
     for idx in 0..<len(keys):
         if keys[idx] == key:
             return int32(idx)
     return int32(-1)
 
+fn reserveHookSlot(ctx: ReactRenderContext, kind: str): int32 =
+    if ctx == nil:
+        return int32(-1)
+    let token = ctx.hookCursor
+    if token < int32(0):
+        return int32(-1)
+    if int(token) >= len(ctx.hookKinds):
+        appendString(ctx.hookKinds, kind)
+    else:
+        let expected = ctx.hookKinds[token]
+        if expected != kind:
+            queueError(ctx, "hook-order-mismatch:slot=" + $token + ";expected=" + expected + ";actual=" + kind)
+    ctx.hookCursor = token + int32(1)
+    return token
+
+fn beginRender(ctx: ReactRenderContext) =
+    if ctx == nil:
+        return
+    ctx.hookCursor = int32(0)
+    setLen[str](&ctx.pendingLayoutKeys, 0)
+    setLen[str](&ctx.pendingLayoutCleanup, 0)
+    setLen[str](&ctx.pendingPassiveKeys, 0)
+    setLen[str](&ctx.pendingPassiveCleanup, 0)
+    queueEffect(ctx, "phase:render")
+
+fn resetHooks(ctx: ReactRenderContext) =
+    beginRender(ctx)
+
+fn findEffectIndex(ctx: ReactRenderContext, key: str): int32 =
+    if ctx == nil:
+        return int32(-1)
+    return findKey(ctx.effectKeys, key)
+
+fn registerEffect(
+    ctx: ReactRenderContext,
+    key: str,
+    deps: str,
+    cleanupToken: str,
+    isLayout: bool
+): bool =
+    if ctx == nil || len(key) == 0:
+        return false
+    let found = findEffectIndex(ctx, key)
+    if found < int32(0):
+        appendString(ctx.effectKeys, key)
+        appendString(ctx.effectDeps, deps)
+        appendString(ctx.effectCleanup, "")
+        appendBool(ctx.effectLayout, isLayout)
+        if isLayout:
+            appendString(ctx.pendingLayoutKeys, key)
+            appendString(ctx.pendingLayoutCleanup, cleanupToken)
+        else:
+            appendString(ctx.pendingPassiveKeys, key)
+            appendString(ctx.pendingPassiveCleanup, cleanupToken)
+        return true
+    let depsChanged = ctx.effectDeps[found] != deps
+    if ! depsChanged:
+        return false
+    let prevCleanup = ctx.effectCleanup[found]
+    if len(prevCleanup) > 0:
+        queueEffect(ctx, "cleanup:" + key + ":" + prevCleanup)
+        ctx.effectCleanup[found] = ""
+    ctx.effectDeps[found] = deps
+    ctx.effectLayout[found] = isLayout
+    if isLayout:
+        appendString(ctx.pendingLayoutKeys, key)
+        appendString(ctx.pendingLayoutCleanup, cleanupToken)
+    else:
+        appendString(ctx.pendingPassiveKeys, key)
+        appendString(ctx.pendingPassiveCleanup, cleanupToken)
+    return true
+
+fn commitRender(ctx: ReactRenderContext): bool =
+    if ctx == nil:
+        return false
+    queueEffect(ctx, "phase:commit")
+    for idx in 0..<len(ctx.pendingLayoutKeys):
+        let key = ctx.pendingLayoutKeys[idx]
+        let cleanupToken = ctx.pendingLayoutCleanup[idx]
+        queueEffect(ctx, "layout-effect:" + key)
+        let found = findEffectIndex(ctx, key)
+        if found >= int32(0):
+            ctx.effectCleanup[found] = cleanupToken
+    for idx in 0..<len(ctx.pendingPassiveKeys):
+        let key = ctx.pendingPassiveKeys[idx]
+        let cleanupToken = ctx.pendingPassiveCleanup[idx]
+        queueEffect(ctx, "passive-effect:" + key)
+        let found = findEffectIndex(ctx, key)
+        if found >= int32(0):
+            ctx.effectCleanup[found] = cleanupToken
+    setLen[str](&ctx.pendingLayoutKeys, 0)
+    setLen[str](&ctx.pendingLayoutCleanup, 0)
+    setLen[str](&ctx.pendingPassiveKeys, 0)
+    setLen[str](&ctx.pendingPassiveCleanup, 0)
+    return true
+
+fn unmountCleanup(ctx: ReactRenderContext): int32 =
+    if ctx == nil:
+        return int32(0)
+    var count: int32 = int32(0)
+    for idx in 0..<len(ctx.effectKeys):
+        let cleanupToken = ctx.effectCleanup[idx]
+        if len(cleanupToken) > 0:
+            queueEffect(ctx, "cleanup:" + ctx.effectKeys[idx] + ":" + cleanupToken)
+            ctx.effectCleanup[idx] = ""
+            count = count + int32(1)
+    return count
+
+fn useState(ctx: ReactRenderContext, initial: str): tuple[value: str, token: int32] =
+    if ctx == nil:
+        return (value: initial, token: int32(-1))
+    let token = reserveHookSlot(ctx, "state")
+    if token < int32(0):
+        return (value: initial, token: int32(-1))
+    if int(token) >= len(ctx.stateValues):
+        appendString(ctx.stateValues, initial)
+    let value = ctx.stateValues[token]
+    return (value: value, token: token)
+
+fn setState(ctx: ReactRenderContext, token: int32, value: str): bool =
+    if ctx == nil:
+        return false
+    if token < int32(0) || int(token) >= len(ctx.stateValues):
+        return false
+    ctx.stateValues[token] = value
+    queueEffect(ctx, "set-state:" + $token)
+    return true
+
+fn useReducer(ctx: ReactRenderContext, initial: str): tuple[value: str, token: int32] =
+    if ctx == nil:
+        return (value: initial, token: int32(-1))
+    let token = reserveHookSlot(ctx, "reducer")
+    if token < int32(0):
+        return (value: initial, token: int32(-1))
+    if int(token) >= len(ctx.reducerValues):
+        appendString(ctx.reducerValues, initial)
+    return (value: ctx.reducerValues[token], token: token)
+
+fn dispatchReducer(ctx: ReactRenderContext, token: int32, nextState: str): bool =
+    if ctx == nil:
+        return false
+    if token < int32(0) || int(token) >= len(ctx.reducerValues):
+        return false
+    ctx.reducerValues[token] = nextState
+    queueEffect(ctx, "dispatch-reducer:" + $token)
+    return true
+
 fn useMemo(ctx: ReactRenderContext, key, computedValue: str): str =
     if ctx == nil:
+        return computedValue
+    let token = reserveHookSlot(ctx, "memo")
+    if token < int32(0):
         return computedValue
     let found = findKey(ctx.memoKeys, key)
     if found >= int32(0):
@@ -148,6 +306,9 @@ fn useMemo(ctx: ReactRenderContext, key, computedValue: str): str =
 fn useCallback(ctx: ReactRenderContext, key, callbackId: str): str =
     if ctx == nil:
         return callbackId
+    let token = reserveHookSlot(ctx, "callback")
+    if token < int32(0):
+        return callbackId
     let found = findKey(ctx.callbackKeys, key)
     if found >= int32(0):
         return ctx.callbackValues[found]
@@ -158,18 +319,21 @@ fn useCallback(ctx: ReactRenderContext, key, callbackId: str): str =
 fn useRef(ctx: ReactRenderContext, initial: str): tuple[value: str, token: int32] =
     if ctx == nil:
         return (value: initial, token: int32(-1))
-    let token = int32(len(ctx.refValues))
-    appendString(ctx.refValues, initial)
-    return (value: initial, token: token)
+    let token = reserveHookSlot(ctx, "ref")
+    if token < int32(0):
+        return (value: initial, token: int32(-1))
+    if int(token) >= len(ctx.refValues):
+        appendString(ctx.refValues, initial)
+    return (value: ctx.refValues[token], token: token)
 
 fn setRef(ctx: ReactRenderContext, token: int32, value: str): bool =
-    if ctx == nil || token < int32(0) || token >= len(ctx.refValues):
+    if ctx == nil || token < int32(0) || int(token) >= len(ctx.refValues):
         return false
     ctx.refValues[token] = value
     return true
 
 fn getRef(ctx: ReactRenderContext, token: int32): str =
-    if ctx == nil || token < int32(0) || token >= len(ctx.refValues):
+    if ctx == nil || token < int32(0) || int(token) >= len(ctx.refValues):
         return ""
     return ctx.refValues[token]
 
@@ -186,19 +350,48 @@ fn provideContext(ctx: ReactRenderContext, context: ReactContext, value: str) =
     let found = findKey(ctx.contextKeys, context.key)
     if found >= int32(0):
         ctx.contextValues[found] = value
+        queueEffect(ctx, "context-update:" + context.key)
         return
     appendString(ctx.contextKeys, context.key)
     appendString(ctx.contextValues, value)
+    queueEffect(ctx, "context-update:" + context.key)
 
 fn useContext(ctx: ReactRenderContext, context: ReactContext): str =
     if context == nil:
         return ""
     if ctx == nil:
         return context.defaultValue
+    let token = reserveHookSlot(ctx, "context")
+    if token >= int32(0):
+        queueEffect(ctx, "context-read:" + $token + ":" + context.key)
     let found = findKey(ctx.contextKeys, context.key)
     if found >= int32(0):
         return ctx.contextValues[found]
     return context.defaultValue
+
+fn useEffectWithDeps(ctx: ReactRenderContext, key, deps, cleanupToken: str): bool =
+    if ctx == nil:
+        return false
+    let token = reserveHookSlot(ctx, "effect")
+    if token < int32(0):
+        return false
+    let effectKey = "effect:" + $token + ":" + key
+    return registerEffect(ctx, effectKey, deps, cleanupToken, false)
+
+fn useLayoutEffectWithDeps(ctx: ReactRenderContext, key, deps, cleanupToken: str): bool =
+    if ctx == nil:
+        return false
+    let token = reserveHookSlot(ctx, "layout-effect")
+    if token < int32(0):
+        return false
+    let effectKey = "layout:" + $token + ":" + key
+    return registerEffect(ctx, effectKey, deps, cleanupToken, true)
+
+fn useEffect(ctx: ReactRenderContext, key: str): bool =
+    return useEffectWithDeps(ctx, key, key, "")
+
+fn useLayoutEffect(ctx: ReactRenderContext, key: str): bool =
+    return useLayoutEffectWithDeps(ctx, key, key, "")
 
 fn importModule(ctx: ReactRenderContext, moduleSpec: str): str =
     if ctx == nil:
@@ -209,8 +402,12 @@ fn importModule(ctx: ReactRenderContext, moduleSpec: str): str =
     let resolved = "module:" + moduleSpec
     appendString(ctx.importKeys, moduleSpec)
     appendString(ctx.importValues, resolved)
+    appendInt(ctx.importStates, int32(1))
     queueEffect(ctx, "import:" + moduleSpec)
     return resolved
+
+fn importAsync(moduleSpec: str): ReactLazy =
+    return lazy(moduleSpec, "lazy-component", "lazy-fallback")
 
 fn lazy(moduleSpec, componentTag, fallbackTag: str): ReactLazy =
     var out: ReactLazy

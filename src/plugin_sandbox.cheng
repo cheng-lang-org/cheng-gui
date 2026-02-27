@@ -8,7 +8,7 @@ import std/os
 import cheng/runtime/json_ast
 import cheng/runtime/json_runtime as runtimeJson
 import ide/textutils
-import cheng/gui/language_service
+import gui/language_service
 type
     PluginLanguagePolicy =
         severities: HashSet[str]

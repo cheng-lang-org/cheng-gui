@@ -1,6 +1,6 @@
-import cheng/gui/ime/utfzh_codec
-import cheng/gui/ime/cangwu_assets_loader
-import cheng/gui/ime/cangwu_types
+import gui/ime/utfzh_codec
+import gui/ime/cangwu_assets_loader
+import gui/ime/cangwu_types
 
 fn testDictLoad(): int32 =
     let dict = cwLoadUtfZhDict("src/ime/data")

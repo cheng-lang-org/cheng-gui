@@ -1,4 +1,4 @@
-import cheng/gui/platform/types_v1
+import gui/platform/types_v1
 
 fn chengGuiNativeTextAvailable(): int32 @ importc("chengGuiNativeTextAvailable")
 fn chengGuiNativeDrawTextBgra(pixels: void*, width: int32, height: int32, strideBytes: int32, x: float64, y: float64, w: float64, h: float64, color: uint32, fontSize: float64, text: cstring): int32 @ importc("chengGuiNativeDrawTextBgra")

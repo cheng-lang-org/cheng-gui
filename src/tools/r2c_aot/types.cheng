@@ -79,6 +79,10 @@ type
         generatedUiMode: str
         routeDiscoveryMode: str
         routeGraphPath: str
+        routeTreePath: str
+        routeLayersPath: str
+        layerCount: int32
+        currentLayerGate: str
         routeEventMatrixPath: str
         routeCoveragePath: str
         visualStates: str[]
@@ -109,6 +113,9 @@ type
         semanticRenderNodesHash: str
         semanticRenderNodesFnv64: str
         semanticNodeCount: int32
+        templateRuntimeUsed: bool
+        semanticCompileMode: str
+        compilerReportOrigin: str
         pixelGoldenDir: str
         pixelTolerance: int32
         replayProfile: str

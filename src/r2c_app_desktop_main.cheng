@@ -1,12 +1,12 @@
 import std/os
 import std/strings
-import cheng/gui/browser/types
-import cheng/gui/browser/web
-import cheng/gui/browser/r2capp/runtime_generic as r2cRuntime
-import cheng/gui/platform/types_v1
-import cheng/gui/platform/native_sys_impl as nativePlat
-import cheng/gui/render/backend_compat
-import cheng/gui/render/drawlist_ir as drawir
+import gui/browser/types
+import gui/browser/web
+import gui/browser/r2capp/runtime_generic as r2cRuntime
+import gui/platform/types_v1
+import gui/platform/native_sys_impl as nativePlat
+import gui/render/backend_compat
+import gui/render/drawlist_ir as drawir
 
 @ importc("setenv")
 fn cSetEnv(key: str, value: str, overwrite: int32): int32

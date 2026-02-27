@@ -125,6 +125,8 @@ if not isinstance(states, list) or len(states) <= 0:
     raise SystemExit("[verify-android-fullroute-pixel] states list is empty")
 
 compile_report = json.load(open(compile_report_json, "r", encoding="utf-8"))
+if bool(compile_report.get("template_runtime_used", False)):
+    raise SystemExit("[verify-android-fullroute-pixel] semantic readiness failed: template_runtime_used=true")
 expected_semantic_total_count = int(compile_report.get("semantic_render_nodes_count", 0) or 0)
 expected_semantic_total_hash = str(compile_report.get("semantic_render_nodes_fnv64", "") or "").strip().lower()
 if expected_semantic_total_count <= 0:
@@ -172,6 +174,70 @@ if strict_capture == 1:
     missing_hash = [s for s in states if s not in truth_framehash_path or not os.path.isfile(truth_framehash_path[s])]
     if missing_hash:
         raise SystemExit(f"[verify-android-fullroute-pixel] strict mode missing golden framehash files: {missing_hash[:5]}")
+
+semantic_runtime_map_path = str(compile_report.get("semantic_runtime_map_path", "") or "").strip()
+if not semantic_runtime_map_path or not os.path.isfile(semantic_runtime_map_path):
+    raise SystemExit(f"[verify-android-fullroute-pixel] semantic readiness failed: missing semantic_runtime_map_path={semantic_runtime_map_path}")
+semantic_runtime_doc = json.load(open(semantic_runtime_map_path, "r", encoding="utf-8"))
+semantic_runtime_nodes = semantic_runtime_doc.get("nodes", [])
+if not isinstance(semantic_runtime_nodes, list) or len(semantic_runtime_nodes) <= 0:
+    raise SystemExit("[verify-android-fullroute-pixel] semantic readiness failed: runtime semantic nodes empty")
+if not all(isinstance(row, dict) for row in semantic_runtime_nodes):
+    raise SystemExit("[verify-android-fullroute-pixel] semantic readiness failed: runtime semantic node schema must be object")
+if len(semantic_runtime_nodes) != expected_semantic_total_count:
+    raise SystemExit(
+        "[verify-android-fullroute-pixel] semantic readiness failed: runtime semantic node count mismatch "
+        f"runtime={len(semantic_runtime_nodes)} expected={expected_semantic_total_count}"
+    )
+
+def route_match_hint(hint: str, state: str) -> bool:
+    h = str(hint or "").strip()
+    s = str(state or "").strip()
+    if not h or not s:
+        return False
+    if h == s:
+        return True
+    if s.startswith(h + "_"):
+        return True
+    if h in ("home", "home_default") and s.startswith("home_"):
+        return True
+    if h in ("publish", "publish_selector") and s.startswith("publish_"):
+        return True
+    if h in ("trading", "trading_main") and s.startswith("trading_"):
+        return True
+    if h in ("ecom", "ecom_main") and s.startswith("ecom_"):
+        return True
+    if h in ("marketplace", "marketplace_main") and s.startswith("marketplace_"):
+        return True
+    if h in ("update_center", "update_center_main") and s.startswith("update_center_"):
+        return True
+    return False
+
+missing_renderable_states = []
+for state in states:
+    renderable = 0
+    for row in semantic_runtime_nodes:
+        hint = str(row.get("route_hint", "") or "").strip()
+        bucket = str(row.get("render_bucket", "") or "").strip()
+        if not (route_match_hint(hint, state) or route_match_hint(bucket, state)):
+            continue
+        role = str(row.get("role", "") or "").strip().lower()
+        text = str(row.get("text", "") or "").strip()
+        props = row.get("props", {})
+        if not isinstance(props, dict):
+            props = {}
+        prop_id = str(props.get("id", "") or "").strip()
+        test_id = str(props.get("dataTestId", "") or "").strip()
+        event_binding = str(row.get("event_binding", "") or "").strip()
+        if role in ("element", "text", "event") or text or prop_id or test_id or event_binding:
+            renderable += 1
+    if renderable <= 0:
+        missing_renderable_states.append(state)
+if missing_renderable_states:
+    raise SystemExit(
+        "[verify-android-fullroute-pixel] semantic readiness failed: no renderable semantic nodes for states="
+        + ",".join(missing_renderable_states[:10])
+    )
 
 def run(cmd, timeout=30, capture=True, check=True):
     if capture:

@@ -1,0 +1,15 @@
+type
+    PwaRegisterResult = ref
+        enabled: bool
+        source: str
+
+fn adapterId(): str =
+    return "virtual:pwa-register"
+
+fn registerSW(): PwaRegisterResult =
+    var out: PwaRegisterResult
+    new(out)
+    out.enabled = true
+    out.source = "native"
+    return out
+

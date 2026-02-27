@@ -1,7 +1,7 @@
 import std/strutils
-import cheng/gui/platform
-import cheng/gui/render/Backend
-import cheng/gui/widgets/base
+import gui/platform
+import gui/render/Backend
+import gui/widgets/base
 const defaultTaskFontSize = 13.0
 DefaultTaskLineHeight = 18.0
 type

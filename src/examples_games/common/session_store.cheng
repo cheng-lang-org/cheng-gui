@@ -1,5 +1,5 @@
 import std/seqs
-import cheng/gui/examples_games/common/string_utils as sutil
+import gui/examples_games/common/string_utils as sutil
 import std/os
 
 const

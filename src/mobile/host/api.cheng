@@ -1,5 +1,5 @@
-import cheng/gui/mobile/host/native_ffi
-import cheng/gui/mobile/render/display_list
+import gui/mobile/host/native_ffi
+import gui/mobile/render/display_list
 
 type
     UiEventKind = enum

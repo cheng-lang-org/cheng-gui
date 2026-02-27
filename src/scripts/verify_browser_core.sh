@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-# Cheng toolchain resolves `cheng/gui/*` modules via GUI_ROOT.
+# Cheng toolchain resolves `gui/*` modules via GUI_ROOT.
 export GUI_ROOT="$ROOT"
 
 required_files=(

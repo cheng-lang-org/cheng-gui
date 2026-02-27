@@ -1,5 +1,5 @@
-import cheng/gui/browser/r2capp/react_compat
-import cheng/gui/browser/r2capp/adapters/three_native
+import gui/browser/r2capp/react_compat
+import gui/browser/r2capp/adapters/three_native
 
 fn adapterId(): str =
     return "@react-three/native"

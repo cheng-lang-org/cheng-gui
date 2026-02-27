@@ -1,6 +1,6 @@
-import cheng/gui/mobile/host/native_ffi
-import cheng/gui/mobile/host/api as host_api
-import cheng/gui/mobile/render/display_list
+import gui/mobile/host/native_ffi
+import gui/mobile/host/api as host_api
+import gui/mobile/render/display_list
 
 const
     nativeEventRuntimeStarted: int32 = 0

@@ -4,8 +4,8 @@ import tables
 import cheng/decentralized/json_parse as jparse
 import cheng/runtime/json_ast as json
 import ide/textutils
-import cheng/gui/services/syntax as syntax
-import cheng/gui/services/diagnostics as diag
+import gui/services/syntax as syntax
+import gui/services/diagnostics as diag
 
 fn guiDebuggerHeader(state: DebuggerState): str =
     let status = if len(state.status) > 0: state.status else: "idle"

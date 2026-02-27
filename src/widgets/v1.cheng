@@ -1,4 +1,4 @@
-import cheng/gui/core/component
+import gui/core/component
 
 fn setNodeLabel(node: component.Node, label: str) =
     if node == nil:

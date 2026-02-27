@@ -1,16 +1,16 @@
-# Deprecated: new code should call `cheng/gui/kit` and `cheng/gui/render/backend_compat`.
+# Deprecated: new code should call `gui/kit` and `gui/render/backend_compat`.
 import std/math
 import std/os
 import std/strutils
 import std/tables
 import std/times
 import cheng/runtime/fs as runtimeFs
-import cheng/gui/platform/types
-import cheng/gui/platform/native as nativePlat
+import gui/platform/types
+import gui/platform/native as nativePlat
 for m
-import cheng/gui/render/text_native
-import cheng/gui/render/skia_ffi
-import cheng/gui/render/hot_asm as hotAsm
+import gui/render/text_native
+import gui/render/skia_ffi
+import gui/render/hot_asm as hotAsm
 import seqs
 type
     RenderCommand

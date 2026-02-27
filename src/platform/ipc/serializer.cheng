@@ -1,4 +1,4 @@
-import cheng/gui/platform/ipc/messages_v2
+import gui/platform/ipc/messages_v2
 
 fn encodeMessage(msg: messages_v2.IpcMessage): str =
     if len(msg.payload) > 0:

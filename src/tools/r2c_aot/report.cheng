@@ -1,4 +1,4 @@
-import cheng/gui/tools/r2c_aot/types
+import gui/tools/r2c_aot/types
 
 fn cEq(a: char, b: char): bool =
     let va = int32(a)

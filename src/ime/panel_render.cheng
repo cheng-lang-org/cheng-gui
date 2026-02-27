@@ -1,5 +1,5 @@
-import cheng/gui/ime/cangwu_types
-import cheng/gui/ime/panel_state
+import gui/ime/cangwu_types
+import gui/ime/panel_state
 
 type
     CwDrawKind = enum

@@ -1,4 +1,4 @@
-import cheng/gui/mobile/ui/tokens_business_cn as ui_tokens
+import gui/mobile/ui/tokens_business_cn as ui_tokens
 
 when defined(android):
     @importc("chengGuiNativeDrawTextBgra")
@@ -307,7 +307,7 @@ fn uiDrawSegmentTabs(
     pixels: void*,
     width, height, strideBytes: int32,
     x, y, w, h: int32,
-    labels: seq[str],
+    labels: str[],
     selectedIdx: int32,
     theme: ui_tokens.MobileUiTheme
 ) =

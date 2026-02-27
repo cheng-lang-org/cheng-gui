@@ -1,4 +1,4 @@
-import cheng/gui/browser/engine/storage/store as storageStore
+import gui/browser/engine/storage/store as storageStore
 import std/strings
 
 fn safeLen(text: str): int32 =
@@ -491,12 +491,18 @@ type
     SideEffectItem = ref
         id: int64
         kind: str
+        opcode: str
         payload: str
+        idempotencyKey: str
+        timeoutMs: int32
+        canceled: bool
 
     SideEffectBridge = ref
         nextId: int64
         queue: SideEffectItem[]
         results: str[]
+        completedIds: int64[]
+        completedPayloads: str[]
 
 fn newSideEffectBridge(): SideEffectBridge =
     var bridge: SideEffectBridge
@@ -504,9 +510,18 @@ fn newSideEffectBridge(): SideEffectBridge =
     bridge.nextId = int64(1)
     setLen[SideEffectItem](&bridge.queue, 0)
     setLen[str](&bridge.results, 0)
+    setLen[int64](&bridge.completedIds, 0)
+    setLen[str](&bridge.completedPayloads, 0)
     return bridge
 
-fn sideEffectPush(bridge: SideEffectBridge, kind, payload: str): int64 =
+fn sideEffectPushEnvelope(
+    bridge: SideEffectBridge,
+    kind,
+    opcode,
+    payload,
+    idempotencyKey: str,
+    timeoutMs: int32
+): int64 =
     if bridge == nil:
         return int64(0)
     var item: SideEffectItem
@@ -514,50 +529,156 @@ fn sideEffectPush(bridge: SideEffectBridge, kind, payload: str): int64 =
     item.id = bridge.nextId
     bridge.nextId = bridge.nextId + int64(1)
     item.kind = kind
+    item.opcode = opcode
     item.payload = payload
+    item.idempotencyKey = idempotencyKey
+    item.timeoutMs = timeoutMs
+    item.canceled = false
     let idx = len(bridge.queue)
     setLen[SideEffectItem](&bridge.queue, idx + 1)
     bridge.queue[idx] = item
     return item.id
 
+fn sideEffectPush(bridge: SideEffectBridge, kind, payload: str): int64 =
+    return sideEffectPushEnvelope(bridge, kind, kind, payload, "", int32(0))
+
 fn sideEffectRequestStorage(bridge: SideEffectBridge, op, key, value: str): int64 =
-    return sideEffectPush(bridge, "storage", "op=" + op + ";key=" + key + ";value=" + value)
+    return sideEffectPushEnvelope(
+        bridge,
+        "storage",
+        "storage." + op,
+        "op=" + op + ";key=" + key + ";value=" + value,
+        "storage:" + op + ":" + key,
+        int32(0)
+    )
 
 fn sideEffectRequestTimer(bridge: SideEffectBridge, op: str, id: int64, ms: int32): int64 =
-    return sideEffectPush(bridge, "timer", "op=" + op + ";id=" + $id + ";ms=" + $ms)
+    return sideEffectPushEnvelope(
+        bridge,
+        "timer",
+        "timer." + op,
+        "op=" + op + ";id=" + $id + ";ms=" + $ms,
+        "timer:" + op + ":" + $id,
+        ms
+    )
 
 fn sideEffectRequestClipboard(bridge: SideEffectBridge, op, text: str): int64 =
-    return sideEffectPush(bridge, "clipboard", "op=" + op + ";text=" + text)
+    return sideEffectPushEnvelope(
+        bridge,
+        "clipboard",
+        "clipboard." + op,
+        "op=" + op + ";text=" + text,
+        "clipboard:" + op,
+        int32(0)
+    )
 
 fn sideEffectRequestGeolocation(bridge: SideEffectBridge, op: str): int64 =
-    return sideEffectPush(bridge, "geolocation", "op=" + op)
+    return sideEffectPushEnvelope(
+        bridge,
+        "geolocation",
+        "geolocation." + op,
+        "op=" + op,
+        "geo:" + op,
+        int32(10000)
+    )
 
 fn sideEffectRequestFile(bridge: SideEffectBridge, op, path, content: str): int64 =
-    return sideEffectPush(bridge, "file", "op=" + op + ";path=" + path + ";content=" + content)
+    return sideEffectPushEnvelope(
+        bridge,
+        "file",
+        "file." + op,
+        "op=" + op + ";path=" + path + ";content=" + content,
+        "file:" + op + ":" + path,
+        int32(0)
+    )
 
 fn sideEffectRequestCrypto(bridge: SideEffectBridge, op, algo, text: str): int64 =
-    return sideEffectPush(bridge, "crypto", "op=" + op + ";algo=" + algo + ";text=" + text)
+    return sideEffectPushEnvelope(
+        bridge,
+        "crypto",
+        "crypto." + op,
+        "op=" + op + ";algo=" + algo + ";text=" + text,
+        "crypto:" + op + ":" + algo,
+        int32(10000)
+    )
 
 fn sideEffectRequestNetwork(bridge: SideEffectBridge, method, url, body: str): int64 =
-    return sideEffectPush(bridge, "network", "method=" + method + ";url=" + url + ";body=" + body)
+    return sideEffectPushEnvelope(
+        bridge,
+        "network",
+        "network.request",
+        "method=" + method + ";url=" + url + ";body=" + body,
+        "network:" + method + ":" + url,
+        int32(30000)
+    )
 
 fn sideEffectRequestMedia(bridge: SideEffectBridge, op, mediaType, arg: str): int64 =
-    return sideEffectPush(bridge, "media", "op=" + op + ";type=" + mediaType + ";arg=" + arg)
+    return sideEffectPushEnvelope(
+        bridge,
+        "media",
+        "media." + op,
+        "op=" + op + ";type=" + mediaType + ";arg=" + arg,
+        "media:" + op + ":" + mediaType,
+        int32(0)
+    )
+
+fn sideEffectRequestCancel(bridge: SideEffectBridge, requestId: int64): bool =
+    if bridge == nil || requestId <= int64(0):
+        return false
+    for idx in 0..<len(bridge.queue):
+        let item = bridge.queue[idx]
+        if item != nil && item.id == requestId && ! item.canceled:
+            item.canceled = true
+            sideEffectPushResultById(bridge, requestId, "canceled=true")
+            return true
+    return false
+
+fn sideEffectPendingCount(bridge: SideEffectBridge): int32 =
+    if bridge == nil:
+        return int32(0)
+    var count: int32 = int32(0)
+    for idx in 0..<len(bridge.queue):
+        let item = bridge.queue[idx]
+        if item != nil && ! item.canceled:
+            count = count + int32(1)
+    return count
 
 fn sideEffectPull(bridge: SideEffectBridge): str =
-    if bridge == nil || len(bridge.queue) == 0:
+    if bridge == nil:
         return ""
-    let head = bridge.queue[0]
-    var next: SideEffectItem[]
-    setLen[SideEffectItem](&next, 0)
-    for idx in 1..<len(bridge.queue):
-        let pos = len(next)
-        setLen[SideEffectItem](&next, pos + 1)
-        next[pos] = bridge.queue[idx]
-    bridge.queue = next
-    if head == nil:
-        return ""
-    return "id=" + $head.id + ";kind=" + head.kind + ";payload=" + head.payload
+    while len(bridge.queue) > 0:
+        let head = bridge.queue[0]
+        var next: SideEffectItem[]
+        setLen[SideEffectItem](&next, 0)
+        for idx in 1..<len(bridge.queue):
+            let pos = len(next)
+            setLen[SideEffectItem](&next, pos + 1)
+            next[pos] = bridge.queue[idx]
+        bridge.queue = next
+        if head == nil || head.canceled:
+            continue
+        return (
+            "id=" + $head.id +
+            ";kind=" + head.kind +
+            ";opcode=" + head.opcode +
+            ";timeout_ms=" + $head.timeoutMs +
+            ";idempotency_key=" + head.idempotencyKey +
+            ";payload=" + head.payload
+        )
+    return ""
+
+fn sideEffectPushResultById(bridge: SideEffectBridge, requestId: int64, payload: str): bool =
+    if bridge == nil || requestId <= int64(0):
+        return false
+    let idx = len(bridge.completedIds)
+    setLen[int64](&bridge.completedIds, idx + 1)
+    setLen[str](&bridge.completedPayloads, idx + 1)
+    bridge.completedIds[idx] = requestId
+    bridge.completedPayloads[idx] = payload
+    let outIdx = len(bridge.results)
+    setLen[str](&bridge.results, outIdx + 1)
+    bridge.results[outIdx] = "id=" + $requestId + ";payload=" + payload
+    return true
 
 fn sideEffectPushResult(bridge: SideEffectBridge, resultEnvelope: str): bool =
     if bridge == nil:

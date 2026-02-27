@@ -1,5 +1,5 @@
-import cheng/gui/mobile/ui/tokens_business_cn as ui_tokens
-import cheng/gui/mobile/ui/components_surface as ui_surface
+import gui/mobile/ui/tokens_business_cn as ui_tokens
+import gui/mobile/ui/components_surface as ui_surface
 
 fn uiDrawPrimaryButton(
     pixels: void*,
