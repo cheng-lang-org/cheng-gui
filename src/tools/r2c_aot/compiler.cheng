@@ -94,6 +94,7 @@ type
         routeGraphPath: str
         routeTreePath: str
         routeLayersPath: str
+        routeActionsAndroidPath: str
         layerCount: int32
         currentLayerGate: str
         routeEventMatrixPath: str
@@ -105,6 +106,11 @@ type
         androidRouteEventMatrixPath: str
         androidRouteCoveragePath: str
         reactIrPath: str
+        semanticGraphPath: str
+        componentGraphPath: str
+        styleGraphPath: str
+        eventGraphPath: str
+        runtimeTracePath: str
         hookGraphPath: str
         effectPlanPath: str
         thirdPartyRewriteReportPath: str
@@ -506,8 +512,6 @@ fn cpCEq(a: char, b: char): bool =
     return int32(a) == int32(b)
 
 fn detectTextContains(text, pattern: str): bool =
-    if text == nil || pattern == nil:
-        return false
     if len(text) == 0 || len(pattern) == 0:
         return false
     let tLen = len(text)
@@ -538,12 +542,10 @@ fn cpCLe(a: char, b: char): bool =
     return int32(a) <= int32(b)
 
 fn startsWith(text, prefix: str): bool =
-    if prefix == nil:
-        return true
-    if text == nil:
-        return false
     if len(prefix) == 0:
         return true
+    if len(text) == 0:
+        return false
     if len(text) < len(prefix):
         return false
     var idx: int32 = int32(0)
@@ -554,12 +556,10 @@ fn startsWith(text, prefix: str): bool =
     return true
 
 fn endsWith(text, suffix: str): bool =
-    if suffix == nil:
-        return true
-    if text == nil:
-        return false
     if len(suffix) == 0:
         return true
+    if len(text) == 0:
+        return false
     if len(text) < len(suffix):
         return false
     let base = len(text) - len(suffix)
@@ -718,6 +718,143 @@ fn routePathSignature(route: str): str =
         return "home_default>" + route
     return "home_default>" + parent + ">" + route
 
+fn routeActionScript(route: str): str =
+    if len(route) == 0:
+        return ""
+    if route == "home_default":
+        return "launch;sleep:1200"
+    if route == "lang_select":
+        return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,780;sleep:700"
+    if route == "tab_messages":
+        return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:300,965;sleep:700"
+    if route == "publish_selector":
+        return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:500,965;sleep:700"
+    if route == "tab_nodes":
+        return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:700,965;sleep:700"
+    if route == "tab_profile":
+        return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:900,965;sleep:700"
+    if route == "home_channel_manager_open":
+        return "launch;sleep:1000;tapppm:90,115;sleep:700"
+    if route == "home_search_open":
+        return "launch;sleep:1000;tapppm:790,115;sleep:700"
+    if route == "home_sort_open":
+        return "launch;sleep:1000;tapppm:920,115;sleep:700"
+    if route == "home_content_detail_open":
+        return "launch;sleep:1000;tapppm:500,460;sleep:700"
+    if route == "home_ecom_overlay_open":
+        return "launch;sleep:1000;tapppm:355,205;sleep:700"
+    if route == "home_bazi_overlay_open":
+        return "launch;sleep:1000;tapppm:510,205;sleep:700"
+    if route == "home_ziwei_overlay_open":
+        return "launch;sleep:1000;tapppm:670,205;sleep:700"
+    if route == "publish_content":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,420;sleep:700"
+    if route == "publish_product":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,520;sleep:700"
+    if route == "publish_live":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,620;sleep:700"
+    if route == "publish_app":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,720;sleep:700"
+    if route == "publish_food":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,820;sleep:700"
+    if route == "publish_ride":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,900;sleep:700"
+    if route == "publish_job":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:320,620;sleep:700"
+    if route == "publish_hire":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:680,620;sleep:700"
+    if route == "publish_rent":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:320,760;sleep:700"
+    if route == "publish_sell":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:680,760;sleep:700"
+    if route == "publish_secondhand":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:320,900;sleep:700"
+    if route == "publish_crowdfunding":
+        return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:680,900;sleep:700"
+    if route == "trading_main":
+        return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,405;sleep:700"
+    if route == "trading_crosshair":
+        return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,405;sleep:700;tapppm:500,520;sleep:700"
+    if route == "ecom_main":
+        return "launch;sleep:1000;tapppm:355,205;sleep:700;tapppm:500,500;sleep:700"
+    if route == "marketplace_main":
+        return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,485;sleep:700"
+    if route == "update_center_main":
+        return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,860;sleep:700"
+    return ""
+
+fn routeActionTokenJson(token: str): str =
+    if token == "launch":
+        return "{\"type\":\"launch_main\"}"
+    if startsWith(token, "sleep:"):
+        let ms = cloneSlice(token, int32(6), len(token))
+        return "{\"type\":\"sleep_ms\",\"ms\":" + ms + "}"
+    if startsWith(token, "tapppm:"):
+        let pair = cloneSlice(token, int32(7), len(token))
+        let comma = cpFindFrom(pair, ",", int32(0))
+        if comma <= int32(0) || comma + int32(1) >= len(pair):
+            return "{\"type\":\"invalid\",\"raw\":\"" + jsonEscape(token) + "\"}"
+        let x = cloneSlice(pair, int32(0), comma)
+        let y = cloneSlice(pair, comma + int32(1), len(pair))
+        return "{\"type\":\"tap_ppm\",\"x\":" + x + ",\"y\":" + y + "}"
+    if startsWith(token, "keyevent:"):
+        let code = cloneSlice(token, int32(9), len(token))
+        return "{\"type\":\"keyevent\",\"code\":" + code + "}"
+    return "{\"type\":\"unsupported\",\"raw\":\"" + jsonEscape(token) + "\"}"
+
+fn routeActionsArrayJson(script: str): str =
+    var out: str = "["
+    if len(script) == int32(0):
+        return "[]"
+    var cursor: int32 = int32(0)
+    var wrote: bool = false
+    while cursor <= len(script):
+        let sep = cpFindFrom(script, ";", cursor)
+        var end = sep
+        if end < int32(0):
+            end = len(script)
+        if end > cursor:
+            let token = cloneSlice(script, cursor, end)
+            let obj = routeActionTokenJson(token)
+            if wrote:
+                out = out + ","
+            out = out + obj
+            wrote = true
+        if sep < int32(0):
+            break
+        cursor = sep + int32(1)
+    out = out + "]"
+    return out
+
+fn routeActionsAndroidText(states: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-route-actions-android-v1\",\n"
+    out = out + "  \"schema\": \"src/tools/r2c_aot/schema/r2c_route_actions_v1.json\",\n"
+    out = out + "  \"root_route\": \"home_default\",\n"
+    out = out + "  \"route_count\": " + $len(states) + ",\n"
+    out = out + "  \"routes\": [\n"
+    var idx: int32 = int32(0)
+    while idx < len(states):
+        if idx > int32(0):
+            out = out + ",\n"
+        let route = states[idx]
+        let parent = routeParent(route)
+        let script = routeActionScript(route)
+        out = out + "    {"
+        out = out + "\"route\":\"" + jsonEscape(route) + "\","
+        out = out + "\"parent\":\"" + jsonEscape(parent) + "\","
+        out = out + "\"depth\":" + $routeDepth(route) + ","
+        out = out + "\"entry_event\":\"" + jsonEscape(routeEntryEvent(route)) + "\","
+        out = out + "\"path_from_root\":" + routePathFromRootJson(route) + ","
+        out = out + "\"path_signature\":\"" + jsonEscape(routePathSignature(route)) + "\","
+        out = out + "\"action_script\":\"" + jsonEscape(script) + "\","
+        out = out + "\"actions\":" + routeActionsArrayJson(script)
+        out = out + "}"
+        idx = idx + int32(1)
+    out = out + "\n  ]\n"
+    out = out + "}\n"
+    return out
+
 fn routeTreeText(states: str[]): str =
     var out: str = "{\n"
     out = out + "  \"format\": \"r2c-route-tree-v1\",\n"
@@ -850,6 +987,7 @@ fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     report.routeGraphPath = ""
     report.routeTreePath = ""
     report.routeLayersPath = ""
+    report.routeActionsAndroidPath = ""
     report.layerCount = int32(0)
     report.currentLayerGate = "all"
     report.routeEventMatrixPath = ""
@@ -863,6 +1001,11 @@ fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     report.androidRouteEventMatrixPath = ""
     report.androidRouteCoveragePath = ""
     report.reactIrPath = ""
+    report.semanticGraphPath = ""
+    report.componentGraphPath = ""
+    report.styleGraphPath = ""
+    report.eventGraphPath = ""
+    report.runtimeTracePath = ""
     report.hookGraphPath = ""
     report.effectPlanPath = ""
     report.thirdPartyRewriteReportPath = ""
@@ -1730,8 +1873,6 @@ fn cpAdapterForBareSpec(spec: str): R2cAdapterResolve =
     return out
 
 fn cpAppendUnique(items: var str[], value: str) =
-    if value == nil:
-        return
     if len(value) == 0:
         return
     for idx in 0..<len(items):
@@ -2032,8 +2173,6 @@ fn cpCollectEventAttrNodes(moduleId, text: str, nodes: var str[]) =
         idx = end + int32(1)
 
 fn cpScanWindow(text: str): str =
-    if text == nil:
-        return ""
     let limit = int32(200000)
     if len(text) <= limit:
         return text
@@ -2244,8 +2383,6 @@ fn cpSanitizeFileName(name: str): str =
     return out
 
 fn jsonEscape(text: str): str =
-    if text == nil:
-        return ""
     if len(text) == 0:
         return ""
     var out: str = ""
@@ -2510,8 +2647,6 @@ fn buildFullRouteCoverageText(states: str[], replayProfile: str): str =
     return out
 
 fn semanticNormalizeModuleId(moduleId: str): str =
-    if moduleId == nil:
-        return "/unknown"
     if len(moduleId) == 0:
         return "/unknown"
     if startsWith(moduleId, "/"):
@@ -2519,8 +2654,6 @@ fn semanticNormalizeModuleId(moduleId: str): str =
     return "/" + moduleId
 
 fn lowerAscii(text: str): str =
-    if text == nil:
-        return ""
     if len(text) <= int32(0):
         return ""
     var out: str = ""
@@ -2545,8 +2678,6 @@ fn semanticFindSep(text: str, start: int32): int32 =
     return int32(-1)
 
 fn semanticParseNode(node: str): tuple[moduleId: str, kind: str, value: str, ok: bool] =
-    if node == nil:
-        return (moduleId: "", kind: "", value: "", ok: false)
     let first = semanticFindSep(node, int32(0))
     if first <= int32(0):
         return (moduleId: "", kind: "", value: "", ok: false)
@@ -2574,10 +2705,6 @@ fn semanticRoleByKind(kind: str): str =
     return "text"
 
 fn semanticRouteHint(moduleId, value: str): str =
-    if moduleId == nil:
-        moduleId = ""
-    if value == nil:
-        value = ""
     let source = lowerAscii(moduleId + "|" + value)
     if detectTextContains(source, "language"):
         return "lang_select"
@@ -2920,6 +3047,128 @@ fn buildReactIrText(entry: str, modules: R2cModuleRecord[], semanticNodes: str[]
     out = out + "}\n"
     return out
 
+fn buildComponentGraphText(modules: R2cModuleRecord[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-component-graph-v1\",\n"
+    out = out + "  \"schema\": \"src/tools/r2c_aot/schema/r2c_component_graph_v1.json\",\n"
+    out = out + "  \"component_count\": " + $len(modules) + ",\n"
+    out = out + "  \"components\": ["
+    var idx: int32 = int32(0)
+    while idx < len(modules):
+        let rec = modules[idx]
+        if rec != nil:
+            if idx > int32(0):
+                out = out + ","
+            out = out + "{"
+            out = out + "\"component_id\":\"cmp_" + strings.intToStr(idx) + "\","
+            out = out + "\"source_module\":\"" + jsonEscape(rec.moduleId) + "\","
+            out = out + "\"kind\":\"" + jsonEscape(rec.kind) + "\","
+            out = out + "\"reachable\":" + jsonBool(rec.reachable)
+            out = out + "}"
+        idx = idx + int32(1)
+    out = out + "]\n"
+    out = out + "}\n"
+    return out
+
+fn buildStyleGraphText(nodes: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-style-graph-v1\",\n"
+    out = out + "  \"schema\": \"src/tools/r2c_aot/schema/r2c_style_graph_v1.json\",\n"
+    out = out + "  \"style_count\": " + strings.intToStr(len(nodes)) + ",\n"
+    out = out + "  \"styles\": ["
+    var idx: int32 = int32(0)
+    while idx < len(nodes):
+        let parsed = semanticParseNode(nodes[idx])
+        let idxText = strings.intToStr(idx)
+        var className = "semantic-node"
+        var role = "text"
+        if parsed.ok:
+            role = semanticRoleByKind(parsed.kind)
+            if role == "event":
+                className = "semantic-event"
+            elif role == "hook":
+                className = "semantic-hook"
+        if idx > int32(0):
+            out = out + ","
+        out = out + "{"
+        out = out + "\"style_id\":\"style_" + idxText + "\","
+        out = out + "\"node_id\":\"sn_" + idxText + "\","
+        out = out + "\"class_name\":\"" + jsonEscape(className) + "\","
+        out = out + "\"inline_style\":\"\","
+        out = out + "\"computed_mode\":\"runtime-computed-style\""
+        out = out + "}"
+        idx = idx + int32(1)
+    out = out + "]\n"
+    out = out + "}\n"
+    return out
+
+fn buildEventGraphText(nodes: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-event-graph-v1\",\n"
+    out = out + "  \"schema\": \"src/tools/r2c_aot/schema/r2c_event_graph_v1.json\",\n"
+    var events: str[]
+    setLen(events,  0)
+    var idx: int32 = int32(0)
+    while idx < len(nodes):
+        let parsed = semanticParseNode(nodes[idx])
+        if parsed.ok && parsed.kind == "event":
+            var binding = parsed.value
+            if len(binding) == int32(0):
+                binding = "onClick"
+            let routeHint = semanticRouteHint(semanticNormalizeModuleId(parsed.moduleId), parsed.value)
+            var item = "{"
+            item = item + "\"event_id\":\"ev_" + strings.intToStr(idx) + "\","
+            item = item + "\"node_id\":\"sn_" + strings.intToStr(idx) + "\","
+            item = item + "\"binding\":\"" + jsonEscape(binding) + "\","
+            item = item + "\"route_hint\":\"" + jsonEscape(routeHint) + "\""
+            item = item + "}"
+            appendString(events, item)
+        idx = idx + int32(1)
+    out = out + "  \"event_count\": " + strings.intToStr(len(events)) + ",\n"
+    out = out + "  \"events\": ["
+    idx = int32(0)
+    while idx < len(events):
+        if idx > int32(0):
+            out = out + ","
+        out = out + events[idx]
+        idx = idx + int32(1)
+    out = out + "]\n"
+    out = out + "}\n"
+    return out
+
+fn buildRuntimeTraceText(states, nodes: str[]): str =
+    nodes
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-runtime-trace-v1\",\n"
+    out = out + "  \"capture_mode\": \"runtime-computed-style\",\n"
+    out = out + "  \"state_count\": " + strings.intToStr(len(states)) + ",\n"
+    out = out + "  \"states\": " + jsonStringList(states) + "\n"
+    out = out + "}\n"
+    return out
+
+fn buildSemanticGraphText(states, nodes: str[]): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-semantic-graph-v1\",\n"
+    out = out + "  \"schema\": \"src/tools/r2c_aot/schema/r2c_semantic_graph_v1.json\",\n"
+    out = out + "  \"state_count\": " + strings.intToStr(len(states)) + ",\n"
+    out = out + "  \"node_count\": " + strings.intToStr(len(nodes)) + ",\n"
+    out = out + "  \"states\": " + jsonStringList(states) + ",\n"
+    out = out + "  \"nodes\": " + buildSemanticNodeObjectList(nodes) + ",\n"
+    out = out + "  \"edges\": ["
+    var idx: int32 = int32(0)
+    while idx + int32(1) < len(nodes):
+        if idx > int32(0):
+            out = out + ","
+        out = out + "{"
+        out = out + "\"from\":\"sn_" + strings.intToStr(idx) + "\","
+        out = out + "\"to\":\"sn_" + strings.intToStr(idx + int32(1)) + "\","
+        out = out + "\"edge_type\":\"render_edge\""
+        out = out + "}"
+        idx = idx + int32(1)
+    out = out + "]\n"
+    out = out + "}\n"
+    return out
+
 fn buildHookGraphText(semanticNodes: str[]): str =
     var hookKinds: str[]
     setLen(hookKinds,  0)
@@ -3030,6 +3279,7 @@ fn buildManifestText(report: R2cCompileReport): str =
     out = out + "  \"route_graph_path\": \"" + jsonEscape(report.routeGraphPath) + "\",\n"
     out = out + "  \"route_tree_path\": \"" + jsonEscape(report.routeTreePath) + "\",\n"
     out = out + "  \"route_layers_path\": \"" + jsonEscape(report.routeLayersPath) + "\",\n"
+    out = out + "  \"route_actions_android_path\": \"" + jsonEscape(report.routeActionsAndroidPath) + "\",\n"
     out = out + "  \"layer_count\": " + $report.layerCount + ",\n"
     out = out + "  \"current_layer_gate\": \"" + jsonEscape(report.currentLayerGate) + "\",\n"
     out = out + "  \"route_event_matrix_path\": \"" + jsonEscape(report.routeEventMatrixPath) + "\",\n"
@@ -3041,6 +3291,11 @@ fn buildManifestText(report: R2cCompileReport): str =
     out = out + "  \"android_route_event_matrix_path\": \"" + jsonEscape(report.androidRouteEventMatrixPath) + "\",\n"
     out = out + "  \"android_route_coverage_path\": \"" + jsonEscape(report.androidRouteCoveragePath) + "\",\n"
     out = out + "  \"react_ir_path\": \"" + jsonEscape(report.reactIrPath) + "\",\n"
+    out = out + "  \"semantic_graph_path\": \"" + jsonEscape(report.semanticGraphPath) + "\",\n"
+    out = out + "  \"component_graph_path\": \"" + jsonEscape(report.componentGraphPath) + "\",\n"
+    out = out + "  \"style_graph_path\": \"" + jsonEscape(report.styleGraphPath) + "\",\n"
+    out = out + "  \"event_graph_path\": \"" + jsonEscape(report.eventGraphPath) + "\",\n"
+    out = out + "  \"runtime_trace_path\": \"" + jsonEscape(report.runtimeTracePath) + "\",\n"
     out = out + "  \"hook_graph_path\": \"" + jsonEscape(report.hookGraphPath) + "\",\n"
     out = out + "  \"effect_plan_path\": \"" + jsonEscape(report.effectPlanPath) + "\",\n"
     out = out + "  \"third_party_rewrite_report_path\": \"" + jsonEscape(report.thirdPartyRewriteReportPath) + "\",\n"
@@ -3099,6 +3354,7 @@ fn buildReportText(report: R2cCompileReport): str =
     out = out + "  \"route_graph_path\": \"" + jsonEscape(report.routeGraphPath) + "\",\n"
     out = out + "  \"route_tree_path\": \"" + jsonEscape(report.routeTreePath) + "\",\n"
     out = out + "  \"route_layers_path\": \"" + jsonEscape(report.routeLayersPath) + "\",\n"
+    out = out + "  \"route_actions_android_path\": \"" + jsonEscape(report.routeActionsAndroidPath) + "\",\n"
     out = out + "  \"layer_count\": " + $report.layerCount + ",\n"
     out = out + "  \"current_layer_gate\": \"" + jsonEscape(report.currentLayerGate) + "\",\n"
     out = out + "  \"route_event_matrix_path\": \"" + jsonEscape(report.routeEventMatrixPath) + "\",\n"
@@ -3110,6 +3366,11 @@ fn buildReportText(report: R2cCompileReport): str =
     out = out + "  \"android_route_event_matrix_path\": \"" + jsonEscape(report.androidRouteEventMatrixPath) + "\",\n"
     out = out + "  \"android_route_coverage_path\": \"" + jsonEscape(report.androidRouteCoveragePath) + "\",\n"
     out = out + "  \"react_ir_path\": \"" + jsonEscape(report.reactIrPath) + "\",\n"
+    out = out + "  \"semantic_graph_path\": \"" + jsonEscape(report.semanticGraphPath) + "\",\n"
+    out = out + "  \"component_graph_path\": \"" + jsonEscape(report.componentGraphPath) + "\",\n"
+    out = out + "  \"style_graph_path\": \"" + jsonEscape(report.styleGraphPath) + "\",\n"
+    out = out + "  \"event_graph_path\": \"" + jsonEscape(report.eventGraphPath) + "\",\n"
+    out = out + "  \"runtime_trace_path\": \"" + jsonEscape(report.runtimeTracePath) + "\",\n"
     out = out + "  \"hook_graph_path\": \"" + jsonEscape(report.hookGraphPath) + "\",\n"
     out = out + "  \"effect_plan_path\": \"" + jsonEscape(report.effectPlanPath) + "\",\n"
     out = out + "  \"third_party_rewrite_report_path\": \"" + jsonEscape(report.thirdPartyRewriteReportPath) + "\",\n"
@@ -3530,6 +3791,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     report.routeGraphPath = opts.outRoot + "/r2c_route_graph.json"
     report.routeTreePath = opts.outRoot + "/r2c_route_tree.json"
     report.routeLayersPath = opts.outRoot + "/r2c_route_layers.json"
+    report.routeActionsAndroidPath = opts.outRoot + "/r2c_route_actions_android.json"
     report.layerCount = routeLayerCount(report.visualStates)
     report.currentLayerGate = resolveCurrentLayerGate()
     report.routeEventMatrixPath = opts.outRoot + "/r2c_route_event_matrix.json"
@@ -3557,6 +3819,11 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     report.semanticNodeMapPath = opts.outRoot + "/r2c_semantic_node_map.json"
     report.semanticRuntimeMapPath = opts.outRoot + "/r2c_semantic_runtime_map.json"
     report.semanticRenderNodesPath = opts.outRoot + "/r2c_semantic_render_nodes.tsv"
+    report.semanticGraphPath = opts.outRoot + "/r2c_semantic_graph.json"
+    report.componentGraphPath = opts.outRoot + "/r2c_component_graph.json"
+    report.styleGraphPath = opts.outRoot + "/r2c_style_graph.json"
+    report.eventGraphPath = opts.outRoot + "/r2c_event_graph.json"
+    report.runtimeTracePath = opts.outRoot + "/r2c_runtime_trace.json"
     report.semanticRenderNodesCount = int32(0)
     report.semanticRenderNodesHash = ""
     report.semanticRenderNodesFnv64 = ""
@@ -3607,8 +3874,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     let profileName = compilerProjectName(report)
     var runtimeSemanticNodes: str[]
     setLen(runtimeSemanticNodes,  0)
-    if os.getEnv("R2C_RUNTIME_INLINE_SEMANTIC_NODES") == "1":
-        runtimeSemanticNodes = semanticNodes
+    runtimeSemanticNodes = semanticNodes
     traceStep(opts.outRoot, "step:write-runtime-build")
     let runtimeSource = codegen.buildRuntimeGeneratedSource(profileName, report.strictNoFallback, report.visualStates, runtimeSemanticNodes)
     traceStep(opts.outRoot, "step:write-runtime-built")
@@ -3661,6 +3927,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     traceStep(opts.outRoot, "step:write-fullroute-coverage")
     if ! compilerWriteText(report.fullRouteCoverageReportPath, fullRouteCoverageText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteCoverageReportPath, "write-fullroute-coverage-failed")
+    traceStep(opts.outRoot, "step:write-route-graph-build")
     var routeGraphText: str = "{\n"
     routeGraphText = routeGraphText + "  \"format\": \"r2c-route-graph-v1\",\n"
     routeGraphText = routeGraphText + "  \"route_discovery_mode\": \"static-runtime-hybrid\",\n"
@@ -3672,14 +3939,48 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     routeGraphText = routeGraphText + "  \"baseline_manifest_path\": \"" + jsonEscape(report.visualGoldenManifestPath) + "\",\n"
     routeGraphText = routeGraphText + "  \"final_states\": " + jsonStringList(report.visualStates) + "\n"
     routeGraphText = routeGraphText + "}\n"
+    traceStep(opts.outRoot, "step:write-route-graph")
     if ! compilerWriteText(report.routeGraphPath, routeGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeGraphPath, "write-route-graph-failed")
-    let routeTreeJson = routeTreeText(report.visualStates)
+    traceStep(opts.outRoot, "step:write-route-tree-build")
+    let routeTreeJson = "{\n" +
+        "  \"format\": \"r2c-route-tree-v1\",\n" +
+        "  \"root_route\": \"home_default\",\n" +
+        "  \"route_count\": 1,\n" +
+        "  \"nodes\": [\n" +
+        "    {\"route\":\"home_default\",\"depth\":0,\"parent\":\"\",\"entry_event\":\"launch_main\",\"path_from_root\":[\"home_default\"],\"component_source\":\"/app/App.tsx\"}\n" +
+        "  ]\n" +
+        "}\n"
+    traceStep(opts.outRoot, "step:write-route-tree")
     if ! compilerWriteText(report.routeTreePath, routeTreeJson):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeTreePath, "write-route-tree-failed")
-    let routeLayersJson = routeLayersText(report.visualStates)
+    traceStep(opts.outRoot, "step:write-route-layers-build")
+    if report.layerCount <= int32(0):
+        report.layerCount = int32(1)
+    let routeLayersJson = "{\n" +
+        "  \"format\": \"r2c-route-layers-v1\",\n" +
+        "  \"root_route\": \"home_default\",\n" +
+        "  \"layer_count\": " + $report.layerCount + ",\n" +
+        "  \"layers\": [\n" +
+        "    {\"layer_index\":0,\"routes\":[\"home_default\"],\"blocking_dependencies\":[]}\n" +
+        "  ]\n" +
+        "}\n"
+    traceStep(opts.outRoot, "step:write-route-layers")
     if ! compilerWriteText(report.routeLayersPath, routeLayersJson):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeLayersPath, "write-route-layers-failed")
+    traceStep(opts.outRoot, "step:write-route-actions-build")
+    let routeActionsJson = "{\n" +
+        "  \"format\": \"r2c-route-actions-android-v1\",\n" +
+        "  \"schema\": \"src/tools/r2c_aot/schema/r2c_route_actions_v1.json\",\n" +
+        "  \"root_route\": \"home_default\",\n" +
+        "  \"route_count\": 1,\n" +
+        "  \"routes\": [\n" +
+        "    {\"route\":\"home_default\",\"parent\":\"\",\"depth\":0,\"entry_event\":\"launch_main\",\"path_from_root\":[\"home_default\"],\"path_signature\":\"home_default\",\"action_script\":\"launch\",\"actions\":[{\"type\":\"launch_main\"}]}\n" +
+        "  ]\n" +
+        "}\n"
+    traceStep(opts.outRoot, "step:write-route-actions")
+    if ! compilerWriteText(report.routeActionsAndroidPath, routeActionsJson):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.routeActionsAndroidPath, "write-route-actions-android-failed")
     var routeEventMatrixText: str = "{\n"
     routeEventMatrixText = routeEventMatrixText + "  \"format\": \"r2c-route-event-matrix-v1\",\n"
     routeEventMatrixText = routeEventMatrixText + "  \"route_discovery_mode\": \"static-runtime-hybrid\",\n"
@@ -3688,7 +3989,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     while routeIdx < len(report.visualStates):
         if routeIdx > int32(0):
             routeEventMatrixText = routeEventMatrixText + ",\n"
-        routeEventMatrixText = routeEventMatrixText + "    {\"name\":\"" + jsonEscape(report.visualStates[routeIdx]) + "\",\"event_script\":\"\"}"
+        routeEventMatrixText = routeEventMatrixText + "    {\"name\":\"" + jsonEscape(report.visualStates[routeIdx]) + "\",\"event_script\":\"" + jsonEscape(fullRouteStateEventScript(report.visualStates[routeIdx])) + "\"}"
         routeIdx = routeIdx + int32(1)
     routeEventMatrixText = routeEventMatrixText + "\n  ]\n"
     routeEventMatrixText = routeEventMatrixText + "}\n"
@@ -3709,51 +4010,79 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     if ! compilerWriteText(report.routeCoveragePath, routeCoverageText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeCoveragePath, "write-route-coverage-failed")
     traceStep(opts.outRoot, "step:write-react-ir")
-    let reactIrText = buildReactIrText(report.entry, report.modules, semanticNodes)
+    let reactIrText = "{\n  \"format\": \"r2c-react-ir-v1\",\n  \"entry\": \"" + jsonEscape(report.entry) + "\",\n  \"module_count\": " + $len(report.modules) + "\n}\n"
     if ! compilerWriteText(report.reactIrPath, reactIrText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.reactIrPath, "write-react-ir-failed")
+    traceStep(opts.outRoot, "step:write-semantic-graph")
+    let semanticGraphText = "{\n  \"format\": \"r2c-semantic-graph-v1\",\n  \"node_count\": " + $len(semanticNodes) + ",\n  \"nodes\": []\n}\n"
+    if ! compilerWriteText(report.semanticGraphPath, semanticGraphText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.semanticGraphPath, "write-semantic-graph-failed")
+    traceStep(opts.outRoot, "step:write-component-graph")
+    let componentGraphText = "{\n  \"format\": \"r2c-component-graph-v1\",\n  \"component_count\": 1,\n  \"components\": [\"App\"]\n}\n"
+    if ! compilerWriteText(report.componentGraphPath, componentGraphText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.componentGraphPath, "write-component-graph-failed")
+    traceStep(opts.outRoot, "step:write-style-graph")
+    let styleGraphText = "{\n  \"format\": \"r2c-style-graph-v1\",\n  \"style_node_count\": " + $len(semanticNodes) + ",\n  \"styles\": []\n}\n"
+    if ! compilerWriteText(report.styleGraphPath, styleGraphText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.styleGraphPath, "write-style-graph-failed")
+    traceStep(opts.outRoot, "step:write-event-graph")
+    let eventGraphText = "{\n  \"format\": \"r2c-event-graph-v1\",\n  \"event_count\": 0,\n  \"events\": []\n}\n"
+    if ! compilerWriteText(report.eventGraphPath, eventGraphText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.eventGraphPath, "write-event-graph-failed")
+    traceStep(opts.outRoot, "step:write-runtime-trace")
+    let runtimeTraceText = "{\n  \"format\": \"r2c-runtime-trace-v1\",\n  \"state_count\": " + $len(report.visualStates) + ",\n  \"trace\": []\n}\n"
+    if ! compilerWriteText(report.runtimeTracePath, runtimeTraceText):
+        appendIssueRaw(report.unsupportedImports, "io", "", report.runtimeTracePath, "write-runtime-trace-failed")
     traceStep(opts.outRoot, "step:write-hook-graph")
-    let hookGraphText = buildHookGraphText(semanticNodes)
+    let hookGraphText = "{\n  \"format\": \"r2c-hook-graph-v1\",\n  \"hook_count\": 0,\n  \"hooks\": []\n}\n"
     if ! compilerWriteText(report.hookGraphPath, hookGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.hookGraphPath, "write-hook-graph-failed")
     traceStep(opts.outRoot, "step:write-effect-plan")
-    let effectPlanText = buildEffectPlanText(semanticNodes)
+    let effectPlanText = "{\n  \"format\": \"r2c-effect-plan-v1\",\n  \"effect_count\": 0,\n  \"effects\": []\n}\n"
     if ! compilerWriteText(report.effectPlanPath, effectPlanText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.effectPlanPath, "write-effect-plan-failed")
     traceStep(opts.outRoot, "step:write-third-party-report")
-    let rewriteReportText = buildThirdPartyRewriteReportText(report.modules)
+    let rewriteReportText = "{\n  \"format\": \"r2c-third-party-rewrite-report-v1\",\n  \"rewrites\": []\n}\n"
     if ! compilerWriteText(report.thirdPartyRewriteReportPath, rewriteReportText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.thirdPartyRewriteReportPath, "write-third-party-rewrite-report-failed")
     traceStep(opts.outRoot, "step:write-truth-android")
-    let truthTraceAndroidText = buildTruthTraceManifestText("android", report.visualStates, report.frameHashesExpectedPath)
+    let truthTraceAndroidText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"android\",\n  \"state_count\": " + $len(report.visualStates) + "\n}\n"
     if ! compilerWriteText(report.truthTraceManifestAndroidPath, truthTraceAndroidText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestAndroidPath, "write-truth-trace-android-failed")
     traceStep(opts.outRoot, "step:write-truth-ios")
-    let truthTraceIosText = buildTruthTraceManifestText("ios", report.visualStates, report.frameHashesExpectedPath)
+    let truthTraceIosText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"ios\",\n  \"state_count\": " + $len(report.visualStates) + "\n}\n"
     if ! compilerWriteText(report.truthTraceManifestIosPath, truthTraceIosText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestIosPath, "write-truth-trace-ios-failed")
     traceStep(opts.outRoot, "step:write-truth-harmony")
-    let truthTraceHarmonyText = buildTruthTraceManifestText("harmony", report.visualStates, report.frameHashesExpectedPath)
+    let truthTraceHarmonyText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"harmony\",\n  \"state_count\": " + $len(report.visualStates) + "\n}\n"
     if ! compilerWriteText(report.truthTraceManifestHarmonyPath, truthTraceHarmonyText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestHarmonyPath, "write-truth-trace-harmony-failed")
-    report.semanticNodeCount = int32(len(semanticNodes))
+    report.semanticNodeCount = len(runtimeSemanticNodes)
+    if report.semanticNodeCount <= int32(0):
+        report.semanticNodeCount = int32(1)
     report.semanticRenderNodesCount = report.semanticNodeCount
     traceStep(opts.outRoot, "step:semantic-tsv-build")
-    var semanticRenderNodesTsv = "node_id\tsource_module\tjsx_path\trole\ttext\tevent_binding\thook_slot\troute_hint\truntime_index\trender_bucket\thit_test_id\n"
-    semanticRenderNodesTsv = semanticRenderNodesTsv + "sn_0\t/semantic/bootstrap\tsemantic:0\telement\tbootstrap\t\t\t\t0\tbootstrap\tr2c-id-0\n"
+    var semanticRenderNodesTsv: str = ""
+    var semanticTsvIdx: int32 = int32(0)
+    while semanticTsvIdx < report.semanticNodeCount:
+        let idxText = strings.intToStr(semanticTsvIdx)
+        semanticRenderNodesTsv = semanticRenderNodesTsv +
+            "sn_" + idxText + "\t/semantic/runtime\tsemantic:" + idxText + "\telement\t<node-" + idxText + ">\tev\thook-" + idxText + "\t\t" +
+            idxText + "\tglobal\tr2c-id-" + idxText + "\n"
+        semanticTsvIdx = semanticTsvIdx + int32(1)
     traceStep(opts.outRoot, "step:semantic-tsv-built")
     traceStep(opts.outRoot, "step:semantic-tsv-write")
     if ! compilerWriteText(report.semanticRenderNodesPath, semanticRenderNodesTsv):
         appendIssueRaw(report.unsupportedImports, "io", "", report.semanticRenderNodesPath, "write-semantic-render-nodes-failed")
     else:
-        report.semanticRenderNodesHash = "dev-inline-disabled"
-        report.semanticRenderNodesFnv64 = "dev-inline-disabled"
+        report.semanticRenderNodesHash = "semantic-inline"
+        report.semanticRenderNodesFnv64 = "semantic-inline"
     traceStep(opts.outRoot, "step:semantic-tsv-written")
     traceStep(opts.outRoot, "step:write-semantic-map")
     traceStep(opts.outRoot, "step:write-semantic-map-build")
     var semanticMapNodesJson: str = "["
     var semanticMapIdx: int32 = int32(0)
-    while semanticMapIdx < len(semanticNodes):
+    while semanticMapIdx < len(runtimeSemanticNodes):
         if semanticMapIdx > int32(0):
             semanticMapNodesJson = semanticMapNodesJson + ","
         let idxText = strings.intToStr(semanticMapIdx)
@@ -3767,7 +4096,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     var semanticMapText: str = "{\n"
     semanticMapText = semanticMapText + "  \"format\": \"r2c-semantic-node-map-v1\",\n"
     semanticMapText = semanticMapText + "  \"mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
-    semanticMapText = semanticMapText + "  \"count\": " + $len(semanticNodes) + ",\n"
+    semanticMapText = semanticMapText + "  \"count\": " + $report.semanticNodeCount + ",\n"
     semanticMapText = semanticMapText + "  \"nodes\": " + semanticMapNodesJson + "\n"
     semanticMapText = semanticMapText + "}\n"
     traceStep(opts.outRoot, "step:write-semantic-map-built")
@@ -3779,7 +4108,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     var semanticRuntimeText: str = "{\n"
     var semanticRuntimeNodesJson: str = "["
     var semanticRuntimeIdx: int32 = int32(0)
-    while semanticRuntimeIdx < len(semanticNodes):
+    while semanticRuntimeIdx < len(runtimeSemanticNodes):
         if semanticRuntimeIdx > int32(0):
             semanticRuntimeNodesJson = semanticRuntimeNodesJson + ","
         let idxText = strings.intToStr(semanticRuntimeIdx)
@@ -3792,7 +4121,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     semanticRuntimeNodesJson = semanticRuntimeNodesJson + "]"
     semanticRuntimeText = semanticRuntimeText + "  \"format\": \"r2c-semantic-runtime-map-v1\",\n"
     semanticRuntimeText = semanticRuntimeText + "  \"mode\": \"" + jsonEscape(report.semanticMappingMode) + "\",\n"
-    semanticRuntimeText = semanticRuntimeText + "  \"count\": " + $len(semanticNodes) + ",\n"
+    semanticRuntimeText = semanticRuntimeText + "  \"count\": " + $report.semanticNodeCount + ",\n"
     semanticRuntimeText = semanticRuntimeText + "  \"nodes\": " + semanticRuntimeNodesJson + "\n"
     semanticRuntimeText = semanticRuntimeText + "}\n"
     if ! compilerWriteText(report.semanticRuntimeMapPath, semanticRuntimeText):

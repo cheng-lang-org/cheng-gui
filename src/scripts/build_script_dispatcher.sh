@@ -5,10 +5,15 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 SRC="$ROOT/tools/script_dispatcher.c"
 SRC_NATIVE_ANDROID_GATE="$ROOT/tools/native_verify_android_claude_1to1_gate.c"
 SRC_NATIVE_R2C_COMPILE="$ROOT/tools/native_r2c_compile_react_project.c"
+SRC_NATIVE_R2C_DEV_HOT_RELOAD="$ROOT/tools/native_r2c_dev_hot_reload_android.c"
 SRC_NATIVE_ANDROID_FULLROUTE="$ROOT/tools/native_verify_android_fullroute_visual_pixel.c"
 SRC_NATIVE_MOBILE_RUN_ANDROID="$ROOT/tools/native_mobile_run_android.c"
 SRC_NATIVE_MOBILE_RUN_IOS="$ROOT/tools/native_mobile_run_ios.c"
 SRC_NATIVE_MOBILE_RUN_HARMONY="$ROOT/tools/native_mobile_run_harmony.c"
+SRC_NATIVE_CAPTURE_ANDROID_TRUTH="$ROOT/tools/native_capture_android_unimaker_truth.c"
+SRC_NATIVE_CAPTURE_ROUTE_LAYER_ANDROID="$ROOT/tools/native_capture_route_layer_android.c"
+SRC_NATIVE_VERIFY_ROUTE_LAYER_ANDROID="$ROOT/tools/native_verify_route_layer_android.c"
+SRC_NATIVE_CLAUDE_ROUTE_BFS_ANDROID="$ROOT/tools/native_claude_route_bfs_1to1_android.c"
 SRC_NATIVE_REPORT_VALIDATE="$ROOT/tools/native_r2c_report_validate.c"
 SRC_NATIVE_EQ_ANDROID="$ROOT/tools/native_verify_r2c_equivalence_android_native.c"
 SRC_NATIVE_EQ_IOS="$ROOT/tools/native_verify_r2c_equivalence_ios_native.c"
@@ -76,6 +81,10 @@ if [ ! -f "$SRC_NATIVE_R2C_COMPILE" ]; then
   echo "[build-script-dispatcher] missing source: $SRC_NATIVE_R2C_COMPILE" >&2
   exit 1
 fi
+if [ ! -f "$SRC_NATIVE_R2C_DEV_HOT_RELOAD" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_R2C_DEV_HOT_RELOAD" >&2
+  exit 1
+fi
 if [ ! -f "$SRC_NATIVE_ANDROID_FULLROUTE" ]; then
   echo "[build-script-dispatcher] missing source: $SRC_NATIVE_ANDROID_FULLROUTE" >&2
   exit 1
@@ -90,6 +99,22 @@ if [ ! -f "$SRC_NATIVE_MOBILE_RUN_IOS" ]; then
 fi
 if [ ! -f "$SRC_NATIVE_MOBILE_RUN_HARMONY" ]; then
   echo "[build-script-dispatcher] missing source: $SRC_NATIVE_MOBILE_RUN_HARMONY" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_CAPTURE_ANDROID_TRUTH" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_CAPTURE_ANDROID_TRUTH" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_CAPTURE_ROUTE_LAYER_ANDROID" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_CAPTURE_ROUTE_LAYER_ANDROID" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_VERIFY_ROUTE_LAYER_ANDROID" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_VERIFY_ROUTE_LAYER_ANDROID" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_CLAUDE_ROUTE_BFS_ANDROID" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_CLAUDE_ROUTE_BFS_ANDROID" >&2
   exit 1
 fi
 if [ ! -f "$SRC_NATIVE_REPORT_VALIDATE" ]; then
@@ -144,10 +169,15 @@ BIN_PATH="$OUT_DIR/$BIN_NAME"
   "$SRC" \
   "$SRC_NATIVE_ANDROID_GATE" \
   "$SRC_NATIVE_R2C_COMPILE" \
+  "$SRC_NATIVE_R2C_DEV_HOT_RELOAD" \
   "$SRC_NATIVE_ANDROID_FULLROUTE" \
   "$SRC_NATIVE_MOBILE_RUN_ANDROID" \
   "$SRC_NATIVE_MOBILE_RUN_IOS" \
   "$SRC_NATIVE_MOBILE_RUN_HARMONY" \
+  "$SRC_NATIVE_CAPTURE_ANDROID_TRUTH" \
+  "$SRC_NATIVE_CAPTURE_ROUTE_LAYER_ANDROID" \
+  "$SRC_NATIVE_VERIFY_ROUTE_LAYER_ANDROID" \
+  "$SRC_NATIVE_CLAUDE_ROUTE_BFS_ANDROID" \
   "$SRC_NATIVE_REPORT_VALIDATE" \
   "$SRC_NATIVE_EQ_ANDROID" \
   "$SRC_NATIVE_EQ_IOS" \
@@ -180,16 +210,20 @@ if [ "$create_links" = "1" ]; then
     esac
   }
   native_cmds=(
+    "capture_route_layer_android"
+    "claude_route_bfs_1to1_android"
     "mobile_run_android"
     "mobile_run_ios"
     "mobile_run_harmony"
     "r2c_compile_react_project"
+    "r2c_dev_hot_reload_android"
     "verify_android_claude_1to1_gate"
     "verify_android_fullroute_visual_pixel"
     "verify_r2c_equivalence_android_native"
     "verify_r2c_equivalence_ios_native"
     "verify_r2c_equivalence_harmony_native"
     "verify_r2c_equivalence_all_native"
+    "verify_route_layer_android"
     "verify_production_closed_loop"
   )
 

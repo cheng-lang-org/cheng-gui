@@ -443,6 +443,11 @@ static int run_capture(char *const argv[], char **out, int timeout_sec) {
   }
   if (pid == 0) {
     if (setpgid(0, 0) != 0) _exit(127);
+    int devnull = open("/dev/null", O_RDONLY);
+    if (devnull >= 0) {
+      (void)dup2(devnull, STDIN_FILENO);
+      close(devnull);
+    }
     dup2(pipefd[1], STDOUT_FILENO);
     dup2(pipefd[1], STDERR_FILENO);
     close(pipefd[0]);
@@ -712,8 +717,29 @@ static bool strlist_has_kv_key(const StringList *list, const char *key) {
   return false;
 }
 
-static bool json_file_has_nonempty_route_state(const char *path) {
-  if (path == NULL || path[0] == '\0' || !file_exists(path)) return false;
+static bool strlist_get_kv_value(const StringList *list, const char *key, char *out, size_t out_cap) {
+  if (out != NULL && out_cap > 0u) out[0] = '\0';
+  if (list == NULL || key == NULL || key[0] == '\0' || out == NULL || out_cap < 2u) return false;
+  size_t key_len = strlen(key);
+  for (size_t i = 0; i < list->len; ++i) {
+    const char *entry = list->items[i];
+    if (entry == NULL || entry[0] == '\0') continue;
+    const char *eq = strchr(entry, '=');
+    size_t name_len = (eq != NULL) ? (size_t)(eq - entry) : strlen(entry);
+    if (name_len == key_len && strncmp(entry, key, key_len) == 0 && eq != NULL && eq[1] != '\0') {
+      size_t value_len = strlen(eq + 1);
+      if (value_len >= out_cap) value_len = out_cap - 1u;
+      memcpy(out, eq + 1, value_len);
+      out[value_len] = '\0';
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool json_file_get_nonempty_route_state(const char *path, char *out, size_t out_cap) {
+  if (out != NULL && out_cap > 0u) out[0] = '\0';
+  if (path == NULL || path[0] == '\0' || !file_exists(path) || out == NULL || out_cap < 2u) return false;
   size_t n = 0u;
   char *doc = read_file_all(path, &n);
   if (doc == NULL || n == 0u) {
@@ -729,12 +755,60 @@ static bool json_file_has_nonempty_route_state(const char *path) {
       while (*p != '\0' && isspace((unsigned char)*p)) p += 1;
       if (*p == '"') {
         p += 1;
-        ok = (*p != '\0' && *p != '"');
+        const char *start = p;
+        while (*p != '\0' && *p != '"') p += 1;
+        if (p > start) {
+          size_t len = (size_t)(p - start);
+          if (len >= out_cap) len = out_cap - 1u;
+          memcpy(out, start, len);
+          out[len] = '\0';
+          ok = true;
+        }
       }
     }
   }
   free(doc);
   return ok;
+}
+
+static bool read_truth_runtime_framehash(const char *assets_dir,
+                                         const char *route_state,
+                                         char *out_hash,
+                                         size_t out_hash_cap) {
+  if (out_hash != NULL && out_hash_cap > 0u) out_hash[0] = '\0';
+  if (assets_dir == NULL || assets_dir[0] == '\0' || route_state == NULL || route_state[0] == '\0' ||
+      out_hash == NULL || out_hash_cap < 2u) {
+    return false;
+  }
+  char truth_dir[PATH_MAX];
+  char hash_path[PATH_MAX];
+  if (path_join(truth_dir, sizeof(truth_dir), assets_dir, "truth") != 0 ||
+      path_join(hash_path, sizeof(hash_path), truth_dir, route_state) != 0) {
+    return false;
+  }
+  size_t prefix_len = strlen(hash_path);
+  if (prefix_len + strlen(".runtime_framehash") >= sizeof(hash_path)) return false;
+  memcpy(hash_path + prefix_len, ".runtime_framehash", strlen(".runtime_framehash") + 1u);
+  size_t n = 0u;
+  char *doc = read_file_all(hash_path, &n);
+  if (doc == NULL || n == 0u) {
+    free(doc);
+    return false;
+  }
+  size_t s = 0u;
+  while (s < n && isspace((unsigned char)doc[s])) s += 1u;
+  size_t e = n;
+  while (e > s && isspace((unsigned char)doc[e - 1u])) e -= 1u;
+  if (e <= s) {
+    free(doc);
+    return false;
+  }
+  size_t len = e - s;
+  if (len >= out_hash_cap) len = out_hash_cap - 1u;
+  memcpy(out_hash, doc + s, len);
+  out_hash[len] = '\0';
+  free(doc);
+  return (out_hash[0] != '\0');
 }
 
 static int run_simple(char *const argv[], int timeout_sec, char **out) {
@@ -915,8 +989,29 @@ static int sync_truth_route_assets(const char *adb,
     return -1;
   }
   (void)sync_truth_route_asset_file(adb, serial, pkg, truth_src_dir, route_state, "meta.json");
-  (void)sync_truth_route_asset_file(adb, serial, pkg, truth_src_dir, route_state, "runtime_framehash");
-  (void)sync_truth_route_asset_file(adb, serial, pkg, truth_src_dir, route_state, "framehash");
+  int runtime_hash_sync =
+      sync_truth_route_asset_file(adb, serial, pkg, truth_src_dir, route_state, "runtime_framehash");
+  if (runtime_hash_sync < 0) return -1;
+  if (runtime_hash_sync == 0) {
+    fprintf(stderr,
+            "[mobile-run-android] missing truth runtime_framehash for route=%s src=%s/%s.runtime_framehash\n",
+            route_state,
+            truth_src_dir,
+            route_state);
+    remove_remote_truth_route_assets(adb, serial, pkg, route_state);
+    return -1;
+  }
+  int framehash_sync = sync_truth_route_asset_file(adb, serial, pkg, truth_src_dir, route_state, "framehash");
+  if (framehash_sync < 0) return -1;
+  if (framehash_sync == 0) {
+    fprintf(stderr,
+            "[mobile-run-android] missing truth framehash for route=%s src=%s/%s.framehash\n",
+            route_state,
+            truth_src_dir,
+            route_state);
+    remove_remote_truth_route_assets(adb, serial, pkg, route_state);
+    return -1;
+  }
   fprintf(stdout, "[mobile-run-android] truth route synced: %s\n", route_state);
   return 0;
 }
@@ -1010,6 +1105,37 @@ static int run_direct_launch_smoke(const char *adb,
   }
   if (state_text == NULL) {
     fprintf(stderr, "[mobile-run-android] direct-launch-smoke missing runtime state\n");
+    return -1;
+  }
+  char launch_kv[4096];
+  char gate_mode[128];
+  char truth_mode[128];
+  char expected_framehash[128];
+  launch_kv[0] = '\0';
+  gate_mode[0] = '\0';
+  truth_mode[0] = '\0';
+  expected_framehash[0] = '\0';
+  if (!json_get_string_field(state_text, "launch_args_kv", launch_kv, sizeof(launch_kv))) {
+    fprintf(stderr, "[mobile-run-android] direct-launch-smoke missing launch_args_kv\n");
+    free(state_text);
+    return -1;
+  }
+  if (!parse_kv_value(launch_kv, "gate_mode", gate_mode, sizeof(gate_mode)) ||
+      strcmp(gate_mode, "android-semantic-visual-1to1") != 0) {
+    fprintf(stderr, "[mobile-run-android] direct-launch-smoke gate_mode is not strict visual 1:1\n");
+    free(state_text);
+    return -1;
+  }
+  if (!parse_kv_value(launch_kv, "truth_mode", truth_mode, sizeof(truth_mode)) ||
+      strcmp(truth_mode, "strict") != 0) {
+    fprintf(stderr, "[mobile-run-android] direct-launch-smoke truth_mode is not strict\n");
+    free(state_text);
+    return -1;
+  }
+  if (!parse_kv_value(launch_kv, "expected_framehash", expected_framehash, sizeof(expected_framehash)) ||
+      expected_framehash[0] == '\0') {
+    fprintf(stderr, "[mobile-run-android] direct-launch-smoke missing expected_framehash\n");
+    free(state_text);
     return -1;
   }
   if (!runtime_state_render_ready(state_text)) {
@@ -1369,8 +1495,25 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
   }
   bool route_from_cli = strlist_has_kv_key(&app_args, "route_state");
   bool route_from_json = false;
+  char route_from_json_value[128];
+  route_from_json_value[0] = '\0';
   if (!route_from_cli) {
-    route_from_json = json_file_has_nonempty_route_state(app_args_json_path);
+    route_from_json = json_file_get_nonempty_route_state(
+        app_args_json_path, route_from_json_value, sizeof(route_from_json_value));
+  }
+  if (!route_from_cli && route_from_json && route_from_json_value[0] != '\0') {
+    char route_arg[192];
+    if (snprintf(route_arg, sizeof(route_arg), "route_state=%s", route_from_json_value) >=
+        (int)sizeof(route_arg)) {
+      fprintf(stderr, "[mobile-run-android] route_state too long in app-args-json\n");
+      strlist_free(&app_args);
+      return 1;
+    }
+    if (strlist_push(&app_args, route_arg) != 0) {
+      fprintf(stderr, "[mobile-run-android] failed to materialize route_state from app-args-json\n");
+      strlist_free(&app_args);
+      return 1;
+    }
   }
   if (!route_from_cli && !route_from_json) {
     if (strlist_push(&app_args, "route_state=home_default") != 0) {
@@ -1379,6 +1522,57 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       return 1;
     }
     fprintf(stdout, "[mobile-run-android] implicit route_state=home_default\n");
+  }
+  if (!strlist_has_kv_key(&app_args, "gate_mode")) {
+    if (strlist_push(&app_args, "gate_mode=android-semantic-visual-1to1") != 0) {
+      fprintf(stderr, "[mobile-run-android] failed to set default gate_mode\n");
+      strlist_free(&app_args);
+      return 1;
+    }
+    fprintf(stdout, "[mobile-run-android] implicit gate_mode=android-semantic-visual-1to1\n");
+  }
+  if (!strlist_has_kv_key(&app_args, "truth_mode")) {
+    if (strlist_push(&app_args, "truth_mode=strict") != 0) {
+      fprintf(stderr, "[mobile-run-android] failed to set default truth_mode\n");
+      strlist_free(&app_args);
+      return 1;
+    }
+    fprintf(stdout, "[mobile-run-android] implicit truth_mode=strict\n");
+  }
+  if (!strlist_has_kv_key(&app_args, "expected_framehash")) {
+    char route_state[128];
+    char expected_hash[128];
+    route_state[0] = '\0';
+    expected_hash[0] = '\0';
+    if (!strlist_get_kv_value(&app_args, "route_state", route_state, sizeof(route_state)) ||
+        route_state[0] == '\0') {
+      if (route_from_json_value[0] != '\0') {
+        snprintf(route_state, sizeof(route_state), "%s", route_from_json_value);
+      } else {
+        snprintf(route_state, sizeof(route_state), "home_default");
+      }
+    }
+    if (!read_truth_runtime_framehash(assets_dir, route_state, expected_hash, sizeof(expected_hash))) {
+      fprintf(stderr,
+              "[mobile-run-android] strict truth gate missing runtime framehash: assets=%s route=%s\n",
+              (assets_dir != NULL && assets_dir[0] != '\0') ? assets_dir : "<empty>",
+              route_state);
+      strlist_free(&app_args);
+      return 1;
+    }
+    char expected_arg[192];
+    if (snprintf(expected_arg, sizeof(expected_arg), "expected_framehash=%s", expected_hash) >=
+        (int)sizeof(expected_arg)) {
+      fprintf(stderr, "[mobile-run-android] expected_framehash too long\n");
+      strlist_free(&app_args);
+      return 1;
+    }
+    if (strlist_push(&app_args, expected_arg) != 0) {
+      fprintf(stderr, "[mobile-run-android] failed to set expected_framehash\n");
+      strlist_free(&app_args);
+      return 1;
+    }
+    fprintf(stdout, "[mobile-run-android] implicit expected_framehash=%s route=%s\n", expected_hash, route_state);
   }
   if (native_obj == NULL || !file_exists(native_obj)) {
     fprintf(stderr, "[mobile-run-android] missing native object: %s\n", native_obj ? native_obj : "");

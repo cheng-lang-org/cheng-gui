@@ -6,7 +6,7 @@ type
         reason: str
 
 fn mgSafeLen(text: str): int32 =
-    if text == nil:
+    if len(text) == 0:
         return int32(0)
     return len(text)
 

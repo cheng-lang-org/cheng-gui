@@ -34,7 +34,7 @@ static bool wants_help(int argc, char **argv, int arg_start) {
 static void usage(void) {
   fprintf(stdout,
           "Usage:\n"
-          "  verify_r2c_equivalence_all_native [--project <abs>] [--entry </app/main.tsx>] [--out <abs>] [--android-fullroute 0|1] [--android-layer-index <n>]\n"
+          "  verify_r2c_equivalence_all_native [--project <abs>] [--entry </app/main.tsx>] [--out <abs>] [--platform android|all] [--android-fullroute 0|1] [--android-layer-index <n>] [--layer-index <n>]\n"
           "\n"
           "Native all-platform equivalence gate (android + ios + harmony).\n");
 }
@@ -71,6 +71,8 @@ int native_verify_r2c_equivalence_all_native(const char *scripts_dir, int argc, 
   if (android_fullroute == NULL || android_fullroute[0] == '\0') android_fullroute = "0";
   const char *android_layer_index = getenv("CHENG_ANDROID_EQ_LAYER_INDEX");
   if (android_layer_index == NULL) android_layer_index = "";
+  const char *platform = getenv("CHENG_R2C_EQ_PLATFORM");
+  if (platform == NULL || platform[0] == '\0') platform = "all";
 
   for (int i = arg_start; i < argc;) {
     const char *arg = argv[i];
@@ -104,6 +106,18 @@ int native_verify_r2c_equivalence_all_native(const char *scripts_dir, int argc, 
       i += 2;
       continue;
     }
+    if (strcmp(arg, "--layer-index") == 0) {
+      if (i + 1 >= argc) return 2;
+      android_layer_index = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (strcmp(arg, "--platform") == 0) {
+      if (i + 1 >= argc) return 2;
+      platform = argv[i + 1];
+      i += 2;
+      continue;
+    }
     fprintf(stderr, "[verify-r2c-all-native] unknown arg: %s\n", arg);
     return 2;
   }
@@ -112,6 +126,10 @@ int native_verify_r2c_equivalence_all_native(const char *scripts_dir, int argc, 
     fprintf(stderr,
             "[verify-r2c-all-native] invalid --android-fullroute: %s (expect 0 or 1)\n",
             android_fullroute);
+    return 2;
+  }
+  if (strcmp(platform, "android") != 0 && strcmp(platform, "all") != 0) {
+    fprintf(stderr, "[verify-r2c-all-native] invalid --platform: %s (expect android or all)\n", platform);
     return 2;
   }
   if (!path_is_under_root(project, root)) {
@@ -155,6 +173,10 @@ int native_verify_r2c_equivalence_all_native(const char *scripts_dir, int argc, 
   android_argv[android_argc] = NULL;
   int rc = native_verify_r2c_equivalence_android_native(scripts_dir, android_argc, android_argv, 1);
   if (rc != 0) return rc;
+  if (strcmp(platform, "android") == 0) {
+    fprintf(stdout, "[verify-r2c-all-native] ok (platform=android)\n");
+    return 0;
+  }
 
   fprintf(stdout, "== all-native equivalence: ios ==\n");
   char ios_out[PATH_MAX];

@@ -149,6 +149,42 @@ static int path_join(char *out, size_t cap, const char *a, const char *b) {
   return 0;
 }
 
+static bool trim_suffix_inplace(char *path, const char *suffix) {
+  if (path == NULL || suffix == NULL) return false;
+  size_t n = strlen(path);
+  size_t m = strlen(suffix);
+  if (n < m) return false;
+  if (strcmp(path + (n - m), suffix) != 0) return false;
+  path[n - m] = '\0';
+  return true;
+}
+
+static void normalize_gui_root_inplace(char *root) {
+  if (root == NULL || root[0] == '\0') return;
+  while (trim_suffix_inplace(root, "/src/scripts") || trim_suffix_inplace(root, "/scripts") ||
+         trim_suffix_inplace(root, "/src")) {
+  }
+}
+
+static int resolve_native_bin_path(const char *root, const char *command, char *out, size_t out_cap) {
+  if (root == NULL || root[0] == '\0' || command == NULL || command[0] == '\0' || out == NULL || out_cap == 0u) return -1;
+  char cand_src_bin[PATH_MAX];
+  char cand_bin[PATH_MAX];
+  int n1 = snprintf(cand_src_bin, sizeof(cand_src_bin), "%s/src/bin/%s", root, command);
+  int n2 = snprintf(cand_bin, sizeof(cand_bin), "%s/bin/%s", root, command);
+  if (n1 < 0 || (size_t)n1 >= sizeof(cand_src_bin) || n2 < 0 || (size_t)n2 >= sizeof(cand_bin)) return -1;
+  if (path_executable(cand_src_bin)) {
+    if (snprintf(out, out_cap, "%s", cand_src_bin) >= (int)out_cap) return -1;
+    return 0;
+  }
+  if (path_executable(cand_bin)) {
+    if (snprintf(out, out_cap, "%s", cand_bin) >= (int)out_cap) return -1;
+    return 0;
+  }
+  if (snprintf(out, out_cap, "%s", cand_src_bin) >= (int)out_cap) return -1;
+  return 0;
+}
+
 static int ensure_dir(const char *path) {
   if (path == NULL || path[0] == '\0') return -1;
   char buf[PATH_MAX];
@@ -455,6 +491,31 @@ static int json_parse_string_array(const char *doc, const char *key, StringList 
 
 static bool str_contains(const char *hay, const char *needle) {
   return (hay != NULL && needle != NULL && strstr(hay, needle) != NULL);
+}
+
+static bool kv_has_key_value(const char *kv, const char *key, const char *expected) {
+  if (kv == NULL || key == NULL || key[0] == '\0' || expected == NULL) return false;
+  size_t key_len = strlen(key);
+  size_t expected_len = strlen(expected);
+  const char *p = kv;
+  while (*p != '\0') {
+    while (*p == ';') p += 1;
+    if (*p == '\0') break;
+    const char *entry = p;
+    while (*p != '\0' && *p != ';') p += 1;
+    const char *entry_end = p;
+    const char *eq = entry;
+    while (eq < entry_end && *eq != '=') eq += 1;
+    if (eq < entry_end) {
+      size_t name_len = (size_t)(eq - entry);
+      if (name_len == key_len && strncmp(entry, key, key_len) == 0) {
+        const char *value = eq + 1;
+        size_t value_len = (size_t)(entry_end - value);
+        return (value_len == expected_len && strncmp(value, expected, expected_len) == 0);
+      }
+    }
+  }
+  return false;
 }
 
 static bool file_contains(const char *path, const char *needle) {
@@ -1833,8 +1894,21 @@ static bool parse_runtime_state(const char *runtime_json,
   char semantic_probe[128];
   snprintf(semantic_probe, sizeof(semantic_probe), "semantic_nodes=%d", semantic_node_count);
   if (!str_contains(kv, "arg_probe=foo_bar") || !str_contains(kv, semantic_probe) ||
-      !str_contains(kv, "gate_mode=android-semantic-visual-1to1")) {
+      !kv_has_key_value(kv, "gate_mode", "android-semantic-visual-1to1")) {
     fprintf(stderr, "[verify-android-claude-1to1-gate] runtime launch args missing required markers\n");
+    free(doc);
+    return false;
+  }
+  if (!kv_has_key_value(kv, "truth_mode", "strict")) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime launch args truth_mode is not strict\n");
+    free(doc);
+    return false;
+  }
+  char expected_from_kv[128];
+  expected_from_kv[0] = '\0';
+  if (!parse_runtime_reason_token(kv, "expected_framehash", expected_from_kv, sizeof(expected_from_kv)) ||
+      !runtime_hash_nonzero(expected_from_kv)) {
+    fprintf(stderr, "[verify-android-claude-1to1-gate] runtime launch args expected_framehash invalid\n");
     free(doc);
     return false;
   }
@@ -2047,7 +2121,8 @@ static void usage(void) {
           "  CHENG_ANDROID_1TO1_TRUTH_FRAME_MODE=fullscreen|viewport (default fullscreen)\n"
           "  CHENG_ANDROID_1TO1_FREEZE_TRUTH_DIR=<abs_path>\n"
           "  CHENG_ANDROID_1TO1_DISABLE_EXPECTED_FRAMEHASH=0|1 (default fullscreen->1, viewport->0)\n"
-          "  CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH=0|1 (default 0)\n"
+          "  CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH=0|1 (default single-route->1)\n"
+          "  CHENG_ANDROID_1TO1_HOME_HARD_GATE=0|1 (default 1; requires route_state=home_default when fullroute disabled)\n"
           "  CHENG_ANDROID_1TO1_TARGET_WIDTH/HEIGHT=<int> (optional runtime surface check)\n"
           "  CHENG_ANDROID_1TO1_ENFORCE_SURFACE_TARGET=0|1 (default 0)\n"
           "\n"
@@ -2062,16 +2137,11 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     snprintf(root, sizeof(root), "%s", env_root);
   } else if (scripts_dir != NULL && scripts_dir[0] != '\0') {
     snprintf(root, sizeof(root), "%s", scripts_dir);
-    size_t n = strlen(root);
-    if (n >= 12u && strcmp(root + n - 12u, "/src/scripts") == 0) {
-      root[n - 12u] = '\0';
-    } else if (n >= 8u && strcmp(root + n - 8u, "/scripts") == 0) {
-      root[n - 8u] = '\0';
-    }
   } else {
     fprintf(stderr, "[verify-android-claude-1to1-gate] missing GUI root\n");
     return 2;
   }
+  normalize_gui_root_inplace(root);
 
   const char *project = getenv("R2C_REAL_PROJECT");
   const char *entry = getenv("R2C_REAL_ENTRY");
@@ -2080,8 +2150,13 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   const char *truth_dir = getenv("CHENG_ANDROID_1TO1_TRUTH_DIR");
   const char *require_runtime = getenv("CHENG_ANDROID_1TO1_REQUIRE_RUNTIME");
   const char *enable_fullroute = getenv("CHENG_ANDROID_1TO1_ENABLE_FULLROUTE");
+  const char *home_hard_gate_env = getenv("CHENG_ANDROID_1TO1_HOME_HARD_GATE");
   const char *skip_compile_env = getenv("CHENG_ANDROID_1TO1_SKIP_COMPILE");
   bool skip_compile = (skip_compile_env != NULL && strcmp(skip_compile_env, "1") == 0);
+  bool home_hard_gate = true;
+  if (home_hard_gate_env != NULL && home_hard_gate_env[0] != '\0') {
+    home_hard_gate = (strcmp(home_hard_gate_env, "0") != 0);
+  }
   if (project == NULL || project[0] == '\0') project = "/Users/lbcheng/UniMaker/ClaudeDesign";
   if (entry == NULL || entry[0] == '\0') entry = "/app/main.tsx";
   bool runtime_required = true;
@@ -2097,7 +2172,7 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       return 2;
     }
   }
-  bool fullroute_enabled = true;
+  bool fullroute_enabled = false;
   bool fullroute_explicit = false;
   if (enable_fullroute != NULL && enable_fullroute[0] != '\0') {
     fullroute_explicit = true;
@@ -2132,6 +2207,18 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
   if (!fullroute_explicit && route_state != NULL && route_state[0] != '\0') {
     fullroute_enabled = false;
   }
+  if (!fullroute_enabled) {
+    if (route_state == NULL || route_state[0] == '\0') {
+      route_state = "home_default";
+    }
+    if (home_hard_gate && strcmp(route_state, "home_default") != 0) {
+      fprintf(stderr,
+              "[verify-android-claude-1to1-gate] home hard gate requires route_state=home_default (got=%s)\n",
+              route_state);
+      return 2;
+    }
+    setenv("CHENG_ANDROID_1TO1_ROUTE_STATE", route_state, 1);
+  }
 
   char marker_dir[PATH_MAX];
   char marker_path[PATH_MAX];
@@ -2156,9 +2243,9 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       path_join(fullroute_log, sizeof(fullroute_log), out_dir, "android_fullroute_visual.log") != 0 ||
       path_join(android_truth_manifest, sizeof(android_truth_manifest), compile_out,
                 "r2capp/r2c_truth_trace_manifest_android.json") != 0 ||
-      path_join(mobile_runner, sizeof(mobile_runner), root, "src/bin/mobile_run_android") != 0 ||
-      path_join(compile_cmd, sizeof(compile_cmd), root, "src/bin/r2c_compile_react_project") != 0 ||
-      path_join(fullroute_gate_cmd, sizeof(fullroute_gate_cmd), root, "src/bin/verify_android_fullroute_visual_pixel") != 0) {
+      resolve_native_bin_path(root, "mobile_run_android", mobile_runner, sizeof(mobile_runner)) != 0 ||
+      resolve_native_bin_path(root, "r2c_compile_react_project", compile_cmd, sizeof(compile_cmd)) != 0 ||
+      resolve_native_bin_path(root, "verify_android_fullroute_visual_pixel", fullroute_gate_cmd, sizeof(fullroute_gate_cmd)) != 0) {
     return 2;
   }
 
@@ -2190,6 +2277,7 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       return 1;
     }
   }
+
   if (!path_executable(fullroute_gate_cmd)) {
     fprintf(stderr, "[verify-android-claude-1to1-gate] missing native fullroute gate command: %s\n", fullroute_gate_cmd);
     return 1;
@@ -2346,7 +2434,19 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     return 1;
   }
 
-  const char *path_keys[] = {"android_route_graph_path", "android_route_event_matrix_path", "android_route_coverage_path"};
+  const char *path_keys[] = {
+      "android_route_graph_path",
+      "android_route_event_matrix_path",
+      "android_route_coverage_path",
+      "route_tree_path",
+      "route_layers_path",
+      "route_actions_android_path",
+      "semantic_graph_path",
+      "component_graph_path",
+      "style_graph_path",
+      "event_graph_path",
+      "runtime_trace_path",
+  };
   for (size_t i = 0; i < sizeof(path_keys) / sizeof(path_keys[0]); ++i) {
     char path[PATH_MAX];
     if (!json_get_string(report_doc, path_keys[i], path, sizeof(path)) || !file_exists(path)) {
@@ -2471,6 +2571,43 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     strlist_free(&states);
     free(report_doc);
     return 1;
+  }
+  char auto_truth_dir[PATH_MAX];
+  auto_truth_dir[0] = '\0';
+  if (!fullroute_enabled &&
+      route_state != NULL && route_state[0] != '\0' &&
+      (truth_dir == NULL || truth_dir[0] == '\0')) {
+    if (path_join(auto_truth_dir, sizeof(auto_truth_dir), compile_out, "r2capp/truth") != 0) {
+      strlist_free(&states);
+      free(report_doc);
+      return 1;
+    }
+    if (!dir_exists(auto_truth_dir)) {
+      fprintf(stderr,
+              "[verify-android-claude-1to1-gate] home hard gate missing truth dir: %s\n",
+              auto_truth_dir);
+      strlist_free(&states);
+      free(report_doc);
+      return 1;
+    }
+    truth_dir = auto_truth_dir;
+    setenv("CHENG_ANDROID_1TO1_TRUTH_DIR", truth_dir, 1);
+    fprintf(stdout, "[verify-android-claude-1to1-gate] auto truth-dir=%s\n", truth_dir);
+  }
+  if (!fullroute_enabled) {
+    const char *enforce_expected_env = getenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH");
+    if (enforce_expected_env == NULL || enforce_expected_env[0] == '\0') {
+      setenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH", "1", 1);
+    }
+    if (home_hard_gate &&
+        route_state != NULL &&
+        strcmp(route_state, "home_default") == 0) {
+      const char *copy_all_env = getenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL");
+      if (copy_all_env == NULL || copy_all_env[0] == '\0') {
+        /* Home gate keeps bottom-tab interactions alive: include sibling tab truths in packaged assets. */
+        setenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL", "1", 1);
+      }
+    }
   }
   if (truth_dir != NULL && truth_dir[0] != '\0' && route_state != NULL && route_state[0] != '\0') {
     if (!prepare_route_truth_assets(truth_dir,
@@ -2628,7 +2765,7 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
                "--direct-launch-smoke:%s",
                direct_launch_smoke_route);
     }
-    char *runtime_argv[29];
+    char *runtime_argv[31];
     int runtime_argc = 0;
     runtime_argv[runtime_argc++] = mobile_runner;
     runtime_argv[runtime_argc++] = runner_entry;
@@ -2642,6 +2779,7 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     if (expected_hash_arg != NULL) runtime_argv[runtime_argc++] = (char *)expected_hash_arg;
     if (route_state_arg != NULL) runtime_argv[runtime_argc++] = (char *)route_state_arg;
     runtime_argv[runtime_argc++] = "--app-arg:gate_mode=android-semantic-visual-1to1";
+    runtime_argv[runtime_argc++] = "--app-arg:truth_mode=strict";
     runtime_argv[runtime_argc++] = "--app-arg:arg_probe=foo_bar";
     runtime_argv[runtime_argc++] = app_args_json_arg;
     runtime_argv[runtime_argc++] = runtime_state_arg;

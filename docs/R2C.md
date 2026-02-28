@@ -1,159 +1,66 @@
-# ClaudeDesign 全路由全像素（Chromium 级）一次性 1:1 门禁闭环计划（macOS 优先）
+# ClaudeDesign React 全语义图驱动 1:1 一次生成闭环计划（无补丁，Android 全路由一次门禁）
 
-## 摘要
-- 目标是一次性把 `ClaudeDesign` 做到“全路由 + 全像素 + Chromium 级门禁”并接入总闭环，不再按小步推进。
-- 构建与运行继续锁定：`零 Node`、`零 JS Runtime`、`硬失败`。
-- 你已锁定的策略全部固化到计划中：`外部依赖可重复回放`、`像素阈值 0 容差`、`一次性通过总门禁`。
+## Summary
+1. 可以实现，而且必须改成“图驱动编译”才能根治你现在的发布/节点偏差。当前链路的根因是：`compiler.cheng` 仍在做字符串扫描，`native_r2c_compile_react_project.c` 仍有编译后补洞，`capture_route_layer_android.c` 仍有硬编码点击脚本，`cheng_mobile_exports.c` 仍在做 route-text 语义渲染。
+2. 目标改为：`React AST + 运行时计算样式/布局/事件轨迹` 生成单一语义图，再由 R2C 一次 codegen 出组件级执行单元，禁止后补注入与模板回放。
+3. 你已确认的执行策略已锁定：
+1. 门禁范围：直接全路由一次。
+2. 样式真值源：运行时计算样式图（computed style + layout box + target map）。
+4. 交付顺序：先 Android 完整全绿（编译、渲染、交互、framehash），再同构复制到 iOS/Harmony。
 
-## 目标口径（锁定）
-- 1:1 定义：`全路由业务E2E` + `全像素（0容差）` + `Chromium 核心门禁` 联合通过。
-- 平台：`macOS` 做可视化 1:1 硬门禁；其他平台继续保留构建/对象门禁。
-- 失败策略：`unsupported_syntax`、`unsupported_imports`、`degraded_features` 任一非空即失败。
-- 外部依赖策略：全部走确定性回放，不允许真实外部随机性影响门禁结果。
+## Public APIs / Interfaces / Types
+1. 编译报告强制新增并设为必填：
+`semantic_graph_path`、`component_graph_path`、`style_graph_path`、`event_graph_path`、`route_tree_path`、`route_actions_android_path`、`runtime_trace_path`、`template_runtime_used=false`、`compiler_report_origin=cheng-compiler`、`semantic_compile_mode=react-semantic-ir-node-compile`。
+2. 新增统一图 schema：
+`src/tools/r2c_aot/schema/r2c_semantic_graph_v1.json`  
+`src/tools/r2c_aot/schema/r2c_component_graph_v1.json`  
+`src/tools/r2c_aot/schema/r2c_style_graph_v1.json`  
+`src/tools/r2c_aot/schema/r2c_event_graph_v1.json`  
+`src/tools/r2c_aot/schema/r2c_route_actions_v1.json`
+3. 运行时状态 schema 强制字段：
+`render_ready`、`semantic_nodes_loaded`、`semantic_nodes_applied_count`、`semantic_nodes_applied_hash`、`last_frame_hash`、`route_state`、`build_hash`、`semantic_hash`、`surface_width`、`surface_height`。
+4. 一键命令保持 native 入口：
+`src/bin/r2c_compile_react_project`  
+`src/bin/verify_r2c_equivalence_android_native --android-fullroute 1`  
+`src/bin/verify_r2c_equivalence_all_native --android-fullroute 1`
 
-## 重要接口与类型变更（对外稳定面）
-- 保持不变：`/Users/lbcheng/.cheng-packages/cheng-gui/src/browser/web.cheng` 导出签名不变（`navigate`/`dispatchDomEvent`/`captureSnapshot` 等）。
-- 扩展内部稳定接口：
-  - `/Users/lbcheng/.cheng-packages/cheng-gui/src/platform/native_sys_impl.cheng` 新增 `surfaceReadbackRgba(surface: SurfaceHandle, outPath: str): bool`。
-  - `/Users/lbcheng/.cheng-packages/cheng-gui/src/r2c_app_desktop_main.cheng` 新增环境变量：
-    - `R2C_APP_FRAME_RGBA_OUT`
-    - `R2C_APP_ROUTE_STATE_OUT`
-    - `R2C_APP_EVENT_MATRIX`
-- 扩展编译报告类型：
-  - `/Users/lbcheng/.cheng-packages/cheng-gui/src/tools/r2c_aot/types.cheng` 的 `R2cCompileReport` 新增：
-    - `fullRouteStatesPath`
-    - `fullRouteStateCount`
-    - `pixelGoldenDir`
-    - `pixelTolerance`（固定为 `0`）
-    - `replayProfile`
-- 产物契约新增文件：
-  - `r2c_fullroute_states.json`
-  - `r2c_fullroute_event_matrix.json`
-  - `r2c_fullroute_coverage_report.json`
+## Implementation Plan
+1. 移除“编译后补洞”主路径：删除 `src/tools/native_r2c_compile_react_project.c` 中 `materialize_semantic_artifacts_from_react_ir()` 及其调用，严格要求编译器直接产出 `generated_runtime_path`、`semantic_render_nodes_path`、`semantic_*_map`。
+2. 移除“路由树回填”主路径：删除 `backfill_route_tree_layers_meta()` 和 `route_parent_for/route_depth_for/route_action_script_for` 这类硬编码路由映射逻辑，改为只消费编译器输出文件；缺失即 hard-fail。
+3. 移除采集器硬编码点击脚本：删除 `src/tools/native_capture_route_layer_android.c` 里的 `route_action_script_for()`，改为解析 `r2c_route_actions_android.json` 的 `actions[]` 回放。
+4. 重建编译前端：在 `src/tools/r2c_aot/compiler.cheng` 下线 `cpCollect*`、`detectTextContains`、`fillFullRouteStates` 路径，新增 TS/TSX AST 前端与 IR lowering（模块图、组件边界、hook 槽位、effect 依赖、context 订阅、事件绑定、lazy/Suspense/import）。
+5. 构建单一语义总图：编译阶段输出 `semantic_graph`，节点包含 `component_id/node_id/props/style_ref/event_ref/hook_ref/route_ref`，边包含 `render_edge/state_edge/effect_edge/event_edge/route_transition_edge`。
+6. 引入运行时样式轨迹采集：新增 `src/tools/native_extract_react_runtime_graph.c`（或 Cheng 等价命令），在 React 真运行过程中按路由采集 `computed style + layout box + event target map`，输出 `style_graph` 与 `runtime_trace`。
+7. 合并 AST 图与运行时图：新增合并器（放 `compiler.cheng` 或 `src/tools/native_merge_semantic_graph.c`），规则固定为 “AST 决定结构与事件语义，runtime trace 决定最终样式与布局数值”；冲突直接编译失败。
+8. 重写代码生成：改造 `src/tools/r2c_aot/codegen_cheng.cheng` 与 `src/tools/r2c_aot/runtime_generated_template.cheng`，产出组件级 `mount/update/unmount` 执行单元，禁止文本语义节点回放路径。
+9. React runtime 最终语义：完善 `src/browser/r2capp/react_compat.cheng`，固定 `render -> commit -> layout -> passive`，依赖变化 `cleanup -> rerun`，unmount cleanup，hook 槽位错位 hard-fail。
+10. 副作用桥收口：完善 `src/browser/r2capp/webapi.cheng` 为 `opcode/request-id/timeout/cancel/idempotency/result push-back` 协议，render 阶段禁副作用。
+11. 缩减 C 到最小 ABI：在 `/Users/lbcheng/cheng-lang/src/runtime/mobile/cheng_mobile_exports.c` 删除 route-text 绘制、手写路由切换和 semantic TSV 文本渲染主路径；仅保留输入、窗口生命周期、side-effect 桥、frame capture。
+12. 首页硬门禁保持：`route_state` 默认强制 `home_default`（无参数），且 runtime 回传不一致直接失败；禁止“首页跳错到应用市场”这类漂移静默通过。
+13. 发布/节点专项收口：在路由动作图中对 `publish_selector`、`tab_nodes`、`home_channel_manager_open` 的入边与返回边做一致性校验（动作可回放、返回路径唯一、framehash 对齐）。
+14. Android 全路由一次门禁：`verify_r2c_equivalence_android_native --android-fullroute 1` 直接跑全路由，但内部按路由逐个输出失败点（route、action step、runtime_state、truth diff）。
+15. 三端收敛：Android 全绿后，将同一 `semantic_graph` 与 `route_actions` 下发到 iOS/Harmony runner，门禁标准与 Android 一致，不降级。
 
-## 一次性实施步骤（决策完成）
+## Test Cases And Scenarios
+1. 编译真实性：
+`template_runtime_used=false`、`compiler_report_origin=cheng-compiler`、`semantic_compile_mode=react-semantic-ir-node-compile`、`unsupported_syntax=0`、`unsupported_imports=0`、`degraded_features=0`。
+2. 图完整性：
+`semantic_graph/component_graph/style_graph/event_graph/route_actions` 全部存在、可解析、节点 ID 稳定、边无悬挂引用。
+3. 路由正确性：
+`publish_selector` 与 `tab_nodes` 的 `path_from_root` 和 `actions[]` 可重放且到达目标 `route_state`。
+4. 渲染正确性：
+每路由 `framehash + RGBA` 与 truth 四件套一致；白板判定直接失败（`render_ready=false` 或 `semantic_nodes_applied_count==0`）。
+5. 交互正确性：
+发布取消点击、底部导航、侧边栏入口、返回链路逐事件一致，偏差不超过 1 帧。
+6. 运行时真实性：
+`semantic_nodes_loaded=true`、`semantic_nodes_applied_count>0`、`semantic_nodes_applied_hash!=0`、`last_frame_hash!=0`。
+7. 退化防护：
+任何编译后补写、注释 `appendSemanticNode(`、硬编码路由脚本残留均 hard-fail。
 
-1. 全路由状态图编译期产出
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/tools/r2c_aot/compiler.cheng`。
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/tools/r2c_aot/codegen_cheng.cheng`。
-- 编译阶段强制产出 `r2c_fullroute_states.json`，状态集合固定包含以下 30 个状态：
-  - `lang_select`
-  - `home_default`
-  - `home_search_open`
-  - `home_sort_open`
-  - `home_channel_manager_open`
-  - `home_content_detail_open`
-  - `home_ecom_overlay_open`
-  - `home_bazi_overlay_open`
-  - `home_ziwei_overlay_open`
-  - `tab_messages`
-  - `tab_nodes`
-  - `tab_profile`
-  - `publish_selector`
-  - `publish_content`
-  - `publish_product`
-  - `publish_live`
-  - `publish_app`
-  - `publish_food`
-  - `publish_ride`
-  - `publish_job`
-  - `publish_hire`
-  - `publish_rent`
-  - `publish_sell`
-  - `publish_secondhand`
-  - `publish_crowdfunding`
-  - `trading_main`
-  - `trading_crosshair`
-  - `ecom_main`
-  - `marketplace_main`
-  - `update_center_main`
-- 编译器检测到模板化回退（非 IR 驱动）立即失败。
-
-2. 全路由事件矩阵与可点击目标稳定化
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/tools/r2c_aot/codegen_cheng.cheng`。
-- 生成 `r2c_fullroute_event_matrix.json`，每个状态必须有确定事件脚本。
-- 对无显式 id 的关键交互节点，生成稳定 selector：`#r2c-auto-<module>-<ordinal>`，保证门禁脚本可重复命中。
-
-3. 0 容差全像素采集与比对
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/platform/macos_app.m`（实现 RGBA readback）。
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/platform/native_sys_impl.cheng`（暴露 readback 到 Cheng）。
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/r2c_app_desktop_main.cheng`：
-  - 每个状态点输出 `framehash` 与 `raw rgba`（或同尺寸无损 PNG）。
-- 新增脚本 `/Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_claude_fullroute_visual_pixel.sh`：
-  - 逐状态执行事件矩阵。
-  - 与 `src/tests/claude_fixture/golden/fullroute/<state>.rgba` 做逐字节比较（0容差）。
-  - 同时校验 `<state>.framehash` 作为快速诊断索引。
-
-4. 外部依赖确定性回放（你已选定）
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/browser/r2capp/webapi.cheng`：
-  - `localStorage/sessionStorage`、`timer`、`matchMedia`、`ResizeObserver`、`cookie`、`clipboard`、`geolocation`、`FileReader` 全部挂到回放层。
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/browser/r2capp/adapters/*`：
-  - 对链上/网络相关适配器统一接入 `replayProfile=claude-fullroute`。
-- 新增回放数据：
-  - `/Users/lbcheng/.cheng-packages/cheng-gui/src/tests/claude_fixture/replay/replay_manifest.json`
-  - `/Users/lbcheng/.cheng-packages/cheng-gui/src/tests/claude_fixture/replay/*.json`
-- 默认禁用真实外部调用；若发生未回放调用，立即失败并输出调用路径。
-
-5. Chromium 级门禁并行硬约束
-- 保留并强制执行 `/Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_chromium_production_closed_loop.sh`。
-- 新增 `/Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_r2c_chromium_equivalence_full.sh`：
-  - 要求 `WPT core >= 90%`。
-  - 要求 `HTTP/HTTPS` 拉取与渲染链路 gate 通过。
-  - 要求 `PDF`、`media` 现有 gate 通过。
-- 任一项失败即阻断全量门禁。
-
-6. 总闭环一次性入口固定
-- 修改 `/Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_production_closed_loop.sh`，固定顺序：
-  - 现有 GUI/Browser/Chromium gate
-  - `verify_r2c_real_project_closed_loop.sh`（严格模式）
-  - `verify_claude_fullroute_visual_pixel.sh`
-  - `verify_r2c_chromium_equivalence_full.sh`
-- 统一成功标记：
-  - `[verify-claude-fullroute-pixel] ok routes=30`
-  - `[verify-r2c-chromium-equivalence-full] ok`
-  - `[verify-production-closed-loop] ok`
-
-## 测试用例与验收场景（硬门禁）
-
-1. 编译器层
-- 可达图覆盖 `ClaudeDesign` 入口可达模块。
-- 报告断言：
-  - `unsupported_syntax = 0`
-  - `unsupported_imports = 0`
-  - `degraded_features = 0`
-  - `generated_ui_mode = ir-driven`
-  - `fullRouteStateCount = 30`
-
-2. 业务全路由层
-- 30 个状态全部可达、可渲染、可输出状态文件。
-- 关键业务断言：
-  - 语言选择持久化
-  - tabs 切换
-  - publish 12 子页
-  - trading crosshair
-  - content detail/ecom overlay
-  - marketplace/update center
-  - timer/resize/matchMedia/cookie/clipboard/geolocation/FileReader 行为一致
-
-3. 视觉层（0容差）
-- 每个状态都进行逐像素比对（RGBA 字节级一致）。
-- 任意 1 像素差异即失败。
-- framehash 仅用于快速定位，不替代像素比对。
-
-4. Chromium 级层
-- `verify_chromium_production_closed_loop.sh` 全绿。
-- `verify_r2c_chromium_equivalence_full.sh` 全绿。
-- WPT core 报告满足阈值。
-
-## 交付命令（单入口）
-- 一次性总门禁：
-  - `R2C_REAL_PROJECT=/Users/lbcheng/UniMaker/ClaudeDesign R2C_REAL_ENTRY=/app/main.tsx /Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_production_closed_loop.sh`
-- 单独全路由全像素门禁：
-  - `/Users/lbcheng/.cheng-packages/cheng-gui/src/scripts/verify_claude_fullroute_visual_pixel.sh`
-
-## 明确假设与默认值
-- 默认 `macOS` 作为可视化 1:1 硬门禁平台。
-- 外部依赖固定使用 `claude-fullroute` 回放配置。
-- 像素阈值固定为 `0`，不允许容差。
-- 运行时严格零 JS VM，构建链严格零 Node。
-- 白名单外依赖与未支持语法一律硬失败，不做静默降级。
+## Assumptions And Defaults
+1. 你选择了“全路由一次门禁”，不采用分层放行。
+2. 样式真值源固定“运行时计算样式图”，不接受仅静态 className 解析作为最终真值。
+3. 第三方未映射能力继续“未映射即失败”，不允许静默 stub。
+4. 仓库外导入保持 `import cheng/gui/...` 可用；仓库内继续 `import gui/...`；`PKG_ROOTS` 默认 `/Users/lbcheng/.cheng-packages`。
+5. C 层仅系统 ABI 桥；业务语义、路由、组件渲染全部由 Cheng 产物执行。
+6. Android 先全绿，再复制到 iOS/Harmony，最终由 `verify_r2c_equivalence_all_native` 与 `verify_production_closed_loop` 收口。

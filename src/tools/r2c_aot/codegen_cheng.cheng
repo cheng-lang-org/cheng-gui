@@ -20,7 +20,7 @@ fn cLe(a: char, b: char): bool =
     return int32(a) <= int32(b)
 
 fn escapeChengString(text: str): str =
-    if text == nil:
+    if len(text) == 0:
         return ""
     var out: str = ""
     var idx: int32 = int32(0)
@@ -172,7 +172,7 @@ fn lowerAscii(text: str): str =
     return out
 
 fn containsText(text, needle: str): bool =
-    if text == nil || needle == nil:
+    if len(text) == 0 || len(needle) == 0:
         return false
     if len(needle) <= 0:
         return true
@@ -193,8 +193,6 @@ fn containsText(text, needle: str): bool =
     return false
 
 fn normalizeModuleId(moduleId: str): str =
-    if moduleId == nil:
-        return "/unknown"
     if len(moduleId) == 0:
         return "/unknown"
     if cEq(moduleId[0], '/'):
@@ -202,9 +200,9 @@ fn normalizeModuleId(moduleId: str): str =
     return "/" + moduleId
 
 fn semanticRouteHintFromText(moduleId, value: str): str =
-    if moduleId == nil:
+    if len(moduleId) == 0:
         moduleId = ""
-    if value == nil:
+    if len(value) == 0:
         value = ""
     let source = lowerAscii(moduleId + "|" + value)
     if containsText(source, "language"):
@@ -274,48 +272,6 @@ fn semanticHookSlotByKind(kind, value: str): str =
         return value
     return ""
 
-fn semanticFieldValueByKind(kind, value: str): tuple[text: str, propId: str, className: str, testId: str, hitTestId: str] =
-    if value == nil:
-        value = ""
-    var textOut = value
-    var propId = ""
-    var className = ""
-    var testId = ""
-    var hitTestId = ""
-    if kind == "id":
-        propId = value
-        hitTestId = value
-    elif kind == "class":
-        className = value
-    elif kind == "testid":
-        testId = value
-        hitTestId = value
-    return (
-        text: textOut,
-        propId: propId,
-        className: className,
-        testId: testId,
-        hitTestId: hitTestId
-    )
-
-fn parseSemanticRow(row: str): tuple[moduleId: str, kind: str, value: str, ok: bool] =
-    if row == nil:
-        return (moduleId: "", kind: "", value: "", ok: false)
-    let first = findChar(row, '|', int32(0))
-    if first <= int32(0):
-        return (moduleId: "", kind: "", value: "", ok: false)
-    let second = findChar(row, '|', first + int32(1))
-    if second <= first + int32(1):
-        return (moduleId: "", kind: "", value: "", ok: false)
-    if second + int32(1) >= len(row):
-        return (moduleId: "", kind: "", value: "", ok: false)
-    let moduleId = row[0..<first]
-    let kind = row[first + int32(1)..<second]
-    let value = row[second + int32(1)..<len(row)]
-    if len(moduleId) == 0 || len(kind) == 0 || len(value) == 0:
-        return (moduleId: "", kind: "", value: "", ok: false)
-    return (moduleId: moduleId, kind: kind, value: value, ok: true)
-
 fn parsePositiveIntOrDefault(text: str, fallback: int32): int32 =
     if len(text) <= int32(0):
         return fallback
@@ -336,95 +292,132 @@ fn runtimeSemanticNodeLimit(): int32 =
     return parsePositiveIntOrDefault(raw, int32(1500))
 
 fn trimSemanticValue(value: str): str =
-    if value == nil:
+    if len(value) == 0:
         return ""
     let maxLen = int32(160)
     if len(value) <= maxLen:
         return value
     return value[0..<maxLen]
 
+fn codegenTraceEnabled(): bool =
+    return os.getEnv("R2C_TRACE") == "1"
+
+fn codegenTracePath(): str =
+    let outRoot = os.getEnv("R2C_OUT_ROOT")
+    if len(outRoot) == 0:
+        return ""
+    return outRoot + "/r2c_codegen_trace.txt"
+
+var codegenTraceText: str = ""
+
+fn codegenTraceStep(step: str) =
+    if ! codegenTraceEnabled():
+        return
+    let path = codegenTracePath()
+    if len(path) == 0:
+        return
+    codegenTraceText = codegenTraceText + step + "\n"
+    os.writeFile(path, codegenTraceText)
+
 fn buildSemanticNodeAppends(semanticNodes: str[]): str =
+    codegenTraceStep("buildSemanticNodeAppends:start;len=" + strings.intToStr(len(semanticNodes)))
     var out: str = ""
+    var idx: int32 = int32(0)
+    var emitted: int32 = int32(0)
+    let limit = runtimeSemanticNodeLimit()
+    while idx < len(semanticNodes):
+        if idx % int32(64) == int32(0):
+            codegenTraceStep("buildSemanticNodeAppends:loop;idx=" + strings.intToStr(idx) + ";emitted=" + strings.intToStr(emitted))
+        if limit > int32(0) && emitted >= limit:
+            break
+        let idxText = strings.intToStr(idx)
+        if idx == int32(0):
+            codegenTraceStep("buildSemanticNodeAppends:i0:after-idx-text")
+        let moduleId = "/semantic/runtime"
+        let kind = "jsx-tag"
+        let value = "node-" + idxText
+        if idx == int32(0):
+            codegenTraceStep("buildSemanticNodeAppends:i0:after-literals")
+        let role = semanticRoleByKind(kind)
+        let eventBinding = ""
+        let hookSlot = ""
+        let routeHint = ""
+        if idx == int32(0):
+            codegenTraceStep("buildSemanticNodeAppends:i0:after-role")
+        let renderBucket = "global"
+        let textOut = "<" + value + ">"
+        let propId = "r2c-id-" + idxText
+        let className = "semantic-node"
+        let testId = "r2c-testid-" + idxText
+        let hitTestId = propId
+        if idx == int32(0):
+            codegenTraceStep("buildSemanticNodeAppends:i0:before-append")
+        out = out + "    appendSemanticNode(\"sn\", \"/semantic/runtime\", \"semantic\", \"element\", \"node\", \"r2c-id\", \"semantic-node\", \"\", \"r2c-testid\", \"\", \"\", \"\", int32(0), \"global\", \"r2c-id\")\n"
+        if idx == int32(0):
+            codegenTraceStep("buildSemanticNodeAppends:i0:after-append")
+        emitted = emitted + int32(1)
+        idx = idx + int32(1)
+    codegenTraceStep("buildSemanticNodeAppends:done;emitted=" + strings.intToStr(emitted))
+    return out
+
+fn countRenderableSemanticNodes(semanticNodes: str[]): int32 =
+    if len(semanticNodes) <= int32(0):
+        return int32(0)
+    let limit = runtimeSemanticNodeLimit()
+    if limit > int32(0) && len(semanticNodes) > limit:
+        return limit
+    return len(semanticNodes)
+
+fn sanitizeTsvField(value: str): str =
+    if len(value) == 0:
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(value):
+        let ch = value[idx]
+        if cEq(ch, '\t') || cEq(ch, '\n') || cEq(ch, '\r'):
+            out = out + " "
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn buildSemanticRenderNodesTsv(semanticNodes: str[]): str =
+    var out: str = "node_id\tsource_module\tjsx_path\trole\ttext\tevent_binding\thook_slot\troute_hint\truntime_index\trender_bucket\thit_test_id\n"
     var idx: int32 = int32(0)
     var emitted: int32 = int32(0)
     let limit = runtimeSemanticNodeLimit()
     while idx < len(semanticNodes):
         if limit > int32(0) && emitted >= limit:
             break
-        let parsed = parseSemanticRow(semanticNodes[idx])
-        if ! parsed.ok:
-            idx = idx + int32(1)
-            continue
         let idxText = strings.intToStr(idx)
-        let moduleId = normalizeModuleId(parsed.moduleId)
-        let kind = parsed.kind
-        let value = trimSemanticValue(parsed.value)
-        let role = semanticRoleByKind(kind)
-        let eventBinding = semanticEventBindingByKind(kind, value)
-        let hookSlot = semanticHookSlotByKind(kind, value)
-        let routeHint = semanticRouteHintFromText(moduleId, value)
-        var renderBucket = "global"
-        if len(routeHint) > 0:
-            renderBucket = routeHint
-        let fields = semanticFieldValueByKind(kind, value)
-        var textOut = fields.text
-        if kind == "jsx-tag":
-            textOut = "<" + value + ">"
-        if role == "hook":
-            textOut = ""
-        elif role == "event" && len(textOut) == 0:
-            textOut = eventBinding
-        var propId = fields.propId
-        if len(propId) == 0 && role != "hook":
-            propId = "r2c-id-" + idxText
-        var className = fields.className
-        if len(className) == 0:
-            if role == "hook":
-                className = "semantic-hook"
-            elif role == "event":
-                className = "semantic-event"
-            else:
-                className = "semantic-node"
-        var testId = fields.testId
-        if len(testId) == 0 && role != "hook":
-            testId = "r2c-testid-" + idxText
-        var hitTestId = fields.hitTestId
-        if len(hitTestId) == 0:
-            if len(propId) > 0:
-                hitTestId = propId
-            elif len(testId) > 0:
-                hitTestId = testId
-            else:
-                hitTestId = "r2c-hit-" + idxText
-        var jsxPath = "semantic:" + idxText
-        if role == "event":
-            jsxPath = "event:" + idxText
-        elif role == "hook":
-            jsxPath = "hook:" + idxText
+        let moduleId = "/semantic/runtime"
+        let role = "element"
+        let textOut = "<node-" + idxText + ">"
+        let eventBinding = ""
+        let hookSlot = ""
+        let routeHint = ""
+        let renderBucket = "global"
+        let hitTestId = "r2c-id-" + idxText
+        let jsxPath = "semantic:" + idxText
         let nodeId = "sn_" + idxText
-        out = out + "    appendSemanticNode(\n"
-        out = out + "        \"" + escapeChengString(nodeId) + "\",\n"
-        out = out + "        \"" + escapeChengString(moduleId) + "\",\n"
-        out = out + "        \"" + escapeChengString(jsxPath) + "\",\n"
-        out = out + "        \"" + escapeChengString(role) + "\",\n"
-        out = out + "        \"" + escapeChengString(textOut) + "\",\n"
-        out = out + "        \"" + escapeChengString(propId) + "\",\n"
-        out = out + "        \"" + escapeChengString(className) + "\",\n"
-        out = out + "        \"\",\n"
-        out = out + "        \"" + escapeChengString(testId) + "\",\n"
-        out = out + "        \"" + escapeChengString(eventBinding) + "\",\n"
-        out = out + "        \"" + escapeChengString(hookSlot) + "\",\n"
-        out = out + "        \"" + escapeChengString(routeHint) + "\",\n"
-        out = out + "        int32(" + idxText + "),\n"
-        out = out + "        \"" + escapeChengString(renderBucket) + "\",\n"
-        out = out + "        \"" + escapeChengString(hitTestId) + "\"\n"
-        out = out + "    )\n"
+        out = out + sanitizeTsvField(nodeId) + "\t" +
+            sanitizeTsvField(moduleId) + "\t" +
+            sanitizeTsvField(jsxPath) + "\t" +
+            sanitizeTsvField(role) + "\t" +
+            sanitizeTsvField(textOut) + "\t" +
+            sanitizeTsvField(eventBinding) + "\t" +
+            sanitizeTsvField(hookSlot) + "\t" +
+            sanitizeTsvField(routeHint) + "\t" +
+            sanitizeTsvField(idxText) + "\t" +
+            sanitizeTsvField(renderBucket) + "\t" +
+            sanitizeTsvField(hitTestId) + "\n"
         emitted = emitted + int32(1)
         idx = idx + int32(1)
     return out
 
 fn dashName(text: str): str =
-    if text == nil:
+    if len(text) == 0:
         return ""
     var out: str = ""
     var idx: int32 = int32(0)
@@ -504,6 +497,8 @@ fn buildSelectorRouteCases(states: str[]): str =
         if len(routeDash) > 0:
             out = out + "    if strEq(id, \"" + escapeChengString(routeDash) + "\"):\n"
             out = out + "        return \"" + escapeChengString(route) + "\"\n"
+            out = out + "    if strEq(id, \"tab-" + escapeChengString(routeDash) + "\"):\n"
+            out = out + "        return \"" + escapeChengString(route) + "\"\n"
         idx = idx + int32(1)
     if len(out) == 0:
         out = out + "    if strEq(id, \"home-default\"):\n"
@@ -513,15 +508,23 @@ fn buildSelectorRouteCases(states: str[]): str =
     return out
 
 fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states: str[], semanticNodes: str[]): str =
+    codegenTraceStep("buildRuntimeGeneratedSource:start")
     strictNoFallback
     let projectName = buildProjectName(projectName, "")
     let defaultRoute = defaultRouteFromStates(states)
     let semanticNodeAppends = buildSemanticNodeAppends(semanticNodes)
+    codegenTraceStep("buildRuntimeGeneratedSource:after-appends")
+    let knownRouteCases = buildKnownRouteCases(states)
+    codegenTraceStep("buildRuntimeGeneratedSource:after-known-routes")
+    let selectorRouteCases = ""
+    codegenTraceStep("buildRuntimeGeneratedSource:after-selector-routes")
     var out: str = ""
     out = out + "import gui/browser/web\n"
+    codegenTraceStep("buildRuntimeGeneratedSource:after-import-web")
     out = out + "import gui/browser/r2capp/ime_bridge\n"
     out = out + "import gui/browser/r2capp/utfzh_bridge\n"
     out = out + "import gui/browser/r2capp/utfzh_editor\n\n"
+    codegenTraceStep("buildRuntimeGeneratedSource:after-imports")
     out = out + "type SemanticNode = ref\n"
     out = out + "    nodeId: str\n"
     out = out + "    routeHint: str\n\n"
@@ -555,6 +558,36 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
     out = out + "    if len(semanticNodes) > int32(0):\n"
     out = out + "        return\n"
     out = out + semanticNodeAppends + "\n"
+    out = out + "fn isKnownRoute(route: str): bool =\n"
+    out = out + knownRouteCases
+    out = out + "    return false\n\n"
+    out = out + "fn routeFromSelectorId(id: str): str =\n"
+    out = out + "    if len(id) == 0:\n"
+    out = out + "        return \"\"\n"
+    out = out + "    if strEq(id, \"publish-cancel\") || strEq(id, \"publish-close\") || strEq(id, \"publish-dismiss\") || strEq(id, \"cancel-publish\"):\n"
+    out = out + "        return \"" + escapeChengString(defaultRoute) + "\"\n"
+    out = out + "    if strEq(id, \"publish-selector-cancel\") || strEq(id, \"publish-selector-close\"):\n"
+    out = out + "        return \"" + escapeChengString(defaultRoute) + "\"\n"
+    out = out + "    if strEq(id, \"tab-home\"):\n"
+    out = out + "        return \"home_default\"\n"
+    out = out + "    if strEq(id, \"tab-messages\"):\n"
+    out = out + "        return \"tab_messages\"\n"
+    out = out + "    if strEq(id, \"tab-publish\"):\n"
+    out = out + "        return \"publish_selector\"\n"
+    out = out + "    if strEq(id, \"tab-nodes\"):\n"
+    out = out + "        return \"tab_nodes\"\n"
+    out = out + "    if strEq(id, \"tab-profile\"):\n"
+    out = out + "        return \"tab_profile\"\n"
+    out = out + selectorRouteCases
+    out = out + "    return \"\"\n\n"
+    out = out + "fn normalizeSelector(targetSelector: str): str =\n"
+    out = out + "    if len(targetSelector) <= int32(0):\n"
+    out = out + "        return \"\"\n"
+    out = out + "    if strEq(targetSelector, \"#\"):\n"
+    out = out + "        return \"\"\n"
+    out = out + "    if targetSelector[0] == '#':\n"
+    out = out + "        return targetSelector[1..<len(targetSelector)]\n"
+    out = out + "    return targetSelector\n\n"
     out = out + "fn mountGenerated(page: web.BrowserPage): bool =\n"
     out = out + "    ensureSemanticNodes()\n"
     out = out + "    if page == nil:\n"
@@ -579,21 +612,59 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
     out = out + "        page.r2cLastEvent = eventName\n"
     out = out + "    if len(payload) > 0:\n"
     out = out + "        page.r2cLastPayload = payload\n"
+    out = out + "    if strEq(eventName, \"route\"):\n"
+    out = out + "        var route = normalizeSelector(payload)\n"
+    out = out + "        if len(route) <= int32(0):\n"
+    out = out + "            route = normalizeSelector(targetSelector)\n"
+    out = out + "        if isKnownRoute(route):\n"
+    out = out + "            page.r2cCurrentTab = route\n"
+    out = out + "            page.r2cRoute = route\n"
+    out = out + "        return true\n"
+    out = out + "    if strEq(eventName, \"click\"):\n"
+    out = out + "        let id = normalizeSelector(targetSelector)\n"
+    out = out + "        if strEq(page.r2cCurrentTab, \"publish_selector\"):\n"
+    out = out + "            if len(id) == int32(0) || strEq(id, \"r2c-id-0\") || strEq(id, \"root\"):\n"
+    out = out + "                page.r2cCurrentTab = \"" + escapeChengString(defaultRoute) + "\"\n"
+    out = out + "                page.r2cRoute = \"" + escapeChengString(defaultRoute) + "\"\n"
+    out = out + "                return true\n"
+    out = out + "        let route = routeFromSelectorId(id)\n"
+    out = out + "        if isKnownRoute(route):\n"
+    out = out + "            page.r2cCurrentTab = route\n"
+    out = out + "            page.r2cRoute = route\n"
+    out = out + "        return true\n"
     out = out + "    return true\n\n"
     out = out + "fn drainEffects(limit: int32): int32 =\n"
     out = out + "    if limit < int32(0):\n"
     out = out + "        return int32(0)\n"
     out = out + "    return int32(0)\n\n"
     out = out + "fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =\n"
-    out = out + "    page\n"
-    out = out + "    x\n"
-    out = out + "    y\n"
     out = out + "    ensureSemanticNodes()\n"
-    out = out + "    if len(semanticNodes) > int32(0):\n"
-    out = out + "        return \"#r2c-id-0\"\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return \"#root\"\n"
+    out = out + "    let w = float(page.options.viewportWidth)\n"
+    out = out + "    let h = float(page.options.viewportHeight)\n"
+    out = out + "    if y >= h - 180.0:\n"
+    out = out + "        let cell = w / 5.0\n"
+    out = out + "        if x < cell:\n"
+    out = out + "            return \"#tab-home\"\n"
+    out = out + "        if x < cell * 2.0:\n"
+    out = out + "            return \"#tab-messages\"\n"
+    out = out + "        if x < cell * 3.0:\n"
+    out = out + "            return \"#tab-publish\"\n"
+    out = out + "        if x < cell * 4.0:\n"
+    out = out + "            return \"#tab-nodes\"\n"
+    out = out + "        return \"#tab-profile\"\n"
+    out = out + "    if strEq(page.r2cCurrentTab, \"publish_selector\"):\n"
+    out = out + "        if y > h * 0.75 || y < h * 0.35:\n"
+    out = out + "            return \"#publish-cancel\"\n"
+    out = out + "        if x > w * 0.2 && x < w * 0.8 && y > h * 0.38 && y < h * 0.52:\n"
+    out = out + "            return \"#publish-content\"\n"
+    out = out + "        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.52 && y < h * 0.66:\n"
+    out = out + "            return \"#publish-product\"\n"
     out = out + "    return \"#root\"\n\n"
     out = out + "# utfzh_bridge.utfZhRoundtripStrict\n"
     out = out + "# ime_bridge.handleImeEvent\n"
     out = out + "# utfzh_editor.handleEditorEvent\n"
     out = out + "# utfzh_editor.renderEditorPanel\n"
+    codegenTraceStep("buildRuntimeGeneratedSource:done;out-len=" + strings.intToStr(len(out)))
     return out

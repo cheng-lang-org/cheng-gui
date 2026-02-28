@@ -81,6 +81,7 @@ type
         routeGraphPath: str
         routeTreePath: str
         routeLayersPath: str
+        routeActionsAndroidPath: str
         layerCount: int32
         currentLayerGate: str
         routeEventMatrixPath: str
@@ -92,6 +93,11 @@ type
         androidRouteEventMatrixPath: str
         androidRouteCoveragePath: str
         reactIrPath: str
+        semanticGraphPath: str
+        componentGraphPath: str
+        styleGraphPath: str
+        eventGraphPath: str
+        runtimeTracePath: str
         hookGraphPath: str
         effectPlanPath: str
         thirdPartyRewriteReportPath: str

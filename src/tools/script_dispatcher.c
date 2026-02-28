@@ -7,12 +7,16 @@
 #include <string.h>
 
 #include "native_verify_android_claude_1to1_gate.h"
+#include "native_r2c_dev_hot_reload_android.h"
 #include "native_r2c_compile_react_project.h"
 #include "native_verify_android_fullroute_visual_pixel.h"
 #include "native_mobile_run_android.h"
 #include "native_mobile_run_ios.h"
 #include "native_mobile_run_harmony.h"
 #include "native_capture_android_unimaker_truth.h"
+#include "native_capture_route_layer_android.h"
+#include "native_verify_route_layer_android.h"
+#include "native_claude_route_bfs_1to1_android.h"
 #include "native_verify_r2c_equivalence_android_native.h"
 #include "native_verify_r2c_equivalence_ios_native.h"
 #include "native_verify_r2c_equivalence_harmony_native.h"
@@ -25,10 +29,13 @@
 
 static const char *kNativeCommands[] = {
     "capture_android_unimaker_truth",
+    "capture_route_layer_android",
+    "claude_route_bfs_1to1_android",
     "mobile_run_android",
     "mobile_run_ios",
     "mobile_run_harmony",
     "r2c_compile_react_project",
+    "r2c_dev_hot_reload_android",
     "verify_android_claude_1to1_gate",
     "verify_android_fullroute_visual_pixel",
     "verify_production_closed_loop",
@@ -36,6 +43,7 @@ static const char *kNativeCommands[] = {
     "verify_r2c_equivalence_android_native",
     "verify_r2c_equivalence_harmony_native",
     "verify_r2c_equivalence_ios_native",
+    "verify_route_layer_android",
 };
 
 static bool is_safe_command(const char *value) {
@@ -113,6 +121,9 @@ int main(int argc, char **argv) {
   if (strcmp(command, "r2c_compile_react_project") == 0) {
     return native_r2c_compile_react_project(scripts_dir, argc, argv, arg_start);
   }
+  if (strcmp(command, "r2c_dev_hot_reload_android") == 0) {
+    return native_r2c_dev_hot_reload_android(scripts_dir, argc, argv, arg_start);
+  }
   if (strcmp(command, "verify_android_fullroute_visual_pixel") == 0) {
     return native_verify_android_fullroute_visual_pixel(scripts_dir, argc, argv, arg_start);
   }
@@ -128,6 +139,12 @@ int main(int argc, char **argv) {
   if (strcmp(command, "capture_android_unimaker_truth") == 0) {
     return native_capture_android_unimaker_truth(scripts_dir, argc, argv, arg_start);
   }
+  if (strcmp(command, "capture_route_layer_android") == 0) {
+    return native_capture_route_layer_android(scripts_dir, argc, argv, arg_start);
+  }
+  if (strcmp(command, "claude_route_bfs_1to1_android") == 0) {
+    return native_claude_route_bfs_1to1_android(scripts_dir, argc, argv, arg_start);
+  }
   if (strcmp(command, "verify_r2c_equivalence_android_native") == 0) {
     return native_verify_r2c_equivalence_android_native(scripts_dir, argc, argv, arg_start);
   }
@@ -136,6 +153,9 @@ int main(int argc, char **argv) {
   }
   if (strcmp(command, "verify_r2c_equivalence_harmony_native") == 0) {
     return native_verify_r2c_equivalence_harmony_native(scripts_dir, argc, argv, arg_start);
+  }
+  if (strcmp(command, "verify_route_layer_android") == 0) {
+    return native_verify_route_layer_android(scripts_dir, argc, argv, arg_start);
   }
   if (strcmp(command, "verify_r2c_equivalence_all_native") == 0) {
     return native_verify_r2c_equivalence_all_native(scripts_dir, argc, argv, arg_start);

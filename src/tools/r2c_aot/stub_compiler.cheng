@@ -145,7 +145,7 @@ fn readTextFile(path: str): ReadTextResult =
 
 fn appendString(items: var str[], item: str) =
     let idx = len(items)
-    setLen(items, idx + 1)
+    setLen[str](&items, idx + 1)
     items[idx] = item
 
 fn skipSpacesBounded(text: str, idx0: int, endIdx: int): int =

@@ -573,6 +573,41 @@ static bool validate_route_layers_file(const char *path,
   return true;
 }
 
+static bool validate_route_actions_file(const char *path, char *err, size_t err_cap) {
+  size_t n = 0u;
+  char *doc = read_file_all(path, &n);
+  if (doc == NULL || n == 0u) {
+    if (err != NULL) snprintf(err, err_cap, "cannot read route_actions_android_path");
+    free(doc);
+    return false;
+  }
+  long long route_count = 0;
+  if (!json_get_int64(doc, "route_count", &route_count) || route_count <= 0) {
+    if (err != NULL) snprintf(err, err_cap, "route actions route_count invalid");
+    free(doc);
+    return false;
+  }
+  if (strstr(doc, "\"route\":\"home_default\"") == NULL &&
+      strstr(doc, "\"route\": \"home_default\"") == NULL) {
+    if (err != NULL) snprintf(err, err_cap, "route actions missing home_default");
+    free(doc);
+    return false;
+  }
+  if (strstr(doc, "\"actions\"") == NULL) {
+    if (err != NULL) snprintf(err, err_cap, "route actions missing actions[]");
+    free(doc);
+    return false;
+  }
+  if (strstr(doc, "\"type\":\"launch_main\"") == NULL &&
+      strstr(doc, "\"type\": \"launch_main\"") == NULL) {
+    if (err != NULL) snprintf(err, err_cap, "route actions missing launch_main action");
+    free(doc);
+    return false;
+  }
+  free(doc);
+  return true;
+}
+
 static int count_runtime_append_calls_strict(const char *runtime_doc, bool *out_has_comment_marker) {
   if (out_has_comment_marker != NULL) *out_has_comment_marker = false;
   if (runtime_doc == NULL) return 0;
@@ -727,11 +762,17 @@ int nr_validate_compile_report(const char *report_path,
 
   const char *required_paths[] = {
       "react_ir_path",
+      "semantic_graph_path",
+      "component_graph_path",
+      "style_graph_path",
+      "event_graph_path",
+      "runtime_trace_path",
       "hook_graph_path",
       "effect_plan_path",
       "third_party_rewrite_report_path",
       "route_tree_path",
       "route_layers_path",
+      "route_actions_android_path",
       "perf_summary_path",
       "semantic_node_map_path",
       "semantic_runtime_map_path",
@@ -786,6 +827,15 @@ int nr_validate_compile_report(const char *report_path,
       !resolve_report_path(report_path, route_layers_raw, route_layers_path, sizeof(route_layers_path)) ||
       !validate_route_layers_file(route_layers_path, layer_count, err, err_cap)) {
     if (err != NULL && err[0] == '\0') snprintf(err, err_cap, "route_layers_path invalid");
+    free(doc);
+    return 1;
+  }
+  char route_actions_raw[PATH_MAX];
+  char route_actions_path[PATH_MAX];
+  if (!json_get_string(doc, "route_actions_android_path", route_actions_raw, sizeof(route_actions_raw)) ||
+      !resolve_report_path(report_path, route_actions_raw, route_actions_path, sizeof(route_actions_path)) ||
+      !validate_route_actions_file(route_actions_path, err, err_cap)) {
+    if (err != NULL && err[0] == '\0') snprintf(err, err_cap, "route_actions_android_path invalid");
     free(doc);
     return 1;
   }

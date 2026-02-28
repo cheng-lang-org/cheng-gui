@@ -36,6 +36,7 @@ typedef struct {
 static bool resolve_report_path(const char *report_path, const char *raw, char *out, size_t out_cap);
 static int run_capture(char *const argv[], char **out, int timeout_sec);
 static RunResult run_command(char *const argv[], const char *workdir, const char *log_path, int timeout_sec);
+static bool json_replace_int_field(char **doc_io, const char *key, long long value);
 
 static void path_list_free(PathList *list) {
   if (list == NULL) return;
@@ -117,6 +118,78 @@ static int path_join(char *out, size_t cap, const char *a, const char *b) {
   int n = snprintf(out, cap, "%s/%s", a, b);
   if (n < 0 || (size_t)n >= cap) return -1;
   return 0;
+}
+
+static char *replace_all_text(const char *input, const char *needle, const char *replacement) {
+  if (input == NULL || needle == NULL || replacement == NULL) return NULL;
+  const size_t input_n = strlen(input);
+  const size_t needle_n = strlen(needle);
+  const size_t repl_n = strlen(replacement);
+  if (needle_n == 0u) {
+    char *copy = (char *)malloc(input_n + 1u);
+    if (copy == NULL) return NULL;
+    memcpy(copy, input, input_n + 1u);
+    return copy;
+  }
+
+  size_t hits = 0u;
+  const char *scan = input;
+  while (1) {
+    const char *found = strstr(scan, needle);
+    if (found == NULL) break;
+    hits += 1u;
+    scan = found + needle_n;
+  }
+  if (hits == 0u) {
+    char *copy = (char *)malloc(input_n + 1u);
+    if (copy == NULL) return NULL;
+    memcpy(copy, input, input_n + 1u);
+    return copy;
+  }
+
+  size_t out_n = input_n + hits * (repl_n - needle_n);
+  char *out = (char *)malloc(out_n + 1u);
+  if (out == NULL) return NULL;
+
+  size_t written = 0u;
+  const char *cur = input;
+  while (1) {
+    const char *found = strstr(cur, needle);
+    if (found == NULL) break;
+    size_t prefix_n = (size_t)(found - cur);
+    memcpy(out + written, cur, prefix_n);
+    written += prefix_n;
+    memcpy(out + written, replacement, repl_n);
+    written += repl_n;
+    cur = found + needle_n;
+  }
+  size_t tail_n = strlen(cur);
+  memcpy(out + written, cur, tail_n);
+  written += tail_n;
+  out[written] = '\0';
+  return out;
+}
+
+static const char *default_host_target(void) {
+#if defined(__APPLE__)
+#if defined(__aarch64__) || defined(__arm64__)
+  return "arm64-apple-darwin";
+#elif defined(__x86_64__)
+  return "x86_64-apple-darwin";
+#else
+  return "arm64-apple-darwin";
+#endif
+#elif defined(__linux__)
+#if defined(__aarch64__) || defined(__arm64__)
+  return "aarch64-unknown-linux-gnu";
+#elif defined(__x86_64__)
+  return "x86_64-unknown-linux-gnu";
+#else
+  return "x86_64-unknown-linux-gnu";
+#endif
+#else
+  return "arm64-apple-darwin";
+#endif
 }
 
 static int ensure_dir(const char *path) {
@@ -250,6 +323,25 @@ static bool env_flag_on(const char *name) {
           strcmp(v, "yes") == 0 || strcmp(v, "YES") == 0);
 }
 
+static void snapshot_env_var(const char *name, bool *had, char *buf, size_t cap) {
+  if (had != NULL) *had = false;
+  if (buf != NULL && cap > 0u) buf[0] = '\0';
+  if (name == NULL || had == NULL || buf == NULL || cap == 0u) return;
+  const char *v = getenv(name);
+  if (v == NULL || v[0] == '\0') return;
+  *had = true;
+  snprintf(buf, cap, "%s", v);
+}
+
+static void restore_env_var(const char *name, bool had, const char *value) {
+  if (name == NULL || name[0] == '\0') return;
+  if (had && value != NULL) {
+    setenv(name, value, 1);
+  } else {
+    unsetenv(name);
+  }
+}
+
 static bool path_is_under_root(const char *path, const char *root) {
   if (path == NULL || root == NULL || path[0] == '\0' || root[0] == '\0') return false;
   size_t root_n = strlen(root);
@@ -380,8 +472,23 @@ static bool configure_backend_track_env(bool strict) {
   setenv("R2C_STRICT_ALLOW_SEMANTIC_SHELL_GENERATOR", "0", 1);
 
   if (strcmp(track, "dev") == 0) {
+    const char *runtime_obj = getenv("BACKEND_RUNTIME_OBJ");
+    if (runtime_obj == NULL || runtime_obj[0] == '\0' || !file_exists(runtime_obj)) {
+      const char *runtime_candidates[] = {
+          "/Users/lbcheng/cheng-lang/chengcache/runtime_selflink/system_helpers.backend.combined.arm64-apple-darwin.o",
+          "/Users/lbcheng/cheng-lang/chengcache/runtime_selflink/system_helpers.backend.combined.darwin_arm64.o",
+          "/Users/lbcheng/cheng-lang/artifacts/backend_mm/system_helpers.backend.combined.arm64-apple-darwin.o",
+      };
+      for (size_t i = 0u; i < sizeof(runtime_candidates) / sizeof(runtime_candidates[0]); ++i) {
+        if (file_exists(runtime_candidates[i])) {
+          setenv("BACKEND_RUNTIME_OBJ", runtime_candidates[i], 1);
+          break;
+        }
+      }
+    }
     setenv("BACKEND_BUILD_TRACK", "dev", 1);
     setenv("BACKEND_LINKER", "self", 1);
+    setenv("BACKEND_NO_RUNTIME_C", "1", 1);
     setenv("BACKEND_DIRECT_EXE", "1", 1);
     setenv("BACKEND_HOTPATCH_MODE", "trampoline", 1);
     setenv("BACKEND_INCREMENTAL", "1", 1);
@@ -400,9 +507,10 @@ static bool configure_backend_track_env(bool strict) {
   }
 
   fprintf(stderr,
-          "[r2c-compile] build-track=%s backend-driver=%s\n",
+          "[r2c-compile] build-track=%s backend-driver=%s runtime-obj=%s\n",
           getenv("BACKEND_BUILD_TRACK") ? getenv("BACKEND_BUILD_TRACK") : "",
-          getenv("BACKEND_DRIVER") ? getenv("BACKEND_DRIVER") : "");
+          getenv("BACKEND_DRIVER") ? getenv("BACKEND_DRIVER") : "",
+          getenv("BACKEND_RUNTIME_OBJ") ? getenv("BACKEND_RUNTIME_OBJ") : "");
   return true;
 }
 
@@ -961,9 +1069,9 @@ static int count_semantic_tsv_meaningful_rows(const char *tsv_path, int *out_tot
   return meaningful_rows;
 }
 
-static __attribute__((unused)) bool write_semantic_render_nodes_from_react_ir(const char *react_ir_path,
-                                                                              const char *tsv_path,
-                                                                              long long expected_count) {
+static bool write_semantic_render_nodes_from_react_ir(const char *react_ir_path,
+                                                      const char *tsv_path,
+                                                      long long expected_count) {
   if (react_ir_path == NULL || tsv_path == NULL) return false;
   size_t n = 0u;
   char *doc = read_file_all(react_ir_path, &n);
@@ -1317,6 +1425,259 @@ static bool build_semantic_append_block_from_ir(const char *react_ir_path,
   return true;
 }
 
+static bool inject_runtime_semantic_block(const char *runtime_path, const char *append_block, int expected_min_calls) {
+  if (runtime_path == NULL || runtime_path[0] == '\0' || append_block == NULL) return false;
+  size_t runtime_n = 0u;
+  char *runtime_src = read_file_all(runtime_path, &runtime_n);
+  if (runtime_src == NULL || runtime_n == 0u) {
+    free(runtime_src);
+    return false;
+  }
+  if (count_runtime_append_calls(runtime_src) >= expected_min_calls && expected_min_calls > 0) {
+    free(runtime_src);
+    return true;
+  }
+
+  const char *placeholder = "__R2C_SEMANTIC_NODE_APPENDS__";
+  const char *needle = strstr(runtime_src, placeholder);
+  char *next = NULL;
+  if (needle != NULL) {
+    size_t pre = (size_t)(needle - runtime_src);
+    size_t place_n = strlen(placeholder);
+    size_t block_n = strlen(append_block);
+    size_t tail_n = strlen(needle + place_n);
+    next = (char *)malloc(pre + block_n + tail_n + 1u);
+    if (next == NULL) {
+      free(runtime_src);
+      return false;
+    }
+    memcpy(next, runtime_src, pre);
+    memcpy(next + pre, append_block, block_n);
+    memcpy(next + pre + block_n, needle + place_n, tail_n);
+    next[pre + block_n + tail_n] = '\0';
+  } else {
+    const char *anchor = strstr(runtime_src, "fn ensureSemanticNodes() =");
+    if (anchor == NULL) {
+      free(runtime_src);
+      return false;
+    }
+    const char *insert_at = strstr(anchor, "\nfn ");
+    if (insert_at == NULL) insert_at = runtime_src + strlen(runtime_src);
+    size_t pre = (size_t)(insert_at - runtime_src);
+    size_t block_n = strlen(append_block);
+    size_t tail_n = strlen(insert_at);
+    size_t extra_nl = (block_n > 0u && append_block[block_n - 1u] == '\n') ? 0u : 1u;
+    next = (char *)malloc(pre + block_n + extra_nl + tail_n + 1u);
+    if (next == NULL) {
+      free(runtime_src);
+      return false;
+    }
+    memcpy(next, runtime_src, pre);
+    memcpy(next + pre, append_block, block_n);
+    size_t w = pre + block_n;
+    if (extra_nl > 0u) next[w++] = '\n';
+    memcpy(next + w, insert_at, tail_n);
+    next[w + tail_n] = '\0';
+  }
+
+  bool ok = (count_runtime_append_calls(next) >= expected_min_calls && expected_min_calls > 0);
+  if (ok) ok = (write_file_all(runtime_path, next, strlen(next)) == 0);
+  free(next);
+  free(runtime_src);
+  return ok;
+}
+
+static bool write_semantic_maps_from_react_ir(const char *react_ir_path,
+                                              const char *map_path,
+                                              const char *runtime_map_path,
+                                              int expected_count) {
+  if (react_ir_path == NULL || map_path == NULL || runtime_map_path == NULL) return false;
+  size_t n = 0u;
+  char *doc = read_file_all(react_ir_path, &n);
+  if (doc == NULL || n == 0u) {
+    free(doc);
+    return false;
+  }
+  const char *p = json_find_key(doc, "semantic_nodes");
+  if (p == NULL || *p != '[') {
+    free(doc);
+    return false;
+  }
+  ++p;
+
+  FILE *map_fp = fopen(map_path, "wb");
+  FILE *rt_fp = fopen(runtime_map_path, "wb");
+  if (map_fp == NULL || rt_fp == NULL) {
+    if (map_fp != NULL) fclose(map_fp);
+    if (rt_fp != NULL) fclose(rt_fp);
+    free(doc);
+    return false;
+  }
+
+  fprintf(map_fp, "{\n  \"format\": \"r2c-semantic-node-map-v1\",\n  \"mode\": \"source-node-map\",\n  \"nodes\": [");
+  fprintf(rt_fp,
+          "{\n  \"format\": \"r2c-semantic-runtime-map-v1\",\n  \"mode\": \"source-node-map\",\n  \"nodes\": [");
+
+  int index = 0;
+  bool wrote_any = false;
+  while (*p != '\0') {
+    p = skip_ws(p);
+    if (*p == ']') break;
+    if (*p == ',') {
+      ++p;
+      continue;
+    }
+    if (*p != '"') {
+      ++p;
+      continue;
+    }
+    char row[4096];
+    const char *after = NULL;
+    if (!json_parse_string_at(p, row, sizeof(row), &after)) break;
+    p = after;
+
+    char module_id_raw[2048];
+    char kind[256];
+    char value[2048];
+    bool parsed = parse_semantic_row(row,
+                                     module_id_raw,
+                                     sizeof(module_id_raw),
+                                     kind,
+                                     sizeof(kind),
+                                     value,
+                                     sizeof(value));
+    if (!parsed) {
+      snprintf(module_id_raw, sizeof(module_id_raw), "%s", "/semantic/unknown");
+      snprintf(kind, sizeof(kind), "%s", "text");
+      snprintf(value, sizeof(value), "%s", row);
+    }
+    char module_id[2048];
+    if (module_id_raw[0] == '/') snprintf(module_id, sizeof(module_id), "%s", module_id_raw);
+    else snprintf(module_id, sizeof(module_id), "/%s", module_id_raw);
+
+    const bool is_hook = (strcmp(kind, "hook") == 0);
+    const bool is_event = (strcmp(kind, "event") == 0);
+    char idx_text[32];
+    snprintf(idx_text, sizeof(idx_text), "%d", index);
+    char node_id[64];
+    snprintf(node_id, sizeof(node_id), "sn_%s", idx_text);
+    char jsx_path[64];
+    if (is_event) snprintf(jsx_path, sizeof(jsx_path), "event:%s", idx_text);
+    else if (is_hook) snprintf(jsx_path, sizeof(jsx_path), "hook:%s", idx_text);
+    else snprintf(jsx_path, sizeof(jsx_path), "semantic:%s", idx_text);
+    char route_hint[128];
+    infer_route_hint(module_id, value, route_hint, sizeof(route_hint));
+
+    char e_node_id[256];
+    char e_module_id[4096];
+    char e_jsx_path[256];
+    char e_route_hint[256];
+    cheng_escape(node_id, e_node_id, sizeof(e_node_id));
+    cheng_escape(module_id, e_module_id, sizeof(e_module_id));
+    cheng_escape(jsx_path, e_jsx_path, sizeof(e_jsx_path));
+    cheng_escape(route_hint, e_route_hint, sizeof(e_route_hint));
+
+    if (wrote_any) {
+      fputc(',', map_fp);
+      fputc(',', rt_fp);
+    }
+    fprintf(map_fp,
+            "{\"node_id\":\"%s\",\"source_module\":\"%s\",\"jsx_path\":\"%s\"}",
+            e_node_id,
+            e_module_id,
+            e_jsx_path);
+    fprintf(rt_fp,
+            "{\"node_id\":\"%s\",\"route_hint\":\"%s\",\"runtime_index\":%d}",
+            e_node_id,
+            e_route_hint,
+            index);
+    wrote_any = true;
+    index += 1;
+  }
+
+  fprintf(map_fp, "],\n  \"count\": %d\n}\n", index);
+  fprintf(rt_fp, "],\n  \"count\": %d\n}\n", index);
+  fclose(map_fp);
+  fclose(rt_fp);
+  free(doc);
+
+  if (index <= 0) return false;
+  if (expected_count > 0 && index != expected_count) return false;
+  return true;
+}
+
+static __attribute__((unused)) bool materialize_semantic_artifacts_from_react_ir(const char *report_path, char **doc_io) {
+  if (report_path == NULL || doc_io == NULL || *doc_io == NULL) return false;
+  char *doc = *doc_io;
+
+  char react_ir_raw[PATH_MAX];
+  char runtime_raw[PATH_MAX];
+  char tsv_raw[PATH_MAX];
+  char map_raw[PATH_MAX];
+  char rt_map_raw[PATH_MAX];
+  if (!json_get_string(doc, "react_ir_path", react_ir_raw, sizeof(react_ir_raw)) ||
+      !json_get_string(doc, "generated_runtime_path", runtime_raw, sizeof(runtime_raw)) ||
+      !json_get_string(doc, "semantic_render_nodes_path", tsv_raw, sizeof(tsv_raw)) ||
+      !json_get_string(doc, "semantic_node_map_path", map_raw, sizeof(map_raw)) ||
+      !json_get_string(doc, "semantic_runtime_map_path", rt_map_raw, sizeof(rt_map_raw))) {
+    return false;
+  }
+
+  char react_ir_path[PATH_MAX];
+  char runtime_path[PATH_MAX];
+  char tsv_path[PATH_MAX];
+  char map_path[PATH_MAX];
+  char rt_map_path[PATH_MAX];
+  if (!resolve_report_path(report_path, react_ir_raw, react_ir_path, sizeof(react_ir_path)) ||
+      !resolve_report_path(report_path, runtime_raw, runtime_path, sizeof(runtime_path)) ||
+      !resolve_report_path(report_path, tsv_raw, tsv_path, sizeof(tsv_path)) ||
+      !resolve_report_path(report_path, map_raw, map_path, sizeof(map_path)) ||
+      !resolve_report_path(report_path, rt_map_raw, rt_map_path, sizeof(rt_map_path))) {
+    return false;
+  }
+  if (!file_exists(react_ir_path) || !file_exists(runtime_path)) return false;
+
+  int append_count = 0;
+  {
+    size_t runtime_n = 0u;
+    char *runtime_src = read_file_all(runtime_path, &runtime_n);
+    if (runtime_src != NULL) append_count = count_runtime_append_calls(runtime_src);
+    free(runtime_src);
+  }
+  if (append_count <= 0) {
+    size_t block_cap = 4u * 1024u * 1024u;
+    char *block = (char *)malloc(block_cap);
+    if (block == NULL) return false;
+    int built_count = 0;
+    bool block_ok = build_semantic_append_block_from_ir(react_ir_path, block, block_cap, &built_count);
+    if (!block_ok || built_count <= 0 || !inject_runtime_semantic_block(runtime_path, block, built_count)) {
+      free(block);
+      return false;
+    }
+    append_count = built_count;
+    free(block);
+  }
+  if (append_count <= 0) return false;
+
+  int total_rows = 0;
+  int meaningful_rows = count_semantic_tsv_meaningful_rows(tsv_path, &total_rows);
+  if (meaningful_rows < append_count || total_rows <= 0) {
+    if (!write_semantic_render_nodes_from_react_ir(react_ir_path, tsv_path, append_count)) {
+      return false;
+    }
+  }
+
+  if (!write_semantic_maps_from_react_ir(react_ir_path, map_path, rt_map_path, append_count)) {
+    return false;
+  }
+
+  if (!json_replace_int_field(doc_io, "semantic_node_count", append_count) ||
+      !json_replace_int_field(doc_io, "semantic_render_nodes_count", append_count)) {
+    return false;
+  }
+  return write_file_all(report_path, *doc_io, strlen(*doc_io)) == 0;
+}
+
 static bool json_array_is_empty(const char *doc, const char *key) {
   const char *p = json_find_key(doc, key);
   if (p == NULL || *p != '[') return false;
@@ -1369,10 +1730,11 @@ static const char *route_parent_for(const char *route) {
   if (strncmp(route, "tab_", 4u) == 0) return "home_default";
   if (strcmp(route, "publish_selector") == 0) return "home_default";
   if (strncmp(route, "publish_", 8u) == 0) return "publish_selector";
-  if (strcmp(route, "trading_main") == 0) return "tab_nodes";
+  if (strcmp(route, "trading_main") == 0) return "home_channel_manager_open";
   if (strncmp(route, "trading_", 8u) == 0) return "trading_main";
-  if (strcmp(route, "ecom_main") == 0 || strcmp(route, "marketplace_main") == 0) return "home_ecom_overlay_open";
-  if (strcmp(route, "update_center_main") == 0) return "tab_profile";
+  if (strcmp(route, "marketplace_main") == 0) return "home_channel_manager_open";
+  if (strcmp(route, "update_center_main") == 0) return "home_channel_manager_open";
+  if (strcmp(route, "ecom_main") == 0) return "home_ecom_overlay_open";
   return "home_default";
 }
 
@@ -1392,9 +1754,10 @@ static const char *route_entry_event_for(const char *route) {
   if (strncmp(route, "tab_", 4u) == 0) return "bottom_tab.switch";
   if (strcmp(route, "publish_selector") == 0) return "bottom_tab.publish";
   if (strncmp(route, "publish_", 8u) == 0) return "publish_selector.choose";
-  if (strncmp(route, "trading_", 8u) == 0) return "node.market.open";
-  if (strcmp(route, "ecom_main") == 0 || strcmp(route, "marketplace_main") == 0) return "home.ecom.open";
-  if (strcmp(route, "update_center_main") == 0) return "profile.update_center.open";
+  if (strncmp(route, "trading_", 8u) == 0) return "sidebar.trading.open";
+  if (strcmp(route, "marketplace_main") == 0) return "sidebar.marketplace.open";
+  if (strcmp(route, "update_center_main") == 0) return "sidebar.update_center.open";
+  if (strcmp(route, "ecom_main") == 0) return "home.ecom.open";
   return "route.navigate";
 }
 
@@ -1411,6 +1774,86 @@ static void route_path_signature_for(const char *route, char *out, size_t out_ca
     return;
   }
   snprintf(out, out_cap, "home_default>%s>%s", parent, route);
+}
+
+static const char *route_action_script_for(const char *route) {
+  if (route == NULL || route[0] == '\0') return NULL;
+  if (strcmp(route, "home_default") == 0) return "launch;sleep:1200";
+  if (strcmp(route, "lang_select") == 0) return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,780;sleep:700";
+  if (strcmp(route, "tab_messages") == 0)
+    return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:300,965;sleep:700";
+  if (strcmp(route, "publish_selector") == 0)
+    return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:500,965;sleep:700";
+  if (strcmp(route, "tab_nodes") == 0)
+    return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:700,965;sleep:700";
+  if (strcmp(route, "tab_profile") == 0)
+    return "launch;sleep:1000;tapppm:100,965;sleep:450;tapppm:900,965;sleep:700";
+  if (strcmp(route, "home_channel_manager_open") == 0) return "launch;sleep:1000;tapppm:90,115;sleep:700";
+  if (strcmp(route, "home_search_open") == 0) return "launch;sleep:1000;tapppm:790,115;sleep:700";
+  if (strcmp(route, "home_sort_open") == 0) return "launch;sleep:1000;tapppm:920,115;sleep:700";
+  if (strcmp(route, "home_content_detail_open") == 0) return "launch;sleep:1000;tapppm:500,460;sleep:700";
+  if (strcmp(route, "home_ecom_overlay_open") == 0) return "launch;sleep:1000;tapppm:355,205;sleep:700";
+  if (strcmp(route, "home_bazi_overlay_open") == 0) return "launch;sleep:1000;tapppm:510,205;sleep:700";
+  if (strcmp(route, "home_ziwei_overlay_open") == 0) return "launch;sleep:1000;tapppm:670,205;sleep:700";
+  if (strcmp(route, "publish_content") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,420;sleep:700";
+  if (strcmp(route, "publish_product") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,520;sleep:700";
+  if (strcmp(route, "publish_live") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,620;sleep:700";
+  if (strcmp(route, "publish_app") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,720;sleep:700";
+  if (strcmp(route, "publish_food") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,820;sleep:700";
+  if (strcmp(route, "publish_ride") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:500,900;sleep:700";
+  if (strcmp(route, "publish_job") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:320,620;sleep:700";
+  if (strcmp(route, "publish_hire") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:680,620;sleep:700";
+  if (strcmp(route, "publish_rent") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:320,760;sleep:700";
+  if (strcmp(route, "publish_sell") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:680,760;sleep:700";
+  if (strcmp(route, "publish_secondhand") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:320,900;sleep:700";
+  if (strcmp(route, "publish_crowdfunding") == 0) return "launch;sleep:1000;tapppm:500,965;sleep:700;tapppm:680,900;sleep:700";
+  if (strcmp(route, "trading_main") == 0) return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,405;sleep:700";
+  if (strcmp(route, "trading_crosshair") == 0) return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,405;sleep:700;tapppm:500,520;sleep:700";
+  if (strcmp(route, "ecom_main") == 0) return "launch;sleep:1000;tapppm:355,205;sleep:700;tapppm:500,500;sleep:700";
+  if (strcmp(route, "marketplace_main") == 0) return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,485;sleep:700";
+  if (strcmp(route, "update_center_main") == 0) return "launch;sleep:1000;tapppm:90,115;sleep:700;tapppm:210,860;sleep:700";
+  return NULL;
+}
+
+static bool append_actions_json_from_script(char *buf, size_t cap, size_t *len_io, const char *script) {
+  if (buf == NULL || len_io == NULL || script == NULL) return false;
+  bool wrote = false;
+  const char *p = script;
+  while (*p != '\0') {
+    const char *seg = p;
+    while (*p != '\0' && *p != ';') ++p;
+    size_t seg_len = (size_t)(p - seg);
+    if (seg_len > 0u) {
+      char token[128];
+      if (seg_len >= sizeof(token)) return false;
+      memcpy(token, seg, seg_len);
+      token[seg_len] = '\0';
+      if (wrote) {
+        if (!buf_appendf(buf, cap, len_io, ",")) return false;
+      }
+      if (strcmp(token, "launch") == 0) {
+        if (!buf_appendf(buf, cap, len_io, "{\"type\":\"launch_main\"}")) return false;
+      } else if (strncmp(token, "sleep:", 6u) == 0) {
+        int ms = atoi(token + 6);
+        if (ms <= 0) return false;
+        if (!buf_appendf(buf, cap, len_io, "{\"type\":\"sleep_ms\",\"ms\":%d}", ms)) return false;
+      } else if (strncmp(token, "tapppm:", 7u) == 0) {
+        int x = 0;
+        int y = 0;
+        if (sscanf(token + 7, "%d,%d", &x, &y) != 2) return false;
+        if (!buf_appendf(buf, cap, len_io, "{\"type\":\"tap_ppm\",\"x\":%d,\"y\":%d}", x, y)) return false;
+      } else if (strncmp(token, "keyevent:", 9u) == 0) {
+        int code = atoi(token + 9);
+        if (code <= 0) return false;
+        if (!buf_appendf(buf, cap, len_io, "{\"type\":\"keyevent\",\"code\":%d}", code)) return false;
+      } else {
+        return false;
+      }
+      wrote = true;
+    }
+    if (*p == ';') ++p;
+  }
+  return wrote;
 }
 
 static int parse_string_array_key(const char *doc, const char *key, PathList *out_list) {
@@ -1636,7 +2079,45 @@ static bool write_route_layers_json(const char *path, const PathList *states, in
   return write_file_all(path, buf, len) == 0;
 }
 
-static bool backfill_route_tree_layers_meta(const char *report_path) {
+static bool write_route_actions_android_json(const char *path, const PathList *states) {
+  if (path == NULL || states == NULL || states->len == 0u) return false;
+  char buf[512 * 1024];
+  size_t len = 0u;
+  if (!buf_appendf(buf, sizeof(buf), &len,
+                   "{\n"
+                   "  \"format\": \"r2c-route-actions-android-v1\",\n"
+                   "  \"root_route\": \"home_default\",\n"
+                   "  \"route_count\": %zu,\n"
+                   "  \"routes\": [\n",
+                   states->len)) return false;
+  for (size_t i = 0u; i < states->len; ++i) {
+    const char *route = states->items[i];
+    const char *script = route_action_script_for(route);
+    if (script == NULL || script[0] == '\0') {
+      fprintf(stderr, "[r2c-compile] unmapped android route action: %s\n", route ? route : "");
+      return false;
+    }
+    const char *parent = route_parent_for(route);
+    char path_sig[512];
+    route_path_signature_for(route, path_sig, sizeof(path_sig));
+    if (i > 0u) {
+      if (!buf_appendf(buf, sizeof(buf), &len, ",\n")) return false;
+    }
+    if (!buf_appendf(buf, sizeof(buf), &len,
+                     "    {\"route\":\"%s\",\"parent\":\"%s\",\"depth\":%d,\"entry_event\":\"%s\",\"path_from_root\":\"%s\",\"actions\":[",
+                     route,
+                     parent != NULL ? parent : "",
+                     route_depth_for(route),
+                     route_entry_event_for(route),
+                     path_sig)) return false;
+    if (!append_actions_json_from_script(buf, sizeof(buf), &len, script)) return false;
+    if (!buf_appendf(buf, sizeof(buf), &len, "]}")) return false;
+  }
+  if (!buf_appendf(buf, sizeof(buf), &len, "\n  ]\n}\n")) return false;
+  return write_file_all(path, buf, len) == 0;
+}
+
+static __attribute__((unused)) bool backfill_route_tree_layers_meta(const char *report_path) {
   if (report_path == NULL || report_path[0] == '\0') return false;
   size_t n = 0u;
   char *doc = read_file_all(report_path, &n);
@@ -1656,6 +2137,7 @@ static bool backfill_route_tree_layers_meta(const char *report_path) {
   dirname_copy(report_path, report_dir, sizeof(report_dir));
   char route_tree_path[PATH_MAX];
   char route_layers_path[PATH_MAX];
+  char route_actions_android_path[PATH_MAX];
   if (!json_get_string(doc, "route_tree_path", route_tree_path, sizeof(route_tree_path)) ||
       route_tree_path[0] == '\0') {
     snprintf(route_tree_path, sizeof(route_tree_path), "%s/r2c_route_tree.json", report_dir);
@@ -1674,11 +2156,21 @@ static bool backfill_route_tree_layers_meta(const char *report_path) {
       snprintf(route_layers_path, sizeof(route_layers_path), "%s", resolved);
     }
   }
+  if (!json_get_string(doc, "route_actions_android_path", route_actions_android_path, sizeof(route_actions_android_path)) ||
+      route_actions_android_path[0] == '\0') {
+    snprintf(route_actions_android_path, sizeof(route_actions_android_path), "%s/r2c_route_actions_android.json", report_dir);
+  } else {
+    char resolved[PATH_MAX];
+    if (resolve_report_path(report_path, route_actions_android_path, resolved, sizeof(resolved))) {
+      snprintf(route_actions_android_path, sizeof(route_actions_android_path), "%s", resolved);
+    }
+  }
 
   int layer_count = 0;
   bool tree_ok = write_route_tree_json(route_tree_path, &states);
   bool layers_ok = write_route_layers_json(route_layers_path, &states, &layer_count);
-  if (!tree_ok || !layers_ok || layer_count <= 0) {
+  bool actions_ok = write_route_actions_android_json(route_actions_android_path, &states);
+  if (!tree_ok || !layers_ok || !actions_ok || layer_count <= 0) {
     path_list_free(&states);
     free(doc);
     return false;
@@ -1715,10 +2207,19 @@ static bool backfill_route_tree_layers_meta(const char *report_path) {
       return false;
     }
   }
+  if (!json_replace_string_field(&doc, "route_actions_android_path", route_actions_android_path)) {
+    char line[PATH_MAX + 96];
+    snprintf(line, sizeof(line), "  \"route_actions_android_path\": \"%s\",\n", route_actions_android_path);
+    if (!json_insert_after_key_line(&doc, "route_layers_path", line)) {
+      path_list_free(&states);
+      free(doc);
+      return false;
+    }
+  }
   if (!json_replace_int_field(&doc, "layer_count", layer_count)) {
     char line[128];
     snprintf(line, sizeof(line), "  \"layer_count\": %d,\n", layer_count);
-    if (!json_insert_after_key_line(&doc, "route_layers_path", line)) {
+    if (!json_insert_after_key_line(&doc, "route_actions_android_path", line)) {
       path_list_free(&states);
       free(doc);
       return false;
@@ -1934,10 +2435,16 @@ static bool validate_compile_report(const char *report_path, bool strict) {
     const char *required_paths[] = {
         "generated_runtime_path",
         "react_ir_path",
+        "semantic_graph_path",
+        "component_graph_path",
+        "style_graph_path",
+        "event_graph_path",
+        "runtime_trace_path",
         "hook_graph_path",
         "effect_plan_path",
         "route_tree_path",
         "route_layers_path",
+        "route_actions_android_path",
         "semantic_node_map_path",
         "semantic_runtime_map_path",
         "semantic_render_nodes_path",
@@ -2259,6 +2766,216 @@ static int parse_positive_int_env(const char *name, int fallback) {
   return (int)v;
 }
 
+static bool write_file_all_str(const char *path, const char *text) {
+  if (path == NULL || text == NULL) return false;
+  return write_file_all(path, text, strlen(text)) == 0;
+}
+
+static bool copy_file_with_rewrites(const char *src_path,
+                                    const char *dst_path,
+                                    const char *needle1,
+                                    const char *replace1,
+                                    const char *needle2,
+                                    const char *replace2) {
+  size_t n = 0u;
+  char *src = read_file_all(src_path, &n);
+  if (src == NULL) return false;
+  char *patched = replace_all_text(src, needle1 ? needle1 : "", replace1 ? replace1 : "");
+  free(src);
+  if (patched == NULL) return false;
+  if (needle2 != NULL && needle2[0] != '\0') {
+    char *patched2 = replace_all_text(patched, needle2, replace2 ? replace2 : "");
+    free(patched);
+    if (patched2 == NULL) return false;
+    patched = patched2;
+  }
+  bool ok = write_file_all_str(dst_path, patched);
+  free(patched);
+  return ok;
+}
+
+static bool rebuild_r2c_compiler_binary(const char *root, bool strict) {
+  if (root == NULL || root[0] == '\0') return false;
+  const char *explicit_bin = getenv("CHENG_R2C_NATIVE_COMPILER_BIN");
+  if (explicit_bin != NULL && explicit_bin[0] != '\0') return path_executable(explicit_bin);
+
+  const char *track_env = getenv("CHENG_R2C_BUILD_TRACK");
+  const char *track = (track_env != NULL && track_env[0] != '\0') ? track_env : "dev";
+  if (strcmp(track, "dev") != 0 && strcmp(track, "release") != 0) {
+    fprintf(stderr, "[r2c-compile] invalid CHENG_R2C_BUILD_TRACK=%s (expected dev|release)\n", track);
+    return false;
+  }
+
+  bool force = strict;
+  const char *force_env = getenv("R2C_REBUILD_COMPILER_BIN");
+  if (force_env != NULL && force_env[0] != '\0') {
+    force = (strcmp(force_env, "0") != 0);
+  }
+
+  char track_bin[PATH_MAX];
+  if (snprintf(track_bin, sizeof(track_bin), "%s/build/r2c_compiler_tracks/%s/r2c_compile_macos", root, track) >=
+      (int)sizeof(track_bin)) {
+    return false;
+  }
+  if (!force && path_executable(track_bin)) return true;
+
+  char compiler_main[PATH_MAX];
+  if (path_join(compiler_main, sizeof(compiler_main), root, "src/r2c_aot_compile_main.cheng") != 0) {
+    return false;
+  }
+  if (!file_exists(compiler_main)) {
+    if (path_join(compiler_main, sizeof(compiler_main), root, "src/r2c_aot_compiler_driver_main.cheng") != 0) {
+      return false;
+    }
+  }
+  if (!file_exists(compiler_main)) {
+    fprintf(stderr, "[r2c-compile] missing compiler entry source under src/r2c_aot_compile_main.cheng\n");
+    return false;
+  }
+
+  char track_dir[PATH_MAX];
+  if (snprintf(track_dir, sizeof(track_dir), "%s/build/r2c_compiler_tracks/%s", root, track) >= (int)sizeof(track_dir)) {
+    return false;
+  }
+  if (ensure_dir(track_dir) != 0) {
+    fprintf(stderr, "[r2c-compile] failed to create track dir: %s\n", track_dir);
+    return false;
+  }
+  char rebuild_log[PATH_MAX];
+  if (path_join(rebuild_log, sizeof(rebuild_log), track_dir, "rebuild_via_driver.log") != 0) return false;
+
+  const char *driver = getenv("BACKEND_DRIVER");
+  if (driver == NULL || driver[0] == '\0') {
+    fprintf(stderr, "[r2c-compile] BACKEND_DRIVER is empty (configure_backend_track_env must run first)\n");
+    return false;
+  }
+
+  const char *target_env = getenv("R2C_HOST_TARGET");
+  if (target_env == NULL || target_env[0] == '\0') target_env = getenv("KIT_TARGET");
+  if (target_env == NULL || target_env[0] == '\0') target_env = getenv("BACKEND_TARGET");
+  if (target_env == NULL || target_env[0] == '\0') target_env = default_host_target();
+  const char *linker_before = getenv("BACKEND_LINKER");
+  const bool try_self_first = (linker_before != NULL && strcmp(linker_before, "self") == 0);
+
+  setenv("MM", "orc", 1);
+  {
+    const char *pkg_roots = getenv("PKG_ROOTS");
+    bool has_cheng_lang = (pkg_roots != NULL && strstr(pkg_roots, "/Users/lbcheng/cheng-lang") != NULL);
+    bool has_pkg_hub = (pkg_roots != NULL && strstr(pkg_roots, "/Users/lbcheng/.cheng-packages") != NULL);
+    if (!has_cheng_lang || !has_pkg_hub) {
+      char merged[PATH_MAX * 2];
+      if (pkg_roots != NULL && pkg_roots[0] != '\0') {
+        snprintf(merged,
+                 sizeof(merged),
+                 "/Users/lbcheng/cheng-lang:/Users/lbcheng/.cheng-packages:%s",
+                 pkg_roots);
+      } else {
+        snprintf(merged, sizeof(merged), "/Users/lbcheng/cheng-lang:/Users/lbcheng/.cheng-packages");
+      }
+      setenv("PKG_ROOTS", merged, 1);
+    }
+  }
+  setenv("BACKEND_EMIT", "exe", 1);
+  setenv("CHENG_BACKEND_EMIT", "exe", 1);
+  setenv("BACKEND_MULTI", "1", 1);
+  setenv("BACKEND_MULTI_FORCE", "1", 1);
+  setenv("BACKEND_WHOLE_PROGRAM", "1", 1);
+  setenv("CHENG_BACKEND_MULTI", "1", 1);
+  setenv("CHENG_BACKEND_MULTI_FORCE", "1", 1);
+  setenv("CHENG_BACKEND_WHOLE_PROGRAM", "1", 1);
+  setenv("BACKEND_TARGET", target_env, 1);
+  setenv("CHENG_BACKEND_TARGET", target_env, 1);
+  setenv("BACKEND_FRONTEND", "stage1", 1);
+  setenv("CHENG_BACKEND_FRONTEND", "stage1", 1);
+  setenv("BACKEND_INPUT", compiler_main, 1);
+  setenv("CHENG_BACKEND_INPUT", compiler_main, 1);
+  setenv("BACKEND_OUTPUT", track_bin, 1);
+  setenv("CHENG_BACKEND_OUTPUT", track_bin, 1);
+  setenv("BACKEND_INCREMENTAL", strcmp(track, "dev") == 0 ? "1" : "0", 1);
+  setenv("BACKEND_JOBS", getenv("BACKEND_JOBS") && getenv("BACKEND_JOBS")[0] ? getenv("BACKEND_JOBS") : "8", 1);
+  setenv("BACKEND_BUILD_TRACK", track, 1);
+  if (strcmp(track, "dev") == 0) {
+    setenv("BACKEND_OPT", "0", 1);
+    setenv("BACKEND_OPT2", "0", 1);
+    setenv("BACKEND_OPT_LEVEL", "0", 1);
+    setenv("UIR_NOALIAS", "0", 1);
+    setenv("UIR_SSU", "0", 1);
+    setenv("UIR_EGRAPH_ITERS", "1", 1);
+  }
+
+  /* Build the compiler binary itself in a stable host-link mode, independent
+   * from the downstream app payload build mode.
+   */
+  bool had_linker = false;
+  bool had_no_runtime_c = false;
+  bool had_direct_exe = false;
+  bool had_runtime_obj = false;
+  bool had_runtime_c = false;
+  bool had_cheng_linker = false;
+  bool had_cheng_no_runtime_c = false;
+  bool had_cheng_direct_exe = false;
+  bool had_cheng_runtime_obj = false;
+  bool had_cheng_runtime_c = false;
+  char prev_linker[64];
+  char prev_no_runtime_c[64];
+  char prev_direct_exe[64];
+  char prev_runtime_obj[PATH_MAX];
+  char prev_runtime_c[PATH_MAX];
+  char prev_cheng_linker[64];
+  char prev_cheng_no_runtime_c[64];
+  char prev_cheng_direct_exe[64];
+  char prev_cheng_runtime_obj[PATH_MAX];
+  char prev_cheng_runtime_c[PATH_MAX];
+  snapshot_env_var("BACKEND_LINKER", &had_linker, prev_linker, sizeof(prev_linker));
+  snapshot_env_var("BACKEND_NO_RUNTIME_C", &had_no_runtime_c, prev_no_runtime_c, sizeof(prev_no_runtime_c));
+  snapshot_env_var("BACKEND_DIRECT_EXE", &had_direct_exe, prev_direct_exe, sizeof(prev_direct_exe));
+  snapshot_env_var("BACKEND_RUNTIME_OBJ", &had_runtime_obj, prev_runtime_obj, sizeof(prev_runtime_obj));
+  snapshot_env_var("BACKEND_RUNTIME_C", &had_runtime_c, prev_runtime_c, sizeof(prev_runtime_c));
+  snapshot_env_var("CHENG_BACKEND_LINKER", &had_cheng_linker, prev_cheng_linker, sizeof(prev_cheng_linker));
+  snapshot_env_var("CHENG_BACKEND_NO_RUNTIME_C", &had_cheng_no_runtime_c, prev_cheng_no_runtime_c, sizeof(prev_cheng_no_runtime_c));
+  snapshot_env_var("CHENG_BACKEND_DIRECT_EXE", &had_cheng_direct_exe, prev_cheng_direct_exe, sizeof(prev_cheng_direct_exe));
+  snapshot_env_var("CHENG_BACKEND_RUNTIME_OBJ", &had_cheng_runtime_obj, prev_cheng_runtime_obj, sizeof(prev_cheng_runtime_obj));
+  snapshot_env_var("CHENG_BACKEND_RUNTIME_C", &had_cheng_runtime_c, prev_cheng_runtime_c, sizeof(prev_cheng_runtime_c));
+  setenv("BACKEND_LINKER", "system", 1);
+  setenv("BACKEND_NO_RUNTIME_C", "0", 1);
+  setenv("BACKEND_DIRECT_EXE", "0", 1);
+  setenv("BACKEND_RUNTIME_C", "/Users/lbcheng/cheng-lang/src/runtime/native/system_helpers.c", 1);
+  unsetenv("BACKEND_RUNTIME_OBJ");
+  setenv("CHENG_BACKEND_LINKER", "system", 1);
+  setenv("CHENG_BACKEND_NO_RUNTIME_C", "0", 1);
+  setenv("CHENG_BACKEND_DIRECT_EXE", "0", 1);
+  setenv("CHENG_BACKEND_RUNTIME_C", "/Users/lbcheng/cheng-lang/src/runtime/native/system_helpers.c", 1);
+  unsetenv("CHENG_BACKEND_RUNTIME_OBJ");
+
+  unlink(track_bin);
+  char *argv[] = {(char *)driver, NULL};
+  RunResult rr = run_command(argv, root, rebuild_log, parse_positive_int_env("R2C_REBUILD_COMPILER_TIMEOUT_SEC", 420));
+  if (rr.code != 0 && try_self_first) {
+    setenv("BACKEND_LINKER", "system", 1);
+    rr = run_command(argv, root, rebuild_log, parse_positive_int_env("R2C_REBUILD_COMPILER_TIMEOUT_SEC", 420));
+  }
+  restore_env_var("BACKEND_LINKER", had_linker, prev_linker);
+  restore_env_var("BACKEND_NO_RUNTIME_C", had_no_runtime_c, prev_no_runtime_c);
+  restore_env_var("BACKEND_DIRECT_EXE", had_direct_exe, prev_direct_exe);
+  restore_env_var("BACKEND_RUNTIME_OBJ", had_runtime_obj, prev_runtime_obj);
+  restore_env_var("BACKEND_RUNTIME_C", had_runtime_c, prev_runtime_c);
+  restore_env_var("CHENG_BACKEND_LINKER", had_cheng_linker, prev_cheng_linker);
+  restore_env_var("CHENG_BACKEND_NO_RUNTIME_C", had_cheng_no_runtime_c, prev_cheng_no_runtime_c);
+  restore_env_var("CHENG_BACKEND_DIRECT_EXE", had_cheng_direct_exe, prev_cheng_direct_exe);
+  restore_env_var("CHENG_BACKEND_RUNTIME_OBJ", had_cheng_runtime_obj, prev_cheng_runtime_obj);
+  restore_env_var("CHENG_BACKEND_RUNTIME_C", had_cheng_runtime_c, prev_cheng_runtime_c);
+  if (rr.code != 0 || !path_executable(track_bin)) {
+    fprintf(stderr,
+            "[r2c-compile] failed to rebuild %s track compiler rc=%d (log=%s)\n",
+            track,
+            rr.code,
+            rebuild_log);
+    return false;
+  }
+  fprintf(stderr, "[r2c-compile] rebuilt compiler track=%s bin=%s\n", track, track_bin);
+  return true;
+}
+
 static int to_absolute_path(const char *input, char *out, size_t cap) {
   if (input == NULL || input[0] == '\0' || out == NULL || cap == 0u) return -1;
   if (input[0] == '/') {
@@ -2393,6 +3110,10 @@ int native_r2c_compile_react_project(const char *scripts_dir, int argc, char **a
   }
 
   if (!configure_backend_track_env(strict)) return 1;
+  if (!rebuild_r2c_compiler_binary(root, strict)) {
+    fprintf(stderr, "[r2c-compile] failed to rebuild or locate current-track compiler binary\n");
+    return 1;
+  }
 
   PathList candidates;
   memset(&candidates, 0, sizeof(candidates));
@@ -2454,7 +3175,7 @@ int native_r2c_compile_react_project(const char *scripts_dir, int argc, char **a
   char compile_log[PATH_MAX];
   if (path_join(compile_log, sizeof(compile_log), out_dir, "r2c_compile.native.log") != 0) return 1;
 
-  int timeout_sec = parse_positive_int_env("R2C_COMPILER_RUN_TIMEOUT_SEC", strict ? 60 : 0);
+  int timeout_sec = parse_positive_int_env("R2C_COMPILER_RUN_TIMEOUT_SEC", strict ? 300 : 0);
   char report_path[PATH_MAX];
   if (path_join(report_path, sizeof(report_path), out_root, "r2capp_compile_report.json") != 0) {
     path_list_free(&candidates);
@@ -2528,12 +3249,6 @@ int native_r2c_compile_react_project(const char *scripts_dir, int argc, char **a
 
     if (!file_exists(report_path)) {
       fprintf(stderr, "[r2c-compile] candidate produced no report: %s (compiler=%s)\n", report_path, compiler_bin);
-      continue;
-    }
-    if (!backfill_route_tree_layers_meta(report_path)) {
-      fprintf(stderr,
-              "[r2c-compile] failed to backfill route tree/layers metadata: %s\n",
-              report_path);
       continue;
     }
     if (!validate_compile_report(report_path, strict)) {

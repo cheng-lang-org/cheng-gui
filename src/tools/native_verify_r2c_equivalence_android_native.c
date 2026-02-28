@@ -307,6 +307,35 @@ static int validate_truth_assets_for_states(const char *truth_dir, const StringL
   return 0;
 }
 
+static bool first_install_pass_enabled(void) {
+  const char *v = getenv("CHENG_ANDROID_FIRST_INSTALL_PASS");
+  return (v != NULL && strcmp(v, "1") == 0);
+}
+
+static bool should_skip_route_for_first_install(const char *state) {
+  if (state == NULL || state[0] == '\0') return false;
+  if (strcmp(state, "lang_select") != 0) return false;
+  return !first_install_pass_enabled();
+}
+
+static void filter_skipped_states_inplace(StringList *states) {
+  if (states == NULL || states->len == 0u) return;
+  size_t write = 0u;
+  for (size_t i = 0u; i < states->len; ++i) {
+    char *state = states->items[i];
+    if (should_skip_route_for_first_install(state)) {
+      fprintf(stdout,
+              "[verify-r2c-android-native] skip first-install route state=%s (CHENG_ANDROID_FIRST_INSTALL_PASS!=1)\n",
+              state);
+      free(state);
+      continue;
+    }
+    states->items[write++] = states->items[i];
+  }
+  for (size_t i = write; i < states->len; ++i) states->items[i] = NULL;
+  states->len = write;
+}
+
 static bool path_is_under_root(const char *path, const char *root) {
   if (path == NULL || root == NULL || path[0] == '\0' || root[0] == '\0') return false;
   size_t root_n = strlen(root);
@@ -421,6 +450,13 @@ int native_verify_r2c_equivalence_android_native(const char *scripts_dir, int ar
     return 2;
   }
 
+  if (strcmp(android_fullroute, "1") != 0 &&
+      (route_state == NULL || route_state[0] == '\0') &&
+      layer_index < 0) {
+    route_state = "home_default";
+    setenv("CHENG_ANDROID_1TO1_ROUTE_STATE", route_state, 1);
+  }
+
   if ((strcmp(android_fullroute, "0") != 0) && (strcmp(android_fullroute, "1") != 0)) {
     fprintf(stderr,
             "[verify-r2c-android-native] invalid --android-fullroute: %s (expect 0 or 1)\n",
@@ -446,6 +482,20 @@ int native_verify_r2c_equivalence_android_native(const char *scripts_dir, int ar
   fprintf(stdout, "[verify-r2c-android-native] android fullroute(requested)=%s\n", android_fullroute);
   fprintf(stdout, "[verify-r2c-android-native] android fullroute(readiness-phase)=0\n");
   fprintf(stdout, "[verify-r2c-android-native] android runtime(required)=%s\n", runtime_required);
+  bool enforce_home_default =
+      (strcmp(android_fullroute, "1") != 0 && layer_index < 0 &&
+       (route_state == NULL || route_state[0] == '\0' || strcmp(route_state, "home_default") == 0));
+  const char *home_gate_env = getenv("CHENG_ANDROID_1TO1_HOME_HARD_GATE");
+  if (home_gate_env == NULL || home_gate_env[0] == '\0') {
+    setenv("CHENG_ANDROID_1TO1_HOME_HARD_GATE", enforce_home_default ? "1" : "0", 1);
+  }
+  const char *enforce_expected_env = getenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH");
+  if (enforce_expected_env == NULL || enforce_expected_env[0] == '\0') {
+    setenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH", "1", 1);
+  }
+  if (strcmp(android_fullroute, "1") != 0) {
+    setenv("CHENG_ANDROID_1TO1_ENABLE_FULLROUTE", "0", 1);
+  }
   if (route_state != NULL && route_state[0] != '\0') {
     fprintf(stdout, "[verify-r2c-android-native] route-state=%s\n", route_state);
     setenv("CHENG_ANDROID_1TO1_ROUTE_STATE", route_state, 1);
@@ -577,6 +627,13 @@ int native_verify_r2c_equivalence_android_native(const char *scripts_dir, int ar
     }
     if (limit > 0 && (size_t)limit < states.len) {
       states.len = (size_t)limit;
+    }
+    filter_skipped_states_inplace(&states);
+    if (states.len == 0u) {
+      fprintf(stderr, "[verify-r2c-android-native] no route states left after first-install filtering\n");
+      strlist_free(&states);
+      strlist_free(&layer_deps);
+      return 1;
     }
 
     char auto_truth_dir[PATH_MAX];

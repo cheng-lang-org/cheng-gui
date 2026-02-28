@@ -330,11 +330,30 @@ __R2C_KNOWN_ROUTE_CASES__
 fn routeFromSelectorId(id: str): str =
     if len(id) == 0:
         return ""
+    if strEq(id, "publish-cancel") || strEq(id, "publish-close") || strEq(id, "publish-dismiss") || strEq(id, "cancel-publish"):
+        return "__R2C_DEFAULT_ROUTE__"
+    if strEq(id, "publish-selector-cancel") || strEq(id, "publish-selector-close"):
+        return "__R2C_DEFAULT_ROUTE__"
 __R2C_SELECTOR_ROUTE_CASES__
     let normalized = dashToUnderscore(id)
     if isKnownRoute(normalized):
         return normalized
     return ""
+
+fn isCancelIntent(textLower, textRaw, selectorId, jsxPath: str): bool =
+    let sid = lowerAscii(selectorId)
+    let path = lowerAscii(jsxPath)
+    if containsText(sid, "cancel") || containsText(sid, "close") || containsText(sid, "dismiss"):
+        return true
+    if containsText(path, "cancel") || containsText(path, "close") || containsText(path, "dismiss"):
+        return true
+    if strEq(trimLine(textRaw), "x") || strEq(trimLine(textRaw), "X") || strEq(trimLine(textRaw), "×"):
+        return true
+    if containsText(textLower, "cancel") || containsText(textLower, "annuler") || containsText(textLower, "abbrechen"):
+        return true
+    if containsText(textRaw, "取消") || containsText(textRaw, "キャンセル") || containsText(textRaw, "취소") || containsText(textRaw, "إلغاء"):
+        return true
+    return false
 
 fn inferRouteHint(node: SemanticNode): str =
     if node == nil:
@@ -793,6 +812,7 @@ fn profileId(): str =
 fn handleClick(page: web.BrowserPage, targetSelector: str): bool =
     ensureSemanticNodes()
     let id = stripHash(targetSelector)
+    let currentRoute = activeRoute(page)
     let clicked = findNodeBySelector("#" + id)
     if clicked != nil:
         var clickedText = strictRoundtripText(page, nodeLabel(clicked))
@@ -801,6 +821,10 @@ fn handleClick(page: web.BrowserPage, targetSelector: str): bool =
             if len(childText) > int32(0):
                 clickedText = childText
         let clickedLower = lowerAscii(clickedText)
+        if strEq(currentRoute, "publish_selector"):
+            if isCancelIntent(clickedLower, clickedText, id, clicked.jsxPath):
+                page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
+                return true
         if page.r2cShowLanguageSelector:
             let clickPath = lowerAscii(clicked.jsxPath)
             if containsText(clickPath, "div[2]/button[1]"):
@@ -869,6 +893,11 @@ fn handleClick(page: web.BrowserPage, targetSelector: str): bool =
         let nodeRoute = effectiveRouteHint(clicked)
         if len(nodeRoute) > 0 && isKnownRoute(nodeRoute):
             page.r2cCurrentTab = nodeRoute
+            return true
+    if strEq(currentRoute, "publish_selector"):
+        if strEq(id, "publish-selector") || strEq(id, "publish-cancel") || strEq(id, "publish-close") ||
+           strEq(id, "publish-dismiss") || strEq(id, "cancel-publish"):
+            page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
             return true
     if strEq(id, "skip"):
         page.r2cLocale = "zh-CN"

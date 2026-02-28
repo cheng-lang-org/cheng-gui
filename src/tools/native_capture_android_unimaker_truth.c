@@ -38,10 +38,11 @@ static const char *route_parent_for(const char *route) {
   if (strncmp(route, "tab_", 4u) == 0) return "home_default";
   if (strcmp(route, "publish_selector") == 0) return "home_default";
   if (strncmp(route, "publish_", 8u) == 0) return "publish_selector";
-  if (strcmp(route, "trading_main") == 0) return "tab_nodes";
+  if (strcmp(route, "trading_main") == 0) return "home_channel_manager_open";
   if (strncmp(route, "trading_", 8u) == 0) return "trading_main";
-  if (strcmp(route, "ecom_main") == 0 || strcmp(route, "marketplace_main") == 0) return "home_ecom_overlay_open";
-  if (strcmp(route, "update_center_main") == 0) return "tab_profile";
+  if (strcmp(route, "marketplace_main") == 0) return "home_channel_manager_open";
+  if (strcmp(route, "update_center_main") == 0) return "home_channel_manager_open";
+  if (strcmp(route, "ecom_main") == 0) return "home_ecom_overlay_open";
   return "home_default";
 }
 
