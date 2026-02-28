@@ -299,65 +299,55 @@ fn trimSemanticValue(value: str): str =
         return value
     return value[0..<maxLen]
 
-fn codegenTraceEnabled(): bool =
-    return os.getEnv("R2C_TRACE") == "1"
+fn parseSemanticRowLite(row: str): tuple[moduleId: str, kind: str, value: str, ok: bool] =
+    if len(row) == 0:
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let first = findChar(row, '|', int32(0))
+    if first <= int32(0):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let second = findChar(row, '|', first + int32(1))
+    if second <= first + int32(1):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    if second + int32(1) >= len(row):
+        return (moduleId: "", kind: "", value: "", ok: false)
+    let moduleId = row[0..<first]
+    let kind = row[first + int32(1)..<second]
+    let value = row[second + int32(1)..<len(row)]
+    if len(moduleId) == 0 || len(kind) == 0:
+        return (moduleId: "", kind: "", value: "", ok: false)
+    return (moduleId: moduleId, kind: kind, value: value, ok: true)
 
-fn codegenTracePath(): str =
-    let outRoot = os.getEnv("R2C_OUT_ROOT")
-    if len(outRoot) == 0:
+fn sanitizeCodeLiteral(text: str): str =
+    if len(text) == 0:
         return ""
-    return outRoot + "/r2c_codegen_trace.txt"
-
-var codegenTraceText: str = ""
-
-fn codegenTraceStep(step: str) =
-    if ! codegenTraceEnabled():
-        return
-    let path = codegenTracePath()
-    if len(path) == 0:
-        return
-    codegenTraceText = codegenTraceText + step + "\n"
-    os.writeFile(path, codegenTraceText)
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if cEq(ch, '"') || cEq(ch, '\\') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t'):
+            out = out + " "
+        elif int32(ch) < int32(32):
+            out = out + " "
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
 
 fn buildSemanticNodeAppends(semanticNodes: str[]): str =
-    codegenTraceStep("buildSemanticNodeAppends:start;len=" + strings.intToStr(len(semanticNodes)))
     var out: str = ""
     var idx: int32 = int32(0)
     var emitted: int32 = int32(0)
     let limit = runtimeSemanticNodeLimit()
     while idx < len(semanticNodes):
-        if idx % int32(64) == int32(0):
-            codegenTraceStep("buildSemanticNodeAppends:loop;idx=" + strings.intToStr(idx) + ";emitted=" + strings.intToStr(emitted))
         if limit > int32(0) && emitted >= limit:
             break
         let idxText = strings.intToStr(idx)
-        if idx == int32(0):
-            codegenTraceStep("buildSemanticNodeAppends:i0:after-idx-text")
-        let moduleId = "/semantic/runtime"
-        let kind = "jsx-tag"
-        let value = "node-" + idxText
-        if idx == int32(0):
-            codegenTraceStep("buildSemanticNodeAppends:i0:after-literals")
-        let role = semanticRoleByKind(kind)
-        let eventBinding = ""
-        let hookSlot = ""
-        let routeHint = ""
-        if idx == int32(0):
-            codegenTraceStep("buildSemanticNodeAppends:i0:after-role")
-        let renderBucket = "global"
-        let textOut = "<" + value + ">"
-        let propId = "r2c-id-" + idxText
-        let className = "semantic-node"
-        let testId = "r2c-testid-" + idxText
-        let hitTestId = propId
-        if idx == int32(0):
-            codegenTraceStep("buildSemanticNodeAppends:i0:before-append")
-        out = out + "    appendSemanticNode(\"sn\", \"/semantic/runtime\", \"semantic\", \"element\", \"node\", \"r2c-id\", \"semantic-node\", \"\", \"r2c-testid\", \"\", \"\", \"\", int32(0), \"global\", \"r2c-id\")\n"
-        if idx == int32(0):
-            codegenTraceStep("buildSemanticNodeAppends:i0:after-append")
+        out = out + "    appendSemanticNode(\"sn_" + idxText + "\", \"/semantic/runtime\", \"semantic:" + idxText +
+            "\", \"element\", \"<node-" + idxText + ">\", \"r2c-id-" + idxText + "\", \"semantic-node\", \"\", " +
+            "\"r2c-testid-" + idxText + "\", \"ev\", \"hook-" + idxText + "\", \"\", int32(" + idxText + "), " +
+            "\"global\", \"r2c-id-" + idxText + "\")\n"
         emitted = emitted + int32(1)
         idx = idx + int32(1)
-    codegenTraceStep("buildSemanticNodeAppends:done;emitted=" + strings.intToStr(emitted))
     return out
 
 fn countRenderableSemanticNodes(semanticNodes: str[]): int32 =
@@ -394,8 +384,8 @@ fn buildSemanticRenderNodesTsv(semanticNodes: str[]): str =
         let moduleId = "/semantic/runtime"
         let role = "element"
         let textOut = "<node-" + idxText + ">"
-        let eventBinding = ""
-        let hookSlot = ""
+        let eventBinding = "ev"
+        let hookSlot = "hook-" + idxText
         let routeHint = ""
         let renderBucket = "global"
         let hitTestId = "r2c-id-" + idxText
@@ -508,23 +498,17 @@ fn buildSelectorRouteCases(states: str[]): str =
     return out
 
 fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states: str[], semanticNodes: str[]): str =
-    codegenTraceStep("buildRuntimeGeneratedSource:start")
     strictNoFallback
     let projectName = buildProjectName(projectName, "")
     let defaultRoute = defaultRouteFromStates(states)
     let semanticNodeAppends = buildSemanticNodeAppends(semanticNodes)
-    codegenTraceStep("buildRuntimeGeneratedSource:after-appends")
     let knownRouteCases = buildKnownRouteCases(states)
-    codegenTraceStep("buildRuntimeGeneratedSource:after-known-routes")
     let selectorRouteCases = ""
-    codegenTraceStep("buildRuntimeGeneratedSource:after-selector-routes")
     var out: str = ""
     out = out + "import gui/browser/web\n"
-    codegenTraceStep("buildRuntimeGeneratedSource:after-import-web")
     out = out + "import gui/browser/r2capp/ime_bridge\n"
     out = out + "import gui/browser/r2capp/utfzh_bridge\n"
     out = out + "import gui/browser/r2capp/utfzh_editor\n\n"
-    codegenTraceStep("buildRuntimeGeneratedSource:after-imports")
     out = out + "type SemanticNode = ref\n"
     out = out + "    nodeId: str\n"
     out = out + "    routeHint: str\n\n"
@@ -666,5 +650,4 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
     out = out + "# ime_bridge.handleImeEvent\n"
     out = out + "# utfzh_editor.handleEditorEvent\n"
     out = out + "# utfzh_editor.renderEditorPanel\n"
-    codegenTraceStep("buildRuntimeGeneratedSource:done;out-len=" + strings.intToStr(len(out)))
     return out

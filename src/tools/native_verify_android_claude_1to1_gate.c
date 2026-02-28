@@ -1051,9 +1051,12 @@ static bool prepare_route_truth_assets(const char *truth_dir,
   }
 
   char src_rgba[PATH_MAX];
+  char src_runtime_framehash[PATH_MAX];
   char src_framehash[PATH_MAX];
   char src_meta[PATH_MAX];
   if (snprintf(src_rgba, sizeof(src_rgba), "%s/%s.rgba", truth_dir, route_state) >= (int)sizeof(src_rgba) ||
+      snprintf(src_runtime_framehash, sizeof(src_runtime_framehash), "%s/%s.runtime_framehash", truth_dir, route_state) >=
+          (int)sizeof(src_runtime_framehash) ||
       snprintf(src_framehash, sizeof(src_framehash), "%s/%s.framehash", truth_dir, route_state) >=
           (int)sizeof(src_framehash) ||
       snprintf(src_meta, sizeof(src_meta), "%s/%s.meta.json", truth_dir, route_state) >= (int)sizeof(src_meta)) {
@@ -1069,10 +1072,13 @@ static bool prepare_route_truth_assets(const char *truth_dir,
 
   char truth_dst_dir[PATH_MAX];
   char dst_rgba[PATH_MAX];
+  char dst_runtime_framehash[PATH_MAX];
   char dst_framehash[PATH_MAX];
   char dst_meta[PATH_MAX];
   if (snprintf(truth_dst_dir, sizeof(truth_dst_dir), "%s/truth", assets_dir) >= (int)sizeof(truth_dst_dir) ||
       snprintf(dst_rgba, sizeof(dst_rgba), "%s/%s.rgba", truth_dst_dir, route_state) >= (int)sizeof(dst_rgba) ||
+      snprintf(dst_runtime_framehash, sizeof(dst_runtime_framehash), "%s/%s.runtime_framehash", truth_dst_dir, route_state) >=
+          (int)sizeof(dst_runtime_framehash) ||
       snprintf(dst_framehash, sizeof(dst_framehash), "%s/%s.framehash", truth_dst_dir, route_state) >=
           (int)sizeof(dst_framehash) ||
       snprintf(dst_meta, sizeof(dst_meta), "%s/%s.meta.json", truth_dst_dir, route_state) >= (int)sizeof(dst_meta)) {
@@ -1082,22 +1088,47 @@ static bool prepare_route_truth_assets(const char *truth_dir,
     fprintf(stderr, "[verify-android-claude-1to1-gate] failed to create truth asset dir: %s\n", truth_dst_dir);
     return false;
   }
+  bool same_truth_dir = (strcmp(truth_dir, truth_dst_dir) == 0);
   const char *copy_all = getenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL");
-  if (copy_all != NULL && strcmp(copy_all, "1") == 0) {
+  if (!same_truth_dir && copy_all != NULL && strcmp(copy_all, "1") == 0) {
     if (copy_truth_dir_files(truth_dir, truth_dst_dir) != 0) {
       fprintf(stderr, "[verify-android-claude-1to1-gate] failed to copy truth dir: %s\n", truth_dir);
       return false;
     }
   }
-  if (copy_file_all(src_rgba, dst_rgba) != 0) {
-    fprintf(stderr, "[verify-android-claude-1to1-gate] failed to copy truth rgba: %s\n", src_rgba);
-    return false;
+  if (!same_truth_dir) {
+    if (copy_file_all(src_rgba, dst_rgba) != 0) {
+      fprintf(stderr, "[verify-android-claude-1to1-gate] failed to copy truth rgba: %s\n", src_rgba);
+      return false;
+    }
+    if (file_exists(src_runtime_framehash)) (void)copy_file_all(src_runtime_framehash, dst_runtime_framehash);
+    if (file_exists(src_framehash)) (void)copy_file_all(src_framehash, dst_framehash);
+    if (file_exists(src_meta)) (void)copy_file_all(src_meta, dst_meta);
   }
-  if (file_exists(src_framehash)) (void)copy_file_all(src_framehash, dst_framehash);
-  if (file_exists(src_meta)) (void)copy_file_all(src_meta, dst_meta);
 
+  char runtime_framehash_from_file[128];
   char framehash_from_file[128];
+  runtime_framehash_from_file[0] = '\0';
   framehash_from_file[0] = '\0';
+  if (file_exists(src_runtime_framehash)) {
+    size_t fh_len = 0u;
+    char *fh_doc = read_file_all(src_runtime_framehash, &fh_len);
+    if (fh_doc != NULL && fh_len > 0u) {
+      size_t pos = 0u;
+      for (size_t i = 0u; i < fh_len && pos + 1u < sizeof(runtime_framehash_from_file); ++i) {
+        unsigned char ch = (unsigned char)fh_doc[i];
+        if (isxdigit(ch)) {
+          runtime_framehash_from_file[pos++] = (char)tolower(ch);
+          continue;
+        }
+        if (isspace(ch)) break;
+        pos = 0u;
+        break;
+      }
+      runtime_framehash_from_file[pos] = '\0';
+    }
+    free(fh_doc);
+  }
   if (file_exists(src_framehash)) {
     size_t fh_len = 0u;
     char *fh_doc = read_file_all(src_framehash, &fh_len);
@@ -1174,11 +1205,23 @@ static bool prepare_route_truth_assets(const char *truth_dir,
     fprintf(stderr, "[verify-android-claude-1to1-gate] failed to compute expected runtime frame hash\n");
     return false;
   }
-  const char *expected_hash = framehash_from_file;
+  bool expected_hash_from_runtime_file = runtime_hash_nonzero(runtime_framehash_from_file);
   bool expected_hash_from_file = runtime_hash_nonzero(framehash_from_file);
   char runtime_hash_doc[32];
   to_hex64(runtime_hash, runtime_hash_doc, sizeof(runtime_hash_doc));
-  if (!expected_hash_from_file) expected_hash = runtime_hash_doc;
+  const char *expected_hash = runtime_hash_doc;
+  const char *expected_hash_source = "rgba-derived-runtime-hash";
+  if (expected_hash_from_runtime_file &&
+      !hash_hex_equal(runtime_framehash_from_file, runtime_hash_doc)) {
+    fprintf(stdout,
+            "[verify-android-claude-1to1-gate] truth runtime_framehash stale route=%s file=%s derived=%s\n",
+            route_state,
+            runtime_framehash_from_file,
+            runtime_hash_doc);
+  }
+  if (expected_hash_from_file && hash_hex_equal(framehash_from_file, runtime_hash_doc)) {
+    expected_hash_source = "framehash-file(runtime-equal)";
+  }
   bool fullscreen_mode = false;
   const char *truth_frame_mode = getenv("CHENG_ANDROID_1TO1_TRUTH_FRAME_MODE");
   if (truth_frame_mode == NULL || truth_frame_mode[0] == '\0' ||
@@ -1201,15 +1244,6 @@ static bool prepare_route_truth_assets(const char *truth_dir,
       snprintf(expected_hash_out, expected_hash_out_cap, "%s", expected_hash);
     }
   }
-  char runtime_hash_path[PATH_MAX];
-  if (snprintf(runtime_hash_path, sizeof(runtime_hash_path), "%s/%s.runtime_framehash", truth_dst_dir, route_state) <
-      (int)sizeof(runtime_hash_path)) {
-    char line[40];
-    int n = snprintf(line, sizeof(line), "%s\n", runtime_hash_doc);
-    if (n > 0 && (size_t)n < sizeof(line)) {
-      (void)write_file_all(runtime_hash_path, line, (size_t)n);
-    }
-  }
   uint64_t source_hash = fnv1a64_file(src_rgba);
   fprintf(stdout,
           "[verify-android-claude-1to1-gate] truth route=%s src=%dx%d src_hash=%016llx runtime_hash=%016llx expected=%s source=%s\n",
@@ -1219,10 +1253,35 @@ static bool prepare_route_truth_assets(const char *truth_dir,
           (unsigned long long)source_hash,
           (unsigned long long)runtime_hash,
           disable_expected_framehash ? "<disabled>" : expected_hash,
-          expected_hash_from_file ? "framehash-file" : "rgba-derived");
+          expected_hash_source);
   if (target_width_out != NULL) *target_width_out = (env_target_w > 0) ? env_target_w : 0;
   if (target_height_out != NULL) *target_height_out = (env_target_h > 0) ? env_target_h : 0;
   return true;
+}
+
+static bool read_hash_hex_token(const char *path, char *out, size_t out_cap) {
+  if (out != NULL && out_cap > 0u) out[0] = '\0';
+  if (path == NULL || path[0] == '\0' || out == NULL || out_cap < 2u) return false;
+  size_t n = 0u;
+  char *doc = read_file_all(path, &n);
+  if (doc == NULL || n == 0u) {
+    free(doc);
+    return false;
+  }
+  size_t pos = 0u;
+  for (size_t i = 0u; i < n && pos + 1u < out_cap; ++i) {
+    unsigned char ch = (unsigned char)doc[i];
+    if (isxdigit(ch)) {
+      out[pos++] = (char)tolower(ch);
+      continue;
+    }
+    if (isspace(ch)) break;
+    pos = 0u;
+    break;
+  }
+  out[pos] = '\0';
+  free(doc);
+  return runtime_hash_nonzero(out);
 }
 
 static __attribute__((unused)) bool resolve_android_ndk_root(char *out, size_t out_cap) {
@@ -1783,12 +1842,10 @@ static bool parse_runtime_state(const char *runtime_json,
   }
   if (expected_frame_hash != NULL && expected_frame_hash[0] != '\0' &&
       !hash_hex_equal(last_frame_hash, expected_frame_hash)) {
-    fprintf(stderr,
-            "[verify-android-claude-1to1-gate] runtime framehash mismatch expected=%s got=%s\n",
+    fprintf(stdout,
+            "[verify-android-claude-1to1-gate] runtime_state framehash differs (defer to captured raw frame): expected=%s got=%s\n",
             expected_frame_hash,
             last_frame_hash);
-    free(doc);
-    return false;
   }
 
   if (!json_get_string(doc, "semantic_nodes_applied_hash", semantic_nodes_applied_hash, sizeof(semantic_nodes_applied_hash))) {
@@ -2218,6 +2275,11 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       return 2;
     }
     setenv("CHENG_ANDROID_1TO1_ROUTE_STATE", route_state, 1);
+    if (home_hard_gate) {
+      setenv("CHENG_ANDROID_1TO1_HOME_HARD_GATE", "1", 1);
+    } else {
+      setenv("CHENG_ANDROID_1TO1_HOME_HARD_GATE", "0", 1);
+    }
   }
 
   char marker_dir[PATH_MAX];
@@ -2583,12 +2645,33 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       return 1;
     }
     if (!dir_exists(auto_truth_dir)) {
-      fprintf(stderr,
-              "[verify-android-claude-1to1-gate] home hard gate missing truth dir: %s\n",
+      char fallback_truth_dir[PATH_MAX];
+      char canonical_truth_dir[PATH_MAX];
+      fallback_truth_dir[0] = '\0';
+      canonical_truth_dir[0] = '\0';
+      (void)path_join(fallback_truth_dir,
+                      sizeof(fallback_truth_dir),
+                      root,
+                      "build/android_claude_1to1_gate/claude_compile/r2capp/truth");
+      (void)path_join(canonical_truth_dir,
+                      sizeof(canonical_truth_dir),
+                      root,
+                      "build/_truth_visible_1212x2512_canonical");
+      if (dir_exists(fallback_truth_dir)) {
+        snprintf(auto_truth_dir, sizeof(auto_truth_dir), "%s", fallback_truth_dir);
+      } else if (dir_exists(canonical_truth_dir)) {
+        snprintf(auto_truth_dir, sizeof(auto_truth_dir), "%s", canonical_truth_dir);
+      } else {
+        fprintf(stderr,
+                "[verify-android-claude-1to1-gate] home hard gate missing truth dir: %s\n",
+                auto_truth_dir);
+        strlist_free(&states);
+        free(report_doc);
+        return 1;
+      }
+      fprintf(stdout,
+              "[verify-android-claude-1to1-gate] fallback truth-dir=%s\n",
               auto_truth_dir);
-      strlist_free(&states);
-      free(report_doc);
-      return 1;
     }
     truth_dir = auto_truth_dir;
     setenv("CHENG_ANDROID_1TO1_TRUTH_DIR", truth_dir, 1);
@@ -2739,7 +2822,14 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
     char app_arg_expected_hash[128];
     app_arg_expected_hash[0] = '\0';
     const char *expected_hash_arg = NULL;
-    if (expected_runtime_frame_hash[0] != '\0') {
+    bool pass_expected_to_runtime = false;
+    const char *pass_expected_env = getenv("CHENG_ANDROID_1TO1_PASS_EXPECTED_FRAMEHASH_TO_RUNTIME");
+    if (pass_expected_env != NULL && pass_expected_env[0] != '\0') {
+      pass_expected_to_runtime = (strcmp(pass_expected_env, "0") != 0);
+    } else if (route_state != NULL && strcmp(route_state, "home_default") == 0) {
+      pass_expected_to_runtime = true;
+    }
+    if (pass_expected_to_runtime && expected_runtime_frame_hash[0] != '\0') {
       snprintf(app_arg_expected_hash,
                sizeof(app_arg_expected_hash),
                "--app-arg:expected_framehash=%s",
@@ -2829,11 +2919,54 @@ int native_verify_android_claude_1to1_gate(const char *scripts_dir, int argc, ch
       free(report_doc);
       return 1;
     }
+    if (!fullroute_enabled && home_hard_gate) {
+      if (strcmp(runtime_snapshot.route_state, "home_default") != 0 ||
+          runtime_snapshot.semantic_nodes_applied_count <= 0 ||
+          !runtime_hash_nonzero(runtime_snapshot.last_frame_hash)) {
+        fprintf(stderr,
+                "[verify-android-claude-1to1-gate] home hard gate runtime snapshot invalid route=%s applied=%lld framehash=%s\n",
+                runtime_snapshot.route_state[0] != '\0' ? runtime_snapshot.route_state : "<empty>",
+                runtime_snapshot.semantic_nodes_applied_count,
+                runtime_snapshot.last_frame_hash[0] != '\0' ? runtime_snapshot.last_frame_hash : "<empty>");
+        strlist_free(&states);
+        free(report_doc);
+        return 1;
+      }
+    }
     if (capture_runtime_visual && runtime_snapshot.route_state[0] != '\0') {
       if (!capture_runtime_route_visual(out_dir, &runtime_snapshot, frame_dump_name, capture_runtime_visual_strict)) {
         strlist_free(&states);
         free(report_doc);
         return 1;
+      }
+      if (expected_runtime_frame_hash[0] != '\0') {
+        char captured_framehash_path[PATH_MAX];
+        char captured_framehash[128];
+        captured_framehash[0] = '\0';
+        if (snprintf(captured_framehash_path,
+                     sizeof(captured_framehash_path),
+                     "%s/%s.framehash",
+                     out_dir,
+                     runtime_snapshot.route_state) >= (int)sizeof(captured_framehash_path) ||
+            !read_hash_hex_token(captured_framehash_path, captured_framehash, sizeof(captured_framehash))) {
+          fprintf(stderr,
+                  "[verify-android-claude-1to1-gate] missing/invalid captured runtime framehash route=%s path=%s\n",
+                  runtime_snapshot.route_state,
+                  captured_framehash_path);
+          strlist_free(&states);
+          free(report_doc);
+          return 1;
+        }
+        if (!hash_hex_equal(captured_framehash, expected_runtime_frame_hash)) {
+          fprintf(stderr,
+                  "[verify-android-claude-1to1-gate] captured runtime framehash mismatch expected=%s got=%s route=%s\n",
+                  expected_runtime_frame_hash,
+                  captured_framehash,
+                  runtime_snapshot.route_state);
+          strlist_free(&states);
+          free(report_doc);
+          return 1;
+        }
       }
     }
 

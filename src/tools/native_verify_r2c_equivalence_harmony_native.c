@@ -122,7 +122,11 @@ int native_verify_r2c_equivalence_harmony_native(const char *scripts_dir, int ar
   setenv("R2C_STRICT_SKIP_COMPILER_EXEC_DEFAULT", "0", 1);
   setenv("R2C_STRICT_ALLOW_SEMANTIC_SHELL_GENERATOR", "0", 1);
   if (getenv("R2C_COMPILER_RUN_TIMEOUT_SEC") == NULL) setenv("R2C_COMPILER_RUN_TIMEOUT_SEC", "180", 1);
-  if (getenv("CHENG_HARMONY_REQUIRE_HAP") == NULL) setenv("CHENG_HARMONY_REQUIRE_HAP", "1", 1);
+  /*
+   * Default to native source-gate unless caller explicitly requires HAP packaging.
+   * The generated harmony skeleton does not always include hvigor wrappers.
+   */
+  if (getenv("CHENG_HARMONY_REQUIRE_HAP") == NULL) setenv("CHENG_HARMONY_REQUIRE_HAP", "0", 1);
 
   fprintf(stdout, "== r2c native equivalence: harmony compile ==\n");
   char *compile_argv[] = {

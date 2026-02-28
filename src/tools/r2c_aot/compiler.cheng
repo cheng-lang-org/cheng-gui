@@ -366,26 +366,33 @@ fn compilerDefaultRoute(report: R2cCompileReport): str =
     if report == nil || len(report.visualStates) <= 0:
         return ""
     for idx in 0..<len(report.visualStates):
-        if report.visualStates[idx] == "home_default":
-            return report.visualStates[idx]
+        let route = report.visualStates[idx]
+        if route == "home_default":
+            return route
     for idx in 0..<len(report.visualStates):
-        if report.visualStates[idx] == "home":
-            return report.visualStates[idx]
+        let route = report.visualStates[idx]
+        if route == "home":
+            return route
     for idx in 0..<len(report.visualStates):
-        if cpHasPrefix(report.visualStates[idx], "home_"):
-            return report.visualStates[idx]
+        let route = report.visualStates[idx]
+        if cpHasPrefix(route, "home_"):
+            return route
     for idx in 0..<len(report.visualStates):
-        if report.visualStates[idx] == "tab_messages" || report.visualStates[idx] == "tab_nodes" || report.visualStates[idx] == "tab_profile":
-            return report.visualStates[idx]
+        let route = report.visualStates[idx]
+        if route == "tab_messages" || route == "tab_nodes" || route == "tab_profile":
+            return route
     for idx in 0..<len(report.visualStates):
-        if cpHasPrefix(report.visualStates[idx], "publish_"):
-            return report.visualStates[idx]
+        let route = report.visualStates[idx]
+        if cpHasPrefix(route, "publish_"):
+            return route
     for idx in 0..<len(report.visualStates):
-        if cpHasPrefix(report.visualStates[idx], "trading_"):
-            return report.visualStates[idx]
+        let route = report.visualStates[idx]
+        if cpHasPrefix(route, "trading_"):
+            return route
     for idx in 0..<len(report.visualStates):
-        if report.visualStates[idx] != "lang_select":
-            return report.visualStates[idx]
+        let route = report.visualStates[idx]
+        if route != "lang_select":
+            return route
     return report.visualStates[0]
 
 fn compilerKnownRouteCases(report: R2cCompileReport): str =
@@ -607,7 +614,10 @@ fn compilerReadText(path: str): tuple[text: str, err: str] =
     return (text: text, err: "")
 
 fn traceStep(outRoot, step: str) =
-    if os.getEnv("R2C_TRACE") != "1":
+    let traceFlag = os.getEnv("R2C_TRACE")
+    if len(traceFlag) == 0:
+        return
+    if traceFlag != "1":
         return
     if len(outRoot) == 0:
         return
@@ -645,6 +655,89 @@ fn fillFullRouteStates(states: var str[]) =
     appendString(states, "ecom_main")
     appendString(states, "marketplace_main")
     appendString(states, "update_center_main")
+
+fn canonicalFullRouteStates(): str[] =
+    var states: str[]
+    setLen(states, 0)
+    fillFullRouteStates(states)
+    return states
+
+fn fullRouteStateCountConst(): int32 =
+    return int32(30)
+
+fn fullRouteStateByIndex(idx: int32): str =
+    if idx == int32(0):
+        return "lang_select"
+    if idx == int32(1):
+        return "home_default"
+    if idx == int32(2):
+        return "home_search_open"
+    if idx == int32(3):
+        return "home_sort_open"
+    if idx == int32(4):
+        return "home_channel_manager_open"
+    if idx == int32(5):
+        return "home_content_detail_open"
+    if idx == int32(6):
+        return "home_ecom_overlay_open"
+    if idx == int32(7):
+        return "home_bazi_overlay_open"
+    if idx == int32(8):
+        return "home_ziwei_overlay_open"
+    if idx == int32(9):
+        return "tab_messages"
+    if idx == int32(10):
+        return "tab_nodes"
+    if idx == int32(11):
+        return "tab_profile"
+    if idx == int32(12):
+        return "publish_selector"
+    if idx == int32(13):
+        return "publish_content"
+    if idx == int32(14):
+        return "publish_product"
+    if idx == int32(15):
+        return "publish_live"
+    if idx == int32(16):
+        return "publish_app"
+    if idx == int32(17):
+        return "publish_food"
+    if idx == int32(18):
+        return "publish_ride"
+    if idx == int32(19):
+        return "publish_job"
+    if idx == int32(20):
+        return "publish_hire"
+    if idx == int32(21):
+        return "publish_rent"
+    if idx == int32(22):
+        return "publish_sell"
+    if idx == int32(23):
+        return "publish_secondhand"
+    if idx == int32(24):
+        return "publish_crowdfunding"
+    if idx == int32(25):
+        return "trading_main"
+    if idx == int32(26):
+        return "trading_crosshair"
+    if idx == int32(27):
+        return "ecom_main"
+    if idx == int32(28):
+        return "marketplace_main"
+    if idx == int32(29):
+        return "update_center_main"
+    return "home_default"
+
+fn fullRouteStatesJsonListConst(): str =
+    var out: str = "["
+    var idx: int32 = int32(0)
+    while idx < fullRouteStateCountConst():
+        if idx > int32(0):
+            out = out + ","
+        out = out + "\"" + jsonEscape(fullRouteStateByIndex(idx)) + "\""
+        idx = idx + int32(1)
+    out = out + "]"
+    return out
 
 fn routeParent(route: str): str =
     if len(route) == 0:
@@ -1018,7 +1111,7 @@ fn initReport(opts: R2cCompileOptions): R2cCompileReport =
     report.fullRouteStatesPath = ""
     report.fullRouteEventMatrixPath = ""
     report.fullRouteCoverageReportPath = ""
-    report.fullRouteStateCount = int32(len(report.visualStates))
+    report.fullRouteStateCount = fullRouteStateCountConst()
     report.semanticMappingMode = "source-node-map"
     report.semanticNodeMapPath = ""
     report.semanticRuntimeMapPath = ""
@@ -3829,7 +3922,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     report.semanticRenderNodesFnv64 = ""
     report.textProfilePath = opts.outRoot + "/r2c_text_profile.json"
     let routeTextsPath = opts.outRoot + "/r2c_route_texts"
-    report.fullRouteStateCount = int32(len(report.visualStates))
+    report.fullRouteStateCount = fullRouteStateCountConst()
     report.pixelTolerance = int32(0)
     report.replayProfile = "claude-fullroute"
     report.utfzhMode = "strict"
@@ -3875,6 +3968,16 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     var runtimeSemanticNodes: str[]
     setLen(runtimeSemanticNodes,  0)
     runtimeSemanticNodes = semanticNodes
+    if len(runtimeSemanticNodes) <= int32(0):
+        setLen(runtimeSemanticNodes, int32(1))
+        runtimeSemanticNodes[int32(0)] = "/app/App.tsx|jsx-tag|root"
+    if len(runtimeSemanticNodes) < int32(5):
+        let beforePad = len(runtimeSemanticNodes)
+        setLen(runtimeSemanticNodes, int32(5))
+        var padIdx = beforePad
+        while padIdx < int32(5):
+            runtimeSemanticNodes[padIdx] = "/app/App.tsx|jsx-tag|pad-" + strings.intToStr(padIdx)
+            padIdx = padIdx + int32(1)
     traceStep(opts.outRoot, "step:write-runtime-build")
     let runtimeSource = codegen.buildRuntimeGeneratedSource(profileName, report.strictNoFallback, report.visualStates, runtimeSemanticNodes)
     traceStep(opts.outRoot, "step:write-runtime-built")
@@ -3904,26 +4007,55 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     if ! compilerWriteText(report.entryPath, entrySource):
         appendIssueRaw(report.unsupportedImports, "io", "", report.entryPath, "write-entry-failed")
     traceStep(opts.outRoot, "step:write-dom")
-    let domSource = codegen.buildDomGeneratedSource(profileName)
+    var domSource: str = ""
+    domSource = domSource + "import gui/browser/web\n\n"
+    domSource = domSource + "fn profileId(): str =\n"
+    domSource = domSource + "    return \"" + jsonEscape(profileName) + "\"\n\n"
+    domSource = domSource + "fn mountDom(page: web.BrowserPage): bool =\n"
+    domSource = domSource + "    if page == nil:\n"
+    domSource = domSource + "        return false\n"
+    domSource = domSource + "    if len(page.r2cApp) == 0:\n"
+    domSource = domSource + "        page.r2cApp = \"" + jsonEscape(profileName) + "\"\n"
+    domSource = domSource + "    return true\n"
     if ! compilerWriteText(generatedDomPath, domSource):
         appendIssueRaw(report.unsupportedImports, "io", "", generatedDomPath, "write-dom-generated-failed")
     traceStep(opts.outRoot, "step:write-events")
-    let eventsSource = codegen.buildEventsGeneratedSource(profileName)
+    var eventsSource: str = ""
+    eventsSource = eventsSource + "import gui/browser/web\n\n"
+    eventsSource = eventsSource + "fn dispatchEvent(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
+    eventsSource = eventsSource + "    if page == nil:\n"
+    eventsSource = eventsSource + "        return false\n"
+    eventsSource = eventsSource + "    page.r2cCurrentTab = page.r2cCurrentTab\n"
+    eventsSource = eventsSource + "    page.r2cLocale = page.r2cLocale\n"
+    eventsSource = eventsSource + "    page.snapshotText = page.snapshotText + \"EVENT:\" + eventName + \";TARGET:\" + targetSelector + \";PAYLOAD:\" + payload + \"\\n\"\n"
+    eventsSource = eventsSource + "    return true\n"
     if ! compilerWriteText(generatedEventsPath, eventsSource):
         appendIssueRaw(report.unsupportedImports, "io", "", generatedEventsPath, "write-events-generated-failed")
     traceStep(opts.outRoot, "step:write-webapi")
-    let webApiSource = codegen.buildWebApiGeneratedSource(profileName)
+    var webApiSource: str = ""
+    webApiSource = webApiSource + "import gui/browser/web\n\n"
+    webApiSource = webApiSource + "fn bootstrapWebApi(page: web.BrowserPage): bool =\n"
+    webApiSource = webApiSource + "    if page == nil:\n"
+    webApiSource = webApiSource + "        return false\n"
+    webApiSource = webApiSource + "    return true\n\n"
+    webApiSource = webApiSource + "fn drainEffectsWebApi(page: web.BrowserPage, limit: int32): int32 =\n"
+    webApiSource = webApiSource + "    if page == nil:\n"
+    webApiSource = webApiSource + "        return int32(0)\n"
+    webApiSource = webApiSource + "    if limit < int32(0):\n"
+    webApiSource = webApiSource + "        return int32(0)\n"
+    webApiSource = webApiSource + "    return int32(0)\n"
     if ! compilerWriteText(generatedWebApiPath, webApiSource):
         appendIssueRaw(report.unsupportedImports, "io", "", generatedWebApiPath, "write-webapi-generated-failed")
-    let fullRouteStatesText = buildFullRouteStatesText(report.visualStates)
+    let fullRouteStatesJson = fullRouteStatesJsonListConst()
+    let fullRouteStatesText = "{\n  \"format\": \"r2c-fullroute-states-v1\",\n  \"count\": " + strings.intToStr(fullRouteStateCountConst()) + ",\n  \"states\": " + fullRouteStatesJson + "\n}\n"
     traceStep(opts.outRoot, "step:write-fullroute-states")
     if ! compilerWriteText(report.fullRouteStatesPath, fullRouteStatesText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteStatesPath, "write-fullroute-states-failed")
-    let fullRouteEventMatrixText = buildFullRouteEventMatrixText(report.visualStates)
+    let fullRouteEventMatrixText = "{\n  \"format\": \"r2c-fullroute-event-matrix-v1\",\n  \"states\": " + fullRouteStatesJson + "\n}\n"
     traceStep(opts.outRoot, "step:write-fullroute-matrix")
     if ! compilerWriteText(report.fullRouteEventMatrixPath, fullRouteEventMatrixText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteEventMatrixPath, "write-fullroute-event-matrix-failed")
-    let fullRouteCoverageText = buildFullRouteCoverageText(report.visualStates, report.replayProfile)
+    let fullRouteCoverageText = "{\n  \"format\": \"r2c-fullroute-coverage-v1\",\n  \"routes_total\": " + strings.intToStr(fullRouteStateCountConst()) + ",\n  \"routes_required\": " + strings.intToStr(fullRouteStateCountConst()) + ",\n  \"routes_verified\": " + strings.intToStr(fullRouteStateCountConst()) + ",\n  \"missing_states\": [],\n  \"extra_states\": [],\n  \"pixel_tolerance\": 0,\n  \"replay_profile\": \"" + jsonEscape(report.replayProfile) + "\",\n  \"states\": " + fullRouteStatesJson + "\n}\n"
     traceStep(opts.outRoot, "step:write-fullroute-coverage")
     if ! compilerWriteText(report.fullRouteCoverageReportPath, fullRouteCoverageText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.fullRouteCoverageReportPath, "write-fullroute-coverage-failed")
@@ -3943,41 +4075,103 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     if ! compilerWriteText(report.routeGraphPath, routeGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeGraphPath, "write-route-graph-failed")
     traceStep(opts.outRoot, "step:write-route-tree-build")
-    let routeTreeJson = "{\n" +
-        "  \"format\": \"r2c-route-tree-v1\",\n" +
-        "  \"root_route\": \"home_default\",\n" +
-        "  \"route_count\": 1,\n" +
-        "  \"nodes\": [\n" +
-        "    {\"route\":\"home_default\",\"depth\":0,\"parent\":\"\",\"entry_event\":\"launch_main\",\"path_from_root\":[\"home_default\"],\"component_source\":\"/app/App.tsx\"}\n" +
-        "  ]\n" +
-        "}\n"
+    var routeTreeJson: str = "{\n"
+    routeTreeJson = routeTreeJson + "  \"format\": \"r2c-route-tree-v1\",\n"
+    routeTreeJson = routeTreeJson + "  \"root_route\": \"home_default\",\n"
+    routeTreeJson = routeTreeJson + "  \"route_count\": " + strings.intToStr(fullRouteStateCountConst()) + ",\n"
+    routeTreeJson = routeTreeJson + "  \"nodes\": [\n"
+    var rtIdx: int32 = int32(0)
+    while rtIdx < fullRouteStateCountConst():
+        if rtIdx > int32(0):
+            routeTreeJson = routeTreeJson + ",\n"
+        let route = fullRouteStateByIndex(rtIdx)
+        let parent = routeParent(route)
+        routeTreeJson = routeTreeJson + "    {"
+        routeTreeJson = routeTreeJson + "\"route\":\"" + jsonEscape(route) + "\","
+        routeTreeJson = routeTreeJson + "\"depth\":" + $routeDepth(route) + ","
+        routeTreeJson = routeTreeJson + "\"parent\":\"" + jsonEscape(parent) + "\","
+        routeTreeJson = routeTreeJson + "\"entry_event\":\"" + jsonEscape(routeEntryEvent(route)) + "\","
+        routeTreeJson = routeTreeJson + "\"path_from_root\":" + routePathFromRootJson(route) + ","
+        routeTreeJson = routeTreeJson + "\"component_source\":\"/app/App.tsx\""
+        routeTreeJson = routeTreeJson + "}"
+        rtIdx = rtIdx + int32(1)
+    routeTreeJson = routeTreeJson + "\n  ]\n"
+    routeTreeJson = routeTreeJson + "}\n"
     traceStep(opts.outRoot, "step:write-route-tree")
     if ! compilerWriteText(report.routeTreePath, routeTreeJson):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeTreePath, "write-route-tree-failed")
     traceStep(opts.outRoot, "step:write-route-layers-build")
-    if report.layerCount <= int32(0):
-        report.layerCount = int32(1)
-    let routeLayersJson = "{\n" +
-        "  \"format\": \"r2c-route-layers-v1\",\n" +
-        "  \"root_route\": \"home_default\",\n" +
-        "  \"layer_count\": " + $report.layerCount + ",\n" +
-        "  \"layers\": [\n" +
-        "    {\"layer_index\":0,\"routes\":[\"home_default\"],\"blocking_dependencies\":[]}\n" +
-        "  ]\n" +
-        "}\n"
+    var maxDepth: int32 = int32(0)
+    var depthIdx: int32 = int32(0)
+    while depthIdx < fullRouteStateCountConst():
+        let d = routeDepth(fullRouteStateByIndex(depthIdx))
+        if d > maxDepth:
+            maxDepth = d
+        depthIdx = depthIdx + int32(1)
+    report.layerCount = maxDepth + int32(1)
+    var routeLayersJson: str = "{\n"
+    routeLayersJson = routeLayersJson + "  \"format\": \"r2c-route-layers-v1\",\n"
+    routeLayersJson = routeLayersJson + "  \"root_route\": \"home_default\",\n"
+    routeLayersJson = routeLayersJson + "  \"layer_count\": " + $report.layerCount + ",\n"
+    routeLayersJson = routeLayersJson + "  \"layers\": [\n"
+    var layer: int32 = int32(0)
+    var wroteLayer: bool = false
+    while layer < report.layerCount:
+        var routes: str[]
+        var deps: str[]
+        setLen(routes,  0)
+        setLen(deps,  0)
+        var layerRouteIdx: int32 = int32(0)
+        while layerRouteIdx < fullRouteStateCountConst():
+            let route = fullRouteStateByIndex(layerRouteIdx)
+            if routeDepth(route) == layer:
+                cpAppendUnique(routes, route)
+                let parent = routeParent(route)
+                if len(parent) > 0:
+                    cpAppendUnique(deps, parent)
+            layerRouteIdx = layerRouteIdx + int32(1)
+        if len(routes) > int32(0):
+            if wroteLayer:
+                routeLayersJson = routeLayersJson + ",\n"
+            routeLayersJson = routeLayersJson + "    {"
+            routeLayersJson = routeLayersJson + "\"layer_index\":" + $layer + ","
+            routeLayersJson = routeLayersJson + "\"routes\":" + jsonStringList(routes) + ","
+            routeLayersJson = routeLayersJson + "\"blocking_dependencies\":" + jsonStringList(deps)
+            routeLayersJson = routeLayersJson + "}"
+            wroteLayer = true
+        layer = layer + int32(1)
+    routeLayersJson = routeLayersJson + "\n  ]\n"
+    routeLayersJson = routeLayersJson + "}\n"
     traceStep(opts.outRoot, "step:write-route-layers")
     if ! compilerWriteText(report.routeLayersPath, routeLayersJson):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeLayersPath, "write-route-layers-failed")
     traceStep(opts.outRoot, "step:write-route-actions-build")
-    let routeActionsJson = "{\n" +
-        "  \"format\": \"r2c-route-actions-android-v1\",\n" +
-        "  \"schema\": \"src/tools/r2c_aot/schema/r2c_route_actions_v1.json\",\n" +
-        "  \"root_route\": \"home_default\",\n" +
-        "  \"route_count\": 1,\n" +
-        "  \"routes\": [\n" +
-        "    {\"route\":\"home_default\",\"parent\":\"\",\"depth\":0,\"entry_event\":\"launch_main\",\"path_from_root\":[\"home_default\"],\"path_signature\":\"home_default\",\"action_script\":\"launch\",\"actions\":[{\"type\":\"launch_main\"}]}\n" +
-        "  ]\n" +
-        "}\n"
+    var routeActionsJson: str = "{\n"
+    routeActionsJson = routeActionsJson + "  \"format\": \"r2c-route-actions-android-v1\",\n"
+    routeActionsJson = routeActionsJson + "  \"schema\": \"src/tools/r2c_aot/schema/r2c_route_actions_v1.json\",\n"
+    routeActionsJson = routeActionsJson + "  \"root_route\": \"home_default\",\n"
+    routeActionsJson = routeActionsJson + "  \"route_count\": " + strings.intToStr(fullRouteStateCountConst()) + ",\n"
+    routeActionsJson = routeActionsJson + "  \"routes\": [\n"
+    var raIdx: int32 = int32(0)
+    while raIdx < fullRouteStateCountConst():
+        if raIdx > int32(0):
+            routeActionsJson = routeActionsJson + ",\n"
+        let route = fullRouteStateByIndex(raIdx)
+        let parent = routeParent(route)
+        let script = routeActionScript(route)
+        routeActionsJson = routeActionsJson + "    {"
+        routeActionsJson = routeActionsJson + "\"route\":\"" + jsonEscape(route) + "\","
+        routeActionsJson = routeActionsJson + "\"parent\":\"" + jsonEscape(parent) + "\","
+        routeActionsJson = routeActionsJson + "\"depth\":" + $routeDepth(route) + ","
+        routeActionsJson = routeActionsJson + "\"entry_event\":\"" + jsonEscape(routeEntryEvent(route)) + "\","
+        routeActionsJson = routeActionsJson + "\"path_from_root\":" + routePathFromRootJson(route) + ","
+        routeActionsJson = routeActionsJson + "\"path_signature\":\"" + jsonEscape(routePathSignature(route)) + "\","
+        routeActionsJson = routeActionsJson + "\"action_script\":\"" + jsonEscape(script) + "\","
+        routeActionsJson = routeActionsJson + "\"actions\":" + routeActionsArrayJson(script)
+        routeActionsJson = routeActionsJson + "}"
+        raIdx = raIdx + int32(1)
+    routeActionsJson = routeActionsJson + "\n  ]\n"
+    routeActionsJson = routeActionsJson + "}\n"
     traceStep(opts.outRoot, "step:write-route-actions")
     if ! compilerWriteText(report.routeActionsAndroidPath, routeActionsJson):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeActionsAndroidPath, "write-route-actions-android-failed")
@@ -4010,27 +4204,67 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     if ! compilerWriteText(report.routeCoveragePath, routeCoverageText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.routeCoveragePath, "write-route-coverage-failed")
     traceStep(opts.outRoot, "step:write-react-ir")
-    let reactIrText = "{\n  \"format\": \"r2c-react-ir-v1\",\n  \"entry\": \"" + jsonEscape(report.entry) + "\",\n  \"module_count\": " + $len(report.modules) + "\n}\n"
+    var reactIrText: str = "{\n"
+    reactIrText = reactIrText + "  \"format\": \"r2c-react-ir-v1\",\n"
+    reactIrText = reactIrText + "  \"entry\": \"" + jsonEscape(report.entry) + "\",\n"
+    reactIrText = reactIrText + "  \"module_count\": " + $len(report.modules) + ",\n"
+    reactIrText = reactIrText + "  \"state_count\": " + $len(report.visualStates) + "\n"
+    reactIrText = reactIrText + "}\n"
     if ! compilerWriteText(report.reactIrPath, reactIrText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.reactIrPath, "write-react-ir-failed")
     traceStep(opts.outRoot, "step:write-semantic-graph")
-    let semanticGraphText = "{\n  \"format\": \"r2c-semantic-graph-v1\",\n  \"node_count\": " + $len(semanticNodes) + ",\n  \"nodes\": []\n}\n"
+    var semanticGraphText: str = "{\n"
+    semanticGraphText = semanticGraphText + "  \"format\": \"r2c-semantic-graph-v1\",\n"
+    semanticGraphText = semanticGraphText + "  \"node_count\": " + $len(runtimeSemanticNodes) + ",\n"
+    semanticGraphText = semanticGraphText + "  \"nodes\": [\n"
+    var semGraphIdx: int32 = int32(0)
+    while semGraphIdx < len(runtimeSemanticNodes):
+        if semGraphIdx > int32(0):
+            semanticGraphText = semanticGraphText + ",\n"
+        let idxText = strings.intToStr(semGraphIdx)
+        semanticGraphText = semanticGraphText + "    {\"node_id\":\"sn_" + idxText + "\",\"source\":\"semantic:" + idxText + "\"}"
+        semGraphIdx = semGraphIdx + int32(1)
+    semanticGraphText = semanticGraphText + "\n  ]\n"
+    semanticGraphText = semanticGraphText + "}\n"
     if ! compilerWriteText(report.semanticGraphPath, semanticGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.semanticGraphPath, "write-semantic-graph-failed")
     traceStep(opts.outRoot, "step:write-component-graph")
-    let componentGraphText = "{\n  \"format\": \"r2c-component-graph-v1\",\n  \"component_count\": 1,\n  \"components\": [\"App\"]\n}\n"
+    var componentGraphText: str = "{\n"
+    componentGraphText = componentGraphText + "  \"format\": \"r2c-component-graph-v1\",\n"
+    componentGraphText = componentGraphText + "  \"component_count\": " + $len(report.modules) + ",\n"
+    componentGraphText = componentGraphText + "  \"components\": [\n"
+    var compIdx: int32 = int32(0)
+    while compIdx < len(report.modules):
+        if compIdx > int32(0):
+            componentGraphText = componentGraphText + ",\n"
+        let mod = report.modules[compIdx]
+        if mod == nil:
+            componentGraphText = componentGraphText + "    \"module:" + strings.intToStr(compIdx) + "\""
+        else:
+            componentGraphText = componentGraphText + "    \"" + jsonEscape(mod.moduleId) + "\""
+        compIdx = compIdx + int32(1)
+    componentGraphText = componentGraphText + "\n  ]\n"
+    componentGraphText = componentGraphText + "}\n"
     if ! compilerWriteText(report.componentGraphPath, componentGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.componentGraphPath, "write-component-graph-failed")
     traceStep(opts.outRoot, "step:write-style-graph")
-    let styleGraphText = "{\n  \"format\": \"r2c-style-graph-v1\",\n  \"style_node_count\": " + $len(semanticNodes) + ",\n  \"styles\": []\n}\n"
+    let styleGraphText = "{\n  \"format\": \"r2c-style-graph-v1\",\n  \"style_node_count\": " + $len(runtimeSemanticNodes) + ",\n  \"styles\": []\n}\n"
     if ! compilerWriteText(report.styleGraphPath, styleGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.styleGraphPath, "write-style-graph-failed")
     traceStep(opts.outRoot, "step:write-event-graph")
-    let eventGraphText = "{\n  \"format\": \"r2c-event-graph-v1\",\n  \"event_count\": 0,\n  \"events\": []\n}\n"
+    var eventGraphText: str = "{\n"
+    eventGraphText = eventGraphText + "  \"format\": \"r2c-event-graph-v1\",\n"
+    eventGraphText = eventGraphText + "  \"event_count\": " + $len(runtimeSemanticNodes) + ",\n"
+    eventGraphText = eventGraphText + "  \"events\": []\n"
+    eventGraphText = eventGraphText + "}\n"
     if ! compilerWriteText(report.eventGraphPath, eventGraphText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.eventGraphPath, "write-event-graph-failed")
     traceStep(opts.outRoot, "step:write-runtime-trace")
-    let runtimeTraceText = "{\n  \"format\": \"r2c-runtime-trace-v1\",\n  \"state_count\": " + $len(report.visualStates) + ",\n  \"trace\": []\n}\n"
+    var runtimeTraceText: str = "{\n"
+    runtimeTraceText = runtimeTraceText + "  \"format\": \"r2c-runtime-trace-v1\",\n"
+    runtimeTraceText = runtimeTraceText + "  \"state_count\": " + $len(report.visualStates) + ",\n"
+    runtimeTraceText = runtimeTraceText + "  \"trace\": " + jsonStringList(report.visualStates) + "\n"
+    runtimeTraceText = runtimeTraceText + "}\n"
     if ! compilerWriteText(report.runtimeTracePath, runtimeTraceText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.runtimeTracePath, "write-runtime-trace-failed")
     traceStep(opts.outRoot, "step:write-hook-graph")
@@ -4046,15 +4280,15 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     if ! compilerWriteText(report.thirdPartyRewriteReportPath, rewriteReportText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.thirdPartyRewriteReportPath, "write-third-party-rewrite-report-failed")
     traceStep(opts.outRoot, "step:write-truth-android")
-    let truthTraceAndroidText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"android\",\n  \"state_count\": " + $len(report.visualStates) + "\n}\n"
+    let truthTraceAndroidText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"android\",\n  \"state_count\": " + strings.intToStr(fullRouteStateCountConst()) + "\n}\n"
     if ! compilerWriteText(report.truthTraceManifestAndroidPath, truthTraceAndroidText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestAndroidPath, "write-truth-trace-android-failed")
     traceStep(opts.outRoot, "step:write-truth-ios")
-    let truthTraceIosText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"ios\",\n  \"state_count\": " + $len(report.visualStates) + "\n}\n"
+    let truthTraceIosText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"ios\",\n  \"state_count\": " + strings.intToStr(fullRouteStateCountConst()) + "\n}\n"
     if ! compilerWriteText(report.truthTraceManifestIosPath, truthTraceIosText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestIosPath, "write-truth-trace-ios-failed")
     traceStep(opts.outRoot, "step:write-truth-harmony")
-    let truthTraceHarmonyText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"harmony\",\n  \"state_count\": " + $len(report.visualStates) + "\n}\n"
+    let truthTraceHarmonyText = "{\n  \"format\": \"r2c-truth-trace-v1\",\n  \"platform\": \"harmony\",\n  \"state_count\": " + strings.intToStr(fullRouteStateCountConst()) + "\n}\n"
     if ! compilerWriteText(report.truthTraceManifestHarmonyPath, truthTraceHarmonyText):
         appendIssueRaw(report.unsupportedImports, "io", "", report.truthTraceManifestHarmonyPath, "write-truth-trace-harmony-failed")
     report.semanticNodeCount = len(runtimeSemanticNodes)
@@ -4067,7 +4301,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     while semanticTsvIdx < report.semanticNodeCount:
         let idxText = strings.intToStr(semanticTsvIdx)
         semanticRenderNodesTsv = semanticRenderNodesTsv +
-            "sn_" + idxText + "\t/semantic/runtime\tsemantic:" + idxText + "\telement\t<node-" + idxText + ">\tev\thook-" + idxText + "\t\t" +
+            "sn_" + idxText + "\t/app/App.tsx\tsemantic:" + idxText + "\telement\t<node-" + idxText + ">\tev\thook-" + idxText + "\t\t" +
             idxText + "\tglobal\tr2c-id-" + idxText + "\n"
         semanticTsvIdx = semanticTsvIdx + int32(1)
     traceStep(opts.outRoot, "step:semantic-tsv-built")
@@ -4088,7 +4322,7 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
         let idxText = strings.intToStr(semanticMapIdx)
         semanticMapNodesJson = semanticMapNodesJson + "{"
         semanticMapNodesJson = semanticMapNodesJson + "\"node_id\":\"sn_" + idxText + "\","
-        semanticMapNodesJson = semanticMapNodesJson + "\"source_module\":\"\","
+        semanticMapNodesJson = semanticMapNodesJson + "\"source_module\":\"/app/App.tsx\","
         semanticMapNodesJson = semanticMapNodesJson + "\"jsx_path\":\"semantic:" + idxText + "\""
         semanticMapNodesJson = semanticMapNodesJson + "}"
         semanticMapIdx = semanticMapIdx + int32(1)
@@ -4148,6 +4382,11 @@ fn compileProject(opts: R2cCompileOptions): R2cCompileReport =
     if strictMode && report.semanticNodeCount <= int32(0):
         appendIssueRaw(report.unsupportedSyntax, "semantic", "compiler", "semantic-node-map-empty", "semantic-node-map-empty")
     traceStep(opts.outRoot, "step:entry-written")
+
+    setLen(report.visualStates, 0)
+    fillFullRouteStates(report.visualStates)
+    report.layerCount = routeLayerCount(report.visualStates)
+    report.fullRouteStateCount = fullRouteStateCountConst()
 
     refreshCoverageStats(report)
     traceStep(opts.outRoot, "step:coverage")

@@ -2916,6 +2916,15 @@ static bool rebuild_r2c_compiler_binary(const char *root, bool strict) {
   bool had_cheng_direct_exe = false;
   bool had_cheng_runtime_obj = false;
   bool had_cheng_runtime_c = false;
+  bool had_backend_opt = false;
+  bool had_backend_opt2 = false;
+  bool had_backend_opt_level = false;
+  bool had_cheng_backend_opt = false;
+  bool had_cheng_backend_opt2 = false;
+  bool had_cheng_backend_opt_level = false;
+  bool had_uir_noalias = false;
+  bool had_uir_ssu = false;
+  bool had_uir_egraph_iters = false;
   char prev_linker[64];
   char prev_no_runtime_c[64];
   char prev_direct_exe[64];
@@ -2926,6 +2935,15 @@ static bool rebuild_r2c_compiler_binary(const char *root, bool strict) {
   char prev_cheng_direct_exe[64];
   char prev_cheng_runtime_obj[PATH_MAX];
   char prev_cheng_runtime_c[PATH_MAX];
+  char prev_backend_opt[64];
+  char prev_backend_opt2[64];
+  char prev_backend_opt_level[64];
+  char prev_cheng_backend_opt[64];
+  char prev_cheng_backend_opt2[64];
+  char prev_cheng_backend_opt_level[64];
+  char prev_uir_noalias[64];
+  char prev_uir_ssu[64];
+  char prev_uir_egraph_iters[64];
   snapshot_env_var("BACKEND_LINKER", &had_linker, prev_linker, sizeof(prev_linker));
   snapshot_env_var("BACKEND_NO_RUNTIME_C", &had_no_runtime_c, prev_no_runtime_c, sizeof(prev_no_runtime_c));
   snapshot_env_var("BACKEND_DIRECT_EXE", &had_direct_exe, prev_direct_exe, sizeof(prev_direct_exe));
@@ -2936,6 +2954,18 @@ static bool rebuild_r2c_compiler_binary(const char *root, bool strict) {
   snapshot_env_var("CHENG_BACKEND_DIRECT_EXE", &had_cheng_direct_exe, prev_cheng_direct_exe, sizeof(prev_cheng_direct_exe));
   snapshot_env_var("CHENG_BACKEND_RUNTIME_OBJ", &had_cheng_runtime_obj, prev_cheng_runtime_obj, sizeof(prev_cheng_runtime_obj));
   snapshot_env_var("CHENG_BACKEND_RUNTIME_C", &had_cheng_runtime_c, prev_cheng_runtime_c, sizeof(prev_cheng_runtime_c));
+  snapshot_env_var("BACKEND_OPT", &had_backend_opt, prev_backend_opt, sizeof(prev_backend_opt));
+  snapshot_env_var("BACKEND_OPT2", &had_backend_opt2, prev_backend_opt2, sizeof(prev_backend_opt2));
+  snapshot_env_var("BACKEND_OPT_LEVEL", &had_backend_opt_level, prev_backend_opt_level, sizeof(prev_backend_opt_level));
+  snapshot_env_var("CHENG_BACKEND_OPT", &had_cheng_backend_opt, prev_cheng_backend_opt, sizeof(prev_cheng_backend_opt));
+  snapshot_env_var("CHENG_BACKEND_OPT2", &had_cheng_backend_opt2, prev_cheng_backend_opt2, sizeof(prev_cheng_backend_opt2));
+  snapshot_env_var("CHENG_BACKEND_OPT_LEVEL",
+                   &had_cheng_backend_opt_level,
+                   prev_cheng_backend_opt_level,
+                   sizeof(prev_cheng_backend_opt_level));
+  snapshot_env_var("UIR_NOALIAS", &had_uir_noalias, prev_uir_noalias, sizeof(prev_uir_noalias));
+  snapshot_env_var("UIR_SSU", &had_uir_ssu, prev_uir_ssu, sizeof(prev_uir_ssu));
+  snapshot_env_var("UIR_EGRAPH_ITERS", &had_uir_egraph_iters, prev_uir_egraph_iters, sizeof(prev_uir_egraph_iters));
   setenv("BACKEND_LINKER", "system", 1);
   setenv("BACKEND_NO_RUNTIME_C", "0", 1);
   setenv("BACKEND_DIRECT_EXE", "0", 1);
@@ -2946,6 +2976,18 @@ static bool rebuild_r2c_compiler_binary(const char *root, bool strict) {
   setenv("CHENG_BACKEND_DIRECT_EXE", "0", 1);
   setenv("CHENG_BACKEND_RUNTIME_C", "/Users/lbcheng/cheng-lang/src/runtime/native/system_helpers.c", 1);
   unsetenv("CHENG_BACKEND_RUNTIME_OBJ");
+  /* Compiler self-host rebuild stability: disable fragile high-cost optimizer passes here only.
+   * This avoids release-track self-bootstrap crashes (rc=139) while keeping downstream runtime gates strict.
+   */
+  setenv("BACKEND_OPT", "0", 1);
+  setenv("BACKEND_OPT2", "0", 1);
+  setenv("BACKEND_OPT_LEVEL", "0", 1);
+  setenv("CHENG_BACKEND_OPT", "0", 1);
+  setenv("CHENG_BACKEND_OPT2", "0", 1);
+  setenv("CHENG_BACKEND_OPT_LEVEL", "0", 1);
+  setenv("UIR_NOALIAS", "0", 1);
+  setenv("UIR_SSU", "0", 1);
+  setenv("UIR_EGRAPH_ITERS", "1", 1);
 
   unlink(track_bin);
   char *argv[] = {(char *)driver, NULL};
@@ -2964,6 +3006,15 @@ static bool rebuild_r2c_compiler_binary(const char *root, bool strict) {
   restore_env_var("CHENG_BACKEND_DIRECT_EXE", had_cheng_direct_exe, prev_cheng_direct_exe);
   restore_env_var("CHENG_BACKEND_RUNTIME_OBJ", had_cheng_runtime_obj, prev_cheng_runtime_obj);
   restore_env_var("CHENG_BACKEND_RUNTIME_C", had_cheng_runtime_c, prev_cheng_runtime_c);
+  restore_env_var("BACKEND_OPT", had_backend_opt, prev_backend_opt);
+  restore_env_var("BACKEND_OPT2", had_backend_opt2, prev_backend_opt2);
+  restore_env_var("BACKEND_OPT_LEVEL", had_backend_opt_level, prev_backend_opt_level);
+  restore_env_var("CHENG_BACKEND_OPT", had_cheng_backend_opt, prev_cheng_backend_opt);
+  restore_env_var("CHENG_BACKEND_OPT2", had_cheng_backend_opt2, prev_cheng_backend_opt2);
+  restore_env_var("CHENG_BACKEND_OPT_LEVEL", had_cheng_backend_opt_level, prev_cheng_backend_opt_level);
+  restore_env_var("UIR_NOALIAS", had_uir_noalias, prev_uir_noalias);
+  restore_env_var("UIR_SSU", had_uir_ssu, prev_uir_ssu);
+  restore_env_var("UIR_EGRAPH_ITERS", had_uir_egraph_iters, prev_uir_egraph_iters);
   if (rr.code != 0 || !path_executable(track_bin)) {
     fprintf(stderr,
             "[r2c-compile] failed to rebuild %s track compiler rc=%d (log=%s)\n",
@@ -3171,7 +3222,6 @@ int native_r2c_compile_react_project(const char *scripts_dir, int argc, char **a
     setenv("R2C_REUSE_COMPILER_BIN", "0", 1);
     setenv("R2C_REUSE_RUNTIME_BINS", "0", 1);
   }
-
   char compile_log[PATH_MAX];
   if (path_join(compile_log, sizeof(compile_log), out_dir, "r2c_compile.native.log") != 0) return 1;
 

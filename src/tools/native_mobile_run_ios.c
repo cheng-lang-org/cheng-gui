@@ -38,6 +38,45 @@ static bool file_exists_local(const char *path) {
   return (path != NULL && stat(path, &st) == 0 && S_ISREG(st.st_mode));
 }
 
+static int copy_file_local(const char *src, const char *dst, mode_t mode) {
+  if (src == NULL || dst == NULL) return -1;
+  FILE *in = fopen(src, "rb");
+  if (in == NULL) return -1;
+  FILE *out = fopen(dst, "wb");
+  if (out == NULL) {
+    fclose(in);
+    return -1;
+  }
+  char buf[1 << 15];
+  size_t n = 0u;
+  int rc = 0;
+  while ((n = fread(buf, 1u, sizeof(buf), in)) > 0u) {
+    if (fwrite(buf, 1u, n, out) != n) {
+      rc = -1;
+      break;
+    }
+  }
+  if (ferror(in)) rc = -1;
+  if (fclose(in) != 0) rc = -1;
+  if (fclose(out) != 0) rc = -1;
+  if (rc == 0) {
+    (void)chmod(dst, mode);
+  }
+  return rc;
+}
+
+static int copy_named_file(const char *src_dir, const char *filename, const char *dst_dir) {
+  char src[PATH_MAX];
+  char dst[PATH_MAX];
+  if (nr_path_join(src, sizeof(src), src_dir, filename) != 0 ||
+      nr_path_join(dst, sizeof(dst), dst_dir, filename) != 0) {
+    return -1;
+  }
+  struct stat st;
+  if (stat(src, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
+  return copy_file_local(src, dst, st.st_mode);
+}
+
 static bool find_executable_in_path(const char *name, char *out, size_t out_cap) {
   if (name == NULL || out == NULL || out_cap == 0u) return false;
   if (strchr(name, '/') != NULL) {
@@ -361,6 +400,17 @@ int native_mobile_run_ios(const char *scripts_dir, int argc, char **argv, int ar
   }
   if (!dir_exists_local(project) || !dir_exists_local(app_src)) {
     fprintf(stderr, "[mobile-run-ios] missing generated project: %s\n", project);
+    return 1;
+  }
+
+  /* iOS host expects ABI v2 exports. Ensure runtime bridge sources are injected. */
+  char runtime_mobile_src[PATH_MAX];
+  if (nr_path_join(runtime_mobile_src, sizeof(runtime_mobile_src), lang_root, "src/runtime/mobile") != 0) return 1;
+  if (copy_named_file(runtime_mobile_src, "cheng_mobile_exports.c", app_src) != 0 ||
+      copy_named_file(runtime_mobile_src, "cheng_mobile_exports.h", app_src) != 0) {
+    fprintf(stderr,
+            "[mobile-run-ios] missing runtime ABI exports (cheng_mobile_exports.c/.h) under: %s\n",
+            runtime_mobile_src);
     return 1;
   }
 

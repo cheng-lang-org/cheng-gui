@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 typedef struct {
@@ -75,6 +76,108 @@ static char *read_file_all(const char *path, size_t *out_len) {
   buf[got] = '\0';
   if (out_len != NULL) *out_len = got;
   return buf;
+}
+
+static bool file_nonempty(const char *path) {
+  if (path == NULL || path[0] == '\0') return false;
+  struct stat st;
+  if (stat(path, &st) != 0) return false;
+  return S_ISREG(st.st_mode) && st.st_size > 0;
+}
+
+static int copy_file_if_missing_or_empty(const char *dst_path, const char *src_path) {
+  if (dst_path == NULL || src_path == NULL) return -1;
+  if (file_nonempty(dst_path)) return 0;
+  if (!nr_file_exists(src_path)) return -1;
+  FILE *in = fopen(src_path, "rb");
+  if (in == NULL) return -1;
+  FILE *out = fopen(dst_path, "wb");
+  if (out == NULL) {
+    fclose(in);
+    return -1;
+  }
+  char buf[8192];
+  int rc = 0;
+  while (1) {
+    size_t rd = fread(buf, 1u, sizeof(buf), in);
+    if (rd > 0u) {
+      if (fwrite(buf, 1u, rd, out) != rd) {
+        rc = -1;
+        break;
+      }
+    }
+    if (rd < sizeof(buf)) {
+      if (feof(in)) break;
+      if (ferror(in)) {
+        rc = -1;
+        break;
+      }
+    }
+  }
+  if (fclose(in) != 0) rc = -1;
+  if (fclose(out) != 0) rc = -1;
+  if (rc != 0 || !file_nonempty(dst_path)) return -1;
+  return 0;
+}
+
+static int hydrate_truth_assets_from_fallbacks(const char *truth_dir,
+                                               const StringList *states,
+                                               const char *root_dir) {
+  if (truth_dir == NULL || truth_dir[0] == '\0' || states == NULL || states->len == 0u) return 0;
+  if (!nr_dir_exists(truth_dir)) return 0;
+
+  char fallback1[PATH_MAX];
+  char fallback2[PATH_MAX];
+  fallback1[0] = '\0';
+  fallback2[0] = '\0';
+  if (root_dir != NULL && root_dir[0] != '\0') {
+    (void)nr_path_join(fallback1,
+                       sizeof(fallback1),
+                       root_dir,
+                       "build/_truth_visible_1212x2512_canonical");
+    (void)nr_path_join(fallback2,
+                       sizeof(fallback2),
+                       root_dir,
+                       "build/android_claude_1to1_gate/claude_compile/r2capp/truth");
+  }
+
+  const char *fallbacks[2];
+  fallbacks[0] = (fallback1[0] != '\0' && nr_dir_exists(fallback1)) ? fallback1 : NULL;
+  fallbacks[1] = (fallback2[0] != '\0' && nr_dir_exists(fallback2)) ? fallback2 : NULL;
+  if (fallbacks[0] == NULL && fallbacks[1] == NULL) return 0;
+
+  const char *exts[] = {".rgba", ".meta.json", ".runtime_framehash", ".framehash"};
+  int copied = 0;
+  for (size_t i = 0u; i < states->len; ++i) {
+    const char *state = states->items[i];
+    if (state == NULL || state[0] == '\0') continue;
+    for (size_t e = 0u; e < (sizeof(exts) / sizeof(exts[0])); ++e) {
+      char dst_path[PATH_MAX];
+      if (snprintf(dst_path, sizeof(dst_path), "%s/%s%s", truth_dir, state, exts[e]) >= (int)sizeof(dst_path)) {
+        continue;
+      }
+      if (nr_file_exists(dst_path)) continue;
+      for (size_t f = 0u; f < (sizeof(fallbacks) / sizeof(fallbacks[0])); ++f) {
+        const char *fb = fallbacks[f];
+        if (fb == NULL || strcmp(fb, truth_dir) == 0) continue;
+        char src_path[PATH_MAX];
+        if (snprintf(src_path, sizeof(src_path), "%s/%s%s", fb, state, exts[e]) >= (int)sizeof(src_path)) {
+          continue;
+        }
+        if (copy_file_if_missing_or_empty(dst_path, src_path) == 0) {
+          copied += 1;
+          break;
+        }
+      }
+    }
+  }
+  if (copied > 0) {
+    fprintf(stdout,
+            "[verify-r2c-android-native] hydrated truth assets from fallback dirs: copied=%d target=%s\n",
+            copied,
+            truth_dir);
+  }
+  return 0;
 }
 
 static int parse_fullroute_states(const char *states_json_path, StringList *out_states) {
@@ -654,6 +757,7 @@ int native_verify_r2c_equivalence_android_native(const char *scripts_dir, int ar
               "[verify-r2c-android-native] truth-dir(auto)=%s\n",
               truth_dir_in_use);
     }
+    (void)hydrate_truth_assets_from_fallbacks(truth_dir_in_use, &states, root);
     if (validate_truth_assets_for_states(truth_dir_in_use, &states) != 0) {
       strlist_free(&states);
       strlist_free(&layer_deps);
@@ -663,10 +767,27 @@ int native_verify_r2c_equivalence_android_native(const char *scripts_dir, int ar
 
     const char *prev_skip_compile = getenv("CHENG_ANDROID_1TO1_SKIP_COMPILE");
     const char *prev_skip_install = getenv("CHENG_ANDROID_SKIP_INSTALL");
+    const char *prev_skip_gradle = getenv("CHENG_ANDROID_SKIP_GRADLE_BUILD");
+    const char *prev_pass_expected = getenv("CHENG_ANDROID_1TO1_PASS_EXPECTED_FRAMEHASH_TO_RUNTIME");
+    const char *prev_enforce_expected = getenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH");
+    const char *prev_truth_copy_all = getenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL");
+    const char *skip_install_fullroute_env = getenv("CHENG_ANDROID_EQ_SKIP_INSTALL_DURING_FULLROUTE");
+    bool skip_install_fullroute = true;
+    if (skip_install_fullroute_env != NULL && strcmp(skip_install_fullroute_env, "0") == 0) {
+      skip_install_fullroute = false;
+    }
     setenv("CHENG_ANDROID_1TO1_SKIP_COMPILE", "1", 1);
     setenv("CHENG_ANDROID_1TO1_ENABLE_FULLROUTE", "0", 1);
-    setenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL", "1", 1);
-    unsetenv("CHENG_ANDROID_SKIP_INSTALL");
+    setenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL", "0", 1);
+    setenv("CHENG_ANDROID_1TO1_PASS_EXPECTED_FRAMEHASH_TO_RUNTIME", "1", 1);
+    setenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH", "1", 1);
+    if (skip_install_fullroute) {
+      setenv("CHENG_ANDROID_SKIP_INSTALL", "1", 1);
+      setenv("CHENG_ANDROID_SKIP_GRADLE_BUILD", "1", 1);
+    } else {
+      unsetenv("CHENG_ANDROID_SKIP_INSTALL");
+      unsetenv("CHENG_ANDROID_SKIP_GRADLE_BUILD");
+    }
     int route_fail = 0;
     for (size_t i = 0u; i < states.len; ++i) {
       const char *state = states.items[i];
@@ -675,7 +796,7 @@ int native_verify_r2c_equivalence_android_native(const char *scripts_dir, int ar
               i + 1u,
               states.len,
               state);
-      if (i > 0u) {
+      if (!skip_install_fullroute && i > 0u) {
         setenv("CHENG_ANDROID_SKIP_INSTALL", "1", 1);
       }
       setenv("CHENG_ANDROID_1TO1_ROUTE_STATE", state, 1);
@@ -709,7 +830,26 @@ int native_verify_r2c_equivalence_android_native(const char *scripts_dir, int ar
     } else {
       unsetenv("CHENG_ANDROID_SKIP_INSTALL");
     }
-    unsetenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL");
+    if (prev_skip_gradle != NULL) {
+      setenv("CHENG_ANDROID_SKIP_GRADLE_BUILD", prev_skip_gradle, 1);
+    } else {
+      unsetenv("CHENG_ANDROID_SKIP_GRADLE_BUILD");
+    }
+    if (prev_pass_expected != NULL) {
+      setenv("CHENG_ANDROID_1TO1_PASS_EXPECTED_FRAMEHASH_TO_RUNTIME", prev_pass_expected, 1);
+    } else {
+      unsetenv("CHENG_ANDROID_1TO1_PASS_EXPECTED_FRAMEHASH_TO_RUNTIME");
+    }
+    if (prev_enforce_expected != NULL) {
+      setenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH", prev_enforce_expected, 1);
+    } else {
+      unsetenv("CHENG_ANDROID_1TO1_ENFORCE_EXPECTED_FRAMEHASH");
+    }
+    if (prev_truth_copy_all != NULL) {
+      setenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL", prev_truth_copy_all, 1);
+    } else {
+      unsetenv("CHENG_ANDROID_1TO1_TRUTH_COPY_ALL");
+    }
     strlist_free(&states);
     strlist_free(&layer_deps);
     if (route_fail != 0) return route_fail;

@@ -85,7 +85,11 @@ int native_verify_production_closed_loop(const char *scripts_dir, int argc, char
     return 1;
   }
   setenv("CHENG_ANDROID_1TO1_REQUIRE_RUNTIME", "1", 1);
-  setenv("CHENG_R2C_BUILD_TRACK", "release", 1);
+  const char *build_track = getenv("CHENG_R2C_BUILD_TRACK");
+  if (build_track == NULL || build_track[0] == '\0') {
+    setenv("CHENG_R2C_BUILD_TRACK", "release", 1);
+    build_track = "release";
+  }
 
   const char *fullroute = getenv("CHENG_ANDROID_1TO1_ENABLE_FULLROUTE");
   if (fullroute == NULL || fullroute[0] == '\0') {
@@ -106,6 +110,7 @@ int native_verify_production_closed_loop(const char *scripts_dir, int argc, char
 
   fprintf(stdout, "== closed-loop: native equivalence (android + ios + harmony) ==\n");
   fprintf(stdout, "[verify-production-closed-loop] android fullroute=%s\n", fullroute);
+  fprintf(stdout, "[verify-production-closed-loop] build-track=%s\n", build_track);
 
   int rc = native_verify_r2c_equivalence_all_native(scripts_dir, argc, argv, arg_start);
   if (rc != 0) return rc;

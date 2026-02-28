@@ -240,6 +240,46 @@ static bool runtime_state_has_nonzero_hash(const char *doc) {
   return false;
 }
 
+static bool runtime_state_home_hard_gate_ok(const char *doc, const char *expected_route_state) {
+  if (doc == NULL || doc[0] == '\0') {
+    fprintf(stderr, "[mobile-run-android] home hard gate: empty runtime state\n");
+    return false;
+  }
+  if (expected_route_state == NULL || expected_route_state[0] == '\0') expected_route_state = "home_default";
+  if (strcmp(expected_route_state, "home_default") != 0) {
+    fprintf(stderr,
+            "[mobile-run-android] home hard gate requires route_state=home_default (got=%s)\n",
+            expected_route_state);
+    return false;
+  }
+  if (!runtime_state_render_ready(doc)) {
+    fprintf(stderr, "[mobile-run-android] home hard gate: render_ready=false\n");
+    return false;
+  }
+  if (!runtime_state_has_nonzero_hash(doc)) {
+    fprintf(stderr, "[mobile-run-android] home hard gate: last_frame_hash is zero/invalid\n");
+    return false;
+  }
+  long long applied = 0;
+  if (!json_get_int64_field(doc, "semantic_nodes_applied_count", &applied) || applied <= 0) {
+    fprintf(stderr,
+            "[mobile-run-android] home hard gate: semantic_nodes_applied_count invalid (%lld)\n",
+            applied);
+    return false;
+  }
+  char route_state[128];
+  route_state[0] = '\0';
+  if (!json_get_string_field(doc, "route_state", route_state, sizeof(route_state)) ||
+      strcmp(route_state, expected_route_state) != 0) {
+    fprintf(stderr,
+            "[mobile-run-android] home hard gate: route_state mismatch expected=%s got=%s\n",
+            expected_route_state,
+            route_state[0] != '\0' ? route_state : "<empty>");
+    return false;
+  }
+  return true;
+}
+
 static bool parse_current_focus_component(const char *dumpsys, char *out, size_t out_cap) {
   if (out != NULL && out_cap > 0u) out[0] = '\0';
   if (dumpsys == NULL || out == NULL || out_cap == 0u) return false;
@@ -275,6 +315,21 @@ static int query_current_focus_component(const char *adb, const char *serial, ch
   bool ok = parse_current_focus_component(doc, out, out_cap);
   free(doc);
   return ok ? 0 : -1;
+}
+
+static bool android_package_installed(const char *adb, const char *serial, const char *pkg) {
+  if (adb == NULL || serial == NULL || pkg == NULL || pkg[0] == '\0') return false;
+  char *argv[] = {(char *)adb, "-s", (char *)serial, "shell", "pm", "path", (char *)pkg, NULL};
+  char *out = NULL;
+  int rc = run_simple(argv, 15, &out);
+  bool ok = false;
+  if (rc == 0 && out != NULL) {
+    const char *p = out;
+    while (*p != '\0' && isspace((unsigned char)*p)) p += 1;
+    ok = (strncmp(p, "package:", strlen("package:")) == 0);
+  }
+  free(out);
+  return ok;
 }
 
 static bool starts_with(const char *s, const char *prefix) {
@@ -657,6 +712,46 @@ static bool resolve_adb_and_serial(char *adb, size_t adb_cap, char *serial, size
   }
   free(out);
   return ok;
+}
+
+static bool adb_target_online(const char *adb, const char *serial) {
+  if (adb == NULL || adb[0] == '\0' || serial == NULL || serial[0] == '\0') return false;
+  char *argv[] = {(char *)adb, "-s", (char *)serial, "get-state", NULL};
+  char *out = NULL;
+  int rc = run_simple(argv, 10, &out);
+  bool ok = false;
+  if (rc == 0 && out != NULL) {
+    const char *p = out;
+    while (*p != '\0' && isspace((unsigned char)*p)) p += 1;
+    ok = starts_with(p, "device");
+  }
+  free(out);
+  return ok;
+}
+
+static void adb_try_reconnect(char *adb, size_t adb_cap, char *serial, size_t serial_cap, bool serial_forced) {
+  if (adb == NULL || adb[0] == '\0' || serial == NULL || serial[0] == '\0') return;
+  if (adb_target_online(adb, serial)) return;
+
+  char *start_server_argv[] = {adb, "start-server", NULL};
+  (void)run_simple(start_server_argv, 20, NULL);
+  char *wait_argv[] = {adb, "-s", serial, "wait-for-device", NULL};
+  (void)run_simple(wait_argv, 25, NULL);
+  if (adb_target_online(adb, serial)) return;
+  if (serial_forced) return;
+
+  char discovered_adb[PATH_MAX];
+  char discovered_serial[128];
+  if (!resolve_adb_and_serial(discovered_adb,
+                              sizeof(discovered_adb),
+                              discovered_serial,
+                              sizeof(discovered_serial))) {
+    return;
+  }
+  if (discovered_serial[0] == '\0') return;
+  snprintf(adb, adb_cap, "%s", discovered_adb);
+  snprintf(serial, serial_cap, "%s", discovered_serial);
+  fprintf(stdout, "[mobile-run-android] switched adb target serial=%s\n", serial);
 }
 
 static char *base64url_encode(const unsigned char *src, size_t n) {
@@ -1317,6 +1412,26 @@ static int prepare_android_project(const char *root,
       fprintf(stderr, "[mobile-run-android] failed to copy assets: %s\n", assets_dir);
       return 1;
     }
+    const char *exclude_truth_assets_env = getenv("CHENG_ANDROID_EXCLUDE_TRUTH_ASSETS");
+    bool exclude_truth_assets = true;
+    if (exclude_truth_assets_env != NULL && strcmp(exclude_truth_assets_env, "0") == 0) {
+      exclude_truth_assets = false;
+    }
+    if (exclude_truth_assets) {
+      char truth_assets_dst[PATH_MAX];
+      if (path_join(truth_assets_dst, sizeof(truth_assets_dst), assets_dst, "truth") != 0) return 1;
+      if (dir_exists(truth_assets_dst)) {
+        if (remove_tree(truth_assets_dst) != 0) {
+          fprintf(stderr,
+                  "[mobile-run-android] failed to exclude truth assets from packaged APK: %s\n",
+                  truth_assets_dst);
+          return 1;
+        }
+        fprintf(stdout,
+                "[mobile-run-android] excluded truth assets from packaged APK: %s\n",
+                truth_assets_dst);
+      }
+    }
   }
 
   const char *sdk_dir = getenv("ANDROID_SDK_ROOT");
@@ -1496,7 +1611,12 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
   bool route_from_cli = strlist_has_kv_key(&app_args, "route_state");
   bool route_from_json = false;
   char route_from_json_value[128];
+  char expected_route_state[128];
+  bool home_hard_gate = true;
   route_from_json_value[0] = '\0';
+  expected_route_state[0] = '\0';
+  const char *home_hard_gate_env = getenv("CHENG_ANDROID_1TO1_HOME_HARD_GATE");
+  if (home_hard_gate_env != NULL && strcmp(home_hard_gate_env, "0") == 0) home_hard_gate = false;
   if (!route_from_cli) {
     route_from_json = json_file_get_nonempty_route_state(
         app_args_json_path, route_from_json_value, sizeof(route_from_json_value));
@@ -1523,6 +1643,17 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     }
     fprintf(stdout, "[mobile-run-android] implicit route_state=home_default\n");
   }
+  if (!strlist_get_kv_value(&app_args, "route_state", expected_route_state, sizeof(expected_route_state)) ||
+      expected_route_state[0] == '\0') {
+    snprintf(expected_route_state, sizeof(expected_route_state), "home_default");
+  }
+  if (home_hard_gate && strcmp(expected_route_state, "home_default") != 0) {
+    fprintf(stderr,
+            "[mobile-run-android] home hard gate requires route_state=home_default (got=%s)\n",
+            expected_route_state);
+    strlist_free(&app_args);
+    return 1;
+  }
   if (!strlist_has_kv_key(&app_args, "gate_mode")) {
     if (strlist_push(&app_args, "gate_mode=android-semantic-visual-1to1") != 0) {
       fprintf(stderr, "[mobile-run-android] failed to set default gate_mode\n");
@@ -1540,23 +1671,13 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     fprintf(stdout, "[mobile-run-android] implicit truth_mode=strict\n");
   }
   if (!strlist_has_kv_key(&app_args, "expected_framehash")) {
-    char route_state[128];
     char expected_hash[128];
-    route_state[0] = '\0';
     expected_hash[0] = '\0';
-    if (!strlist_get_kv_value(&app_args, "route_state", route_state, sizeof(route_state)) ||
-        route_state[0] == '\0') {
-      if (route_from_json_value[0] != '\0') {
-        snprintf(route_state, sizeof(route_state), "%s", route_from_json_value);
-      } else {
-        snprintf(route_state, sizeof(route_state), "home_default");
-      }
-    }
-    if (!read_truth_runtime_framehash(assets_dir, route_state, expected_hash, sizeof(expected_hash))) {
+    if (!read_truth_runtime_framehash(assets_dir, expected_route_state, expected_hash, sizeof(expected_hash))) {
       fprintf(stderr,
               "[mobile-run-android] strict truth gate missing runtime framehash: assets=%s route=%s\n",
               (assets_dir != NULL && assets_dir[0] != '\0') ? assets_dir : "<empty>",
-              route_state);
+              expected_route_state);
       strlist_free(&app_args);
       return 1;
     }
@@ -1572,7 +1693,7 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       strlist_free(&app_args);
       return 1;
     }
-    fprintf(stdout, "[mobile-run-android] implicit expected_framehash=%s route=%s\n", expected_hash, route_state);
+    fprintf(stdout, "[mobile-run-android] implicit expected_framehash=%s route=%s\n", expected_hash, expected_route_state);
   }
   if (native_obj == NULL || !file_exists(native_obj)) {
     fprintf(stderr, "[mobile-run-android] missing native object: %s\n", native_obj ? native_obj : "");
@@ -1638,6 +1759,7 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
 
   char adb[PATH_MAX];
   char serial[128];
+  bool serial_forced = false;
   if (serial_override != NULL && serial_override[0] != '\0') {
     if (!resolve_adb_executable(adb, sizeof(adb))) {
       fprintf(stderr, "[mobile-run-android] missing adb\n");
@@ -1648,6 +1770,7 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       return 2;
     }
     snprintf(serial, sizeof(serial), "%s", serial_override);
+    serial_forced = true;
   } else if (!resolve_adb_and_serial(adb, sizeof(adb), serial, sizeof(serial))) {
     fprintf(stderr, "[mobile-run-android] no android device/emulator detected\n");
     free(json_b64);
@@ -1677,19 +1800,36 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     return 1;
   }
   bool skip_install = false;
+  bool package_already_installed = android_package_installed(adb, serial, pkg);
   const char *skip_install_env = getenv("CHENG_ANDROID_SKIP_INSTALL");
   if (skip_install_env != NULL && strcmp(skip_install_env, "1") == 0) {
     skip_install = true;
   }
+  if (!skip_install) {
+    const char *auto_skip_install_env = getenv("CHENG_ANDROID_SKIP_INSTALL_IF_PRESENT");
+    bool auto_skip_install_if_present = true;
+    if (auto_skip_install_env != NULL && strcmp(auto_skip_install_env, "0") == 0) {
+      auto_skip_install_if_present = false;
+    }
+    if (auto_skip_install_if_present && package_already_installed) {
+      skip_install = true;
+    }
+  }
   if (skip_install) {
-    fprintf(stdout, "[mobile-run-android] skip adb install: CHENG_ANDROID_SKIP_INSTALL=1\n");
+    if (skip_install_env != NULL && strcmp(skip_install_env, "1") == 0) {
+      fprintf(stdout, "[mobile-run-android] skip adb install: CHENG_ANDROID_SKIP_INSTALL=1\n");
+    } else {
+      fprintf(stdout, "[mobile-run-android] skip adb install: package already installed (%s)\n", pkg);
+    }
   } else {
     int install_rc = 1;
     int install_attempt = 0;
     for (install_attempt = 1; install_attempt <= 3; ++install_attempt) {
+      adb_try_reconnect(adb, sizeof(adb), serial, sizeof(serial), serial_forced);
       char *install_argv[] = {adb, "-s", serial, "install", "-r", apk_path, NULL};
+      char *install_nostream_argv[] = {adb, "-s", serial, "install", "--no-streaming", "-r", apk_path, NULL};
       char *install_out = NULL;
-      install_rc = run_simple(install_argv, 180, &install_out);
+      install_rc = run_simple((install_attempt == 2) ? install_nostream_argv : install_argv, 180, &install_out);
       if (install_rc == 0) {
         free(install_out);
         break;
@@ -1704,15 +1844,29 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       if (install_attempt < 3) {
         char *reconnect_argv[] = {adb, "start-server", NULL};
         (void)run_simple(reconnect_argv, 20, NULL);
+        char *wait_argv[] = {adb, "-s", serial, "wait-for-device", NULL};
+        (void)run_simple(wait_argv, 20, NULL);
+        adb_try_reconnect(adb, sizeof(adb), serial, sizeof(serial), serial_forced);
         usleep(800000);
       }
     }
     if (install_rc != 0) {
-      free(json_b64);
-      free(json);
-      free(kv);
-      strlist_free(&app_args);
-      return 1;
+      const char *allow_install_fail_if_present_env = getenv("CHENG_ANDROID_ALLOW_INSTALL_FAILURE_IF_PRESENT");
+      bool allow_install_fail_if_present = true;
+      if (allow_install_fail_if_present_env != NULL && strcmp(allow_install_fail_if_present_env, "0") == 0) {
+        allow_install_fail_if_present = false;
+      }
+      if (allow_install_fail_if_present && android_package_installed(adb, serial, pkg)) {
+        fprintf(stdout,
+                "[mobile-run-android] adb install failed but package already installed; continue with existing app: %s\n",
+                pkg);
+      } else {
+        free(json_b64);
+        free(json);
+        free(kv);
+        strlist_free(&app_args);
+        return 1;
+      }
     }
   }
 
@@ -1721,12 +1875,12 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
   char *rm_state[] = {adb, "-s", serial, "shell", "run-as", (char *)pkg, "rm", "-f", "files/cheng_runtime_state.json", NULL};
   (void)run_simple(rm_state, 10, NULL);
   if (sync_truth_route_assets(adb, serial, pkg, assets_dir != NULL ? assets_dir : "", kv) != 0) {
-    free(json_b64);
-    free(json);
-    free(kv);
-    strlist_free(&app_args);
-    return 1;
-  }
+      free(json_b64);
+      free(json);
+      free(kv);
+      strlist_free(&app_args);
+      return 1;
+    }
 
   fprintf(stdout,
           "[run-android] cmd: %s -s %s shell am start-activity -S --windowingMode 1 -W -n %s --es cheng_app_args_kv <...> --es cheng_app_args_json <...> --es cheng_app_args_json_b64 <...>\n",
@@ -1900,6 +2054,15 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
   if (state_with_semantic_hash != NULL) {
     free(state_text);
     state_text = state_with_semantic_hash;
+  }
+
+  if (home_hard_gate && !runtime_state_home_hard_gate_ok(state_text, expected_route_state)) {
+    free(state_text);
+    free(json_b64);
+    free(json);
+    free(kv);
+    strlist_free(&app_args);
+    return 1;
   }
 
   if (runtime_state_out != NULL && runtime_state_out[0] != '\0') {
