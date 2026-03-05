@@ -1357,7 +1357,7 @@ function PalaceCell({
             <div
                 ref={contentRef}
                 className={`min-h-0 ${layoutPlan.enableOverflowScroll ? 'overflow-y-auto' : 'overflow-hidden'}`}
-                style={layoutPlan.enableOverflowScroll ? { scrollbarWidth: 'none', MsOverflowStyle: 'none' } : undefined}
+                style={layoutPlan.enableOverflowScroll ? { scrollbarWidth: 'none', msOverflowStyle: 'none' } : undefined}
             >
                 <div className="mt-0.5 flex flex-wrap items-start gap-0.5">
                     {displayMainStars.map((star, i) => (

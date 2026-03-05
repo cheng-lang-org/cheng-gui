@@ -40,16 +40,7 @@ export const mockApps: App[] = [
         price: 'free',
         isInstalled: true,
     },
-    {
-        id: 'movie',
-        name: '一起看电影',
-        icon: '🎬',
-        description: '群内同步观影，支持弹幕互动',
-        category: '娱乐',
-        rating: 4.8,
-        price: 'free',
-        isInstalled: true,
-    },
+
     {
         id: 'doudizhu',
         name: '斗地主',
@@ -89,18 +80,7 @@ export const mockApps: App[] = [
         price: 'free',
         isInstalled: true,
     },
-    {
-        id: 'astro-pro',
-        name: '命理大师 Pro',
-        icon: '🔮',
-        description: '高级排盘与合盘分析，含专业报告导出',
-        category: '工具',
-        rating: 4.9,
-        price: 19.9,
-        sellerId: 'vendor_astro_pro',
-        wechatQr: mockQr('wechat://pay/vendor_astro_pro'),
-        alipayQr: mockQr('alipay://pay/vendor_astro_pro'),
-    },
+
     {
         id: 'minecraft',
         name: '我的世界',

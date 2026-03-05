@@ -22,6 +22,8 @@
 #include "native_verify_r2c_equivalence_harmony_native.h"
 #include "native_verify_r2c_equivalence_all_native.h"
 #include "native_verify_production_closed_loop.h"
+#include "native_extract_react_runtime_graph.h"
+#include "native_merge_semantic_graph.h"
 
 #ifndef CHENG_GUI_SCRIPTS_DIR_DEFAULT
 #define CHENG_GUI_SCRIPTS_DIR_DEFAULT ""
@@ -34,6 +36,8 @@ static const char *kNativeCommands[] = {
     "mobile_run_android",
     "mobile_run_ios",
     "mobile_run_harmony",
+    "extract_react_runtime_graph",
+    "merge_semantic_graph",
     "r2c_compile_react_project",
     "r2c_dev_hot_reload_android",
     "verify_android_claude_1to1_gate",
@@ -135,6 +139,12 @@ int main(int argc, char **argv) {
   }
   if (strcmp(command, "mobile_run_harmony") == 0) {
     return native_mobile_run_harmony(scripts_dir, argc, argv, arg_start);
+  }
+  if (strcmp(command, "extract_react_runtime_graph") == 0) {
+    return native_extract_react_runtime_graph(scripts_dir, argc, argv, arg_start);
+  }
+  if (strcmp(command, "merge_semantic_graph") == 0) {
+    return native_merge_semantic_graph(scripts_dir, argc, argv, arg_start);
   }
   if (strcmp(command, "capture_android_unimaker_truth") == 0) {
     return native_capture_android_unimaker_truth(scripts_dir, argc, argv, arg_start);

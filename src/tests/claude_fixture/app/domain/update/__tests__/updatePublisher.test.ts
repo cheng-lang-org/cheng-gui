@@ -17,6 +17,12 @@ const mock = vi.hoisted(() => ({
   boostCalls: 0,
   syncCalls: 0,
   joinCalls: 0,
+  discoveryActiveCalls: 0,
+  networkSnapshotCalls: 0,
+  mdnsProbeCalls: 0,
+  mdnsDebugCalls: 0,
+  socialConnectCalls: 0,
+  registerHintCalls: 0,
   lastError: '',
 }));
 
@@ -60,6 +66,38 @@ vi.mock('../../../libp2p/service', () => ({
     joinViaRandomBootstrap: async () => {
       mock.joinCalls += 1;
       return { ok: true, connectedCount: 1 };
+    },
+    setDiscoveryActive: async () => {
+      mock.discoveryActiveCalls += 1;
+    },
+    networkDiscoverySnapshot: async () => {
+      mock.networkSnapshotCalls += 1;
+      return {
+        ok: true,
+        peerId: mock.localPeerId,
+        connectedPeers: [],
+        connectedPeersInfo: [],
+        discoveredPeers: { peers: [], totalCount: 0 },
+      };
+    },
+    mdnsSetInterval: async () => true,
+    mdnsSetEnabled: async () => true,
+    mdnsProbe: async () => {
+      mock.mdnsProbeCalls += 1;
+      return true;
+    },
+    mdnsDebug: async () => {
+      mock.mdnsDebugCalls += 1;
+      return { peers: [] };
+    },
+    socialListDiscoveredPeers: async () => ({ peers: [], totalCount: 0 }),
+    registerPeerHints: async () => {
+      mock.registerHintCalls += 1;
+      return true;
+    },
+    socialConnectPeer: async () => {
+      mock.socialConnectCalls += 1;
+      return true;
     },
     vrfGenerateKeypair: async () => ({
       ok: true,
@@ -153,6 +191,12 @@ describe('update publisher vrf', () => {
     mock.boostCalls = 0;
     mock.syncCalls = 0;
     mock.joinCalls = 0;
+    mock.discoveryActiveCalls = 0;
+    mock.networkSnapshotCalls = 0;
+    mock.mdnsProbeCalls = 0;
+    mock.mdnsDebugCalls = 0;
+    mock.socialConnectCalls = 0;
+    mock.registerHintCalls = 0;
     mock.lastError = '';
     clearVrfPublisherKeypair();
   });

@@ -6,6 +6,7 @@ import {
 import type { BridgeEventEntry, JsonValue } from '../libp2p/definitions';
 import { libp2pEventPump } from '../libp2p/eventPump';
 import { libp2pService } from '../libp2p/service';
+import { sevenGatesRuntime } from '../libp2p/sevenGatesRuntime';
 import { reverseGeocodeCoordinates, type ReverseGeocodeAddress } from '../utils/contentLocation';
 import { getRegionPolicySync } from '../utils/region';
 
@@ -46,6 +47,11 @@ export interface PublishLocationHint {
   province?: string;
   city?: string;
   district?: string;
+}
+
+export interface PublishLocationPreloadOptions {
+  cacheTtlMs?: number;
+  reverseGeocodeTimeoutMs?: number;
 }
 
 export type PublishLocationErrorCode = 'permission_denied' | 'accuracy_too_low' | 'timeout' | 'unavailable';
@@ -119,6 +125,14 @@ const TEXT_COVER_LINE_VISUAL_MAX = 12;
 const GEO_COMMIT_PREFIX = 'geo:v1';
 const GEO_NONCE_BYTES = 16;
 const GEO_ACCURACY_THRESHOLD_METERS = 50;
+const GEO_PREFETCH_CACHE_TTL_MS = 90_000;
+const GEO_PREFETCH_CACHE_MIN_TTL_MS = 5_000;
+const GEO_PREFETCH_CACHE_MAX_TTL_MS = 10 * 60 * 1000;
+const GEO_PREFETCH_REVERSE_GEOCODE_TIMEOUT_MS = 2_200;
+const GEO_PREFETCH_REVERSE_GEOCODE_MIN_TIMEOUT_MS = 1_000;
+const GEO_PREFETCH_REVERSE_GEOCODE_MAX_TIMEOUT_MS = 8_000;
+const GEO_PREFETCH_COORD_DECIMALS = 6;
+const CONTENT_NATIVE_SOCIAL_PUBLISH_BUDGET_MS = 850;
 
 export const DISTRIBUTED_CONTENT_TOPIC = 'unimaker/content/v1';
 export const DISTRIBUTED_CONTENT_RENDEZVOUS_NS = 'unimaker/content/v1';
@@ -147,6 +161,15 @@ let pumpUnsubscribe: (() => void) | null = null;
 let rendezvousTimer: ReturnType<typeof setInterval> | null = null;
 let localPeerIdPromise: Promise<string> | null = null;
 let clearedBeforeByPeer: Record<string, number> = readClearMarkers();
+type StrictCapturedLocation = Awaited<ReturnType<typeof captureStrictHighAccuracyLocation>>;
+let preloadedPublishLocation: StrictCapturedLocation | null = null;
+let preloadedPublishLocationExpiresAt = 0;
+let preloadedPublishLocationPromise: Promise<StrictCapturedLocation> | null = null;
+let preloadedPublishReverseAddress: ReverseGeocodeAddress | null = null;
+let preloadedPublishReverseAddressKey = '';
+let preloadedPublishReverseAddressExpiresAt = 0;
+let preloadedPublishReverseAddressPromise: Promise<ReverseGeocodeAddress | null> | null = null;
+let preloadedPublishReverseAddressPromiseKey = '';
 
 function hasStorage(): boolean {
   return typeof localStorage !== 'undefined';
@@ -284,6 +307,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function withTimeoutFallback<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  const budgetMs = Number.isFinite(timeoutMs) ? Math.max(0, Math.trunc(timeoutMs)) : 0;
+  if (budgetMs <= 0) {
+    return promise.catch(() => fallback);
+  }
+  return Promise.race([
+    promise.catch(() => fallback),
+    sleep(budgetMs).then(() => fallback),
+  ]);
 }
 
 function isPublishCategory(value: string): value is DistributedPublishCategory {
@@ -609,13 +643,6 @@ function createUnknownGeoPublic(): DistributedGeoPublic {
   };
 }
 
-function resolvePreferredLocaleTag(): string {
-  if (typeof navigator !== 'undefined' && typeof navigator.language === 'string' && navigator.language.trim().length > 0) {
-    return navigator.language.trim();
-  }
-  return 'zh-CN';
-}
-
 function buildGeoPublicFromSources(
   hint?: PublishLocationHint,
   reverse?: ReverseGeocodeAddress | null,
@@ -700,6 +727,158 @@ function randomHex(bytesLength: number): string {
   return bytesToHex(Uint8Array.from(fallback));
 }
 
+function normalizePublishLocationCacheTtlMs(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return GEO_PREFETCH_CACHE_TTL_MS;
+  }
+  const ttlMs = Math.trunc(value);
+  return Math.min(GEO_PREFETCH_CACHE_MAX_TTL_MS, Math.max(GEO_PREFETCH_CACHE_MIN_TTL_MS, ttlMs));
+}
+
+function normalizeReverseGeocodeTimeoutMs(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return GEO_PREFETCH_REVERSE_GEOCODE_TIMEOUT_MS;
+  }
+  const timeoutMs = Math.trunc(value);
+  return Math.min(
+    GEO_PREFETCH_REVERSE_GEOCODE_MAX_TIMEOUT_MS,
+    Math.max(GEO_PREFETCH_REVERSE_GEOCODE_MIN_TIMEOUT_MS, timeoutMs),
+  );
+}
+
+function resolvePreferredLocaleTag(): string {
+  if (typeof navigator !== 'undefined' && typeof navigator.language === 'string' && navigator.language.trim().length > 0) {
+    return navigator.language.trim();
+  }
+  return 'zh-CN';
+}
+
+function publishLocationCoordKey(captured: StrictCapturedLocation): string {
+  const latitude = captured.coords.latitude;
+  const longitude = captured.coords.longitude;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return '';
+  }
+  return `${latitude.toFixed(GEO_PREFETCH_COORD_DECIMALS)},${longitude.toFixed(GEO_PREFETCH_COORD_DECIMALS)}`;
+}
+
+function isPreloadedPublishLocationValid(captured: StrictCapturedLocation | null): captured is StrictCapturedLocation {
+  if (!captured) {
+    return false;
+  }
+  if (Date.now() > preloadedPublishLocationExpiresAt) {
+    return false;
+  }
+  const accuracy = captured.coords.accuracy;
+  return Number.isFinite(accuracy) && accuracy <= GEO_ACCURACY_THRESHOLD_METERS;
+}
+
+function cachePreloadedPublishLocation(captured: StrictCapturedLocation, cacheTtlMs = GEO_PREFETCH_CACHE_TTL_MS): StrictCapturedLocation {
+  preloadedPublishLocation = captured;
+  preloadedPublishLocationExpiresAt = Date.now() + normalizePublishLocationCacheTtlMs(cacheTtlMs);
+  return captured;
+}
+
+function cachePreloadedPublishReverseAddress(
+  captured: StrictCapturedLocation,
+  reverseAddress: ReverseGeocodeAddress | null,
+  cacheTtlMs = GEO_PREFETCH_CACHE_TTL_MS,
+): ReverseGeocodeAddress | null {
+  preloadedPublishReverseAddress = reverseAddress;
+  preloadedPublishReverseAddressKey = publishLocationCoordKey(captured);
+  preloadedPublishReverseAddressExpiresAt = Date.now() + normalizePublishLocationCacheTtlMs(cacheTtlMs);
+  return reverseAddress;
+}
+
+function isPreloadedPublishReverseAddressValid(captured: StrictCapturedLocation): boolean {
+  if (!preloadedPublishReverseAddress) {
+    return false;
+  }
+  if (Date.now() > preloadedPublishReverseAddressExpiresAt) {
+    return false;
+  }
+  const key = publishLocationCoordKey(captured);
+  return key.length > 0 && key === preloadedPublishReverseAddressKey;
+}
+
+function getPreloadedPublishReverseAddress(captured: StrictCapturedLocation): ReverseGeocodeAddress | null {
+  if (!isPreloadedPublishReverseAddressValid(captured)) {
+    return null;
+  }
+  return preloadedPublishReverseAddress;
+}
+
+function resetPublishLocationPreloadState(): void {
+  preloadedPublishLocation = null;
+  preloadedPublishLocationExpiresAt = 0;
+  preloadedPublishLocationPromise = null;
+  preloadedPublishReverseAddress = null;
+  preloadedPublishReverseAddressKey = '';
+  preloadedPublishReverseAddressExpiresAt = 0;
+  preloadedPublishReverseAddressPromise = null;
+  preloadedPublishReverseAddressPromiseKey = '';
+}
+
+async function capturePublishLocationWithPreload(cacheTtlMs = GEO_PREFETCH_CACHE_TTL_MS): Promise<StrictCapturedLocation> {
+  if (isPreloadedPublishLocationValid(preloadedPublishLocation)) {
+    return preloadedPublishLocation;
+  }
+  if (preloadedPublishLocationPromise) {
+    return preloadedPublishLocationPromise;
+  }
+  const task = captureStrictHighAccuracyLocation({
+    requiredAccuracyMeters: GEO_ACCURACY_THRESHOLD_METERS,
+  }).then((captured) => cachePreloadedPublishLocation(captured, cacheTtlMs));
+  preloadedPublishLocationPromise = task;
+  try {
+    return await task;
+  } finally {
+    if (preloadedPublishLocationPromise === task) {
+      preloadedPublishLocationPromise = null;
+    }
+  }
+}
+
+async function preloadPublishReverseAddress(
+  captured: StrictCapturedLocation,
+  options: PublishLocationPreloadOptions = {},
+): Promise<ReverseGeocodeAddress | null> {
+  if (isPreloadedPublishReverseAddressValid(captured)) {
+    return preloadedPublishReverseAddress;
+  }
+  const coordKey = publishLocationCoordKey(captured);
+  if (!coordKey) {
+    return null;
+  }
+  if (preloadedPublishReverseAddressPromise && preloadedPublishReverseAddressPromiseKey === coordKey) {
+    return preloadedPublishReverseAddressPromise;
+  }
+  const timeoutMs = normalizeReverseGeocodeTimeoutMs(options.reverseGeocodeTimeoutMs);
+  const task = reverseGeocodeCoordinates(
+    captured.coords.latitude,
+    captured.coords.longitude,
+    resolvePreferredLocaleTag(),
+    timeoutMs,
+  )
+    .catch(() => null)
+    .then((reverseAddress) => cachePreloadedPublishReverseAddress(captured, reverseAddress, options.cacheTtlMs));
+  preloadedPublishReverseAddressPromise = task;
+  preloadedPublishReverseAddressPromiseKey = coordKey;
+  try {
+    return await task;
+  } finally {
+    if (preloadedPublishReverseAddressPromise === task) {
+      preloadedPublishReverseAddressPromise = null;
+      preloadedPublishReverseAddressPromiseKey = '';
+    }
+  }
+}
+
+export async function preloadPublishLocation(options: PublishLocationPreloadOptions = {}): Promise<void> {
+  const captured = await capturePublishLocationWithPreload(options.cacheTtlMs);
+  await preloadPublishReverseAddress(captured, options);
+}
+
 function toPublishLocationError(error: unknown): PublishLocationError {
   if (error instanceof PublishLocationError) {
     return error;
@@ -733,18 +912,17 @@ function toPreciseLocation(captured: Awaited<ReturnType<typeof captureStrictHigh
 }
 
 async function buildPublishLocation(hint?: PublishLocationHint): Promise<DistributedContentLocation> {
-  let captured: Awaited<ReturnType<typeof captureStrictHighAccuracyLocation>>;
+  let captured: StrictCapturedLocation;
   try {
-    captured = await captureStrictHighAccuracyLocation({ requiredAccuracyMeters: GEO_ACCURACY_THRESHOLD_METERS });
+    captured = await capturePublishLocationWithPreload();
   } catch (error) {
     throw toPublishLocationError(error);
   }
+  const reverseAddress = getPreloadedPublishReverseAddress(captured);
+  if (!reverseAddress) {
+    void preloadPublishReverseAddress(captured);
+  }
   const precise = toPreciseLocation(captured);
-  const reverseAddress = await reverseGeocodeCoordinates(
-    precise.latitude,
-    precise.longitude,
-    resolvePreferredLocaleTag(),
-  ).catch(() => null);
   const nonce = randomHex(GEO_NONCE_BYTES);
   const commit = await buildGeoCommit(precise, nonce);
   return {
@@ -1060,14 +1238,161 @@ async function refreshFeedSnapshot(): Promise<void> {
   }
 }
 
+function containsPostIdDeep(value: unknown, postId: string): boolean {
+  if (!postId) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    return value.includes(postId);
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => containsPostIdDeep(item, postId));
+  }
+  const record = asRecord(value);
+  if (record) {
+    if (asString(record.postId).trim() === postId) {
+      return true;
+    }
+    if (asString(record.id).trim() === postId) {
+      return true;
+    }
+    return Object.values(record).some((item) => containsPostIdDeep(item, postId));
+  }
+  return false;
+}
+
+function resolvePublishedPostId(postResult: unknown, fallbackPostId: string): { postId: string; fromNative: boolean } {
+  const record = asRecord(postResult);
+  if (!record) {
+    return { postId: fallbackPostId, fromNative: false };
+  }
+  const nativePostId = asString(record.postId).trim()
+    || asString(record.id).trim()
+    || asString(record.momentId).trim();
+  if (nativePostId.length > 0) {
+    return { postId: nativePostId, fromNative: true };
+  }
+  return { postId: fallbackPostId, fromNative: false };
+}
+
+async function waitFeedSnapshotContainsPostId(postId: string): Promise<boolean> {
+  if (!postId || !libp2pService.isNativePlatform()) {
+    return false;
+  }
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const snapshot = await libp2pService.fetchFeedSnapshot().catch(() => ({} as Record<string, JsonValue>));
+    if (containsPostIdDeep(snapshot, postId)) {
+      return true;
+    }
+    if (attempt < 4) {
+      await sleep(220 + (attempt * 130));
+    }
+  }
+  return false;
+}
+
+interface NativePublishGateReportInput {
+  itemId: string;
+  wire: Record<string, JsonValue>;
+  publishedPostId: string;
+  publishedPostIdFromNative: boolean;
+}
+
+async function reportNativePublishGateInBackground(input: NativePublishGateReportInput): Promise<void> {
+  try {
+    const [pubsubResult, feedPublishResult] = await Promise.allSettled([
+      libp2pService.pubsubPublish(DISTRIBUTED_CONTENT_TOPIC, JSON.stringify(input.wire)),
+      libp2pService.feedPublishEntry(input.wire),
+    ]);
+    const pubsubOk = pubsubResult.status === 'fulfilled' && pubsubResult.value === true;
+    const feedPublishOk = feedPublishResult.status === 'fulfilled' && feedPublishResult.value === true;
+    const feedSnapshotHasPost = input.publishedPostIdFromNative
+      ? await waitFeedSnapshotContainsPostId(input.publishedPostId)
+      : false;
+    const gatePassed = pubsubOk || feedPublishOk;
+    sevenGatesRuntime.setGateStatus('gate.content_publish_home_feed', gatePassed ? 'passed' : 'failed', {
+      error: gatePassed
+        ? undefined
+        : 'content_transport_publish_failed',
+      evidence: [
+        {
+          check: 'content.socialMomentsPublish',
+          status: input.publishedPostIdFromNative ? 'passed' : 'blocked',
+          detail: input.publishedPostIdFromNative ? undefined : `native postId missing; fallback to contentId: ${input.itemId}`,
+          data: {
+            postId: input.publishedPostId,
+            postIdSource: input.publishedPostIdFromNative ? 'native' : 'fallback_content_id',
+            contentId: input.itemId,
+          },
+        },
+        {
+          check: 'content.feedPublishEntry',
+          status: feedPublishOk ? 'passed' : 'failed',
+          detail: feedPublishOk ? undefined : 'feedPublishEntry failed',
+          data: {
+            pubsubPublished: pubsubOk,
+          },
+        },
+        {
+          check: 'content.fetchFeedSnapshot',
+          status: feedSnapshotHasPost ? 'passed' : 'blocked',
+          detail: feedSnapshotHasPost ? undefined : `postId not yet visible in snapshot: ${input.publishedPostId}`,
+          data: {
+            postId: input.publishedPostId,
+          },
+        },
+      ],
+      ttlMs: 12 * 60 * 60 * 1000,
+    });
+  } catch (error) {
+    sevenGatesRuntime.setGateStatus('gate.content_publish_home_feed', 'failed', {
+      error: 'content_transport_publish_unexpected',
+      evidence: [
+        {
+          check: 'content.backgroundTransport',
+          status: 'failed',
+          detail: error instanceof Error ? error.message : `${error}`,
+          data: {
+            contentId: input.itemId,
+            postId: input.publishedPostId,
+          },
+        },
+      ],
+      ttlMs: 12 * 60 * 60 * 1000,
+    });
+  }
+}
+
 async function refreshRendezvousPeers(): Promise<void> {
   if (!libp2pService.isNativePlatform()) {
     return;
   }
   const localPeerId = await ensureLocalPeerId();
-  const peers = await libp2pService.rendezvousDiscover(DISTRIBUTED_CONTENT_RENDEZVOUS_NS, 64).catch(() => []);
-  for (const row of peers) {
-    const peerId = asString(row.peerId).trim();
+  const snapshot = await libp2pService
+    .networkDiscoverySnapshot('', 128, 4)
+    .catch(() => ({} as Record<string, JsonValue>));
+  const root = asRecord(snapshot);
+  const candidatePeerIds = new Set<string>();
+  const connectedPeers = Array.isArray(root?.connectedPeers) ? root.connectedPeers : [];
+  for (const raw of connectedPeers) {
+    const peerId = asString(raw).trim();
+    if (peerId) {
+      candidatePeerIds.add(peerId);
+    }
+  }
+  const discoveredRoot = asRecord(root?.discoveredPeers);
+  const discoveredPeers = Array.isArray(discoveredRoot?.peers) ? discoveredRoot.peers : [];
+  for (const rowRaw of discoveredPeers) {
+    const row = asRecord(rowRaw);
+    if (!row) {
+      continue;
+    }
+    const peerId = asString(row.peerId ?? row.peer_id).trim();
+    if (peerId) {
+      candidatePeerIds.add(peerId);
+    }
+  }
+  for (const peerId of candidatePeerIds) {
     if (peerId.length === 0 || peerId === localPeerId || subscribedFeedPeers.has(peerId)) {
       continue;
     }
@@ -1157,6 +1482,38 @@ export async function publishDistributedContent(input: PublishDistributedContent
   const normalizedCoverMedia = coverMedia || primaryMedia;
   const normalizedMediaItems = shouldGenerateCover ? [primaryMedia] : mediaItems;
   const mediaAspectRatio = shouldGenerateCover ? 3 / 4 : normalizeMediaAspectRatio(input.mediaAspectRatio);
+  let publishedPostId = '';
+  let publishedPostIdFromNative = false;
+
+  if (libp2pService.isNativePlatform()) {
+    const postPayload: Record<string, JsonValue> = {
+      content: resolvedContent,
+      text: resolvedContent,
+      media: primaryMedia,
+      coverMedia: normalizedCoverMedia,
+      timestampMs: now,
+      contentId: itemId,
+      publishCategory: input.publishCategory,
+    };
+    const postResult = await withTimeoutFallback(
+      libp2pService.socialMomentsPublish(postPayload),
+      CONTENT_NATIVE_SOCIAL_PUBLISH_BUDGET_MS,
+      {} as Record<string, JsonValue>,
+    );
+    const postIdResolution = resolvePublishedPostId(postResult, itemId);
+    publishedPostId = postIdResolution.postId;
+    publishedPostIdFromNative = postIdResolution.fromNative;
+  }
+
+  const mergedExtraBase: Record<string, unknown> = asRecord(input.extra)
+    ? { ...(input.extra as Record<string, unknown>) }
+    : {};
+  if (publishedPostId) {
+    mergedExtraBase.postId = publishedPostId;
+  }
+  const mergedExtra = Object.keys(mergedExtraBase).length > 0
+    ? mergedExtraBase
+    : undefined;
 
   const item: DistributedContent = {
     id: itemId,
@@ -1174,19 +1531,20 @@ export async function publishDistributedContent(input: PublishDistributedContent
     comments: 0,
     timestamp: now,
     location,
-    extra: input.extra as Record<string, unknown> | undefined,
+    extra: mergedExtra,
   };
 
   upsertContent(item);
 
   if (libp2pService.isNativePlatform()) {
-    const wire = toWirePayload(item, input.extra);
-    void (async () => {
-      await Promise.allSettled([
-        libp2pService.pubsubPublish(DISTRIBUTED_CONTENT_TOPIC, JSON.stringify(wire)),
-        libp2pService.feedPublishEntry(wire),
-      ]);
-    })();
+    const wireExtra = mergedExtra as Record<string, JsonValue> | undefined;
+    const wire = toWirePayload(item, wireExtra);
+    void reportNativePublishGateInBackground({
+      itemId,
+      wire,
+      publishedPostId,
+      publishedPostIdFromNative,
+    });
   }
 
   return item;
@@ -1245,6 +1603,7 @@ export async function resolveDistributedContentDetail(contentId: string, authorP
 export const __distributedContentTestUtils = {
   normalizeLocation,
   buildGeoCommit,
+  resetPublishLocationPreloadState,
 };
 
 import { mockApps } from './appList';

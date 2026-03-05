@@ -21,6 +21,16 @@ export interface RwadTxEnvelope {
   encoding: 'cbor' | 'jcs-json';
 }
 
+export interface RwadAssetTransferPayload {
+  from: string;
+  to: string;
+  amount: number;
+  asset_id: string;
+  ref?: string;
+  nfc_mode?: string;
+  nfc_proof?: Record<string, JsonValue>;
+}
+
 export interface SubmitTxResult {
   ok: boolean;
   txHash: string;

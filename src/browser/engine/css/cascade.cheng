@@ -59,8 +59,6 @@ fn cGe(a: char, b: char): bool =
     return !cLt(a, b)
 
 fn safeLen(text: str): int32 =
-    if text == nil:
-        return int32(0)
     return len(text)
 
 fn cssStrEq(a: str, b: str): bool =
@@ -112,10 +110,9 @@ fn cssLowerAscii(text: str): str =
 fn cssMatchAt(text: str, pattern: str, offset: int): bool =
     if offset < 0:
         return false
-    if text == nil || pattern == nil:
-        return false
     let n = safeLen(pattern)
-    if offset + n > safeLen(text):
+    let total = safeLen(text)
+    if offset + n > total:
         return false
     var idx: int32 = int32(0)
     while idx < n:

@@ -290,6 +290,8 @@ class NativeLibp2pRuntime implements Libp2pRuntime {
       if (!payload) {
         return;
       }
+      const payloadType = asString(payload.type);
+      const normalizedPayload = parseJsonValue(payload);
       if (asString(payload.type) === 'ContentFeedItem') {
         const itemPayload = extractBridgePayload(payload.payload, parseJsonValue(payload.payload));
         if (itemPayload === null) {
@@ -300,7 +302,13 @@ class NativeLibp2pRuntime implements Libp2pRuntime {
         if (itemTopic) {
           this.dispatch(itemTopic, itemPayload, 'feed', asString(payload.peer_id));
         }
+        this.dispatch('network_event', normalizedPayload, 'network', asString(payload.peer_id));
+        return;
       }
+      if (payloadType.toLowerCase() === 'hostnetworkstatus') {
+        this.dispatch('host.network_status', normalizedPayload, 'network');
+      }
+      this.dispatch('network_event', normalizedPayload, 'network', asString(payload.peer_id));
       return;
     }
 

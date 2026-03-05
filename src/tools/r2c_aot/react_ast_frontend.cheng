@@ -1,0 +1,519 @@
+import std/os
+import std/strings
+
+import gui/tools/r2c_aot/module_graph as graph
+import gui/tools/r2c_aot/jsx_lower as jsx
+
+type
+    ReactAstFrontendResult = ref
+        ok: bool
+        moduleCount: int32
+        componentBoundaryCount: int32
+        jsxNodeCount: int32
+        eventBindingCount: int32
+        hookSlotCount: int32
+        contextSubscriptionCount: int32
+        unsupportedSyntax: str[]
+        routeStates: str[]
+        semanticRows: str[]
+        moduleRows: str[]
+        componentRows: str[]
+        nodeRows: str[]
+        eventRows: str[]
+        hookRows: str[]
+        contextRows: str[]
+
+fn appendStringLocal(items: var str[], item: str) =
+    let idx = len(items)
+    setLen(items, idx + int32(1))
+    items[idx] = item
+
+fn appendUniqueString(items: var str[], item: str) =
+    if len(item) == int32(0):
+        return
+    var idx: int32 = int32(0)
+    while idx < len(items):
+        if items[idx] == item:
+            return
+        idx = idx + int32(1)
+    appendStringLocal(items, item)
+
+fn jsonEscapeLocal(text: str): str =
+    if len(text) == int32(0):
+        return ""
+    var out: str = ""
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        let ch = text[idx]
+        if ch == '"':
+            out = out + "\\\""
+        elif ch == '\\':
+            out = out + "\\\\"
+        elif ch == '\n':
+            out = out + "\\n"
+        elif ch == '\r':
+            out = out + "\\r"
+        elif ch == '\t':
+            out = out + "\\t"
+        else:
+            out = out + charToStr(ch)
+        idx = idx + int32(1)
+    return out
+
+fn jsonStringList(items: str[]): str =
+    var out: str = "["
+    var idx: int32 = int32(0)
+    while idx < len(items):
+        if idx > int32(0):
+            out = out + ","
+        out = out + "\"" + jsonEscapeLocal(items[idx]) + "\""
+        idx = idx + int32(1)
+    out = out + "]"
+    return out
+
+fn rowsToJson(rows: str[]): str =
+    var out: str = "["
+    var idx: int32 = int32(0)
+    while idx < len(rows):
+        if idx > int32(0):
+            out = out + ","
+        out = out + rows[idx]
+        idx = idx + int32(1)
+    out = out + "]"
+    return out
+
+fn findTab(text: str): int32 =
+    var idx: int32 = int32(0)
+    while idx < len(text):
+        if text[idx] == '\t':
+            return idx
+        idx = idx + int32(1)
+    return int32(-1)
+
+fn trimLine(text: str): str =
+    if len(text) == int32(0):
+        return ""
+    var begin: int32 = int32(0)
+    while begin < len(text):
+        let ch = text[begin]
+        if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r':
+            begin = begin + int32(1)
+        else:
+            break
+    var ending = len(text)
+    while ending > begin:
+        let ch = text[ending - int32(1)]
+        if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r':
+            ending = ending - int32(1)
+        else:
+            break
+    if ending <= begin:
+        return ""
+    return text[begin..<ending]
+
+fn parseModuleIndex(indexText: str, moduleIds: var str[], sourcePaths: var str[]) =
+    setLen(moduleIds, 0)
+    setLen(sourcePaths, 0)
+    var lineStart: int32 = int32(0)
+    while lineStart < len(indexText):
+        var lineEnd = lineStart
+        while lineEnd < len(indexText):
+            let ch = indexText[lineEnd]
+            if ch == '\n' || ch == '\r':
+                break
+            lineEnd = lineEnd + int32(1)
+        let line = trimLine(indexText[lineStart..<lineEnd])
+        if len(line) > int32(0):
+            let tabAt = findTab(line)
+            if tabAt > int32(0) && tabAt + int32(1) < len(line):
+                let moduleId = trimLine(line[0..<tabAt])
+                let sourcePath = trimLine(line[tabAt + int32(1)..<len(line)])
+                if len(moduleId) > int32(0) && len(sourcePath) > int32(0):
+                    appendStringLocal(moduleIds, moduleId)
+                    appendStringLocal(sourcePaths, sourcePath)
+        lineStart = lineEnd + int32(1)
+
+fn countToken(text, token: str): int32 =
+    if len(text) == int32(0) || len(token) == int32(0):
+        return int32(0)
+    if len(token) > len(text):
+        return int32(0)
+    var count: int32 = int32(0)
+    var idx: int32 = int32(0)
+    while idx + len(token) <= len(text):
+        var matched = true
+        var j: int32 = int32(0)
+        while j < len(token):
+            if int32(text[idx + j]) != int32(token[j]):
+                matched = false
+                break
+            j = j + int32(1)
+        if matched:
+            count = count + int32(1)
+            idx = idx + len(token)
+        else:
+            idx = idx + int32(1)
+    return count
+
+fn containsToken(text, token: str): bool =
+    return countToken(text, token) > int32(0)
+
+fn routeStateHintFromText(moduleId, text: str): str =
+    let source = moduleId + "|" + text
+    if containsToken(source, "language") || containsToken(source, "lang") || containsToken(source, "语言") || containsToken(source, "語言"):
+        return "lang_select"
+    if containsToken(source, "publish"):
+        if containsToken(source, "crowdfunding"):
+            return "publish_crowdfunding"
+        if containsToken(source, "secondhand"):
+            return "publish_secondhand"
+        if containsToken(source, "product"):
+            return "publish_product"
+        if containsToken(source, "content"):
+            return "publish_content"
+        if containsToken(source, "food"):
+            return "publish_food"
+        if containsToken(source, "ride"):
+            return "publish_ride"
+        if containsToken(source, "rent"):
+            return "publish_rent"
+        if containsToken(source, "sell"):
+            return "publish_sell"
+        if containsToken(source, "hire"):
+            return "publish_hire"
+        if containsToken(source, "job"):
+            return "publish_job"
+        if containsToken(source, "live"):
+            return "publish_live"
+        if containsToken(source, "app"):
+            return "publish_app"
+        return "publish_selector"
+    if containsToken(source, "trading") || containsToken(source, "kline") || containsToken(source, "chart"):
+        return "trading_main"
+    if containsToken(source, "marketplace"):
+        return "marketplace_main"
+    if containsToken(source, "update"):
+        return "update_center_main"
+    if containsToken(source, "sidebar") || containsToken(source, "drawer"):
+        return "sidebar_open"
+    if containsToken(source, "ecom"):
+        return "ecom_main"
+    if containsToken(source, "message") || containsToken(source, "chat"):
+        return "tab_messages"
+    if containsToken(source, "node"):
+        return "tab_nodes"
+    if containsToken(source, "profile") || containsToken(source, "wallet"):
+        return "tab_profile"
+    if containsToken(source, "home"):
+        return "home_default"
+    return ""
+
+fn appendSemanticRow(rows: var str[], moduleId, kind, value: str) =
+    if len(moduleId) == int32(0) || len(kind) == int32(0):
+        return
+    var val = value
+    if len(val) <= int32(0):
+        val = "-"
+    if len(val) > int32(240):
+        val = val[0..<int32(240)]
+    appendUniqueString(rows, moduleId + "|" + kind + "|" + val)
+
+fn isEventAttr(name: str): bool =
+    if len(name) <= int32(2):
+        return false
+    if int32(name[0]) != int32('o') || int32(name[1]) != int32('n'):
+        return false
+    let third = name[2]
+    return int32(third) >= int32('A') && int32(third) <= int32('Z')
+
+fn appendJsonRow(rows: var str[], row: str) =
+    appendStringLocal(rows, row)
+
+fn collectJsxIr(node: jsx.JsxNode,
+                moduleId, componentId, path: str,
+                nodeRows: var str[],
+                eventRows: var str[],
+                semanticRows: var str[],
+                routeStates: var str[],
+                nodeCounter: var int32,
+                eventCounter: var int32): int32 =
+    if node == nil:
+        return int32(0)
+    let nodeId = "node_" + strings.intToStr(nodeCounter)
+    nodeCounter = nodeCounter + int32(1)
+    var kind: str = "text"
+    var tag: str = ""
+    var text: str = ""
+    if node.kind == jsx.jxElement:
+        kind = "element"
+        tag = node.tag
+        appendSemanticRow(semanticRows, moduleId, "jsx-tag", tag)
+        let hint = routeStateHintFromText(moduleId, tag)
+        if len(hint) > int32(0):
+            appendUniqueString(routeStates, hint)
+    elif node.kind == jsx.jxExpr:
+        kind = "expr"
+        text = node.text
+    else:
+        kind = "text"
+        text = node.text
+        if len(trimLine(text)) > int32(0):
+            appendSemanticRow(semanticRows, moduleId, "text", trimLine(text))
+            let hint = routeStateHintFromText(moduleId, trimLine(text))
+            if len(hint) > int32(0):
+                appendUniqueString(routeStates, hint)
+
+    appendJsonRow(
+        nodeRows,
+        "{\"node_id\":\"" + jsonEscapeLocal(nodeId) +
+        "\",\"module_id\":\"" + jsonEscapeLocal(moduleId) +
+        "\",\"component_id\":\"" + jsonEscapeLocal(componentId) +
+        "\",\"path\":\"" + jsonEscapeLocal(path) +
+        "\",\"kind\":\"" + jsonEscapeLocal(kind) +
+        "\",\"tag\":\"" + jsonEscapeLocal(tag) +
+        "\",\"text\":\"" + jsonEscapeLocal(text) + "\"}"
+    )
+
+    if node.kind == jsx.jxElement:
+        var attrIdx: int32 = int32(0)
+        while attrIdx < len(node.attrs):
+            let attr = node.attrs[attrIdx]
+            if attr != nil:
+                if isEventAttr(attr.name):
+                    let eventId = "ev_" + strings.intToStr(eventCounter)
+                    eventCounter = eventCounter + int32(1)
+                    appendJsonRow(
+                        eventRows,
+                        "{\"event_id\":\"" + jsonEscapeLocal(eventId) +
+                        "\",\"module_id\":\"" + jsonEscapeLocal(moduleId) +
+                        "\",\"component_id\":\"" + jsonEscapeLocal(componentId) +
+                        "\",\"path\":\"" + jsonEscapeLocal(path) +
+                        "\",\"binding\":\"" + jsonEscapeLocal(attr.name) + "\"}"
+                    )
+                    appendSemanticRow(semanticRows, moduleId, "event", attr.name)
+                elif attr.name == "id":
+                    appendSemanticRow(semanticRows, moduleId, "id", attr.value)
+                elif attr.name == "className":
+                    appendSemanticRow(semanticRows, moduleId, "class", attr.value)
+                elif attr.name == "data-testid":
+                    appendSemanticRow(semanticRows, moduleId, "testid", attr.value)
+            attrIdx = attrIdx + int32(1)
+
+    var total: int32 = int32(1)
+    var childIdx: int32 = int32(0)
+    while childIdx < len(node.children):
+        let childPath = path + "." + strings.intToStr(childIdx)
+        total = total + collectJsxIr(node.children[childIdx],
+                                     moduleId,
+                                     componentId,
+                                     childPath,
+                                     nodeRows,
+                                     eventRows,
+                                     semanticRows,
+                                     routeStates,
+                                     nodeCounter,
+                                     eventCounter)
+        childIdx = childIdx + int32(1)
+    return total
+
+fn addHookRows(hookRows: var str[], semanticRows: var str[], moduleId, componentId, hookName: str, count: int32, hookCounter: var int32) =
+    if count <= int32(0):
+        return
+    var idx: int32 = int32(0)
+    while idx < count:
+        let hookId = "hook_" + strings.intToStr(hookCounter)
+        hookCounter = hookCounter + int32(1)
+        appendJsonRow(
+            hookRows,
+            "{\"hook_id\":\"" + jsonEscapeLocal(hookId) +
+            "\",\"module_id\":\"" + jsonEscapeLocal(moduleId) +
+            "\",\"component_id\":\"" + jsonEscapeLocal(componentId) +
+            "\",\"hook_kind\":\"" + jsonEscapeLocal(hookName) + "\"}"
+        )
+        appendSemanticRow(semanticRows, moduleId, "hook", hookName)
+        idx = idx + int32(1)
+
+fn addContextRows(contextRows: var str[], moduleId, componentId, source: str, count: int32, contextCounter: var int32) =
+    if count <= int32(0):
+        return
+    var idx: int32 = int32(0)
+    while idx < count:
+        let subId = "ctx_" + strings.intToStr(contextCounter)
+        contextCounter = contextCounter + int32(1)
+        appendJsonRow(
+            contextRows,
+            "{\"subscription_id\":\"" + jsonEscapeLocal(subId) +
+            "\",\"module_id\":\"" + jsonEscapeLocal(moduleId) +
+            "\",\"component_id\":\"" + jsonEscapeLocal(componentId) +
+            "\",\"source\":\"" + jsonEscapeLocal(source) + "\"}"
+        )
+        idx = idx + int32(1)
+
+fn buildReactAstFrontendIrText(result: ReactAstFrontendResult): str =
+    var out: str = "{\n"
+    out = out + "  \"format\": \"r2c-react-ast-frontend-v1\",\n"
+    out = out + "  \"ok\": " + if result.ok: "true" else: "false" + ",\n"
+    out = out + "  \"module_count\": " + $result.moduleCount + ",\n"
+    out = out + "  \"component_boundary_count\": " + $result.componentBoundaryCount + ",\n"
+    out = out + "  \"jsx_node_count\": " + $result.jsxNodeCount + ",\n"
+    out = out + "  \"event_binding_count\": " + $result.eventBindingCount + ",\n"
+    out = out + "  \"hook_slot_count\": " + $result.hookSlotCount + ",\n"
+    out = out + "  \"context_subscription_count\": " + $result.contextSubscriptionCount + ",\n"
+    out = out + "  \"unsupported_syntax\": " + jsonStringList(result.unsupportedSyntax) + ",\n"
+    out = out + "  \"route_states\": " + jsonStringList(result.routeStates) + ",\n"
+    out = out + "  \"semantic_rows\": " + jsonStringList(result.semanticRows) + ",\n"
+    out = out + "  \"modules\": " + rowsToJson(result.moduleRows) + ",\n"
+    out = out + "  \"component_boundaries\": " + rowsToJson(result.componentRows) + ",\n"
+    out = out + "  \"nodes\": " + rowsToJson(result.nodeRows) + ",\n"
+    out = out + "  \"events\": " + rowsToJson(result.eventRows) + ",\n"
+    out = out + "  \"hook_slots\": " + rowsToJson(result.hookRows) + ",\n"
+    out = out + "  \"context_subscriptions\": " + rowsToJson(result.contextRows) + "\n"
+    out = out + "}\n"
+    return out
+
+fn runReactAstFrontend(moduleIndexPath, outPath: str): ReactAstFrontendResult =
+    var result: ReactAstFrontendResult
+    new(result)
+    result.ok = false
+    result.moduleCount = int32(0)
+    result.componentBoundaryCount = int32(0)
+    result.jsxNodeCount = int32(0)
+    result.eventBindingCount = int32(0)
+    result.hookSlotCount = int32(0)
+    result.contextSubscriptionCount = int32(0)
+    setLen(result.unsupportedSyntax, 0)
+    setLen(result.routeStates, 0)
+    setLen(result.semanticRows, 0)
+    setLen(result.moduleRows, 0)
+    setLen(result.componentRows, 0)
+    setLen(result.nodeRows, 0)
+    setLen(result.eventRows, 0)
+    setLen(result.hookRows, 0)
+    setLen(result.contextRows, 0)
+
+    if len(moduleIndexPath) == int32(0) || len(outPath) == int32(0):
+        appendStringLocal(result.unsupportedSyntax, "missing-input-path")
+        return result
+    if ! os.fileExists(moduleIndexPath):
+        appendStringLocal(result.unsupportedSyntax, "module-index-not-found")
+        return result
+
+    let indexText = os.readFile(moduleIndexPath)
+    if len(indexText) == int32(0):
+        appendStringLocal(result.unsupportedSyntax, "module-index-empty")
+        return result
+
+    var moduleIds: str[]
+    var sourcePaths: str[]
+    parseModuleIndex(indexText, moduleIds, sourcePaths)
+    if len(moduleIds) <= int32(0):
+        appendStringLocal(result.unsupportedSyntax, "module-index-parse-empty")
+        return result
+
+    var globalNodeCounter: int32 = int32(0)
+    var globalEventCounter: int32 = int32(0)
+    var globalHookCounter: int32 = int32(0)
+    var globalContextCounter: int32 = int32(0)
+
+    var idx: int32 = int32(0)
+    while idx < len(moduleIds) && idx < len(sourcePaths):
+        let moduleId = moduleIds[idx]
+        let sourcePath = sourcePaths[idx]
+        if ! os.fileExists(sourcePath):
+            appendStringLocal(result.unsupportedSyntax, "source-not-found:" + moduleId)
+            idx = idx + int32(1)
+            continue
+
+        let sourceText = os.readFile(sourcePath)
+        if len(sourceText) <= int32(0):
+            appendStringLocal(result.unsupportedSyntax, "source-empty:" + moduleId)
+            idx = idx + int32(1)
+            continue
+
+        let staticImports = graph.parseStaticImportSpecs(sourceText)
+        let dynamicImports = graph.parseDynamicImportSpecs(sourceText)
+        let issues = graph.scanUnsupportedSyntax(moduleId, sourceText)
+        var issueIdx: int32 = int32(0)
+        while issueIdx < len(issues):
+            let issue = issues[issueIdx]
+            if issue != nil:
+                appendStringLocal(result.unsupportedSyntax, "unsupported:" + issue.moduleId + ":" + issue.reason)
+            issueIdx = issueIdx + int32(1)
+
+        appendJsonRow(
+            result.moduleRows,
+            "{\"module_id\":\"" + jsonEscapeLocal(moduleId) +
+            "\",\"source_path\":\"" + jsonEscapeLocal(sourcePath) +
+            "\",\"imports\":" + jsonStringList(staticImports) +
+            ",\"dynamic_imports\":" + jsonStringList(dynamicImports) + "}"
+        )
+
+        let routeHintFromModule = routeStateHintFromText(moduleId, "")
+        if len(routeHintFromModule) > int32(0):
+            appendUniqueString(result.routeStates, routeHintFromModule)
+
+        let componentId = "comp_" + strings.intToStr(idx)
+        let parsed = jsx.parseFirstElement(sourceText)
+        if len(parsed.err) == int32(0) && parsed.node != nil:
+            result.componentBoundaryCount = result.componentBoundaryCount + int32(1)
+            appendJsonRow(
+                result.componentRows,
+                "{\"component_id\":\"" + jsonEscapeLocal(componentId) +
+                "\",\"module_id\":\"" + jsonEscapeLocal(moduleId) +
+                "\",\"root_tag\":\"" + jsonEscapeLocal(parsed.node.tag) + "\"}"
+            )
+            result.jsxNodeCount = result.jsxNodeCount + collectJsxIr(parsed.node,
+                                                                      moduleId,
+                                                                      componentId,
+                                                                      "0",
+                                                                      result.nodeRows,
+                                                                      result.eventRows,
+                                                                      result.semanticRows,
+                                                                      result.routeStates,
+                                                                      globalNodeCounter,
+                                                                      globalEventCounter)
+        else:
+            appendStringLocal(result.unsupportedSyntax, "jsx-parse-failed:" + moduleId)
+
+        let hookUseState = countToken(sourceText, "useState(")
+        let hookUseReducer = countToken(sourceText, "useReducer(")
+        let hookUseEffect = countToken(sourceText, "useEffect(")
+        let hookUseLayout = countToken(sourceText, "useLayoutEffect(")
+        let hookUseMemo = countToken(sourceText, "useMemo(")
+        let hookUseCallback = countToken(sourceText, "useCallback(")
+        let hookUseRef = countToken(sourceText, "useRef(")
+        addHookRows(result.hookRows, result.semanticRows, moduleId, componentId, "useState", hookUseState, globalHookCounter)
+        addHookRows(result.hookRows, result.semanticRows, moduleId, componentId, "useReducer", hookUseReducer, globalHookCounter)
+        addHookRows(result.hookRows, result.semanticRows, moduleId, componentId, "useEffect", hookUseEffect, globalHookCounter)
+        addHookRows(result.hookRows, result.semanticRows, moduleId, componentId, "useLayoutEffect", hookUseLayout, globalHookCounter)
+        addHookRows(result.hookRows, result.semanticRows, moduleId, componentId, "useMemo", hookUseMemo, globalHookCounter)
+        addHookRows(result.hookRows, result.semanticRows, moduleId, componentId, "useCallback", hookUseCallback, globalHookCounter)
+        addHookRows(result.hookRows, result.semanticRows, moduleId, componentId, "useRef", hookUseRef, globalHookCounter)
+
+        let hookTotal = hookUseState + hookUseReducer + hookUseEffect + hookUseLayout + hookUseMemo + hookUseCallback + hookUseRef
+        result.hookSlotCount = result.hookSlotCount + hookTotal
+
+        let contextUseCount = countToken(sourceText, "useContext(")
+        let contextConsumerCount = countToken(sourceText, ".Consumer")
+        addContextRows(result.contextRows, moduleId, componentId, "useContext", contextUseCount, globalContextCounter)
+        addContextRows(result.contextRows, moduleId, componentId, "consumer", contextConsumerCount, globalContextCounter)
+        result.contextSubscriptionCount = result.contextSubscriptionCount + contextUseCount + contextConsumerCount
+
+        idx = idx + int32(1)
+
+    result.moduleCount = len(result.moduleRows)
+    result.eventBindingCount = len(result.eventRows)
+    if len(result.routeStates) <= int32(0):
+        appendUniqueString(result.routeStates, "home_default")
+    if len(result.semanticRows) <= int32(0):
+        appendStringLocal(result.unsupportedSyntax, "semantic-rows-empty")
+    let astSuccess = len(result.unsupportedSyntax) == int32(0) &&
+        result.moduleCount > int32(0) &&
+        result.componentBoundaryCount > int32(0) &&
+        result.jsxNodeCount > int32(0) &&
+        len(result.semanticRows) > int32(0)
+    result.ok = astSuccess
+
+    let irText = buildReactAstFrontendIrText(result)
+    os.writeFile(outPath, irText)
+    return result

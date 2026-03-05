@@ -16,6 +16,7 @@ import {
     Users,
     ThumbsUp,
     RefreshCcw,
+    Shield,
 } from 'lucide-react';
 import { useLocale } from '../i18n/LocaleContext';
 
@@ -161,6 +162,14 @@ export default function Sidebar({ isOpen, onClose, onNavigate, onOpenApp }: Side
                         >
                             <RefreshCcw size={22} className="text-gray-600" />
                             <span className="flex-1 text-left text-gray-800">{t.sidebar_checkUpdates}</span>
+                        </button>
+
+                        <button
+                            onClick={() => { onNavigate?.('seven-gates'); onClose(); }}
+                            className="w-full flex items-center gap-4 px-4 py-3 hover:bg-gray-50 rounded-lg transition-colors"
+                        >
+                            <Shield size={22} className="text-gray-600" />
+                            <span className="flex-1 text-left text-gray-800">七门禁</span>
                         </button>
                     </div>
                 </div>

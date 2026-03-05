@@ -304,6 +304,16 @@ export interface Translations {
     nodes_diag_connected_peers: string;
     nodes_diag_mdns_peers: string;
     nodes_diag_candidates: string;
+    nodes_diag_mdns_health: string;
+    nodes_diag_mdns_health_ok: string;
+    nodes_diag_mdns_health_degraded: string;
+    nodes_diag_mdns_health_failed: string;
+    nodes_diag_mdns_error: string;
+    nodes_diag_mdns_hint_runtime_starting: string;
+    nodes_diag_mdns_hint_disabled: string;
+    nodes_diag_mdns_hint_unhealthy: string;
+    nodes_diag_mdns_hint_fallback: string;
+    nodes_diag_mdns_hint_no_peer: string;
     nodes_diag_peer_id: string;
     nodes_diag_last_error: string;
 
@@ -454,6 +464,9 @@ export interface Translations {
     profile_rideshareFrom: string;
     profile_rideshareTo: string;
     profile_rideshareHint: string;
+    profile_ridesharePhone: string;
+    profile_rideshareIdCard: string;
+    profile_rideshareLicensePlate: string;
     profile_distributedNode: string;
     profile_distributedNodeHint: string;
     profile_distributedNodeRewards: string;
@@ -657,6 +670,8 @@ export interface Translations {
     pubRide_notePlaceholder: string;
     pubRide_offerLabel: string;
     pubRide_lookForLabel: string;
+    pubRide_licensePlate: string;
+    pubRide_licensePlatePlaceholder: string;
 
     // Publish Job
     pubJob_title: string;
@@ -980,10 +995,46 @@ export interface Translations {
     profile_rwadChainTransferBlocked: string;
     profile_rwadChainDomainBlocked: string;
     profile_rwadWalletNotFound: string;
+    profile_transferIdentityUnavailable: string;
     profile_rwadChainRefreshFailed: string;
     profile_rwadWalletCreated: string;
     profile_createRwadWallet: string;
     profile_rwadMigrationHint: string;
+    profile_rwadNfcScanning: string;
+    profile_rwadNfcAuthorized: string;
+    profile_rwadTransferSubmittedPrefix: string;
+    profile_rwadTransferSubmitFailed: string;
+    profile_rwadTransferSignFailed: string;
+    profile_rwadTransferFailedPrefix: string;
+    profile_rwadNfcUnavailable: string;
+    profile_rwadNfcDisabled: string;
+    profile_rwadNfcSettingsOpening: string;
+    profile_rwadNfcPaymentSettingsOpening: string;
+    profile_rwadNfcScanCancelled: string;
+    profile_rwadNfcTagUntrusted: string;
+    profile_rwadNfcAuthTimeout: string;
+    profile_rwadNfcWalletIntercepted: string;
+    profile_rwadNfcUnsupportedPlatform: string;
+    profile_rwadNfcProtocolError: string;
+    profile_rwadNfcPeerNotReady: string;
+    profile_rwadNfcSelfTransferDenied: string;
+    profile_rwadBiometricUnavailable: string;
+    profile_rwadBiometricCancelled: string;
+    profile_rwadBiometricTimeout: string;
+    profile_rwadBiometricFailed: string;
+    profile_rwadNfcNoAddressHint: string;
+    profile_rwadNfcReceiveStart: string;
+    profile_rwadNfcReceiveStop: string;
+    profile_rwadNfcReceiveStarted: string;
+    profile_rwadNfcReceiveStopped: string;
+    profile_rwadNfcReceiveActiveUntil: string;
+    profile_pointsNfcScanning: string;
+    profile_pointsNfcAuthorized: string;
+    profile_pointsTransferSubmittedPrefix: string;
+    profile_pointsTransferSubmitFailed: string;
+    profile_pointsTransferSignFailed: string;
+    profile_pointsTransferFailedPrefix: string;
+    profile_pointsNfcNoAddressHint: string;
 
     // C2C Trading Page
     c2c_title: string;
@@ -1419,6 +1470,16 @@ const zhCN: Translations = {
     nodes_diag_connected_peers: '已连接节点',
     nodes_diag_mdns_peers: 'mDNS候选',
     nodes_diag_candidates: '发现候选',
+    nodes_diag_mdns_health: 'mDNS状态',
+    nodes_diag_mdns_health_ok: '正常',
+    nodes_diag_mdns_health_degraded: '降级',
+    nodes_diag_mdns_health_failed: '异常',
+    nodes_diag_mdns_error: 'mDNS错误',
+    nodes_diag_mdns_hint_runtime_starting: 'mDNS诊断等待运行时就绪',
+    nodes_diag_mdns_hint_disabled: 'mDNS 已被禁用，请检查 discovery 开关与系统网络权限',
+    nodes_diag_mdns_hint_unhealthy: 'mDNS线程异常，已降级使用已连接/候选节点',
+    nodes_diag_mdns_hint_fallback: '暂未发现 mDNS 局域网节点，已降级使用已连接/候选节点',
+    nodes_diag_mdns_hint_no_peer: '暂未发现局域网节点，请确认设备在同一 Wi-Fi 且未启用 AP 隔离',
     nodes_diag_peer_id: '本机PeerId',
     nodes_diag_last_error: '最近错误',
 
@@ -1568,7 +1629,10 @@ const zhCN: Translations = {
     profile_rideshareFrom: '出发地',
     profile_rideshareTo: '目的地',
     profile_rideshareHint: '设置后，沿途用户发布的顺风车请求将推送给您',
-    profile_distributedNode: '分布式计算存储节点',
+    profile_ridesharePhone: '联系电话',
+    profile_rideshareIdCard: '身份证号',
+    profile_rideshareLicensePlate: '车牌号',
+    profile_distributedNode: '分布式全球算力节点',
     profile_distributedNodeHint: '任务价格随市场波动实时变动。发起任务时会确认具体价格和收益。请设置您的资源贡献上限。',
     profile_distributedNodeRewards: '收益模式：按需付费',
     profile_priceCpu: 'CPU系统出价',
@@ -1762,9 +1826,11 @@ const zhCN: Translations = {
     pubRide_seatUnit: '座',
     pubRide_costShare: '费用分摊 (每人)',
     pubRide_note: '备注',
-    pubRide_notePlaceholder: '如：可绕路接送、不接受宠物等...',
-    pubRide_offerLabel: '车找人',
-    pubRide_lookForLabel: '人找车',
+    pubRide_notePlaceholder: '如上车点、车型说明或对拼车人的要求等',
+    pubRide_offerLabel: '提供车位',
+    pubRide_lookForLabel: '寻找车位',
+    pubRide_licensePlate: '车牌号',
+    pubRide_licensePlatePlaceholder: '请输入车牌号',
 
     // Publish Job
     pubJob_title: '发布求职',
@@ -2088,10 +2154,46 @@ const zhCN: Translations = {
     profile_rwadChainTransferBlocked: 'RWAD 转账请使用链上交易流程。',
     profile_rwadChainDomainBlocked: 'RWAD 扣费已迁移链上，域名注册入口待接入。',
     profile_rwadWalletNotFound: '未找到 RWAD 钱包，请先创建或导入。',
+    profile_transferIdentityUnavailable: '未找到本机 PeerId 身份，请先等待节点初始化完成。',
     profile_rwadChainRefreshFailed: '链上余额刷新失败，请稍后重试。',
     profile_rwadWalletCreated: 'RWAD 钱包创建成功！',
     profile_createRwadWallet: '创建 RWAD 钱包',
     profile_rwadMigrationHint: 'RWAD 余额已切换为链上真相，本地账本不再生效。',
+    profile_rwadNfcScanning: 'NFC 处理中，请靠近收款手机（或已绑定标签）...',
+    profile_rwadNfcAuthorized: 'NFC 授权成功，正在提交链上交易...',
+    profile_rwadTransferSubmittedPrefix: '已提交链上交易',
+    profile_rwadTransferSubmitFailed: 'RWAD 转账提交失败，请稍后重试',
+    profile_rwadTransferSignFailed: 'RWAD 签名失败，请检查钱包密钥',
+    profile_rwadTransferFailedPrefix: 'RWAD 转账失败',
+    profile_rwadNfcUnavailable: '设备不支持 NFC 或当前不可用',
+    profile_rwadNfcDisabled: 'NFC 未开启，请先在系统设置中打开 NFC',
+    profile_rwadNfcSettingsOpening: '检测到 NFC 未开启，已为你打开系统 NFC 设置，请开启后返回重试',
+    profile_rwadNfcPaymentSettingsOpening: '检测到系统钱包拦截，已为你打开 NFC 支付设置，请将默认支付应用切换后重试',
+    profile_rwadNfcScanCancelled: '已取消 NFC 扫描',
+    profile_rwadNfcTagUntrusted: 'NFC 标签校验失败，请使用已绑定标签',
+    profile_rwadNfcAuthTimeout: 'NFC 授权超时，请重试',
+    profile_rwadNfcWalletIntercepted: '检测到交通卡/钱包拦截 NFC，请关闭交通卡快捷呼起或切换默认支付应用后重试',
+    profile_rwadNfcUnsupportedPlatform: '当前平台暂不支持 NFC 授权转账',
+    profile_rwadNfcProtocolError: 'NFC 授权协议错误，请升级应用后重试',
+    profile_rwadNfcPeerNotReady: '未读取到收款方，请让对方先开启 NFC 收款模式后再碰一碰',
+    profile_rwadNfcSelfTransferDenied: '收款地址与当前钱包相同，请使用另一台手机收款',
+    profile_rwadBiometricUnavailable: '生物信息支付不可用，请先在系统中启用指纹或面容并设置锁屏密码',
+    profile_rwadBiometricCancelled: '已取消生物信息支付验证',
+    profile_rwadBiometricTimeout: '生物信息支付验证超时，请重试',
+    profile_rwadBiometricFailed: '生物信息支付验证失败，请重试',
+    profile_rwadNfcNoAddressHint: '远程转账请手动填写目标地址；留空时将通过 NFC 碰一碰自动读取收款地址。',
+    profile_rwadNfcReceiveStart: '开启 NFC 收款模式',
+    profile_rwadNfcReceiveStop: '关闭 NFC 收款模式',
+    profile_rwadNfcReceiveStarted: 'NFC 收款模式已开启，请让对方手机贴近读取收款地址',
+    profile_rwadNfcReceiveStopped: 'NFC 收款模式已关闭',
+    profile_rwadNfcReceiveActiveUntil: 'NFC 收款模式有效至',
+    profile_pointsNfcScanning: '积分 NFC 处理中，请靠近收款手机读取收款地址...',
+    profile_pointsNfcAuthorized: '积分 NFC 授权成功，正在提交链上交易...',
+    profile_pointsTransferSubmittedPrefix: '积分链上交易已提交',
+    profile_pointsTransferSubmitFailed: '积分转账提交失败，请稍后重试',
+    profile_pointsTransferSignFailed: '积分转账签名失败，请检查钱包密钥',
+    profile_pointsTransferFailedPrefix: '积分转账失败',
+    profile_pointsNfcNoAddressHint: '远程转账请手动填写目标地址；留空时将通过 NFC 碰一碰自动读取收款地址。',
 
     // C2C Trading Page
     c2c_title: 'C2C交易',
@@ -2428,10 +2530,46 @@ const zhTW: Partial<Translations> = {
     profile_rwadChainTransferBlocked: 'RWAD 轉帳請使用鏈上交易流程。',
     profile_rwadChainDomainBlocked: 'RWAD 扣費已遷移鏈上，域名註冊入口待接入。',
     profile_rwadWalletNotFound: '未找到 RWAD 錢包，請先建立或匯入。',
+    profile_transferIdentityUnavailable: '未找到本機 PeerId 身份，請先等待節點初始化完成。',
     profile_rwadChainRefreshFailed: '鏈上餘額刷新失敗，請稍後重試。',
     profile_rwadWalletCreated: 'RWAD 錢包建立成功！',
     profile_createRwadWallet: '建立 RWAD 錢包',
     profile_rwadMigrationHint: 'RWAD 餘額已切換為鏈上真相，本地帳本不再生效。',
+    profile_rwadNfcScanning: 'NFC 處理中，請靠近收款手機（或已綁定標籤）...',
+    profile_rwadNfcAuthorized: 'NFC 授權成功，正在提交鏈上交易...',
+    profile_rwadTransferSubmittedPrefix: '已提交鏈上交易',
+    profile_rwadTransferSubmitFailed: 'RWAD 轉帳提交失敗，請稍後重試',
+    profile_rwadTransferSignFailed: 'RWAD 簽名失敗，請檢查錢包密鑰',
+    profile_rwadTransferFailedPrefix: 'RWAD 轉帳失敗',
+    profile_rwadNfcUnavailable: '裝置不支援 NFC 或目前不可用',
+    profile_rwadNfcDisabled: 'NFC 未開啟，請先在系統設定中開啟 NFC',
+    profile_rwadNfcSettingsOpening: '偵測到 NFC 未開啟，已為你打開系統 NFC 設定，請開啟後返回重試',
+    profile_rwadNfcPaymentSettingsOpening: '偵測到系統錢包攔截，已為你打開 NFC 支付設定，請切換預設支付應用後重試',
+    profile_rwadNfcScanCancelled: '已取消 NFC 掃描',
+    profile_rwadNfcTagUntrusted: 'NFC 標籤驗證失敗，請使用已綁定標籤',
+    profile_rwadNfcAuthTimeout: 'NFC 授權逾時，請重試',
+    profile_rwadNfcWalletIntercepted: '偵測到交通卡/錢包攔截 NFC，請關閉交通卡快捷喚起或切換預設支付應用後重試',
+    profile_rwadNfcUnsupportedPlatform: '目前平台暫不支援 NFC 授權轉帳',
+    profile_rwadNfcProtocolError: 'NFC 授權協議錯誤，請升級應用後重試',
+    profile_rwadNfcPeerNotReady: '未讀取到收款方，請先讓對方開啟 NFC 收款模式後再貼近',
+    profile_rwadNfcSelfTransferDenied: '收款地址與目前錢包相同，請使用另一台手機收款',
+    profile_rwadBiometricUnavailable: '生物資訊支付不可用，請先在系統中啟用指紋或臉部辨識並設定鎖屏密碼',
+    profile_rwadBiometricCancelled: '已取消生物資訊支付驗證',
+    profile_rwadBiometricTimeout: '生物資訊支付驗證逾時，請重試',
+    profile_rwadBiometricFailed: '生物資訊支付驗證失敗，請重試',
+    profile_rwadNfcNoAddressHint: '遠端轉帳請手動填寫目標地址；留空時將透過 NFC 貼一貼自動讀取收款地址。',
+    profile_rwadNfcReceiveStart: '開啟 NFC 收款模式',
+    profile_rwadNfcReceiveStop: '關閉 NFC 收款模式',
+    profile_rwadNfcReceiveStarted: 'NFC 收款模式已開啟，請讓對方手機貼近讀取收款地址',
+    profile_rwadNfcReceiveStopped: 'NFC 收款模式已關閉',
+    profile_rwadNfcReceiveActiveUntil: 'NFC 收款模式有效至',
+    profile_pointsNfcScanning: '積分 NFC 處理中，請靠近收款手機讀取收款地址...',
+    profile_pointsNfcAuthorized: '積分 NFC 授權成功，正在提交鏈上交易...',
+    profile_pointsTransferSubmittedPrefix: '積分鏈上交易已提交',
+    profile_pointsTransferSubmitFailed: '積分轉帳提交失敗，請稍後重試',
+    profile_pointsTransferSignFailed: '積分轉帳簽名失敗，請檢查錢包密鑰',
+    profile_pointsTransferFailedPrefix: '積分轉帳失敗',
+    profile_pointsNfcNoAddressHint: '遠端轉帳請手動填寫目標地址；留空時將透過 NFC 貼一貼自動讀取收款地址。',
 
     // C2C Trading Page
     c2c_title: 'C2C交易',
@@ -2903,6 +3041,16 @@ const en: Translations = {
     nodes_diag_connected_peers: 'Connected Peers',
     nodes_diag_mdns_peers: 'mDNS Candidates',
     nodes_diag_candidates: 'Discovery Candidates',
+    nodes_diag_mdns_health: 'mDNS Health',
+    nodes_diag_mdns_health_ok: 'Healthy',
+    nodes_diag_mdns_health_degraded: 'Degraded',
+    nodes_diag_mdns_health_failed: 'Failed',
+    nodes_diag_mdns_error: 'mDNS Error',
+    nodes_diag_mdns_hint_runtime_starting: 'mDNS diagnostics are waiting for runtime readiness',
+    nodes_diag_mdns_hint_disabled: 'mDNS is disabled; check discovery switches and network permissions',
+    nodes_diag_mdns_hint_unhealthy: 'mDNS worker is unhealthy; falling back to connected/candidate peers',
+    nodes_diag_mdns_hint_fallback: 'No LAN peers discovered via mDNS; falling back to connected/candidate peers',
+    nodes_diag_mdns_hint_no_peer: 'No LAN peers found yet; verify both devices are on the same Wi-Fi without AP isolation',
     nodes_diag_peer_id: 'Local PeerId',
     nodes_diag_last_error: 'Last Error',
 
@@ -3068,9 +3216,12 @@ const en: Translations = {
     profile_rideshare: 'Rideshare',
     profile_rideshareRoute: 'Regular route',
     profile_rideshareFrom: 'Origin',
-    profile_rideshareTo: 'Destination',
-    profile_rideshareHint: 'Rideshare requests along your route will be pushed to you',
-    profile_distributedNode: 'Distributed Compute/Storage Node',
+    profile_rideshareTo: 'To Location',
+    profile_rideshareHint: 'When enabled, ride requests along the route will be pushed to you',
+    profile_ridesharePhone: 'Contact Phone',
+    profile_rideshareIdCard: 'ID Card No.',
+    profile_rideshareLicensePlate: 'License Plate',
+    profile_distributedNode: 'Distributed Global Compute/Storage Node',
     profile_distributedNodeHint: 'Task pricing fluctuates with market demand. Specific price and income will be confirmed upon task dispatch. Please set your resource limits.',
     profile_distributedNodeRewards: 'Earning Model: Pay-as-you-go',
     profile_priceCpu: 'System Price (CPU)',
@@ -3238,9 +3389,11 @@ const en: Translations = {
     pubRide_seatUnit: 'seats',
     pubRide_costShare: 'Cost per person',
     pubRide_note: 'Note',
-    pubRide_notePlaceholder: 'e.g. can detour, no pets...',
-    pubRide_offerLabel: 'Offering ride',
-    pubRide_lookForLabel: 'Looking for ride',
+    pubRide_notePlaceholder: 'Describe meeting point, vehicle model, or requirements',
+    pubRide_offerLabel: 'Offer Seat',
+    pubRide_lookForLabel: 'Look for Seat',
+    pubRide_licensePlate: 'License Plate',
+    pubRide_licensePlatePlaceholder: 'Enter license plate number',
 
     // Publish Hire
     pubHire_title: 'Post Job',
@@ -3535,10 +3688,46 @@ const en: Translations = {
     profile_rwadChainTransferBlocked: 'Please use on-chain transactions to transfer RWAD.',
     profile_rwadChainDomainBlocked: 'RWAD fee has migrated on-chain; domain registration coming soon.',
     profile_rwadWalletNotFound: 'RWAD wallet not found. Please create or import one.',
+    profile_transferIdentityUnavailable: 'Local PeerId identity is unavailable. Wait for node initialization to finish.',
     profile_rwadChainRefreshFailed: 'On-chain balance refresh failed. Please try again later.',
     profile_rwadWalletCreated: 'RWAD wallet created successfully!',
     profile_createRwadWallet: 'Create RWAD Wallet',
     profile_rwadMigrationHint: 'RWAD balance is now on-chain. Local ledger is no longer in effect.',
+    profile_rwadNfcScanning: 'NFC in progress. Hold near receiver phone (or enrolled tag)...',
+    profile_rwadNfcAuthorized: 'NFC authorized. Submitting on-chain transaction...',
+    profile_rwadTransferSubmittedPrefix: 'On-chain transaction submitted',
+    profile_rwadTransferSubmitFailed: 'RWAD transfer submission failed. Please try again later.',
+    profile_rwadTransferSignFailed: 'RWAD signing failed. Please check wallet key.',
+    profile_rwadTransferFailedPrefix: 'RWAD transfer failed',
+    profile_rwadNfcUnavailable: 'NFC is unavailable on this device.',
+    profile_rwadNfcDisabled: 'NFC is disabled. Please enable NFC in system settings.',
+    profile_rwadNfcSettingsOpening: 'NFC is off. Opening system NFC settings now. Enable it, then return and retry.',
+    profile_rwadNfcPaymentSettingsOpening: 'Wallet interception detected. Opening NFC payment settings now. Switch default payment app and retry.',
+    profile_rwadNfcScanCancelled: 'NFC scan was cancelled.',
+    profile_rwadNfcTagUntrusted: 'NFC tag verification failed. Use the enrolled tag.',
+    profile_rwadNfcAuthTimeout: 'NFC authorization timed out. Please retry.',
+    profile_rwadNfcWalletIntercepted: 'Transit card or wallet intercepted NFC. Disable quick transit-card launch or switch default payment app, then retry.',
+    profile_rwadNfcUnsupportedPlatform: 'NFC-authorized transfer is not supported on this platform yet.',
+    profile_rwadNfcProtocolError: 'NFC protocol error. Please update app and retry.',
+    profile_rwadNfcPeerNotReady: 'Receiver was not detected. Ask the other phone to enable NFC receive mode and tap again.',
+    profile_rwadNfcSelfTransferDenied: 'Receiver wallet matches current wallet. Please use another phone as receiver.',
+    profile_rwadBiometricUnavailable: 'Biometric payment is unavailable. Enable fingerprint/face unlock and device screen lock first.',
+    profile_rwadBiometricCancelled: 'Biometric payment verification was cancelled.',
+    profile_rwadBiometricTimeout: 'Biometric payment verification timed out. Please retry.',
+    profile_rwadBiometricFailed: 'Biometric payment verification failed. Please retry.',
+    profile_rwadNfcNoAddressHint: 'For remote transfer, enter recipient address manually. Leave it empty to auto-fill via NFC tap.',
+    profile_rwadNfcReceiveStart: 'Enable NFC Receive Mode',
+    profile_rwadNfcReceiveStop: 'Disable NFC Receive Mode',
+    profile_rwadNfcReceiveStarted: 'NFC receive mode enabled. Ask sender phone to tap and read receiver wallet.',
+    profile_rwadNfcReceiveStopped: 'NFC receive mode disabled.',
+    profile_rwadNfcReceiveActiveUntil: 'NFC receive mode active until',
+    profile_pointsNfcScanning: 'Points NFC in progress. Hold near receiver phone to read recipient wallet.',
+    profile_pointsNfcAuthorized: 'Points NFC authorized. Submitting on-chain transaction...',
+    profile_pointsTransferSubmittedPrefix: 'Points on-chain transaction submitted',
+    profile_pointsTransferSubmitFailed: 'Points transfer submission failed. Please try again later.',
+    profile_pointsTransferSignFailed: 'Points transfer signing failed. Please check wallet key.',
+    profile_pointsTransferFailedPrefix: 'Points transfer failed',
+    profile_pointsNfcNoAddressHint: 'For remote transfer, enter recipient address manually. Leave it empty to auto-fill via NFC tap.',
 
     // C2C Trading Page
     c2c_title: 'C2C Trading',

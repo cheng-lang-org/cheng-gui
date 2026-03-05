@@ -1,6 +1,10 @@
 import gui/platform/ipc/messages_v2
 
 type
+    DequeueResult =
+        ok: bool
+        message: messages_v2.IpcMessage
+
     SharedRing = ref
         capacity: int32
         head: int32
@@ -32,16 +36,20 @@ fn enqueue(ring: SharedRing, msg: messages_v2.IpcMessage): bool =
     ring.size = ring.size + int32(1)
     return true
 
-fn dequeue(ring: SharedRing): tuple[ok: bool, message: messages_v2.IpcMessage] =
-    var empty = messages_v2.defaultMessage()
+fn dequeue(ring: SharedRing): DequeueResult =
+    var result: DequeueResult
+    result.ok = false
+    result.message = messages_v2.defaultMessage()
     if ring == nil || ring.size <= int32(0):
-        return (ok: false, message: empty)
+        return result
     let msg = ring.buffer[ring.head]
     ring.head = ring.head + int32(1)
     if ring.head >= ring.capacity:
         ring.head = int32(0)
     ring.size = ring.size - int32(1)
-    return (ok: true, message: msg)
+    result.ok = true
+    result.message = msg
+    return result
 
 fn pending(ring: SharedRing): int32 =
     if ring == nil:

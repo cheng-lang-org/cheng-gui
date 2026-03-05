@@ -240,6 +240,80 @@ static bool runtime_state_has_nonzero_hash(const char *doc) {
   return false;
 }
 
+static char *kv_upsert_string(const char *kv, const char *key, const char *value) {
+  if (kv == NULL || key == NULL || key[0] == '\0' || value == NULL) return NULL;
+  size_t key_len = strlen(key);
+  size_t value_len = strlen(value);
+  size_t cap = strlen(kv) + key_len + value_len + 4u;
+  char *out = (char *)malloc(cap);
+  if (out == NULL) return NULL;
+  out[0] = '\0';
+  bool replaced = false;
+  bool first = true;
+  const char *p = kv;
+  while (*p != '\0') {
+    while (*p == ';') p += 1;
+    if (*p == '\0') break;
+    const char *entry = p;
+    while (*p != '\0' && *p != ';') p += 1;
+    const char *entry_end = p;
+    const char *eq = entry;
+    while (eq < entry_end && *eq != '=') eq += 1;
+    size_t name_len = (eq < entry_end) ? (size_t)(eq - entry) : (size_t)(entry_end - entry);
+    if (!first) strcat(out, ";");
+    first = false;
+    if (name_len == key_len && strncmp(entry, key, key_len) == 0) {
+      strcat(out, key);
+      strcat(out, "=");
+      strcat(out, value);
+      replaced = true;
+    } else {
+      strncat(out, entry, (size_t)(entry_end - entry));
+    }
+  }
+  if (!replaced) {
+    if (!first) strcat(out, ";");
+    strcat(out, key);
+    strcat(out, "=");
+    strcat(out, value);
+  }
+  return out;
+}
+
+static char *json_upsert_string_field(const char *doc, const char *key, const char *value) {
+  if (doc == NULL || key == NULL || key[0] == '\0' || value == NULL) return NULL;
+  char key_pat[256];
+  if (snprintf(key_pat, sizeof(key_pat), "\"%s\"", key) >= (int)sizeof(key_pat)) return NULL;
+  const char *key_pos = strstr(doc, key_pat);
+  if (key_pos == NULL) return json_inject_string_field_if_missing(doc, key, value);
+  const char *colon = key_pos + strlen(key_pat);
+  while (*colon != '\0' && isspace((unsigned char)*colon)) colon += 1;
+  if (*colon != ':') return strdup(doc);
+  colon += 1;
+  while (*colon != '\0' && isspace((unsigned char)*colon)) colon += 1;
+  if (*colon != '"') return strdup(doc);
+  const char *value_begin = colon + 1;
+  const char *value_end = value_begin;
+  while (*value_end != '\0') {
+    if (*value_end == '\\' && value_end[1] != '\0') {
+      value_end += 2;
+      continue;
+    }
+    if (*value_end == '"') break;
+    value_end += 1;
+  }
+  if (*value_end != '"') return strdup(doc);
+  size_t prefix_len = (size_t)(value_begin - doc);
+  size_t suffix_len = strlen(value_end);
+  size_t value_len = strlen(value);
+  char *out = (char *)malloc(prefix_len + value_len + suffix_len + 1u);
+  if (out == NULL) return NULL;
+  memcpy(out, doc, prefix_len);
+  memcpy(out + prefix_len, value, value_len);
+  memcpy(out + prefix_len + value_len, value_end, suffix_len + 1u);
+  return out;
+}
+
 static bool runtime_state_home_hard_gate_ok(const char *doc, const char *expected_route_state) {
   if (doc == NULL || doc[0] == '\0') {
     fprintf(stderr, "[mobile-run-android] home hard gate: empty runtime state\n");
@@ -317,6 +391,22 @@ static int query_current_focus_component(const char *adb, const char *serial, ch
   return ok ? 0 : -1;
 }
 
+static bool expected_package_focused(const char *adb,
+                                     const char *serial,
+                                     const char *pkg,
+                                     char *focus_component,
+                                     size_t focus_component_cap) {
+  if (focus_component != NULL && focus_component_cap > 0u) focus_component[0] = '\0';
+  if (adb == NULL || serial == NULL || pkg == NULL || pkg[0] == '\0') return false;
+  char local_focus[256];
+  local_focus[0] = '\0';
+  if (query_current_focus_component(adb, serial, local_focus, sizeof(local_focus)) != 0) return false;
+  if (focus_component != NULL && focus_component_cap > 0u) {
+    snprintf(focus_component, focus_component_cap, "%s", local_focus);
+  }
+  return strstr(local_focus, pkg) != NULL;
+}
+
 static bool android_package_installed(const char *adb, const char *serial, const char *pkg) {
   if (adb == NULL || serial == NULL || pkg == NULL || pkg[0] == '\0') return false;
   char *argv[] = {(char *)adb, "-s", (char *)serial, "shell", "pm", "path", (char *)pkg, NULL};
@@ -332,10 +422,60 @@ static bool android_package_installed(const char *adb, const char *serial, const
   return ok;
 }
 
+static const char *infer_main_activity_for_package(const char *pkg, char *buf, size_t buf_cap) {
+  if (pkg == NULL || pkg[0] == '\0') return "com.unimaker.app/.MainActivity";
+  if (strcmp(pkg, "com.unimaker.app") == 0) return "com.unimaker.app/.MainActivity";
+  if (strcmp(pkg, "com.cheng.mobile") == 0) return "com.cheng.mobile/.ChengActivity";
+  if (buf != NULL && buf_cap > 0u) {
+    int n = snprintf(buf, buf_cap, "%s/.MainActivity", pkg);
+    if (n > 0 && (size_t)n < buf_cap) return buf;
+  }
+  return "com.unimaker.app/.MainActivity";
+}
+
+static int dump_runtime_state_snapshot(const char *adb, const char *serial, const char *pkg, const char *out_path) {
+  if (adb == NULL || serial == NULL || pkg == NULL || pkg[0] == '\0') return 1;
+  char *argv[] = {
+      (char *)adb, "-s", (char *)serial, "shell", "run-as", (char *)pkg, "cat", "files/cheng_runtime_state.json", NULL};
+  char *out = NULL;
+  int rc = run_simple(argv, 20, &out);
+  if (rc != 0 || out == NULL || out[0] == '\0') {
+    fprintf(stderr,
+            "[mobile-run-android] runtime state export failed pkg=%s rc=%d (missing/unreadable files/cheng_runtime_state.json)\n",
+            pkg,
+            rc);
+    fprintf(stderr,
+            "[mobile-run-android] hint: adb -s %s shell run-as %s cat files/cheng_runtime_state.json\n",
+            serial,
+            pkg);
+    free(out);
+    return 1;
+  }
+  if (out_path != NULL && out_path[0] != '\0') {
+    if (write_file_all(out_path, out, strlen(out)) != 0) {
+      fprintf(stderr, "[mobile-run-android] failed to write runtime state: %s\n", out_path);
+      free(out);
+      return 1;
+    }
+    fprintf(stdout, "[mobile-run-android] runtime-state-export %s\n", out_path);
+  } else {
+    fputs(out, stdout);
+    if (out[strlen(out) - 1u] != '\n') fputc('\n', stdout);
+  }
+  free(out);
+  return 0;
+}
+
 static bool starts_with(const char *s, const char *prefix) {
   if (s == NULL || prefix == NULL) return false;
   size_t n = strlen(prefix);
   return strncmp(s, prefix, n) == 0;
+}
+
+static bool env_flag_enabled(const char *name, bool fallback) {
+  const char *raw = getenv(name);
+  if (raw == NULL || raw[0] == '\0') return fallback;
+  return strcmp(raw, "0") != 0;
 }
 
 static int path_join(char *out, size_t cap, const char *a, const char *b) {
@@ -911,6 +1051,377 @@ static int run_simple(char *const argv[], int timeout_sec, char **out) {
   return rc;
 }
 
+static bool parse_node_bounds_center(const char *node_start, const char *node_end, int *out_x, int *out_y) {
+  if (out_x != NULL) *out_x = 0;
+  if (out_y != NULL) *out_y = 0;
+  if (node_start == NULL || node_end == NULL || node_end <= node_start || out_x == NULL || out_y == NULL) {
+    return false;
+  }
+  const char *bounds = strstr(node_start, "bounds=\"[");
+  if (bounds == NULL || bounds >= node_end) return false;
+  int x1 = 0;
+  int y1 = 0;
+  int x2 = 0;
+  int y2 = 0;
+  if (sscanf(bounds, "bounds=\"[%d,%d][%d,%d]\"", &x1, &y1, &x2, &y2) != 4) return false;
+  if (x2 <= x1 || y2 <= y1) return false;
+  *out_x = x1 + (x2 - x1) / 2;
+  *out_y = y1 + (y2 - y1) / 2;
+  return true;
+}
+
+static bool range_contains(const char *range_start, const char *range_end, const char *needle) {
+  if (range_start == NULL || range_end == NULL || needle == NULL || needle[0] == '\0' || range_end <= range_start) {
+    return false;
+  }
+  size_t needle_len = strlen(needle);
+  const char *cursor = range_start;
+  while (cursor < range_end) {
+    const char *hit = strstr(cursor, needle);
+    if (hit == NULL || hit >= range_end) return false;
+    if (hit + needle_len <= range_end) return true;
+    cursor = hit + 1;
+  }
+  return false;
+}
+
+static bool extract_node_center_by_resource(const char *ui_xml,
+                                            const char *resource_id,
+                                            bool require_enabled,
+                                            bool require_checked_false,
+                                            int *out_x,
+                                            int *out_y) {
+  if (out_x != NULL) *out_x = 0;
+  if (out_y != NULL) *out_y = 0;
+  if (ui_xml == NULL || resource_id == NULL || resource_id[0] == '\0' || out_x == NULL || out_y == NULL) {
+    return false;
+  }
+  char needle[256];
+  if (snprintf(needle, sizeof(needle), "resource-id=\"%s\"", resource_id) >= (int)sizeof(needle)) return false;
+  const char *p = ui_xml;
+  while ((p = strstr(p, needle)) != NULL) {
+    const char *node_start = p;
+    while (node_start > ui_xml && *node_start != '<') node_start -= 1;
+    const char *node_end = strstr(p, "/>");
+    if (node_end == NULL) node_end = strchr(p, '>');
+    if (node_end != NULL) {
+      if (require_enabled && !range_contains(node_start, node_end, "enabled=\"true\"")) {
+        p += strlen(needle);
+        continue;
+      }
+      if (require_checked_false && !range_contains(node_start, node_end, "checked=\"false\"")) {
+        p += strlen(needle);
+        continue;
+      }
+      if (parse_node_bounds_center(node_start, node_end, out_x, out_y)) return true;
+    }
+    p += strlen(needle);
+  }
+  return false;
+}
+
+static bool package_installer_in_foreground(const char *adb, const char *serial) {
+  if (adb == NULL || adb[0] == '\0' || serial == NULL || serial[0] == '\0') return false;
+  char *argv[] = {(char *)adb, "-s", (char *)serial, "shell", "dumpsys", "window", NULL};
+  char *out = NULL;
+  int rc = run_simple(argv, 6, &out);
+  bool active = false;
+  if (rc == 0 && out != NULL) {
+    if (strstr(out, "packageinstaller") != NULL || strstr(out, "PackageInstaller") != NULL ||
+        strstr(out, "com.huawei.appmarket") != NULL || strstr(out, "InstallDistActivity") != NULL ||
+        strstr(out, "com.huawei.coauthservice") != NULL || strstr(out, "UnifiedAuthenticationDialogActivity") != NULL) {
+      active = true;
+    }
+  }
+  free(out);
+  return active;
+}
+
+static char *encode_android_input_text(const char *src) {
+  if (src == NULL || src[0] == '\0') return NULL;
+  size_t n = strlen(src);
+  char *out = (char *)malloc(n * 3u + 1u);
+  if (out == NULL) return NULL;
+  size_t w = 0u;
+  for (size_t i = 0u; i < n; ++i) {
+    unsigned char c = (unsigned char)src[i];
+    if (isalnum(c) || c == '_' || c == '-' || c == '.' || c == '@') {
+      out[w++] = (char)c;
+    } else if (c == ' ') {
+      out[w++] = '%';
+      out[w++] = 's';
+    } else {
+      free(out);
+      return NULL;
+    }
+  }
+  out[w] = '\0';
+  return out;
+}
+
+/*
+ * Return value:
+ *   0  no action / no prompt
+ *   1  action performed
+ *  -2  blocked by lockscreen-auth prompt without usable password input
+ */
+static int try_auto_confirm_install_prompt(const char *adb, const char *serial) {
+  if (!package_installer_in_foreground(adb, serial)) return 0;
+
+  char *dump_argv[] = {(char *)adb,
+                       "-s",
+                       (char *)serial,
+                       "shell",
+                       "uiautomator",
+                       "dump",
+                       "/sdcard/cheng_install_prompt.xml",
+                       NULL};
+  (void)run_simple(dump_argv, 8, NULL);
+
+  char *cat_argv[] = {
+      (char *)adb, "-s", (char *)serial, "shell", "cat", "/sdcard/cheng_install_prompt.xml", NULL};
+  char *ui_xml = NULL;
+  int cat_rc = run_simple(cat_argv, 8, &ui_xml);
+  int tap_x = 0;
+  int tap_y = 0;
+  bool has_action = false;
+  if (cat_rc == 0 && ui_xml != NULL) {
+    if (strstr(ui_xml, "com.huawei.coauthservice:id/pin_password_entry") != NULL) {
+      const char *password = getenv("CHENG_ANDROID_INSTALL_LOCKSCREEN_PASSWORD");
+      if (password == NULL || password[0] == '\0') {
+        free(ui_xml);
+        return -2;
+      }
+      if (extract_node_center_by_resource(ui_xml,
+                                          "com.huawei.coauthservice:id/pin_password_entry",
+                                          true,
+                                          false,
+                                          &tap_x,
+                                          &tap_y)) {
+        char sx[32];
+        char sy[32];
+        snprintf(sx, sizeof(sx), "%d", tap_x);
+        snprintf(sy, sizeof(sy), "%d", tap_y);
+        char *tap_field_argv[] = {(char *)adb, "-s", (char *)serial, "shell", "input", "tap", sx, sy, NULL};
+        (void)run_simple(tap_field_argv, 6, NULL);
+      }
+      char *encoded = encode_android_input_text(password);
+      if (encoded == NULL) {
+        free(ui_xml);
+        return -2;
+      }
+      char *input_argv[] = {(char *)adb, "-s", (char *)serial, "shell", "input", "text", encoded, NULL};
+      (void)run_simple(input_argv, 6, NULL);
+      free(encoded);
+      char *enter_argv[] = {(char *)adb, "-s", (char *)serial, "shell", "input", "keyevent", "66", NULL};
+      (void)run_simple(enter_argv, 6, NULL);
+      free(ui_xml);
+      return 1;
+    }
+
+    if (extract_node_center_by_resource(ui_xml,
+                                        "com.huawei.appmarket:id/hidden_card_install_button_continue",
+                                        true,
+                                        false,
+                                        &tap_x,
+                                        &tap_y) ||
+        extract_node_center_by_resource(ui_xml,
+                                        "com.huawei.appmarket:id/hidden_card_checkbox",
+                                        true,
+                                        true,
+                                        &tap_x,
+                                        &tap_y) ||
+        extract_node_center_by_resource(ui_xml,
+                                        "com.huawei.appmarket:id/hidden_card_checkbox_text",
+                                        true,
+                                        false,
+                                        &tap_x,
+                                        &tap_y) ||
+        extract_node_center_by_resource(ui_xml,
+                                        "android:id/button1",
+                                        true,
+                                        false,
+                                        &tap_x,
+                                        &tap_y)) {
+      has_action = true;
+    }
+  }
+  free(ui_xml);
+
+  if (has_action) {
+    char sx[32];
+    char sy[32];
+    snprintf(sx, sizeof(sx), "%d", tap_x);
+    snprintf(sy, sizeof(sy), "%d", tap_y);
+    char *tap_argv[] = {(char *)adb, "-s", (char *)serial, "shell", "input", "tap", sx, sy, NULL};
+    (void)run_simple(tap_argv, 6, NULL);
+    return 1;
+  }
+
+  char *enter_argv[] = {(char *)adb, "-s", (char *)serial, "shell", "input", "keyevent", "66", NULL};
+  (void)run_simple(enter_argv, 6, NULL);
+  return 0;
+}
+
+static int run_capture_with_install_prompt(char *const argv[],
+                                           char **out,
+                                           int timeout_sec,
+                                           const char *adb,
+                                           const char *serial,
+                                           bool enable_auto_confirm) {
+  if (out != NULL) *out = NULL;
+  int pipefd[2];
+  if (pipe(pipefd) != 0) return -1;
+  pid_t pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -1;
+  }
+  if (pid == 0) {
+    if (setpgid(0, 0) != 0) _exit(127);
+    int devnull = open("/dev/null", O_RDONLY);
+    if (devnull >= 0) {
+      (void)dup2(devnull, STDIN_FILENO);
+      close(devnull);
+    }
+    dup2(pipefd[1], STDOUT_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+  close(pipefd[1]);
+  setpgid(pid, pid);
+  int flags = fcntl(pipefd[0], F_GETFL, 0);
+  if (flags >= 0) (void)fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+  size_t cap = 4096u;
+  size_t len = 0u;
+  char *buf = (char *)malloc(cap);
+  if (buf == NULL) {
+    close(pipefd[0]);
+    kill(-pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    return -1;
+  }
+
+  time_t deadline = (timeout_sec > 0) ? (time(NULL) + timeout_sec) : 0;
+  time_t next_confirm_probe = 0;
+  int status = 0;
+  bool pipe_open = true;
+  bool child_done = false;
+  while (!child_done || pipe_open) {
+    if (!child_done) {
+      pid_t wr = waitpid(pid, &status, WNOHANG);
+      if (wr == pid) {
+        child_done = true;
+      } else if (wr < 0 && errno != EINTR) {
+        child_done = true;
+        status = 1;
+      }
+    }
+
+    if (enable_auto_confirm && !child_done && adb != NULL && serial != NULL) {
+      time_t now = time(NULL);
+      if (now >= next_confirm_probe) {
+        int prompt_rc = try_auto_confirm_install_prompt(adb, serial);
+        if (prompt_rc == -2) {
+          kill(-pid, SIGTERM);
+          usleep(200000);
+          kill(-pid, SIGKILL);
+          (void)waitpid(pid, &status, 0);
+          if (pipe_open) close(pipefd[0]);
+          free(buf);
+          return 125;
+        }
+        next_confirm_probe = now + 1;
+      }
+    }
+
+    if (timeout_sec > 0 && !child_done && time(NULL) >= deadline) {
+      kill(-pid, SIGTERM);
+      usleep(200000);
+      kill(-pid, SIGKILL);
+      (void)waitpid(pid, &status, 0);
+      if (pipe_open) close(pipefd[0]);
+      free(buf);
+      return 124;
+    }
+
+    if (!pipe_open) {
+      usleep(50000);
+      continue;
+    }
+
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(pipefd[0], &rfds);
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000;
+    if (timeout_sec > 0 && !child_done) {
+      time_t now = time(NULL);
+      long remain = (long)(deadline - now);
+      if (remain < 0L) remain = 0L;
+      if (remain < (long)tv.tv_sec) {
+        tv.tv_sec = remain;
+        tv.tv_usec = 0;
+      }
+    }
+
+    int sr = select(pipefd[0] + 1, &rfds, NULL, NULL, &tv);
+    if (sr < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (sr == 0 || !FD_ISSET(pipefd[0], &rfds)) continue;
+
+    while (1) {
+      char tmp[1024];
+      ssize_t rd = read(pipefd[0], tmp, sizeof(tmp));
+      if (rd > 0) {
+        if (len + (size_t)rd + 1u > cap) {
+          size_t next = cap * 2u;
+          while (len + (size_t)rd + 1u > next) next *= 2u;
+          char *resized = (char *)realloc(buf, next);
+          if (resized == NULL) {
+            free(buf);
+            close(pipefd[0]);
+            kill(-pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            return -1;
+          }
+          buf = resized;
+          cap = next;
+        }
+        memcpy(buf + len, tmp, (size_t)rd);
+        len += (size_t)rd;
+        continue;
+      }
+      if (rd == 0) {
+        pipe_open = false;
+        close(pipefd[0]);
+        break;
+      }
+      if (errno == EINTR) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+      pipe_open = false;
+      close(pipefd[0]);
+      break;
+    }
+  }
+  if (pipe_open) close(pipefd[0]);
+
+  buf[len] = '\0';
+  if (out != NULL) *out = buf;
+  else free(buf);
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+  return 1;
+}
+
 static bool parse_kv_value(const char *kv, const char *key, char *out, size_t out_cap) {
   if (out != NULL && out_cap > 0u) out[0] = '\0';
   if (kv == NULL || key == NULL || key[0] == '\0' || out == NULL || out_cap < 2u) return false;
@@ -937,6 +1448,113 @@ static bool parse_kv_value(const char *kv, const char *key, char *out, size_t ou
     }
   }
   return false;
+}
+
+static int resolve_truth_source_dir(const char *assets_dir, const char *truth_dir_override, char *out, size_t out_cap) {
+  if (out == NULL || out_cap == 0u) return -1;
+  out[0] = '\0';
+  if (truth_dir_override != NULL && truth_dir_override[0] != '\0') {
+    if (snprintf(out, out_cap, "%s", truth_dir_override) >= (int)out_cap) return -1;
+    return dir_exists(out) ? 0 : -1;
+  }
+  const char *truth_env = getenv("CHENG_ANDROID_TRUTH_DIR");
+  if (truth_env != NULL && truth_env[0] != '\0') {
+    if (snprintf(out, out_cap, "%s", truth_env) >= (int)out_cap) return -1;
+    return dir_exists(out) ? 0 : -1;
+  }
+  if (assets_dir == NULL || assets_dir[0] == '\0') return -1;
+  if (path_join(out, out_cap, assets_dir, "truth") != 0) return -1;
+  if (dir_exists(out)) return 0;
+  out[0] = '\0';
+  char parent_dir[PATH_MAX];
+  snprintf(parent_dir, sizeof(parent_dir), "%s", assets_dir);
+  char *slash = strrchr(parent_dir, '/');
+  if (slash == NULL) return -1;
+  *slash = '\0';
+  if (path_join(out, out_cap, parent_dir, "truth") != 0) return -1;
+  return dir_exists(out) ? 0 : -1;
+}
+
+static int count_truth_rgba_routes(const char *truth_dir, char *single_route, size_t single_route_cap) {
+  if (single_route != NULL && single_route_cap > 0u) single_route[0] = '\0';
+  if (truth_dir == NULL || truth_dir[0] == '\0' || !dir_exists(truth_dir)) return 0;
+  DIR *dir = opendir(truth_dir);
+  if (dir == NULL) return 0;
+  int count = 0;
+  struct dirent *ent = NULL;
+  while ((ent = readdir(dir)) != NULL) {
+    const char *name = ent->d_name;
+    if (name == NULL || name[0] == '.') continue;
+    size_t n = strlen(name);
+    if (n <= 5u || strcmp(name + n - 5u, ".rgba") != 0) continue;
+    count += 1;
+    if (count == 1 && single_route != NULL && single_route_cap > 0u) {
+      size_t route_len = n - 5u;
+      if (route_len >= single_route_cap) route_len = single_route_cap - 1u;
+      memcpy(single_route, name, route_len);
+      single_route[route_len] = '\0';
+    }
+  }
+  closedir(dir);
+  return count;
+}
+
+static int normalize_runtime_launch_payload(char **kv_io,
+                                            char **json_io,
+                                            const char *pkg,
+                                            const char *assets_dir,
+                                            const char *truth_dir_override) {
+  if (kv_io == NULL || *kv_io == NULL || json_io == NULL || *json_io == NULL || pkg == NULL || pkg[0] == '\0') {
+    return -1;
+  }
+
+  char device_manifest[PATH_MAX];
+  if (snprintf(device_manifest,
+               sizeof(device_manifest),
+               "/data/data/%s/files/cheng_assets/r2capp_manifest.json",
+               pkg) >= (int)sizeof(device_manifest)) {
+    return -1;
+  }
+
+  char *next_kv = kv_upsert_string(*kv_io, "r2c_manifest", device_manifest);
+  if (next_kv == NULL) return -1;
+  free(*kv_io);
+  *kv_io = next_kv;
+
+  char *next_json = json_upsert_string_field(*json_io, "manifest", device_manifest);
+  if (next_json == NULL) return -1;
+  free(*json_io);
+  *json_io = next_json;
+
+  char truth_mode[64];
+  char route_state[128];
+  char route_lock[32];
+  truth_mode[0] = '\0';
+  route_state[0] = '\0';
+  route_lock[0] = '\0';
+  bool strict_truth = parse_kv_value(*kv_io, "truth_mode", truth_mode, sizeof(truth_mode)) &&
+                      strcmp(truth_mode, "strict") == 0;
+  bool has_route = parse_kv_value(*kv_io, "route_state", route_state, sizeof(route_state)) && route_state[0] != '\0';
+  bool has_route_lock = parse_kv_value(*kv_io, "route_lock", route_lock, sizeof(route_lock)) && route_lock[0] != '\0';
+  if (!strict_truth || !has_route || has_route_lock) return 0;
+
+  char truth_dir[PATH_MAX];
+  truth_dir[0] = '\0';
+  if (resolve_truth_source_dir(assets_dir, truth_dir_override, truth_dir, sizeof(truth_dir)) != 0) return 0;
+
+  char single_route[128];
+  int truth_route_count = count_truth_rgba_routes(truth_dir, single_route, sizeof(single_route));
+  if (truth_route_count == 1 && single_route[0] != '\0' && strcmp(single_route, route_state) == 0) {
+    next_kv = kv_upsert_string(*kv_io, "route_lock", "1");
+    if (next_kv == NULL) return -1;
+    free(*kv_io);
+    *kv_io = next_kv;
+    fprintf(stdout,
+            "[mobile-run-android] implicit route_lock=1 route=%s reason=single-truth-route truth_dir=%s\n",
+            route_state,
+            truth_dir);
+  }
+  return 0;
 }
 
 static int sync_truth_route_asset_file(const char *adb,
@@ -1025,6 +1643,162 @@ static int sync_truth_route_asset_file(const char *adb,
   return 1;
 }
 
+static int sync_local_file_to_app_assets(const char *adb,
+                                         const char *serial,
+                                         const char *pkg,
+                                         const char *src_path,
+                                         const char *remote_dst_relpath,
+                                         bool required) {
+  if (adb == NULL || serial == NULL || pkg == NULL || src_path == NULL || remote_dst_relpath == NULL) return -1;
+  if (!file_exists(src_path)) {
+    if (required) {
+      fprintf(stderr,
+              "[mobile-run-android] missing required runtime asset src=%s dst=%s\n",
+              src_path,
+              remote_dst_relpath);
+      return -1;
+    }
+    return 0;
+  }
+
+  const char *leaf = strrchr(remote_dst_relpath, '/');
+  leaf = (leaf != NULL) ? (leaf + 1) : remote_dst_relpath;
+  if (leaf == NULL || leaf[0] == '\0') leaf = "asset.bin";
+  char remote_tmp[PATH_MAX];
+  if (snprintf(remote_tmp, sizeof(remote_tmp), "/data/local/tmp/cheng_asset_%d_%s", (int)getpid(), leaf) >=
+      (int)sizeof(remote_tmp)) {
+    return -1;
+  }
+
+  char *push_argv[] = {(char *)adb, "-s", (char *)serial, "push", (char *)src_path, remote_tmp, NULL};
+  char *push_out = NULL;
+  int push_rc = run_simple(push_argv, 30, &push_out);
+  if (push_rc != 0) {
+    fprintf(stderr,
+            "[mobile-run-android] runtime asset push failed src=%s dst=%s rc=%d\n%s\n",
+            src_path,
+            remote_dst_relpath,
+            push_rc,
+            push_out ? push_out : "");
+    free(push_out);
+    return -1;
+  }
+  free(push_out);
+
+  char remote_parent[PATH_MAX];
+  snprintf(remote_parent, sizeof(remote_parent), "%s", remote_dst_relpath);
+  char *slash = strrchr(remote_parent, '/');
+  if (slash != NULL) *slash = '\0';
+  if (remote_parent[0] == '\0') snprintf(remote_parent, sizeof(remote_parent), "files/cheng_assets");
+
+  char *mkdir_argv[] = {(char *)adb,
+                        "-s",
+                        (char *)serial,
+                        "shell",
+                        "run-as",
+                        (char *)pkg,
+                        "mkdir",
+                        "-p",
+                        remote_parent,
+                        NULL};
+  if (run_simple(mkdir_argv, 12, NULL) != 0) {
+    fprintf(stderr, "[mobile-run-android] runtime asset mkdir failed dst=%s\n", remote_parent);
+    char *rm_argv[] = {(char *)adb, "-s", (char *)serial, "shell", "rm", "-f", remote_tmp, NULL};
+    (void)run_simple(rm_argv, 10, NULL);
+    return -1;
+  }
+
+  char *cp_argv[] = {(char *)adb,
+                     "-s",
+                     (char *)serial,
+                     "shell",
+                     "run-as",
+                     (char *)pkg,
+                     "cp",
+                     remote_tmp,
+                     (char *)remote_dst_relpath,
+                     NULL};
+  char *cp_out = NULL;
+  int cp_rc = run_simple(cp_argv, 15, &cp_out);
+  char *rm_argv[] = {(char *)adb, "-s", (char *)serial, "shell", "rm", "-f", remote_tmp, NULL};
+  (void)run_simple(rm_argv, 10, NULL);
+  if (cp_rc != 0) {
+    fprintf(stderr,
+            "[mobile-run-android] runtime asset copy failed src=%s dst=%s rc=%d\n%s\n",
+            src_path,
+            remote_dst_relpath,
+            cp_rc,
+            cp_out ? cp_out : "");
+    free(cp_out);
+    return -1;
+  }
+  free(cp_out);
+  fprintf(stdout,
+          "[mobile-run-android] runtime asset synced: %s -> %s\n",
+          src_path,
+          remote_dst_relpath);
+  return 1;
+}
+
+static int sync_runtime_semantic_assets(const char *adb,
+                                        const char *serial,
+                                        const char *pkg,
+                                        const char *assets_dir) {
+  if (adb == NULL || serial == NULL || pkg == NULL || assets_dir == NULL || assets_dir[0] == '\0') return 0;
+  const char *names[] = {
+      "r2c_route_semantic_tree.json",
+      "r2c_route_tree.json",
+      "r2capp_compile_report.json",
+  };
+  for (size_t i = 0u; i < sizeof(names) / sizeof(names[0]); ++i) {
+    const char *name = names[i];
+    char src_candidates[3][PATH_MAX];
+    src_candidates[0][0] = '\0';
+    src_candidates[1][0] = '\0';
+    src_candidates[2][0] = '\0';
+    (void)snprintf(src_candidates[0], sizeof(src_candidates[0]), "%s/%s", assets_dir, name);
+    (void)snprintf(src_candidates[1], sizeof(src_candidates[1]), "%s/r2capp/%s", assets_dir, name);
+    if (strstr(assets_dir, "/r2capp") != NULL) {
+      char parent[PATH_MAX];
+      snprintf(parent, sizeof(parent), "%s", assets_dir);
+      char *slash = strrchr(parent, '/');
+      if (slash != NULL) {
+        *slash = '\0';
+        (void)snprintf(src_candidates[2], sizeof(src_candidates[2]), "%s/%s", parent, name);
+      }
+    }
+
+    const char *src = NULL;
+    for (size_t c = 0u; c < 3u; ++c) {
+      if (src_candidates[c][0] == '\0') continue;
+      if (file_exists(src_candidates[c])) {
+        src = src_candidates[c];
+        break;
+      }
+    }
+    if (src == NULL) continue;
+
+    char remote_rel[PATH_MAX];
+    if (snprintf(remote_rel, sizeof(remote_rel), "files/cheng_assets/%s", name) >= (int)sizeof(remote_rel)) {
+      return -1;
+    }
+    if (sync_local_file_to_app_assets(adb, serial, pkg, src, remote_rel, false) < 0) return -1;
+  }
+  return 0;
+}
+
+static void trim_ascii_spaces_inplace(char *text) {
+  if (text == NULL || text[0] == '\0') return;
+  char *start = text;
+  while (*start != '\0' && isspace((unsigned char)*start)) start += 1;
+  if (start != text) memmove(text, start, strlen(start) + 1u);
+  size_t n = strlen(text);
+  while (n > 0u && isspace((unsigned char)text[n - 1u])) {
+    text[n - 1u] = '\0';
+    n -= 1u;
+  }
+}
+
 static void remove_remote_truth_route_assets(const char *adb,
                                              const char *serial,
                                              const char *pkg,
@@ -1054,23 +1828,13 @@ static void remove_remote_truth_route_assets(const char *adb,
   }
 }
 
-static int sync_truth_route_assets(const char *adb,
-                                   const char *serial,
-                                   const char *pkg,
-                                   const char *assets_dir,
-                                   const char *kv) {
-  if (adb == NULL || serial == NULL || pkg == NULL || assets_dir == NULL || kv == NULL) return 0;
-  char route_state[128];
-  route_state[0] = '\0';
-  if (!parse_kv_value(kv, "route_state", route_state, sizeof(route_state)) || route_state[0] == '\0') return 0;
-  char truth_src_dir[PATH_MAX];
-  if (path_join(truth_src_dir, sizeof(truth_src_dir), assets_dir, "truth") != 0 || !dir_exists(truth_src_dir)) {
-    fprintf(stderr,
-            "[mobile-run-android] missing truth dir for route=%s dir=%s/truth\n",
-            route_state,
-            assets_dir);
-    remove_remote_truth_route_assets(adb, serial, pkg, route_state);
-    return -1;
+static int sync_truth_route_assets_for_state(const char *adb,
+                                             const char *serial,
+                                             const char *pkg,
+                                             const char *truth_src_dir,
+                                             const char *route_state) {
+  if (adb == NULL || serial == NULL || pkg == NULL || truth_src_dir == NULL || route_state == NULL || route_state[0] == '\0') {
+    return 0;
   }
   int rgba_sync = sync_truth_route_asset_file(adb, serial, pkg, truth_src_dir, route_state, "rgba");
   if (rgba_sync < 0) return -1;
@@ -1111,6 +1875,81 @@ static int sync_truth_route_assets(const char *adb,
   return 0;
 }
 
+static int sync_truth_route_assets(const char *adb,
+                                   const char *serial,
+                                   const char *pkg,
+                                   const char *assets_dir,
+                                   const char *truth_dir_override,
+                                   const char *kv) {
+  if (adb == NULL || serial == NULL || pkg == NULL || kv == NULL) return 0;
+  char route_state[128];
+  char extra_routes[1024];
+  route_state[0] = '\0';
+  extra_routes[0] = '\0';
+  bool has_route_state = parse_kv_value(kv, "route_state", route_state, sizeof(route_state)) && route_state[0] != '\0';
+  bool has_extra_routes = parse_kv_value(kv, "truth_sync_routes", extra_routes, sizeof(extra_routes)) && extra_routes[0] != '\0';
+  if (!has_route_state && !has_extra_routes) return 0;
+  char truth_src_dir[PATH_MAX];
+  truth_src_dir[0] = '\0';
+  if (truth_dir_override != NULL && truth_dir_override[0] != '\0') {
+    if (snprintf(truth_src_dir, sizeof(truth_src_dir), "%s", truth_dir_override) >= (int)sizeof(truth_src_dir)) return -1;
+  } else {
+    const char *truth_env = getenv("CHENG_ANDROID_TRUTH_DIR");
+    if (truth_env != NULL && truth_env[0] != '\0') {
+      if (snprintf(truth_src_dir, sizeof(truth_src_dir), "%s", truth_env) >= (int)sizeof(truth_src_dir)) return -1;
+    } else if (assets_dir != NULL && assets_dir[0] != '\0') {
+      if (path_join(truth_src_dir, sizeof(truth_src_dir), assets_dir, "truth") != 0) return -1;
+      if (!dir_exists(truth_src_dir)) {
+        truth_src_dir[0] = '\0';
+        char parent_dir[PATH_MAX];
+        snprintf(parent_dir, sizeof(parent_dir), "%s", assets_dir);
+        char *slash = strrchr(parent_dir, '/');
+        if (slash != NULL) {
+          *slash = '\0';
+          if (path_join(truth_src_dir, sizeof(truth_src_dir), parent_dir, "truth") != 0) return -1;
+        }
+      }
+    }
+  }
+  if (truth_src_dir[0] == '\0' || !dir_exists(truth_src_dir)) {
+    fprintf(stderr,
+            "[mobile-run-android] missing truth dir for route sync truth_dir=%s assets_dir=%s\n",
+            truth_src_dir[0] != '\0' ? truth_src_dir : "<unset>",
+            (assets_dir != NULL && assets_dir[0] != '\0') ? assets_dir : "<unset>");
+    if (has_route_state) remove_remote_truth_route_assets(adb, serial, pkg, route_state);
+    return -1;
+  }
+  if (has_route_state) {
+    if (sync_truth_route_assets_for_state(adb, serial, pkg, truth_src_dir, route_state) != 0) return -1;
+  }
+  if (has_extra_routes) {
+    char list_copy[sizeof(extra_routes)];
+    snprintf(list_copy, sizeof(list_copy), "%s", extra_routes);
+    char *cursor = list_copy;
+    while (cursor != NULL && cursor[0] != '\0') {
+      while (*cursor == ',' || *cursor == ';') cursor += 1;
+      if (*cursor == '\0') break;
+      char *next = cursor;
+      while (*next != '\0' && *next != ',' && *next != ';') next += 1;
+      char saved = *next;
+      *next = '\0';
+      trim_ascii_spaces_inplace(cursor);
+      if (cursor[0] != '\0') {
+        if (!(has_route_state && strcmp(cursor, route_state) == 0)) {
+          if (sync_truth_route_assets_for_state(adb, serial, pkg, truth_src_dir, cursor) != 0) return -1;
+        }
+      }
+      if (saved == '\0') break;
+      cursor = next + 1;
+    }
+  }
+  if (sync_runtime_semantic_assets(adb, serial, pkg, assets_dir) != 0) {
+    fprintf(stderr, "[mobile-run-android] failed to sync runtime semantic assets from %s\n", assets_dir);
+    return -1;
+  }
+  return 0;
+}
+
 static int parse_positive_int_env(const char *name, int fallback) {
   const char *raw = getenv(name);
   if (raw == NULL || raw[0] == '\0') return fallback;
@@ -1120,11 +1959,16 @@ static int parse_positive_int_env(const char *name, int fallback) {
   return (int)v;
 }
 
+static char *shell_single_quote(const char *text);
+
 static int run_direct_launch_smoke(const char *adb,
                                    const char *serial,
                                    const char *pkg,
                                    const char *activity,
                                    const char *expected_route,
+                                   const char *launch_kv,
+                                   const char *launch_json,
+                                   const char *launch_json_b64,
                                    int wait_ms) {
   if (adb == NULL || serial == NULL || pkg == NULL || activity == NULL || expected_route == NULL ||
       expected_route[0] == '\0') {
@@ -1132,8 +1976,24 @@ static int run_direct_launch_smoke(const char *adb,
   }
   fprintf(stdout, "[mobile-run-android] direct-launch-smoke route=%s\n", expected_route);
 
-  char *force_stop[] = {(char *)adb, "-s", (char *)serial, "shell", "am", "force-stop", (char *)pkg, NULL};
-  (void)run_simple(force_stop, 10, NULL);
+  bool no_foreground_switch =
+      env_flag_enabled("CHENG_ANDROID_1TO1_CAPTURE_NO_FOREGROUND_SWITCH", false) ||
+      env_flag_enabled("CHENG_ANDROID_NO_FOREGROUND_SWITCH", false);
+  if (no_foreground_switch) {
+    char focus_component[256];
+    focus_component[0] = '\0';
+    if (!expected_package_focused(adb, serial, pkg, focus_component, sizeof(focus_component))) {
+      fprintf(stdout,
+              "[mobile-run-android] no-foreground-switch note: target not focused before direct-launch-smoke phase=%s expected_pkg=%s current_focus=%s\n",
+              "direct-launch-smoke",
+              pkg,
+              focus_component[0] != '\0' ? focus_component : "<unknown>");
+    }
+  }
+  if (!env_flag_enabled("CHENG_ANDROID_NO_FORCE_STOP", false)) {
+    char *force_stop[] = {(char *)adb, "-s", (char *)serial, "shell", "am", "force-stop", (char *)pkg, NULL};
+    (void)run_simple(force_stop, 10, NULL);
+  }
   char *rm_state[] = {(char *)adb,
                       "-s",
                       (char *)serial,
@@ -1146,19 +2006,105 @@ static int run_direct_launch_smoke(const char *adb,
                       NULL};
   (void)run_simple(rm_state, 10, NULL);
 
-  char *start_argv[] = {(char *)adb,
-                        "-s",
-                        (char *)serial,
-                        "shell",
-                        "am",
-                        "start-activity",
-                        "-S",
-                        "--windowingMode",
-                        "1",
-                        "-W",
-                        "-n",
-                        (char *)activity,
-                        NULL};
+  const char *smoke_kv = (launch_kv != NULL) ? launch_kv : "";
+  const char *smoke_json = (launch_json != NULL) ? launch_json : "{}";
+  const char *smoke_json_b64 = (launch_json_b64 != NULL) ? launch_json_b64 : "";
+  char *q_activity = shell_single_quote(activity);
+  char *q_kv = shell_single_quote(smoke_kv);
+  char *q_json = shell_single_quote(smoke_json);
+  char *q_json_b64 = shell_single_quote(smoke_json_b64);
+  if (q_activity == NULL || q_kv == NULL || q_json == NULL || q_json_b64 == NULL) {
+    free(q_activity);
+    free(q_kv);
+    free(q_json);
+    free(q_json_b64);
+    fprintf(stderr, "[mobile-run-android] direct-launch-smoke failed to quote launch args\n");
+    return -1;
+  }
+  const char *windowing_mode = getenv("CHENG_ANDROID_START_WINDOWING_MODE");
+  bool use_windowing_mode = (windowing_mode != NULL && windowing_mode[0] != '\0');
+  bool use_reset_start = !env_flag_enabled("CHENG_ANDROID_NO_RESTART", false);
+  size_t cmd_len = 0u;
+  if (use_windowing_mode) {
+    if (use_reset_start) {
+      cmd_len = strlen(
+                    "am start-activity -S --windowingMode  -W -n  --es cheng_app_args_kv  --es "
+                    "cheng_app_args_json  --es cheng_app_args_json_b64 ") +
+                strlen(windowing_mode) + strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) +
+                1u;
+    } else {
+      cmd_len = strlen(
+                    "am start-activity --windowingMode  -W -n  --es cheng_app_args_kv  --es "
+                    "cheng_app_args_json  --es cheng_app_args_json_b64 ") +
+                strlen(windowing_mode) + strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) +
+                1u;
+    }
+  } else {
+    if (use_reset_start) {
+      cmd_len = strlen(
+                    "am start-activity -S -W -n  --es cheng_app_args_kv  --es cheng_app_args_json  --es "
+                    "cheng_app_args_json_b64 ") +
+                strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) + 1u;
+    } else {
+      cmd_len = strlen(
+                    "am start-activity -W -n  --es cheng_app_args_kv  --es cheng_app_args_json  --es "
+                    "cheng_app_args_json_b64 ") +
+                strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) + 1u;
+    }
+  }
+  char *remote_cmd = (char *)malloc(cmd_len);
+  if (remote_cmd == NULL) {
+    free(q_activity);
+    free(q_kv);
+    free(q_json);
+    free(q_json_b64);
+    fprintf(stderr, "[mobile-run-android] direct-launch-smoke OOM building launch command\n");
+    return -1;
+  }
+  if (use_windowing_mode) {
+    if (use_reset_start) {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity -S --windowingMode %s -W -n %s --es cheng_app_args_kv %s --es "
+               "cheng_app_args_json %s --es cheng_app_args_json_b64 %s",
+               windowing_mode,
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    } else {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity --windowingMode %s -W -n %s --es cheng_app_args_kv %s --es "
+               "cheng_app_args_json %s --es cheng_app_args_json_b64 %s",
+               windowing_mode,
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    }
+  } else {
+    if (use_reset_start) {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity -S -W -n %s --es cheng_app_args_kv %s --es cheng_app_args_json %s --es "
+               "cheng_app_args_json_b64 %s",
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    } else {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity -W -n %s --es cheng_app_args_kv %s --es cheng_app_args_json %s --es "
+               "cheng_app_args_json_b64 %s",
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    }
+  }
+  char *start_argv[] = {(char *)adb, "-s", (char *)serial, "shell", remote_cmd, NULL};
   char *start_out = NULL;
   int start_rc = run_simple(start_argv, 20, &start_out);
   if (start_rc != 0) {
@@ -1167,9 +2113,19 @@ static int run_direct_launch_smoke(const char *adb,
             start_rc,
             start_out ? start_out : "");
     free(start_out);
+    free(remote_cmd);
+    free(q_activity);
+    free(q_kv);
+    free(q_json);
+    free(q_json_b64);
     return -1;
   }
   free(start_out);
+  free(remote_cmd);
+  free(q_activity);
+  free(q_kv);
+  free(q_json);
+  free(q_json_b64);
 
   int poll_times = wait_ms / 250;
   if (poll_times < 1) poll_times = 1;
@@ -1202,32 +2158,32 @@ static int run_direct_launch_smoke(const char *adb,
     fprintf(stderr, "[mobile-run-android] direct-launch-smoke missing runtime state\n");
     return -1;
   }
-  char launch_kv[4096];
+  char runtime_launch_kv[4096];
   char gate_mode[128];
   char truth_mode[128];
   char expected_framehash[128];
-  launch_kv[0] = '\0';
+  runtime_launch_kv[0] = '\0';
   gate_mode[0] = '\0';
   truth_mode[0] = '\0';
   expected_framehash[0] = '\0';
-  if (!json_get_string_field(state_text, "launch_args_kv", launch_kv, sizeof(launch_kv))) {
+  if (!json_get_string_field(state_text, "launch_args_kv", runtime_launch_kv, sizeof(runtime_launch_kv))) {
     fprintf(stderr, "[mobile-run-android] direct-launch-smoke missing launch_args_kv\n");
     free(state_text);
     return -1;
   }
-  if (!parse_kv_value(launch_kv, "gate_mode", gate_mode, sizeof(gate_mode)) ||
+  if (!parse_kv_value(runtime_launch_kv, "gate_mode", gate_mode, sizeof(gate_mode)) ||
       strcmp(gate_mode, "android-semantic-visual-1to1") != 0) {
     fprintf(stderr, "[mobile-run-android] direct-launch-smoke gate_mode is not strict visual 1:1\n");
     free(state_text);
     return -1;
   }
-  if (!parse_kv_value(launch_kv, "truth_mode", truth_mode, sizeof(truth_mode)) ||
+  if (!parse_kv_value(runtime_launch_kv, "truth_mode", truth_mode, sizeof(truth_mode)) ||
       strcmp(truth_mode, "strict") != 0) {
     fprintf(stderr, "[mobile-run-android] direct-launch-smoke truth_mode is not strict\n");
     free(state_text);
     return -1;
   }
-  if (!parse_kv_value(launch_kv, "expected_framehash", expected_framehash, sizeof(expected_framehash)) ||
+  if (!parse_kv_value(runtime_launch_kv, "expected_framehash", expected_framehash, sizeof(expected_framehash)) ||
       expected_framehash[0] == '\0') {
     fprintf(stderr, "[mobile-run-android] direct-launch-smoke missing expected_framehash\n");
     free(state_text);
@@ -1475,6 +2431,13 @@ static int prepare_android_project(const char *root,
       (void)root;
       return 0;
     }
+    const char *skip_install_env = getenv("CHENG_ANDROID_SKIP_INSTALL");
+    if (skip_install_env != NULL && strcmp(skip_install_env, "1") == 0) {
+      fprintf(stdout,
+              "[mobile-run-android] skip gradle assembleDebug: CHENG_ANDROID_SKIP_GRADLE_BUILD=1 and CHENG_ANDROID_SKIP_INSTALL=1 (allow missing apk)\n");
+      (void)root;
+      return 0;
+    }
     fprintf(stderr,
             "[mobile-run-android] CHENG_ANDROID_SKIP_GRADLE_BUILD=1 but apk missing, fallback to assembleDebug: %s\n",
             apk_path);
@@ -1525,9 +2488,11 @@ static int prepare_android_project(const char *root,
 static void usage(void) {
   fprintf(stdout,
           "Usage:\n"
-          "  mobile_run_android <entry.cheng> [--name:<appName>] [--out:<dir>] [--assets:<dir>] [--native-obj:<obj>] [--serial:<id>]\n"
+          "  mobile_run_android <entry.cheng> [--name:<appName>] [--out:<dir>] [--assets:<dir>] [--truth-dir:<dir>] [--native-obj:<obj>] [--serial:<id>]\n"
           "                     [--app-arg:<k=v>]... [--app-args-json:<abs_path>] [--runtime-state-out:<abs_path>] [--runtime-state-wait-ms:<ms>]\n"
-          "                     [--direct-launch-smoke:<expected_route_state>]\n");
+          "                     [--package:<pkg>] [--activity:<pkg/.Activity>] [--direct-launch-smoke:<expected_route_state>]\n"
+          "\n"
+          "  mobile_run_android --dump-runtime-state-only[:1] [--serial:<id>] [--package:<pkg>] [--runtime-state-out:<abs_path>]\n");
 }
 
 int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, int arg_start) {
@@ -1542,11 +2507,15 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
   const char *name = "cheng_mobile_native_run";
   const char *out_dir = NULL;
   const char *assets_dir = NULL;
+  const char *truth_dir = NULL;
   const char *native_obj = NULL;
   const char *app_args_json_path = NULL;
   const char *runtime_state_out = NULL;
   const char *serial_override = NULL;
   const char *direct_launch_smoke_route = NULL;
+  const char *package_override = NULL;
+  const char *activity_override = NULL;
+  bool dump_runtime_state_only = false;
   int wait_ms = 3000;
   StringList app_args;
   memset(&app_args, 0, sizeof(app_args));
@@ -1569,8 +2538,20 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       assets_dir = arg + strlen("--assets:");
       continue;
     }
+    if (starts_with(arg, "--truth-dir:")) {
+      truth_dir = arg + strlen("--truth-dir:");
+      continue;
+    }
     if (starts_with(arg, "--native-obj:")) {
       native_obj = arg + strlen("--native-obj:");
+      continue;
+    }
+    if (strcmp(arg, "--truth-dir") == 0) {
+      if (i + 1 >= argc) {
+        strlist_free(&app_args);
+        return 2;
+      }
+      truth_dir = argv[++i];
       continue;
     }
     if (starts_with(arg, "--app-arg:")) {
@@ -1597,16 +2578,64 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       serial_override = arg + strlen("--serial:");
       continue;
     }
+    if (starts_with(arg, "--package:")) {
+      package_override = arg + strlen("--package:");
+      continue;
+    }
+    if (starts_with(arg, "--activity:")) {
+      activity_override = arg + strlen("--activity:");
+      continue;
+    }
+    if (strcmp(arg, "--dump-runtime-state-only") == 0) {
+      dump_runtime_state_only = true;
+      continue;
+    }
+    if (starts_with(arg, "--dump-runtime-state-only:")) {
+      const char *raw = arg + strlen("--dump-runtime-state-only:");
+      dump_runtime_state_only = (raw[0] != '\0' && strcmp(raw, "0") != 0);
+      continue;
+    }
     if (starts_with(arg, "--direct-launch-smoke:")) {
       direct_launch_smoke_route = arg + strlen("--direct-launch-smoke:");
       continue;
     }
   }
 
-  if (entry == NULL) {
+  if (!dump_runtime_state_only && entry == NULL) {
     fprintf(stderr, "[mobile-run-android] missing entry source\n");
     strlist_free(&app_args);
     return 2;
+  }
+
+  char runtime_pkg_buf[256];
+  runtime_pkg_buf[0] = '\0';
+  const char *runtime_pkg = "com.unimaker.app";
+  const char *pkg_env = getenv("CHENG_ANDROID_APP_PACKAGE");
+  if (pkg_env != NULL && pkg_env[0] != '\0') runtime_pkg = pkg_env;
+  if (package_override != NULL && package_override[0] != '\0') runtime_pkg = package_override;
+  const char *activity_env = getenv("CHENG_ANDROID_APP_ACTIVITY");
+  (void)activity_env;
+  (void)activity_override;
+  (void)infer_main_activity_for_package(runtime_pkg, runtime_pkg_buf, sizeof(runtime_pkg_buf));
+
+  if (dump_runtime_state_only) {
+    char adb[PATH_MAX];
+    char serial[128];
+    if (serial_override != NULL && serial_override[0] != '\0') {
+      if (!resolve_adb_executable(adb, sizeof(adb))) {
+        fprintf(stderr, "[mobile-run-android] missing adb\n");
+        strlist_free(&app_args);
+        return 2;
+      }
+      snprintf(serial, sizeof(serial), "%s", serial_override);
+    } else if (!resolve_adb_and_serial(adb, sizeof(adb), serial, sizeof(serial))) {
+      fprintf(stderr, "[mobile-run-android] no android device/emulator detected\n");
+      strlist_free(&app_args);
+      return 1;
+    }
+    int export_rc = dump_runtime_state_snapshot(adb, serial, runtime_pkg, runtime_state_out);
+    strlist_free(&app_args);
+    return export_rc;
   }
   bool route_from_cli = strlist_has_kv_key(&app_args, "route_state");
   bool route_from_json = false;
@@ -1749,13 +2778,7 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       json = doc;
     }
   }
-  char *json_b64 = base64url_encode((const unsigned char *)json, strlen(json));
-  if (json_b64 == NULL) {
-    free(json);
-    free(kv);
-    strlist_free(&app_args);
-    return 1;
-  }
+  char *json_b64 = NULL;
 
   char adb[PATH_MAX];
   char serial[128];
@@ -1780,8 +2803,41 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     return 1;
   }
 
-  const char *pkg = "com.cheng.mobile";
-  const char *activity = "com.cheng.mobile/.ChengActivity";
+  const char *pkg = "com.unimaker.app";
+  const char *activity = "com.unimaker.app/.MainActivity";
+  pkg_env = getenv("CHENG_ANDROID_APP_PACKAGE");
+  activity_env = getenv("CHENG_ANDROID_APP_ACTIVITY");
+  char activity_auto[256];
+  activity_auto[0] = '\0';
+  if (pkg_env != NULL && pkg_env[0] != '\0') {
+    pkg = pkg_env;
+  }
+  if (package_override != NULL && package_override[0] != '\0') {
+    pkg = package_override;
+  }
+  if (activity_env != NULL && activity_env[0] != '\0') {
+    activity = activity_env;
+  }
+  if (activity_override != NULL && activity_override[0] != '\0') {
+    activity = activity_override;
+  } else if ((activity_env == NULL || activity_env[0] == '\0') &&
+             !(activity_override != NULL && activity_override[0] != '\0')) {
+    activity = infer_main_activity_for_package(pkg, activity_auto, sizeof(activity_auto));
+  }
+  if (normalize_runtime_launch_payload(&kv, &json, pkg, assets_dir, truth_dir) != 0) {
+    fprintf(stderr, "[mobile-run-android] failed to normalize runtime launch payload\n");
+    free(json);
+    free(kv);
+    strlist_free(&app_args);
+    return 1;
+  }
+  json_b64 = base64url_encode((const unsigned char *)json, strlen(json));
+  if (json_b64 == NULL) {
+    free(json);
+    free(kv);
+    strlist_free(&app_args);
+    return 1;
+  }
   fprintf(stdout,
           "[mobile-export] mode=native-obj entry=%s native_obj=%s name=%s out=%s\n",
           entry,
@@ -1790,8 +2846,7 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
           out_dir);
 
   char apk_path[PATH_MAX];
-  if (path_join(apk_path, sizeof(apk_path), project_dir, "app/build/outputs/apk/debug/app-debug.apk") != 0 ||
-      !file_exists(apk_path)) {
+  if (path_join(apk_path, sizeof(apk_path), project_dir, "app/build/outputs/apk/debug/app-debug.apk") != 0) {
     fprintf(stderr, "[mobile-run-android] missing built apk: %s\n", apk_path);
     free(json_b64);
     free(json);
@@ -1799,10 +2854,25 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     strlist_free(&app_args);
     return 1;
   }
+  bool apk_exists = file_exists(apk_path);
+  const char *skip_install_env = getenv("CHENG_ANDROID_SKIP_INSTALL");
+  bool force_skip_install = (skip_install_env != NULL && strcmp(skip_install_env, "1") == 0);
+  if (!apk_exists && !force_skip_install) {
+    fprintf(stderr, "[mobile-run-android] missing built apk: %s\n", apk_path);
+    free(json_b64);
+    free(json);
+    free(kv);
+    strlist_free(&app_args);
+    return 1;
+  }
+  if (!apk_exists && force_skip_install) {
+    fprintf(stdout,
+            "[mobile-run-android] apk missing but CHENG_ANDROID_SKIP_INSTALL=1; continue without local apk: %s\n",
+            apk_path);
+  }
   bool skip_install = false;
   bool package_already_installed = android_package_installed(adb, serial, pkg);
-  const char *skip_install_env = getenv("CHENG_ANDROID_SKIP_INSTALL");
-  if (skip_install_env != NULL && strcmp(skip_install_env, "1") == 0) {
+  if (force_skip_install) {
     skip_install = true;
   }
   if (!skip_install) {
@@ -1816,12 +2886,33 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     }
   }
   if (skip_install) {
+    if (force_skip_install && !package_already_installed) {
+      fprintf(stderr,
+              "[mobile-run-android] CHENG_ANDROID_SKIP_INSTALL=1 but package is not installed on device: %s\n",
+              pkg);
+      free(json_b64);
+      free(json);
+      free(kv);
+      strlist_free(&app_args);
+      return 1;
+    }
     if (skip_install_env != NULL && strcmp(skip_install_env, "1") == 0) {
       fprintf(stdout, "[mobile-run-android] skip adb install: CHENG_ANDROID_SKIP_INSTALL=1\n");
     } else {
       fprintf(stdout, "[mobile-run-android] skip adb install: package already installed (%s)\n", pkg);
     }
   } else {
+    int install_timeout_sec = 180;
+    const char *install_timeout_env = getenv("CHENG_ANDROID_INSTALL_TIMEOUT_SEC");
+    if (install_timeout_env != NULL && install_timeout_env[0] != '\0') {
+      long parsed = strtol(install_timeout_env, NULL, 10);
+      if (parsed >= 60 && parsed <= 3600) install_timeout_sec = (int)parsed;
+    }
+    bool install_auto_confirm = true;
+    const char *install_auto_confirm_env = getenv("CHENG_ANDROID_INSTALL_AUTO_CONFIRM");
+    if (install_auto_confirm_env != NULL && strcmp(install_auto_confirm_env, "0") == 0) {
+      install_auto_confirm = false;
+    }
     int install_rc = 1;
     int install_attempt = 0;
     for (install_attempt = 1; install_attempt <= 3; ++install_attempt) {
@@ -1829,7 +2920,12 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       char *install_argv[] = {adb, "-s", serial, "install", "-r", apk_path, NULL};
       char *install_nostream_argv[] = {adb, "-s", serial, "install", "--no-streaming", "-r", apk_path, NULL};
       char *install_out = NULL;
-      install_rc = run_simple((install_attempt == 2) ? install_nostream_argv : install_argv, 180, &install_out);
+      install_rc = run_capture_with_install_prompt((install_attempt == 2) ? install_nostream_argv : install_argv,
+                                                   &install_out,
+                                                   install_timeout_sec,
+                                                   adb,
+                                                   serial,
+                                                   install_auto_confirm);
       if (install_rc == 0) {
         free(install_out);
         break;
@@ -1841,6 +2937,13 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
               apk_path,
               install_out ? install_out : "");
       free(install_out);
+      if (install_rc == 125) {
+        fprintf(stderr,
+                "[mobile-run-android] install blocked by device lockscreen-auth prompt; "
+                "set CHENG_ANDROID_INSTALL_LOCKSCREEN_PASSWORD or preinstall %s and rerun with CHENG_ANDROID_SKIP_INSTALL=1\n",
+                pkg);
+        break;
+      }
       if (install_attempt < 3) {
         char *reconnect_argv[] = {adb, "start-server", NULL};
         (void)run_simple(reconnect_argv, 20, NULL);
@@ -1870,11 +2973,45 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     }
   }
 
-  char *force_stop[] = {adb, "-s", serial, "shell", "am", "force-stop", (char *)pkg, NULL};
-  (void)run_simple(force_stop, 10, NULL);
+  if (!android_package_installed(adb, serial, pkg)) {
+    fprintf(stderr,
+            "[mobile-run-android] target package not installed after install phase: %s (serial=%s). "
+            "disable CHENG_ANDROID_SKIP_INSTALL or preinstall package before runtime gate\n",
+            pkg,
+            serial);
+    free(json_b64);
+    free(json);
+    free(kv);
+    strlist_free(&app_args);
+    return 1;
+  }
+
+  bool no_foreground_switch =
+      env_flag_enabled("CHENG_ANDROID_1TO1_CAPTURE_NO_FOREGROUND_SWITCH", false) ||
+      env_flag_enabled("CHENG_ANDROID_NO_FOREGROUND_SWITCH", false);
+  bool no_force_stop = env_flag_enabled("CHENG_ANDROID_NO_FORCE_STOP", false);
+  bool no_reset_start = env_flag_enabled("CHENG_ANDROID_NO_RESTART", false);
+  if (no_foreground_switch) {
+    char focus_component_pre[256];
+    focus_component_pre[0] = '\0';
+    if (!expected_package_focused(adb, serial, pkg, focus_component_pre, sizeof(focus_component_pre))) {
+      fprintf(stdout,
+              "[mobile-run-android] no-foreground-switch note: target not focused before launch expected_pkg=%s current_focus=%s\n",
+              pkg,
+              focus_component_pre[0] != '\0' ? focus_component_pre : "<unknown>");
+    }
+  }
+  if (!no_force_stop) {
+    char *force_stop[] = {adb, "-s", serial, "shell", "am", "force-stop", (char *)pkg, NULL};
+    (void)run_simple(force_stop, 10, NULL);
+  } else {
+    fprintf(stdout,
+            "[mobile-run-android] skip force-stop (no-force-stop mode) pkg=%s\n",
+            pkg);
+  }
   char *rm_state[] = {adb, "-s", serial, "shell", "run-as", (char *)pkg, "rm", "-f", "files/cheng_runtime_state.json", NULL};
   (void)run_simple(rm_state, 10, NULL);
-  if (sync_truth_route_assets(adb, serial, pkg, assets_dir != NULL ? assets_dir : "", kv) != 0) {
+  if (sync_truth_route_assets(adb, serial, pkg, assets_dir != NULL ? assets_dir : "", truth_dir, kv) != 0) {
       free(json_b64);
       free(json);
       free(kv);
@@ -1882,11 +3019,39 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
       return 1;
     }
 
-  fprintf(stdout,
-          "[run-android] cmd: %s -s %s shell am start-activity -S --windowingMode 1 -W -n %s --es cheng_app_args_kv <...> --es cheng_app_args_json <...> --es cheng_app_args_json_b64 <...>\n",
-          adb,
-          serial,
-          activity);
+  const char *windowing_mode = getenv("CHENG_ANDROID_START_WINDOWING_MODE");
+  bool use_windowing_mode = (windowing_mode != NULL && windowing_mode[0] != '\0');
+  if (use_windowing_mode) {
+    if (no_reset_start) {
+      fprintf(stdout,
+              "[run-android] cmd: %s -s %s shell am start-activity --windowingMode %s -W -n %s --es cheng_app_args_kv <...> --es cheng_app_args_json <...> --es cheng_app_args_json_b64 <...>\n",
+              adb,
+              serial,
+              windowing_mode,
+              activity);
+    } else {
+      fprintf(stdout,
+              "[run-android] cmd: %s -s %s shell am start-activity -S --windowingMode %s -W -n %s --es cheng_app_args_kv <...> --es cheng_app_args_json <...> --es cheng_app_args_json_b64 <...>\n",
+              adb,
+              serial,
+              windowing_mode,
+              activity);
+    }
+  } else {
+    if (no_reset_start) {
+      fprintf(stdout,
+              "[run-android] cmd: %s -s %s shell am start-activity -W -n %s --es cheng_app_args_kv <...> --es cheng_app_args_json <...> --es cheng_app_args_json_b64 <...>\n",
+              adb,
+              serial,
+              activity);
+    } else {
+      fprintf(stdout,
+              "[run-android] cmd: %s -s %s shell am start-activity -S -W -n %s --es cheng_app_args_kv <...> --es cheng_app_args_json <...> --es cheng_app_args_json_b64 <...>\n",
+              adb,
+              serial,
+              activity);
+    }
+  }
   char *q_activity = shell_single_quote(activity);
   char *q_kv = shell_single_quote(kv);
   char *q_json = shell_single_quote(json);
@@ -1902,8 +3067,30 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     strlist_free(&app_args);
     return 1;
   }
-  size_t cmd_len = strlen("am start-activity -S --windowingMode 1 -W -n  --es cheng_app_args_kv  --es cheng_app_args_json  --es cheng_app_args_json_b64 ") +
-                   strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) + 1u;
+  size_t cmd_len = 0u;
+  if (use_windowing_mode) {
+    if (no_reset_start) {
+      cmd_len = strlen(
+                    "am start-activity --windowingMode  -W -n  --es cheng_app_args_kv  --es cheng_app_args_json  --es cheng_app_args_json_b64 ") +
+                strlen(windowing_mode) + strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) +
+                1u;
+    } else {
+      cmd_len = strlen(
+                    "am start-activity -S --windowingMode  -W -n  --es cheng_app_args_kv  --es cheng_app_args_json  --es cheng_app_args_json_b64 ") +
+                strlen(windowing_mode) + strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) +
+                1u;
+    }
+  } else {
+    if (no_reset_start) {
+      cmd_len = strlen(
+                    "am start-activity -W -n  --es cheng_app_args_kv  --es cheng_app_args_json  --es cheng_app_args_json_b64 ") +
+                strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) + 1u;
+    } else {
+      cmd_len = strlen(
+                    "am start-activity -S -W -n  --es cheng_app_args_kv  --es cheng_app_args_json  --es cheng_app_args_json_b64 ") +
+                strlen(q_activity) + strlen(q_kv) + strlen(q_json) + strlen(q_json_b64) + 1u;
+    }
+  }
   char *remote_cmd = (char *)malloc(cmd_len);
   if (remote_cmd == NULL) {
     free(q_activity);
@@ -1916,13 +3103,45 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     strlist_free(&app_args);
     return 1;
   }
-  snprintf(remote_cmd,
-           cmd_len,
-           "am start-activity -S --windowingMode 1 -W -n %s --es cheng_app_args_kv %s --es cheng_app_args_json %s --es cheng_app_args_json_b64 %s",
-           q_activity,
-           q_kv,
-           q_json,
-           q_json_b64);
+  if (use_windowing_mode) {
+    if (no_reset_start) {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity --windowingMode %s -W -n %s --es cheng_app_args_kv %s --es cheng_app_args_json %s --es cheng_app_args_json_b64 %s",
+               windowing_mode,
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    } else {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity -S --windowingMode %s -W -n %s --es cheng_app_args_kv %s --es cheng_app_args_json %s --es cheng_app_args_json_b64 %s",
+               windowing_mode,
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    }
+  } else {
+    if (no_reset_start) {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity -W -n %s --es cheng_app_args_kv %s --es cheng_app_args_json %s --es cheng_app_args_json_b64 %s",
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    } else {
+      snprintf(remote_cmd,
+               cmd_len,
+               "am start-activity -S -W -n %s --es cheng_app_args_kv %s --es cheng_app_args_json %s --es cheng_app_args_json_b64 %s",
+               q_activity,
+               q_kv,
+               q_json,
+               q_json_b64);
+    }
+  }
 
   char *start_argv[] = {adb, "-s", serial, "shell", remote_cmd, NULL};
   char *start_out = NULL;
@@ -1949,7 +3168,8 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
   bool focused_ok = false;
   char focus_component[256];
   focus_component[0] = '\0';
-  for (int focus_try = 0; focus_try < 4; ++focus_try) {
+  int focus_try_max = no_foreground_switch ? 1 : 4;
+  for (int focus_try = 0; focus_try < focus_try_max; ++focus_try) {
     if (query_current_focus_component(adb, serial, focus_component, sizeof(focus_component)) == 0 &&
         strstr(focus_component, pkg) != NULL) {
       focused_ok = true;
@@ -1965,24 +3185,31 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
     if (focus_try >= 3) {
       break;
     }
-    // Recover from AOD/NotificationShade stealing focus before startup completes.
-    char *wake_argv[] = {adb, "-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP", NULL};
-    char *menu_argv[] = {adb, "-s", serial, "shell", "input", "keyevent", "82", NULL};
-    char *collapse_argv[] = {adb, "-s", serial, "shell", "cmd", "statusbar", "collapse", NULL};
-    (void)run_simple(wake_argv, 8, NULL);
-    (void)run_simple(menu_argv, 8, NULL);
-    (void)run_simple(collapse_argv, 8, NULL);
-    usleep(300000);
-    char *retry_out = NULL;
-    int retry_rc = run_simple(start_argv, 20, &retry_out);
-    if (retry_rc != 0) {
+    if (!no_foreground_switch) {
+      // Recover from AOD/NotificationShade stealing focus before startup completes.
+      char *wake_argv[] = {adb, "-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP", NULL};
+      char *menu_argv[] = {adb, "-s", serial, "shell", "input", "keyevent", "82", NULL};
+      char *collapse_argv[] = {adb, "-s", serial, "shell", "cmd", "statusbar", "collapse", NULL};
+      (void)run_simple(wake_argv, 8, NULL);
+      (void)run_simple(menu_argv, 8, NULL);
+      (void)run_simple(collapse_argv, 8, NULL);
+      usleep(300000);
+      char *retry_out = NULL;
+      int retry_rc = run_simple(start_argv, 20, &retry_out);
+      if (retry_rc != 0) {
+        fprintf(stderr,
+                "[mobile-run-android] relaunch during focus recovery failed rc=%d\n%s\n",
+                retry_rc,
+                retry_out ? retry_out : "");
+      }
+      free(retry_out);
+      usleep(400000);
+    } else {
       fprintf(stderr,
-              "[mobile-run-android] relaunch during focus recovery failed rc=%d\n%s\n",
-              retry_rc,
-              retry_out ? retry_out : "");
+              "[mobile-run-android] no-foreground-switch mode: skip focus recovery relaunch expected_pkg=%s current_focus=%s\n",
+              pkg,
+              focus_component[0] != '\0' ? focus_component : "<unknown>");
     }
-    free(retry_out);
-    usleep(400000);
   }
   if (!focused_ok) {
     fprintf(stderr,
@@ -2086,6 +3313,9 @@ int native_mobile_run_android(const char *scripts_dir, int argc, char **argv, in
                                 pkg,
                                 activity,
                                 direct_launch_smoke_route,
+                                kv,
+                                json,
+                                json_b64,
                                 wait_ms) != 0) {
       free(state_text);
       free(json_b64);

@@ -5,6 +5,9 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 export GUI_ROOT="$ROOT"
 STRICT_PROJECT="/Users/lbcheng/UniMaker/ClaudeDesign"
 STRICT_ENTRY="/app/main.tsx"
+BIN_DIR="${CHENG_GUI_DISPATCHER_BIN_DIR:-$ROOT/bin}"
+BIN_NAME="${CHENG_GUI_DISPATCHER_BIN_NAME:-cheng_gui_scripts}"
+COMPILE_CMD="$BIN_DIR/r2c_compile_react_project"
 
 usage() {
   cat <<'EOF'
@@ -20,6 +23,17 @@ Description:
   - compile report has zero degraded_features
   - runner and desktop binaries both execute and emit mounted/draw outputs
 EOF
+}
+
+ensure_compile_cmd() {
+  if [ -x "$COMPILE_CMD" ]; then
+    return 0
+  fi
+  "$ROOT/scripts/build_script_dispatcher.sh" --out-dir "$BIN_DIR" --bin-name "$BIN_NAME" >/dev/null
+  if [ ! -x "$COMPILE_CMD" ]; then
+    echo "[verify-r2c-real] missing native compile command: $COMPILE_CMD" >&2
+    exit 1
+  fi
 }
 
 slugify() {
@@ -115,7 +129,8 @@ if [ "${STRICT_GATE_CONTEXT:-0}" = "1" ] && [ "${R2C_DESKTOP_FRONTEND:-auto}" !=
   exit 1
 fi
 
-bash "$ROOT/scripts/r2c_compile_react_project.sh" "${compile_args[@]}"
+ensure_compile_cmd
+"$COMPILE_CMD" "${compile_args[@]}"
 
 report_json="$out_dir/r2capp/r2capp_compile_report.json"
 if [ ! -f "$report_json" ]; then

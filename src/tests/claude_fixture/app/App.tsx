@@ -23,9 +23,11 @@ import TradingPage from './components/TradingPage';
 import EcomFeedPage from './components/EcomFeedPage';
 import AppMarketplace from './components/AppMarketplace';
 import UpdateCenterPage from './components/UpdateCenterPage';
+import SevenGatesPage from './components/SevenGatesPage';
 import { LocaleProvider, useLocale } from './i18n/LocaleContext';
 import { libp2pService } from './libp2p/service';
 import { libp2pEventPump } from './libp2p/eventPump';
+import { sevenGatesRuntime } from './libp2p/sevenGatesRuntime';
 import { startInboundHandler, stopInboundHandler } from './libp2p/inboundHandler';
 import { socialStore } from './libp2p/socialStore';
 import { startC2CSync, stopC2CSync } from './domain/c2c/c2cSync';
@@ -40,7 +42,7 @@ import {
   subscribeUpdateSnapshot,
   type UpdateSnapshot,
 } from './domain/update';
-import { startDistributedContentSync, stopDistributedContentSync } from './data/distributedContent';
+import { preloadPublishLocation, startDistributedContentSync, stopDistributedContentSync } from './data/distributedContent';
 import { purgeMockConversations } from './data/socialData';
 import { getFeatureFlag } from './utils/featureFlags';
 import { ensureRegionPolicy } from './utils/region';
@@ -49,6 +51,7 @@ import {
   queryOrderFromReturnUrl,
   registerPaymentReturnListener,
 } from './domain/payment/paymentApi';
+import type { SevenGateSnapshot } from './libp2p/definitions';
 
 const BaziPage = lazy(() => import('./components/BaziPage'));
 const ZiweiPage = lazy(() => import('./components/ZiweiPage'));
@@ -61,27 +64,98 @@ const MinecraftPage = lazy(() => import('./components/MinecraftPage'));
 type TabType = 'home' | 'messages' | 'nodes' | 'profile';
 type PublishMode = 'none' | 'select' | PublishType;
 
+const SEVEN_GATES_LAST_ACTIVE_PROBE_KEY = 'unimaker_seven_gates_last_active_probe_at_v1';
+const SEVEN_GATES_ACTIVE_PROBE_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+interface SevenGatesDebugEntry {
+  runActiveProbe: () => Promise<SevenGateSnapshot>;
+  runEntrypointSmoke: () => Promise<SevenGateSnapshot>;
+  getSnapshot: () => SevenGateSnapshot;
+}
+
+interface TruthRouteQuery {
+  enabled: boolean;
+  route: string;
+}
+
+function readTruthRouteQuery(): TruthRouteQuery {
+  if (typeof window === 'undefined') {
+    return { enabled: false, route: '' };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const enabled = params.get('r2c_truth') === '1';
+  const route = (params.get('r2c_route') ?? '').trim();
+  return { enabled, route };
+}
+
+function truthInitialTab(route: string): TabType {
+  if (route === 'tab_messages') return 'messages';
+  if (route === 'tab_nodes') return 'nodes';
+  if (route === 'tab_profile') return 'profile';
+  return 'home';
+}
+
+function truthInitialPublishMode(route: string): PublishMode {
+  switch (route) {
+    case 'publish_selector': return 'select';
+    case 'publish_content': return 'content';
+    case 'publish_product': return 'product';
+    case 'publish_live': return 'live';
+    case 'publish_app': return 'app';
+    case 'publish_food': return 'food';
+    case 'publish_ride': return 'ride';
+    case 'publish_job': return 'job';
+    case 'publish_hire': return 'hire';
+    case 'publish_rent': return 'rent';
+    case 'publish_sell': return 'sell';
+    case 'publish_secondhand': return 'secondhand';
+    case 'publish_crowdfunding': return 'crowdfunding';
+    default: return 'none';
+  }
+}
+
+declare global {
+  interface Window {
+    __unimakerSevenGates?: SevenGatesDebugEntry;
+  }
+}
+
 function AppContent() {
-  const [currentTab, setCurrentTab] = useState<TabType>('home');
-  const [publishMode, setPublishMode] = useState<PublishMode>('none');
-  const [showLanguageSelector, setShowLanguageSelector] = useState(false);
-  const [showTrading, setShowTrading] = useState(false);
-  const [showEcom, setShowEcom] = useState(false);
-  const [showMarketplace, setShowMarketplace] = useState(false);
-  const [showUpdateCenter, setShowUpdateCenter] = useState(false);
+  const truthQuery = readTruthRouteQuery();
+  const truthMode = truthQuery.enabled;
+  const truthRoute = truthQuery.route;
+
+  const [currentTab, setCurrentTab] = useState<TabType>(() => truthInitialTab(truthRoute));
+  const [publishMode, setPublishMode] = useState<PublishMode>(() => truthInitialPublishMode(truthRoute));
+  const [showLanguageSelector, setShowLanguageSelector] = useState(() => truthMode && truthRoute === 'lang_select');
+  const [showTrading, setShowTrading] = useState(() => truthRoute === 'trading_main' || truthRoute === 'trading_crosshair');
+  const [showEcom, setShowEcom] = useState(() => truthRoute === 'ecom_main');
+  const [showMarketplace, setShowMarketplace] = useState(() => truthRoute === 'marketplace_main');
+  const [showUpdateCenter, setShowUpdateCenter] = useState(() => truthRoute === 'update_center_main');
+  const [showSevenGates, setShowSevenGates] = useState(false);
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>(() => getUpdateSnapshot());
   const [currentApp, setCurrentApp] = useState<{ id: string; roomId?: string } | null>(null);
   const { setLocale, t } = useLocale();
   const enableC2CV2 = getFeatureFlag('c2c_rwads_v2', false);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.dispatchEvent(new Event('unimaker-app-mounted'));
+  }, []);
+
   // 检查是否首次启动
   useEffect(() => {
+    if (truthMode) {
+      return;
+    }
     purgeMockConversations();
     const languageSet = localStorage.getItem('app_language_set');
     if (!languageSet) {
       setShowLanguageSelector(true);
     }
-  }, []);
+  }, [truthMode]);
 
   useEffect(() => {
     return subscribeUpdateSnapshot((next) => {
@@ -101,10 +175,60 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    if (truthMode) {
+      return;
+    }
     let disposed = false;
     let bootstrapTimer: ReturnType<typeof setInterval> | null = null;
     let peerIdSyncTimer: ReturnType<typeof setInterval> | null = null;
     let discoveryStartupTimer: ReturnType<typeof setTimeout> | null = null;
+    sevenGatesRuntime.start('hybrid');
+
+    const readLastActiveProbeAt = (): number => {
+      try {
+        const raw = localStorage.getItem(SEVEN_GATES_LAST_ACTIVE_PROBE_KEY);
+        const value = Number(raw ?? '0');
+        if (!Number.isFinite(value) || value <= 0) {
+          return 0;
+        }
+        return Math.trunc(value);
+      } catch {
+        return 0;
+      }
+    };
+
+    const markLastActiveProbeAt = (value: number): void => {
+      try {
+        localStorage.setItem(SEVEN_GATES_LAST_ACTIVE_PROBE_KEY, String(Math.trunc(value)));
+      } catch {
+        // ignore storage write failures
+      }
+    };
+
+    const runActiveProbeWithThrottle = async (force = false): Promise<SevenGateSnapshot> => {
+      if (disposed) {
+        return sevenGatesRuntime.getSnapshot();
+      }
+      if (!force) {
+        const lastRun = readLastActiveProbeAt();
+        const now = Date.now();
+        if (lastRun > 0 && now - lastRun < SEVEN_GATES_ACTIVE_PROBE_INTERVAL_MS) {
+          return sevenGatesRuntime.getSnapshot();
+        }
+      }
+      const snapshot = await sevenGatesRuntime.runActiveProbe().catch(() => sevenGatesRuntime.getSnapshot());
+      markLastActiveProbeAt(Date.now());
+      return snapshot;
+    };
+
+    if (typeof window !== 'undefined') {
+      window.__unimakerSevenGates = {
+        runActiveProbe: () => runActiveProbeWithThrottle(true),
+        runEntrypointSmoke: () => sevenGatesRuntime.runEntrypointSmoke(),
+        getSnapshot: () => sevenGatesRuntime.getSnapshot(),
+      };
+    }
+
     const runBootstrapMaintenance = () => {
       void libp2pService.bootstrapTick().catch(() => ({}));
     };
@@ -208,6 +332,7 @@ function AppContent() {
       bootstrapTimer = setInterval(() => {
         runBootstrapMaintenance();
       }, 15_000);
+      void runActiveProbeWithThrottle(false);
     };
 
     void setup();
@@ -234,13 +359,31 @@ function AppContent() {
       }
       void libp2pService.setDiscoveryActive(false, 'app-startup');
       void libp2pService.stop();
+      if (typeof window !== 'undefined' && window.__unimakerSevenGates) {
+        delete window.__unimakerSevenGates;
+      }
     };
-  }, []);
+  }, [truthMode]);
 
   const handleLanguageSelect = (selectedLocale: string) => {
     setLocale(selectedLocale);
     setShowLanguageSelector(false);
   };
+
+  // 显示语言选择器（首次启动）
+  useEffect(() => {
+    if (
+      publishMode === 'none' ||
+      publishMode === 'select' ||
+      publishMode === 'live' ||
+      publishMode === 'livestream'
+    ) {
+      return;
+    }
+    void preloadPublishLocation().catch(() => {
+      // 发布时会兜底再次采集并给出可读错误，这里仅做预加载提速
+    });
+  }, [publishMode]);
 
   // 显示语言选择器（首次启动）
   if (showLanguageSelector) {
@@ -295,6 +438,7 @@ function AppContent() {
   };
 
   const canShowUpdateBanner =
+    !truthMode &&
     !showUpdateCenter &&
     updateSnapshot.show_update_prompt &&
     updateSnapshot.latest_manifest_verified &&
@@ -380,6 +524,10 @@ function AppContent() {
         void manualCheckForUpdates().catch(() => {
           // Update center will render current failure reason from snapshot.
         });
+        return;
+      }
+      if (page === 'seven-gates') {
+        setShowSevenGates(true);
       }
     };
 
@@ -478,6 +626,15 @@ function AppContent() {
           onBack={() => setShowMarketplace(false)}
           onOpenApp={(appId) => setCurrentApp({ id: appId })}
         />
+      </>
+    );
+  }
+
+  if (showSevenGates) {
+    return (
+      <>
+        {renderUpdateBanner()}
+        <SevenGatesPage onClose={() => setShowSevenGates(false)} />
       </>
     );
   }

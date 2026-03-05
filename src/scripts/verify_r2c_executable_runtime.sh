@@ -3,6 +3,20 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 export GUI_ROOT="$ROOT"
+BIN_DIR="${CHENG_GUI_DISPATCHER_BIN_DIR:-$ROOT/bin}"
+BIN_NAME="${CHENG_GUI_DISPATCHER_BIN_NAME:-cheng_gui_scripts}"
+COMPILE_CMD="$BIN_DIR/r2c_compile_react_project"
+
+ensure_compile_cmd() {
+  if [ -x "$COMPILE_CMD" ]; then
+    return 0
+  fi
+  "$ROOT/scripts/build_script_dispatcher.sh" --out-dir "$BIN_DIR" --bin-name "$BIN_NAME" >/dev/null
+  if [ ! -x "$COMPILE_CMD" ]; then
+    echo "[verify-r2c-exec] missing native compile command: $COMPILE_CMD" >&2
+    exit 1
+  fi
+}
 
 host="$(uname -s)"
 if [ "$host" != "Darwin" ]; then
@@ -31,7 +45,8 @@ compile_out="$out_dir/claude_exec"
 
 export R2C_PROFILE="claude"
 export STRICT_GATE_CONTEXT=1
-bash "$ROOT/scripts/r2c_compile_react_project.sh" --project "$fixture_root" --out "$compile_out" --strict
+ensure_compile_cmd
+"$COMPILE_CMD" --project "$fixture_root" --out "$compile_out" --strict
 
 app_bin="$compile_out/r2c_app_runner_macos"
 if [ ! -x "$app_bin" ]; then

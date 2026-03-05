@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPILE_SCRIPT="$ROOT/scripts/r2c_compile_react_project.sh"
+BIN_DIR="${CHENG_GUI_DISPATCHER_BIN_DIR:-$ROOT/bin}"
+BIN_NAME="${CHENG_GUI_DISPATCHER_BIN_NAME:-cheng_gui_scripts}"
+COMPILE_CMD="$BIN_DIR/r2c_compile_react_project"
 DEFAULT_PROJECT="/Users/lbcheng/UniMaker/ClaudeDesign"
 DEFAULT_ENTRY="/app/main.tsx"
 DEFAULT_OUT="$ROOT/build/claude_desktop_1to1"
@@ -32,6 +34,17 @@ Options:
   --capture                Export snapshot/state/drawlist into out_dir/run_capture
   -h, --help               Show this help
 USAGE
+}
+
+ensure_compile_cmd() {
+  if [ -x "$COMPILE_CMD" ]; then
+    return 0
+  fi
+  "$ROOT/scripts/build_script_dispatcher.sh" --out-dir "$BIN_DIR" --bin-name "$BIN_NAME" >/dev/null
+  if [ ! -x "$COMPILE_CMD" ]; then
+    echo "[run-claude-1to1] missing native compile command: $COMPILE_CMD" >&2
+    exit 1
+  fi
 }
 
 require_strict_gate_marker() {
@@ -162,7 +175,8 @@ if [ "$rebuild" -eq 0 ]; then
 fi
 
 if [ "$rebuild" -eq 1 ] || [ ! -x "$app_bin" ] || [ ! -x "$launcher_bin" ]; then
-  "$COMPILE_SCRIPT" \
+  ensure_compile_cmd
+  "$COMPILE_CMD" \
     --project "$project" \
     --entry "$entry" \
     --out "$out_dir" \

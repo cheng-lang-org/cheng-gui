@@ -1,6 +1,6 @@
 /**
  * Inbound message handler — routes incoming DM and chat-control events
- * from the nim-libp2p event pump into the local conversation storage.
+ * from the cheng-libp2p event pump into the local conversation storage.
  */
 import { libp2pEventPump } from './eventPump';
 import {

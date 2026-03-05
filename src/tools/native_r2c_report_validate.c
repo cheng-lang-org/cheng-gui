@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -381,6 +382,22 @@ static void dirname_copy(const char *path, char *out, size_t out_cap) {
   *slash = '\0';
 }
 
+static void set_contract_error(char *err, size_t err_cap, const char *fmt, ...) {
+  if (err == NULL || err_cap == 0u) return;
+  const char *prefix = "[compile-report-contract] ";
+  int used = snprintf(err, err_cap, "%s", prefix);
+  if (used < 0) return;
+  size_t pos = (size_t)used;
+  if (pos >= err_cap) {
+    err[err_cap - 1u] = '\0';
+    return;
+  }
+  va_list ap;
+  va_start(ap, fmt);
+  (void)vsnprintf(err + pos, err_cap - pos, fmt, ap);
+  va_end(ap);
+}
+
 static bool resolve_report_path(const char *report_path, const char *raw, char *out, size_t out_cap) {
   if (report_path == NULL || raw == NULL || out == NULL || out_cap == 0u) return false;
   if (raw[0] == '\0') return false;
@@ -388,7 +405,9 @@ static bool resolve_report_path(const char *report_path, const char *raw, char *
     if (snprintf(out, out_cap, "%s", raw) >= (int)out_cap) return false;
     return true;
   }
-  if (snprintf(out, out_cap, "%s", raw) < (int)out_cap && nr_file_exists(out)) {
+  struct stat st;
+  if (stat(raw, &st) == 0) {
+    if (snprintf(out, out_cap, "%s", raw) >= (int)out_cap) return false;
     return true;
   }
   char dir[PATH_MAX];
@@ -399,16 +418,20 @@ static bool resolve_report_path(const char *report_path, const char *raw, char *
 static bool validate_path_key(const char *report_path, const char *doc, const char *key, char *err, size_t err_cap) {
   char raw[PATH_MAX];
   if (!json_get_string(doc, key, raw, sizeof(raw))) {
-    snprintf(err, err_cap, "missing report field: %s", key);
+    set_contract_error(err, err_cap, "missing required key: %s", key);
+    return false;
+  }
+  if (raw[0] == '\0') {
+    set_contract_error(err, err_cap, "empty required path: %s", key);
     return false;
   }
   char resolved[PATH_MAX];
   if (!resolve_report_path(report_path, raw, resolved, sizeof(resolved))) {
-    snprintf(err, err_cap, "invalid report path: %s=%s", key, raw);
+    set_contract_error(err, err_cap, "relative-path resolve failed: %s=%s", key, raw);
     return false;
   }
   if (!nr_file_exists(resolved)) {
-    snprintf(err, err_cap, "report path not found: %s -> %s", key, resolved);
+    set_contract_error(err, err_cap, "path not found: %s -> %s", key, resolved);
     return false;
   }
   return true;
@@ -417,16 +440,20 @@ static bool validate_path_key(const char *report_path, const char *doc, const ch
 static bool ensure_semantic_render_nodes_file(const char *report_path, const char *doc, char *err, size_t err_cap) {
   char raw_path[PATH_MAX];
   if (!json_get_string(doc, "semantic_render_nodes_path", raw_path, sizeof(raw_path))) {
-    if (err != NULL) snprintf(err, err_cap, "missing semantic_render_nodes_path");
+    set_contract_error(err, err_cap, "missing required key: semantic_render_nodes_path");
+    return false;
+  }
+  if (raw_path[0] == '\0') {
+    set_contract_error(err, err_cap, "empty required path: semantic_render_nodes_path");
     return false;
   }
   char resolved[PATH_MAX];
   if (!resolve_report_path(report_path, raw_path, resolved, sizeof(resolved))) {
-    if (err != NULL) snprintf(err, err_cap, "invalid semantic_render_nodes_path: %s", raw_path);
+    set_contract_error(err, err_cap, "relative-path resolve failed: semantic_render_nodes_path=%s", raw_path);
     return false;
   }
   if (!nr_file_exists(resolved)) {
-    if (err != NULL) snprintf(err, err_cap, "semantic_render_nodes_path not found: %s", resolved);
+    set_contract_error(err, err_cap, "path not found: semantic_render_nodes_path -> %s", resolved);
     return false;
   }
   return true;
@@ -525,6 +552,85 @@ static bool validate_route_tree_file(const char *path, char *err, size_t err_cap
   return ok;
 }
 
+static bool validate_route_semantic_tree_file(const char *path, char *err, size_t err_cap) {
+  size_t n = 0u;
+  char *doc = read_file_all(path, &n);
+  if (doc == NULL || n == 0u) {
+    if (err != NULL) snprintf(err, err_cap, "cannot read route_semantic_tree_path");
+    free(doc);
+    return false;
+  }
+  bool ok = true;
+  long long route_count = 0;
+  long long semantic_total_count = 0;
+  char semantic_total_hash[128];
+  semantic_total_hash[0] = '\0';
+  if (!json_get_int64(doc, "route_count", &route_count) || route_count <= 0) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree route_count invalid");
+  }
+  if (ok && (!json_get_int64(doc, "semantic_total_count", &semantic_total_count) || semantic_total_count <= 0)) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree semantic_total_count invalid");
+  }
+  if (ok && !json_get_string(doc, "semantic_total_hash", semantic_total_hash, sizeof(semantic_total_hash))) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing semantic_total_hash");
+  }
+  if (ok) {
+    size_t hash_n = strlen(semantic_total_hash);
+    if (hash_n != 16u) {
+      ok = false;
+      if (err != NULL) snprintf(err, err_cap, "route semantic tree semantic_total_hash invalid length");
+    } else {
+      for (size_t i = 0u; i < hash_n; ++i) {
+        char ch = semantic_total_hash[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+          ok = false;
+          if (err != NULL) snprintf(err, err_cap, "route semantic tree semantic_total_hash not-lower-hex64");
+          break;
+        }
+      }
+    }
+  }
+  if (ok && strstr(doc, "\"format\":\"r2c-route-semantic-tree-v1\"") == NULL &&
+      strstr(doc, "\"format\": \"r2c-route-semantic-tree-v1\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree format mismatch");
+  }
+  if (ok && strstr(doc, "\"route\":\"home_default\"") == NULL &&
+      strstr(doc, "\"route\": \"home_default\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing home_default");
+  }
+  if (ok && strstr(doc, "\"path_signature\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing path_signature");
+  }
+  if (ok && strstr(doc, "\"node_ids\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing node_ids");
+  }
+  if (ok && strstr(doc, "\"edge_ids\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing edge_ids");
+  }
+  if (ok && strstr(doc, "\"subtree_hash\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing subtree_hash");
+  }
+  if (ok && strstr(doc, "\"subtree_node_count\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing subtree_node_count");
+  }
+  if (ok && strstr(doc, "\"component_sources\"") == NULL) {
+    ok = false;
+    if (err != NULL) snprintf(err, err_cap, "route semantic tree missing component_sources");
+  }
+  free(doc);
+  return ok;
+}
+
 static bool validate_route_layers_file(const char *path,
                                        long long expected_layer_count,
                                        char *err,
@@ -598,6 +704,11 @@ static bool validate_route_actions_file(const char *path, char *err, size_t err_
     free(doc);
     return false;
   }
+  if (strstr(doc, "\"action_script\"") != NULL) {
+    set_contract_error(err, err_cap, "route actions contains forbidden key: action_script");
+    free(doc);
+    return false;
+  }
   if (strstr(doc, "\"type\":\"launch_main\"") == NULL &&
       strstr(doc, "\"type\": \"launch_main\"") == NULL) {
     if (err != NULL) snprintf(err, err_cap, "route actions missing launch_main action");
@@ -608,29 +719,99 @@ static bool validate_route_actions_file(const char *path, char *err, size_t err_
   return true;
 }
 
-static int count_runtime_append_calls_strict(const char *runtime_doc, bool *out_has_comment_marker) {
-  if (out_has_comment_marker != NULL) *out_has_comment_marker = false;
-  if (runtime_doc == NULL) return 0;
-  int append_count = 0;
-  const char *line = runtime_doc;
-  while (*line != '\0') {
-    const char *end = line;
-    while (*end != '\0' && *end != '\n' && *end != '\r') ++end;
-    const char *p = line;
-    while (p < end && isspace((unsigned char)*p)) ++p;
-    if (p < end) {
-      if (*p == '#') {
-        if (strstr(p, "appendSemanticNode(") != NULL && out_has_comment_marker != NULL) {
-          *out_has_comment_marker = true;
-        }
-      } else if (strncmp(p, "appendSemanticNode(", 19u) == 0) {
-        append_count += 1;
+static bool runtime_map_has_route_hint(const char *runtime_map_doc, const char *route) {
+  if (runtime_map_doc == NULL || route == NULL || route[0] == '\0') return false;
+  char pat1[320];
+  char pat2[320];
+  char pat3[320];
+  char pat4[320];
+  if (snprintf(pat1, sizeof(pat1), "\"route_hint\":\"%s\"", route) >= (int)sizeof(pat1) ||
+      snprintf(pat2, sizeof(pat2), "\"route_hint\": \"%s\"", route) >= (int)sizeof(pat2) ||
+      snprintf(pat3, sizeof(pat3), "\"render_bucket\":\"%s\"", route) >= (int)sizeof(pat3) ||
+      snprintf(pat4, sizeof(pat4), "\"render_bucket\": \"%s\"", route) >= (int)sizeof(pat4)) {
+    return false;
+  }
+  return strstr(runtime_map_doc, pat1) != NULL || strstr(runtime_map_doc, pat2) != NULL ||
+         strstr(runtime_map_doc, pat3) != NULL || strstr(runtime_map_doc, pat4) != NULL;
+}
+
+static bool validate_runtime_map_route_coverage(const char *runtime_map_doc,
+                                                const char *route_actions_path,
+                                                char *err,
+                                                size_t err_cap) {
+  if (runtime_map_doc == NULL || route_actions_path == NULL || route_actions_path[0] == '\0') {
+    if (err != NULL) snprintf(err, err_cap, "semantic runtime route coverage input invalid");
+    return false;
+  }
+  size_t n = 0u;
+  char *route_doc = read_file_all(route_actions_path, &n);
+  if (route_doc == NULL || n == 0u) {
+    if (err != NULL) snprintf(err, err_cap, "cannot read route_actions_android_path for runtime map coverage");
+    free(route_doc);
+    return false;
+  }
+  int seen = 0;
+  const char *p = route_doc;
+  while ((p = strstr(p, "\"route\"")) != NULL) {
+    const char *q = strchr(p, ':');
+    if (q == NULL) break;
+    q += 1;
+    while (*q != '\0' && isspace((unsigned char)*q)) q += 1;
+    if (*q != '"') {
+      p += 7;
+      continue;
+    }
+    q += 1;
+    const char *end = q;
+    while (*end != '\0' && *end != '"') {
+      if (*end == '\\' && end[1] != '\0') {
+        end += 2;
+      } else {
+        end += 1;
       }
     }
-    if (*end == '\0') break;
-    line = end + 1;
+    if (*end != '"') break;
+    size_t route_len = (size_t)(end - q);
+    if (route_len > 0u && route_len < 128u) {
+      char route[128];
+      memcpy(route, q, route_len);
+      route[route_len] = '\0';
+      seen += 1;
+      if (!runtime_map_has_route_hint(runtime_map_doc, route)) {
+        if (err != NULL) snprintf(err, err_cap, "semantic runtime map missing route coverage: %s", route);
+        free(route_doc);
+        return false;
+      }
+    }
+    p = end + 1;
   }
-  return append_count;
+  free(route_doc);
+  if (seen <= 0) {
+    if (err != NULL) snprintf(err, err_cap, "route_actions_android_path has no route entries");
+    return false;
+  }
+  return true;
+}
+
+static bool runtime_contains_forbidden_semantic_append(const char *runtime_doc) {
+  if (runtime_doc == NULL) return false;
+  return strstr(runtime_doc, "appendSemanticNode(") != NULL;
+}
+
+static bool runtime_has_component_executor_api(const char *runtime_doc) {
+  if (runtime_doc == NULL) return false;
+  const char *required[] = {
+      "fn mountComponentUnit(",
+      "fn updateComponentUnit(",
+      "fn unmountComponentUnit(",
+      "fn mountGenerated(",
+      "fn dispatchFromPage(",
+      "fn resolveTargetAt(",
+  };
+  for (size_t i = 0u; i < sizeof(required) / sizeof(required[0]); ++i) {
+    if (strstr(runtime_doc, required[i]) == NULL) return false;
+  }
+  return true;
 }
 
 NativeRunResult nr_run_command(char *const argv[], const char *log_path, int timeout_sec) {
@@ -771,6 +952,7 @@ int nr_validate_compile_report(const char *report_path,
       "effect_plan_path",
       "third_party_rewrite_report_path",
       "route_tree_path",
+      "route_semantic_tree_path",
       "route_layers_path",
       "route_actions_android_path",
       "perf_summary_path",
@@ -817,16 +999,37 @@ int nr_validate_compile_report(const char *report_path,
   if (!json_get_string(doc, "route_tree_path", route_tree_raw, sizeof(route_tree_raw)) ||
       !resolve_report_path(report_path, route_tree_raw, route_tree_path, sizeof(route_tree_path)) ||
       !validate_route_tree_file(route_tree_path, err, err_cap)) {
-    if (err != NULL && err[0] == '\0') snprintf(err, err_cap, "route_tree_path invalid");
+    if (err != NULL && err[0] == '\0') {
+      set_contract_error(err, err_cap, "route_tree_path invalid");
+    }
     free(doc);
     return 1;
   }
   char route_layers_raw[PATH_MAX];
   char route_layers_path[PATH_MAX];
+  char route_semantic_tree_raw[PATH_MAX];
+  char route_semantic_tree_path[PATH_MAX];
   if (!json_get_string(doc, "route_layers_path", route_layers_raw, sizeof(route_layers_raw)) ||
       !resolve_report_path(report_path, route_layers_raw, route_layers_path, sizeof(route_layers_path)) ||
       !validate_route_layers_file(route_layers_path, layer_count, err, err_cap)) {
-    if (err != NULL && err[0] == '\0') snprintf(err, err_cap, "route_layers_path invalid");
+    if (err != NULL && err[0] == '\0') {
+      set_contract_error(err, err_cap, "route_layers_path invalid");
+    }
+    free(doc);
+    return 1;
+  }
+  if (!json_get_string(doc,
+                       "route_semantic_tree_path",
+                       route_semantic_tree_raw,
+                       sizeof(route_semantic_tree_raw)) ||
+      !resolve_report_path(report_path,
+                           route_semantic_tree_raw,
+                           route_semantic_tree_path,
+                           sizeof(route_semantic_tree_path)) ||
+      !validate_route_semantic_tree_file(route_semantic_tree_path, err, err_cap)) {
+    if (err != NULL && err[0] == '\0') {
+      set_contract_error(err, err_cap, "route_semantic_tree_path invalid");
+    }
     free(doc);
     return 1;
   }
@@ -835,7 +1038,9 @@ int nr_validate_compile_report(const char *report_path,
   if (!json_get_string(doc, "route_actions_android_path", route_actions_raw, sizeof(route_actions_raw)) ||
       !resolve_report_path(report_path, route_actions_raw, route_actions_path, sizeof(route_actions_path)) ||
       !validate_route_actions_file(route_actions_path, err, err_cap)) {
-    if (err != NULL && err[0] == '\0') snprintf(err, err_cap, "route_actions_android_path invalid");
+    if (err != NULL && err[0] == '\0') {
+      set_contract_error(err, err_cap, "route_actions_android_path invalid");
+    }
     free(doc);
     return 1;
   }
@@ -877,21 +1082,17 @@ int nr_validate_compile_report(const char *report_path,
     free(doc);
     return 1;
   }
-  bool has_append_comment_marker = false;
-  int append_count = count_runtime_append_calls_strict(runtime_doc, &has_append_comment_marker);
-  if (has_append_comment_marker) {
-    if (err != NULL) snprintf(err, err_cap, "generated runtime contains commented appendSemanticNode markers");
+  if (runtime_contains_forbidden_semantic_append(runtime_doc)) {
+    if (err != NULL) {
+      snprintf(err, err_cap, "generated runtime contains forbidden semantic fallback: appendSemanticNode");
+    }
     free(runtime_doc);
     free(doc);
     return 1;
   }
-  if (append_count < (int)semantic_nodes) {
+  if (!runtime_has_component_executor_api(runtime_doc)) {
     if (err != NULL) {
-      snprintf(err,
-               err_cap,
-               "generated runtime semantic nodes insufficient: append=%d expected=%lld",
-               append_count,
-               semantic_nodes);
+      snprintf(err, err_cap, "generated runtime missing component executor APIs (mount/update/unmount)");
     }
     free(runtime_doc);
     free(doc);
@@ -978,7 +1179,6 @@ int nr_validate_compile_report(const char *report_path,
     return 1;
   }
   int rt_map_nodes = json_count_key_occurrence(rt_map_doc, "node_id");
-  free(rt_map_doc);
   if (rt_map_nodes != (int)semantic_nodes) {
     if (err != NULL) {
       snprintf(err,
@@ -987,9 +1187,16 @@ int nr_validate_compile_report(const char *report_path,
                rt_map_nodes,
                semantic_nodes);
     }
+    free(rt_map_doc);
     free(doc);
     return 1;
   }
+  if (!validate_runtime_map_route_coverage(rt_map_doc, route_actions_path, err, err_cap)) {
+    free(rt_map_doc);
+    free(doc);
+    return 1;
+  }
+  free(rt_map_doc);
 
   free(doc);
   return 0;

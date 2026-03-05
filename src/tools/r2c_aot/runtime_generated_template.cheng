@@ -1,1140 +1,518 @@
 import gui/browser/web
-import gui/browser/engine/storage/store as storageStore
 import gui/browser/r2capp/ime_bridge
-import gui/browser/r2capp/webapi
-import gui/browser/r2capp/utfzh_editor
 import gui/browser/r2capp/utfzh_bridge
-import gui/render/drawlist_ir as drawir
+import gui/browser/r2capp/utfzh_editor
 
 type
-    SemanticNode = ref
-        nodeId: str
-        sourceModule: str
-        jsxPath: str
-        role: str
-        text: str
-        propId: str
-        className: str
-        styleText: str
-        testId: str
-        eventBinding: str
-        hookSlot: str
-        routeHint: str
-        runtimeIndex: int32
-        renderBucket: str
-        hitTestId: str
+    ComponentUnit = ref
+        componentId: str
+        routeState: str
+        mounted: bool
+        mountCount: int32
+        updateCount: int32
+        unmountCount: int32
 
 var mountedPage: web.BrowserPage = nil
-var semanticNodes: SemanticNode[]
-var sideEffectBridge: webapi.SideEffectBridge = nil
+var componentUnits: ComponentUnit[]
 
-fn ensureSideEffectBridge() =
-    if sideEffectBridge != nil:
-        return
-    sideEffectBridge = webapi.newSideEffectBridge()
-
-fn appendSemanticNodeRef(items: var SemanticNode[], item: SemanticNode) =
-    let idx = len(items)
-    setLen(items, idx + 1)
-    items[idx] = item
-
-fn semanticNodeAt(items: var SemanticNode[], idx: int32): SemanticNode =
-    if idx < int32(0):
-        return nil
-    if idx >= len(items):
-        return nil
-    return items[idx]
-
-fn cEq(a: char, b: char): bool =
-    return int32(a) == int32(b)
-
-fn cNe(a: char, b: char): bool =
-    return int32(a) != int32(b)
-
-fn cLt(a: char, b: char): bool =
-    return int32(a) < int32(b)
-
-fn cLe(a: char, b: char): bool =
-    return int32(a) <= int32(b)
-
-fn cGe(a: char, b: char): bool =
-    return int32(a) >= int32(b)
-
-fn safeLen(text: str): int32 =
-    if text == nil:
-        return int32(0)
-    return len(text)
-
-fn strEq(a: str, b: str): bool =
-    let aLen = safeLen(a)
-    let bLen = safeLen(b)
-    if aLen < bLen:
+fn strEq(a, b: str): bool =
+    if len(a) < len(b):
         return false
-    if aLen > bLen:
+    if len(a) > len(b):
         return false
     var idx: int32 = int32(0)
-    while idx < aLen:
-        if cNe(a[idx], b[idx]):
+    while idx < len(a):
+        if int32(a[idx]) != int32(b[idx]):
             return false
         idx = idx + int32(1)
     return true
 
-fn hasPrefix(text: str, prefix: str): bool =
-    let tLen = safeLen(text)
-    let pLen = safeLen(prefix)
-    if tLen < pLen:
-        return false
-    var idx: int32 = int32(0)
-    while idx < pLen:
-        if cNe(text[idx], prefix[idx]):
-            return false
-        idx = idx + int32(1)
-    return true
+fn appendComponentUnit(componentId, routeState: str) =
+    var unit: ComponentUnit
+    new(unit)
+    unit.componentId = componentId
+    unit.routeState = routeState
+    unit.mounted = false
+    unit.mountCount = int32(0)
+    unit.updateCount = int32(0)
+    unit.unmountCount = int32(0)
+    let idx = len(componentUnits)
+    setLen(componentUnits, idx + int32(1))
+    componentUnits[idx] = unit
 
-fn lowerAsciiChar(ch: char): char =
-    if cGe(ch, 'A') && cLe(ch, 'Z'):
-        return char(int32(ch) + int32(32))
-    return ch
-
-fn lowerAscii(text: str): str =
-    if safeLen(text) <= int32(0):
-        return ""
-    var out: str = ""
-    var idx: int32 = int32(0)
-    while idx < safeLen(text):
-        out = out + charToStr(lowerAsciiChar(text[idx]))
-        idx = idx + int32(1)
-    return out
-
-fn containsText(text: str, needle: str): bool =
-    let tLen = safeLen(text)
-    let nLen = safeLen(needle)
-    if nLen <= int32(0):
-        return true
-    if tLen < nLen:
-        return false
-    var idx: int32 = int32(0)
-    while idx + nLen <= tLen:
-        var matched = true
-        var j: int32 = int32(0)
-        while j < nLen:
-            if cNe(text[idx + j], needle[j]):
-                matched = false
-                break
-            j = j + int32(1)
-        if matched:
-            return true
-        idx = idx + int32(1)
-    return false
-
-fn stripHash(selector: str): str =
-    if safeLen(selector) > int32(0) && cEq(selector[0], '#'):
-        return selector[1..<len(selector)]
-    return selector
-
-fn dashToUnderscore(text: str): str =
-    if safeLen(text) <= int32(0):
-        return ""
-    var out: str = ""
-    var idx: int32 = int32(0)
-    while idx < safeLen(text):
-        let ch = text[idx]
-        if cEq(ch, '-'):
-            out = out + "_"
-        else:
-            out = out + charToStr(ch)
-        idx = idx + int32(1)
-    return out
-
-fn intToStr(value: int32): str =
-    if value == int32(0):
-        return "0"
-    var neg = false
-    var n = value
-    if n < int32(0):
-        neg = true
-        n = -n
-    var outText: str = ""
-    while n > int32(0):
-        let d = n % int32(10)
-        outText = charToStr(char(int32('0') + d)) + outText
-        n = n / int32(10)
-    if neg:
-        outText = "-" + outText
-    return outText
-
-fn boolToStr(value: bool): str =
-    if value:
-        return "true"
-    return "false"
-
-fn maxInt(a, b: int32): int32 =
-    if a >= b:
-        return a
-    return b
-
-fn minInt(a, b: int32): int32 =
-    if a <= b:
-        return a
-    return b
-
-fn parsePayloadInt(payload: str, key: str, fallback: int32): int32 =
-    if safeLen(payload) == int32(0) || safeLen(key) == int32(0):
-        return fallback
-    let pattern = key + "="
-    let pLen = safeLen(pattern)
-    var idx: int32 = int32(0)
-    while idx + pLen <= safeLen(payload):
-        var ok = true
-        var j: int32 = int32(0)
-        while j < pLen:
-            if cNe(payload[idx + j], pattern[j]):
-                ok = false
-                break
-            j = j + int32(1)
-        if ok:
-            var pos = idx + pLen
-            var sign: int32 = int32(1)
-            if pos < safeLen(payload) && cEq(payload[pos], '-'):
-                sign = int32(-1)
-                pos = pos + int32(1)
-            var value: int32 = int32(0)
-            var saw = false
-            while pos < safeLen(payload):
-                let ch = payload[pos]
-                if cGe(ch, '0') && cLe(ch, '9'):
-                    saw = true
-                    value = value * int32(10) + int32(int32(ch) - int32('0'))
-                    pos = pos + int32(1)
-                else:
-                    break
-            if saw:
-                return value * sign
-            return fallback
-        idx = idx + int32(1)
-    return fallback
-
-fn reorderDrag(page: web.BrowserPage, fromIdx: int32, toIdx: int32) =
-    if page == nil:
+fn ensureComponentUnits() =
+    if len(componentUnits) > int32(0):
         return
-    let order = page.r2cDragOrderText
-    var a = 'A'
-    var b = 'B'
-    var c = 'C'
-    if safeLen(order) >= int32(5):
-        a = order[0]
-        b = order[2]
-        c = order[4]
-    var na = a
-    var nb = b
-    var nc = c
-    if (fromIdx == int32(0) && toIdx == int32(1)) || (fromIdx == int32(1) && toIdx == int32(0)):
-        na = b
-        nb = a
-    elif fromIdx == int32(0) && toIdx == int32(2):
-        na = b
-        nb = c
-        nc = a
-    elif (fromIdx == int32(1) && toIdx == int32(2)) || (fromIdx == int32(2) && toIdx == int32(1)):
-        na = a
-        nb = c
-        nc = b
-    elif fromIdx == int32(2) && toIdx == int32(0):
-        na = c
-        nb = a
-        nc = b
-    page.r2cDragOrderText = charToStr(na) + "," + charToStr(nb) + "," + charToStr(nc)
+    appendComponentUnit("cu_0", "__R2C_DEFAULT_ROUTE__")
 
-fn appendSemanticNode(
-    nodeId, sourceModule, jsxPath, role, text, propId, className, styleText, testId, eventBinding, hookSlot, routeHint: str,
-    runtimeIndex: int32, renderBucket, hitTestId: str
-) =
-    var node: SemanticNode
-    new(node)
-    node.nodeId = nodeId
-    node.sourceModule = sourceModule
-    node.jsxPath = jsxPath
-    node.role = role
-    node.text = text
-    node.propId = propId
-    node.className = className
-    node.styleText = styleText
-    node.testId = testId
-    node.eventBinding = eventBinding
-    node.hookSlot = hookSlot
-    node.routeHint = routeHint
-    node.runtimeIndex = runtimeIndex
-    node.renderBucket = renderBucket
-    node.hitTestId = hitTestId
-    appendSemanticNodeRef(semanticNodes, node)
-
-fn ensureSemanticNodes() =
-    if len(semanticNodes) > int32(0):
-        return
-__R2C_SEMANTIC_NODE_APPENDS__
-
-fn ensureDefaults(page: web.BrowserPage) =
-    if page == nil:
-        return
-    if len(page.r2cApp) == 0:
-        page.r2cApp = "__R2C_PROJECT_NAME__"
-    if len(page.r2cTextWelcome) == 0:
-        page.r2cTextWelcome = "__R2C_TEXT_WELCOME__"
-    if len(page.r2cTextSelectLanguage) == 0:
-        page.r2cTextSelectLanguage = "__R2C_TEXT_SELECT_LANGUAGE__"
-    if len(page.r2cTextContinue) == 0:
-        page.r2cTextContinue = "__R2C_TEXT_CONTINUE__"
-    if len(page.r2cTextSelectPrompt) == 0:
-        page.r2cTextSelectPrompt = "__R2C_TEXT_SELECT_PROMPT__"
-    if len(page.r2cTextSkipDefault) == 0:
-        page.r2cTextSkipDefault = "__R2C_TEXT_SKIP__"
-    if len(page.r2cDragOrderText) == 0:
-        page.r2cDragOrderText = "A,B,C"
-    if len(page.r2cCurrentTab) == 0:
-        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-    if len(page.r2cLocale) == 0:
-        page.r2cLocale = storageStore.getValue(page.storage, "app_locale")
-        if len(page.r2cLocale) == 0:
-            page.r2cLocale = "zh-CN"
-    if len(page.r2cCookieText) == 0:
-        page.r2cCookieText = storageStore.getValue(page.storage, "cookie")
-    if page.options.viewportWidth <= int32(0):
-        page.options.viewportWidth = int32(960)
-    elif page.options.viewportWidth > int32(4096):
-        page.options.viewportWidth = int32(960)
-    if page.options.viewportHeight <= int32(0):
-        page.options.viewportHeight = int32(540)
-    elif page.options.viewportHeight > int32(4096):
-        page.options.viewportHeight = int32(540)
-    page.r2cUtfZhStrict = true
-    if page.r2cUtfZhEnabled == false:
-        page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
-    utfzh_editor.ensureEditorState(page)
-
-fn isTradingRoute(route: str): bool =
-    return hasPrefix(route, "trading_")
-
-fn isPublishRoute(route: str): bool =
-    return hasPrefix(route, "publish_")
-
-fn routeTitle(route: str): str =
-__R2C_ROUTE_TITLE_CASES__
-    if len(route) > 0:
-        return route
-    return "__R2C_PROJECT_NAME__"
+fn componentUnitForRoute(routeState: str): ComponentUnit =
+    var idx: int32 = int32(0)
+    while idx < len(componentUnits):
+        let unit = componentUnits[idx]
+        if unit != nil && strEq(unit.routeState, routeState):
+            return unit
+        idx = idx + int32(1)
+    return nil
 
 fn isKnownRoute(route: str): bool =
 __R2C_KNOWN_ROUTE_CASES__
     return false
 
+fn normalizeSelector(targetSelector: str): str =
+    if len(targetSelector) <= int32(0):
+        return ""
+    if strEq(targetSelector, "#"):
+        return ""
+    if targetSelector[0] == '#':
+        return targetSelector[1..<len(targetSelector)]
+    return targetSelector
+
 fn routeFromSelectorId(id: str): str =
-    if len(id) == 0:
+    if len(id) == int32(0):
         return ""
     if strEq(id, "publish-cancel") || strEq(id, "publish-close") || strEq(id, "publish-dismiss") || strEq(id, "cancel-publish"):
         return "__R2C_DEFAULT_ROUTE__"
     if strEq(id, "publish-selector-cancel") || strEq(id, "publish-selector-close"):
         return "__R2C_DEFAULT_ROUTE__"
-__R2C_SELECTOR_ROUTE_CASES__
-    let normalized = dashToUnderscore(id)
-    if isKnownRoute(normalized):
-        return normalized
-    return ""
-
-fn isCancelIntent(textLower, textRaw, selectorId, jsxPath: str): bool =
-    let sid = lowerAscii(selectorId)
-    let path = lowerAscii(jsxPath)
-    if containsText(sid, "cancel") || containsText(sid, "close") || containsText(sid, "dismiss"):
-        return true
-    if containsText(path, "cancel") || containsText(path, "close") || containsText(path, "dismiss"):
-        return true
-    if strEq(trimLine(textRaw), "x") || strEq(trimLine(textRaw), "X") || strEq(trimLine(textRaw), "×"):
-        return true
-    if containsText(textLower, "cancel") || containsText(textLower, "annuler") || containsText(textLower, "abbrechen"):
-        return true
-    if containsText(textRaw, "取消") || containsText(textRaw, "キャンセル") || containsText(textRaw, "취소") || containsText(textRaw, "إلغاء"):
-        return true
-    return false
-
-fn inferRouteHint(node: SemanticNode): str =
-    if node == nil:
-        return ""
-    let source = lowerAscii(node.sourceModule + "|" + node.jsxPath + "|" + node.renderBucket + "|" + node.propId + "|" + node.testId)
-    if containsText(source, "language"):
-        return "lang_select"
-    if containsText(source, "publish"):
-        if containsText(source, "crowdfunding"):
-            return "publish_crowdfunding"
-        if containsText(source, "secondhand"):
-            return "publish_secondhand"
-        if containsText(source, "product"):
-            return "publish_product"
-        if containsText(source, "content"):
-            return "publish_content"
-        if containsText(source, "food"):
-            return "publish_food"
-        if containsText(source, "ride"):
-            return "publish_ride"
-        if containsText(source, "rent"):
-            return "publish_rent"
-        if containsText(source, "sell"):
-            return "publish_sell"
-        if containsText(source, "hire"):
-            return "publish_hire"
-        if containsText(source, "job"):
-            return "publish_job"
-        if containsText(source, "live"):
-            return "publish_live"
-        if containsText(source, "app"):
-            return "publish_app"
-        return "publish_selector"
-    if containsText(source, "marketplace"):
-        return "marketplace_main"
-    if containsText(source, "update_center") || containsText(source, "updatecenter"):
-        return "update_center_main"
-    if containsText(source, "ecom"):
-        return "ecom_main"
-    if containsText(source, "trading") || containsText(source, "kline") || containsText(source, "chart"):
-        return "trading_main"
-    if containsText(source, "message") || containsText(source, "chat"):
-        return "tab_messages"
-    if containsText(source, "node"):
-        return "tab_nodes"
-    if containsText(source, "profile") || containsText(source, "wallet"):
-        return "tab_profile"
-    if containsText(source, "home"):
+    if strEq(id, "tab-home"):
         return "home_default"
+    if strEq(id, "tab-messages"):
+        return "tab_messages"
+    if strEq(id, "tab-publish"):
+        return "publish_selector"
+    if strEq(id, "tab-nodes"):
+        return "tab_nodes"
+    if strEq(id, "tab-profile"):
+        return "tab_profile"
+    if strEq(id, "sidebar-open") || strEq(id, "home-sidebar-open") || strEq(id, "menu-open"):
+        return "sidebar_open"
+__R2C_SELECTOR_ROUTE_CASES__
     return ""
 
-fn effectiveRouteHint(node: SemanticNode): str =
-    if node == nil:
-        return ""
-    let inferred = inferRouteHint(node)
-    if len(node.routeHint) <= 0:
-        return inferred
-    if strEq(node.routeHint, "publish_selector") && len(inferred) > 0 && ! strEq(inferred, "publish_selector"):
-        return inferred
-    if strEq(node.routeHint, "trading_main") && len(inferred) > 0 && ! strEq(inferred, "trading_main"):
-        return inferred
-    if strEq(node.routeHint, "home_default") && len(inferred) > 0 && ! strEq(inferred, "home_default"):
-        return inferred
-    return node.routeHint
-
-fn nodeVisibleForRoute(node: SemanticNode, route: str): bool =
-    if node == nil:
-        return false
-    let hint = effectiveRouteHint(node)
-    if strEq(route, "lang_select"):
-        if strEq(hint, "lang_select"):
-            return true
-        if strEq(hint, "home") || strEq(hint, "home_default") || hasPrefix(hint, "home_"):
-            return true
-        return false
-    if len(hint) == 0:
-        if strEq(route, "lang_select"):
-            return false
-        return true
-    if strEq(hint, route):
-        return true
-    if hasPrefix(route, hint + "_"):
-        return true
-    if strEq(hint, "home") && hasPrefix(route, "home_"):
-        return true
-    if strEq(hint, "home_default") && hasPrefix(route, "home_"):
-        return true
-    if strEq(hint, "publish") && hasPrefix(route, "publish_"):
-        return true
-    if strEq(hint, "publish_selector") && hasPrefix(route, "publish_"):
-        return true
-    if strEq(hint, "trading") && hasPrefix(route, "trading_"):
-        return true
-    if strEq(hint, "trading_main") && hasPrefix(route, "trading_"):
-        return true
-    if strEq(route, "ecom_main"):
-        if strEq(hint, "ecom_main") || strEq(hint, "update_center_main") || strEq(hint, "marketplace_main") || strEq(hint, "trading_main"):
-            return true
-    if strEq(route, "marketplace_main"):
-        if strEq(hint, "marketplace_main") || strEq(hint, "update_center_main") || strEq(hint, "ecom_main"):
-            return true
-    if strEq(route, "update_center_main"):
-        if strEq(hint, "update_center_main") || strEq(hint, "ecom_main") || strEq(hint, "marketplace_main"):
-            return true
-    return false
-
-fn nodeIsMeta(node: SemanticNode): bool =
-    if node == nil:
-        return true
-    if hasPrefix(node.jsxPath, "event:"):
-        return true
-    if hasPrefix(node.jsxPath, "hook:"):
-        return true
-    return false
-
-fn nodeRenderable(node: SemanticNode): bool =
-    if node == nil:
-        return false
-    if nodeIsMeta(node):
-        return false
-    if len(node.text) > 0:
-        return true
-    if len(node.eventBinding) > 0 && len(node.propId) > 0:
-        return true
-    if len(node.eventBinding) > 0 && len(node.testId) > 0:
-        return true
-    return false
-
-fn hexNibble(ch: char): int32 =
-    if cGe(ch, '0') && cLe(ch, '9'):
-        return int32(ch) - int32('0')
-    if cGe(ch, 'a') && cLe(ch, 'f'):
-        return int32(ch) - int32('a') + int32(10)
-    if cGe(ch, 'A') && cLe(ch, 'F'):
-        return int32(ch) - int32('A') + int32(10)
-    return int32(-1)
-
-fn decodeHexPayload(hexText: str): str =
-    if len(hexText) <= int32(1):
-        return ""
-    var out: str = ""
-    var idx: int32 = int32(0)
-    while idx + int32(1) < len(hexText):
-        let hi = hexNibble(hexText[idx])
-        let lo = hexNibble(hexText[idx + int32(1)])
-        if hi < int32(0) || lo < int32(0):
-            break
-        out = out + charToStr(char(hi * int32(16) + lo))
-        idx = idx + int32(2)
-    return out
-
-fn resolveEncodedText(text: str): str =
-    if hasPrefix(text, "__HEX__"):
-        return decodeHexPayload(text[7..<len(text)])
-    return text
-
-fn nodeLabel(node: SemanticNode): str =
-    if node == nil:
-        return ""
-    if len(node.text) > 0:
-        return resolveEncodedText(node.text)
-    if len(node.propId) > 0:
-        return "#" + node.propId
-    if len(node.testId) > 0:
-        return "[" + node.testId + "]"
-    return node.role
-
-fn nodeIndentLevel(node: SemanticNode): int32 =
-    if node == nil || len(node.jsxPath) == 0:
-        return int32(0)
-    var level: int32 = int32(0)
-    var idx: int32 = int32(0)
-    while idx < len(node.jsxPath):
-        if cEq(node.jsxPath[idx], '/'):
-            level = level + int32(1)
-        idx = idx + int32(1)
-    if level > int32(7):
-        level = int32(7)
-    return level
-
-fn nodeBlockColor(node: SemanticNode): uint32 =
-    if node == nil:
-        return uint32(0)
-    let classes = lowerAscii(node.className)
-    if containsText(classes, "bg-purple-500"):
-        return uint32(0xFF8B5CF6)
-    if containsText(classes, "bg-purple-100"):
-        return uint32(0xFFE9D5FF)
-    if containsText(classes, "bg-gray-50"):
-        return uint32(0xFFF9FAFB)
-    if containsText(classes, "bg-gray-100"):
-        return uint32(0xFFF3F4F6)
-    if containsText(classes, "bg-white"):
-        return uint32(0xFFFFFFFF)
-    if containsText(classes, "bg-") || len(node.styleText) > 0:
-        return uint32(0xFFF8FAFC)
-    if len(node.propId) > 0 || len(node.testId) > 0:
-        return uint32(0xFFF1F5F9)
-    return uint32(0)
-
-fn nodeSelector(node: SemanticNode): str =
-    if node == nil:
-        return ""
-    if len(node.propId) > 0:
-        return "#" + node.propId
-    if len(node.hitTestId) > 0:
-        return "#" + node.hitTestId
-    if len(node.testId) > 0:
-        return "#" + node.testId
-    return ""
-
-fn firstTextChild(node: SemanticNode): str =
-    if node == nil:
-        return ""
-    if len(node.jsxPath) <= int32(0):
-        return ""
-    let prefix = node.jsxPath + "/"
-    var idx: int32 = int32(0)
-    while idx < len(semanticNodes):
-        let child = semanticNodeAt(semanticNodes, idx)
-        if child != nil && hasPrefix(child.jsxPath, prefix) && strEq(child.role, "text"):
-            let txt = resolveEncodedText(child.text)
-            if len(txt) > int32(0):
-                return txt
-        idx = idx + int32(1)
-    return ""
-
-fn findNodeBySelector(selector: str): SemanticNode =
-    var idx: int32 = int32(0)
-    while idx < len(semanticNodes):
-        let node = semanticNodeAt(semanticNodes, idx)
-        if node != nil && strEq(nodeSelector(node), selector):
-            return node
-        idx = idx + int32(1)
-    return nil
-
-fn roleColor(role: str): uint32 =
-    if strEq(role, "text"):
-        return uint32(0xFF0F172A)
-    if strEq(role, "component"):
-        return uint32(0xFF334155)
-    if strEq(role, "element"):
-        return uint32(0xFF1E293B)
-    return uint32(0xFF475569)
-
-fn nodeTextColor(node: SemanticNode): uint32 =
-    if node == nil:
-        return uint32(0xFF0F172A)
-    let classes = lowerAscii(node.className)
-    if containsText(classes, "text-white"):
-        return uint32(0xFFFFFFFF)
-    if containsText(classes, "text-gray-500"):
-        return uint32(0xFF6B7280)
-    if containsText(classes, "text-gray-400"):
-        return uint32(0xFF9CA3AF)
-    if containsText(classes, "text-purple-600"):
-        return uint32(0xFF7C3AED)
-    if containsText(classes, "text-purple-200"):
-        return uint32(0xFFDDD6FE)
-    if containsText(classes, "text-purple-500"):
-        return uint32(0xFF8B5CF6)
-    if containsText(classes, "text-gray-700"):
-        return uint32(0xFF374151)
-    if containsText(classes, "text-gray-800"):
-        return uint32(0xFF1F2937)
-    return roleColor(node.role)
-
-fn nodeFontSize(node: SemanticNode): float =
-    if node == nil:
-        return 13.0
-    let classes = lowerAscii(node.className)
-    if containsText(classes, "text-2xl"):
-        return 30.0
-    if containsText(classes, "text-xl"):
-        return 24.0
-    if containsText(classes, "text-lg"):
-        return 18.0
-    if containsText(classes, "text-base"):
-        return 14.0
-    if containsText(classes, "text-sm"):
-        return 12.0
-    if containsText(classes, "text-xs"):
-        return 11.0
-    if strEq(node.role, "text"):
-        return 12.0
-    return 13.0
-
-fn activeRoute(page: web.BrowserPage): str =
-    if page == nil:
-        return "__R2C_DEFAULT_ROUTE__"
-    if page.r2cShowLanguageSelector:
-        return "lang_select"
-    if len(page.r2cCurrentTab) > 0:
-        return page.r2cCurrentTab
-    return "__R2C_DEFAULT_ROUTE__"
-
-fn strictRoundtripText(page: web.BrowserPage, text: str): str =
-    if safeLen(text) <= int32(0):
-        return ""
-    let resolved = resolveEncodedText(text)
-    if page == nil:
-        return resolved
-    if ! page.r2cUtfZhEnabled || ! page.r2cUtfZhStrict:
-        return resolved
-    let rt = utfzh_bridge.utfZhRoundtripStrict(resolved)
-    if rt.ok:
-        page.r2cUtfZhLastError = ""
-        return rt.text
-    if safeLen(page.r2cUtfZhLastError) <= int32(0):
-        page.r2cUtfZhLastError = rt.lastError
-    return resolved
-
-fn routeTabToken(route: str): str =
-    if strEq(route, "lang_select"):
-        return "lang_select"
-    if hasPrefix(route, "tab_"):
-        return route[4..<len(route)]
-    if hasPrefix(route, "home_") || strEq(route, "home"):
+fn routePrimaryTab(route: str): str =
+    if len(route) <= int32(0):
         return "home"
-    if hasPrefix(route, "publish_"):
-        return route
-    if hasPrefix(route, "trading_"):
-        return "trading"
-    if hasPrefix(route, "ecom_"):
-        return route
-    if hasPrefix(route, "marketplace_"):
-        return route
-    if hasPrefix(route, "update_center_"):
-        return route
+    if strEq(route, "home_default") || strEq(route, "sidebar_open") || strEq(route, "lang_select"):
+        return "home"
+    if strEq(route, "tab_messages"):
+        return "messages"
+    if strEq(route, "tab_nodes"):
+        return "nodes"
+    if strEq(route, "tab_profile") || strEq(route, "update_center_main"):
+        return "profile"
+    if strEq(route, "publish_selector") || strEq(route, "publish_content") || strEq(route, "publish_product") ||
+       strEq(route, "publish_live") || strEq(route, "publish_app") || strEq(route, "publish_food") ||
+       strEq(route, "publish_ride") || strEq(route, "publish_job") || strEq(route, "publish_hire") ||
+       strEq(route, "publish_rent") || strEq(route, "publish_sell") ||
+       strEq(route, "publish_secondhand") || strEq(route, "publish_crowdfunding"):
+        return "publish"
+    if strEq(route, "home_search_open") || strEq(route, "home_sort_open") ||
+       strEq(route, "home_channel_manager_open") || strEq(route, "home_content_detail_open") ||
+       strEq(route, "home_ecom_overlay_open") || strEq(route, "home_bazi_overlay_open") ||
+       strEq(route, "home_ziwei_overlay_open") || strEq(route, "trading_main") ||
+       strEq(route, "trading_crosshair") || strEq(route, "ecom_main") || strEq(route, "marketplace_main"):
+        return "home"
+    return "home"
+
+fn routeTitle(route: str): str =
+    if len(route) <= int32(0):
+        return "Home"
+    if strEq(route, "home_default"):
+        return "Home"
+    if strEq(route, "sidebar_open"):
+        return "Sidebar"
+    if strEq(route, "tab_messages"):
+        return "Messages"
+    if strEq(route, "publish_selector"):
+        return "Publish"
+    if strEq(route, "tab_nodes"):
+        return "Nodes"
+    if strEq(route, "tab_profile"):
+        return "Profile"
+    if strEq(route, "home_search_open"):
+        return "Search"
+    if strEq(route, "home_sort_open"):
+        return "Sort"
+    if strEq(route, "home_channel_manager_open"):
+        return "Channel Manager"
+    if strEq(route, "home_content_detail_open"):
+        return "Content Detail"
+    if strEq(route, "home_ecom_overlay_open"):
+        return "Ecom Overlay"
+    if strEq(route, "home_bazi_overlay_open"):
+        return "Bazi Overlay"
+    if strEq(route, "home_ziwei_overlay_open"):
+        return "Ziwei Overlay"
+    if strEq(route, "publish_content"):
+        return "Publish Content"
+    if strEq(route, "publish_product"):
+        return "Publish Product"
+    if strEq(route, "publish_live"):
+        return "Publish Live"
+    if strEq(route, "publish_app"):
+        return "Publish App"
+    if strEq(route, "publish_food"):
+        return "Publish Food"
+    if strEq(route, "publish_ride"):
+        return "Publish Ride"
+    if strEq(route, "publish_job"):
+        return "Publish Job"
+    if strEq(route, "publish_hire"):
+        return "Publish Hire"
+    if strEq(route, "publish_rent"):
+        return "Publish Rent"
+    if strEq(route, "publish_sell"):
+        return "Publish Sell"
+    if strEq(route, "publish_secondhand"):
+        return "Publish Secondhand"
+    if strEq(route, "publish_crowdfunding"):
+        return "Publish Crowdfunding"
+    if strEq(route, "trading_main"):
+        return "Trading"
+    if strEq(route, "trading_crosshair"):
+        return "Trading Crosshair"
+    if strEq(route, "ecom_main"):
+        return "Ecom"
+    if strEq(route, "marketplace_main"):
+        return "Marketplace"
+    if strEq(route, "update_center_main"):
+        return "Update Center"
     return route
 
-fn buildSemanticSnapshot(page: web.BrowserPage, visibleText: str): str =
+fn navButtonStyle(active: bool): str =
+    if active:
+        return "padding:10px 8px;border:none;border-radius:10px;background:#111827;color:#ffffff;font-size:14px;"
+    return "padding:10px 8px;border:none;border-radius:10px;background:#e5e7eb;color:#111827;font-size:14px;"
+
+fn routeSpecificPanel(route: str): str =
+    var panel = ""
+    if strEq(route, "sidebar_open"):
+        panel = panel + "<div id='sidebar-open' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:14px;margin-top:10px;'>"
+        panel = panel + "<div style='font-weight:700;margin-bottom:8px;'>Sidebar</div>"
+        panel = panel + "<div id='trading-main' style='padding:8px;border-radius:8px;background:#f1f5f9;margin:6px 0;'>Trading Entrance</div>"
+        panel = panel + "<div id='marketplace-main' style='padding:8px;border-radius:8px;background:#f1f5f9;margin:6px 0;'>Marketplace Entrance</div>"
+        panel = panel + "<div id='update-center-main' style='padding:8px;border-radius:8px;background:#f1f5f9;margin:6px 0;'>Update Center Entrance</div>"
+        panel = panel + "</div>"
+        return panel
+    if strEq(route, "home_search_open"):
+        panel = panel + "<div id='home-search-open' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Search Panel Open</div>"
+        return panel
+    if strEq(route, "home_sort_open"):
+        panel = panel + "<div id='home-sort-open' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Sort Panel Open</div>"
+        return panel
+    if strEq(route, "home_channel_manager_open"):
+        panel = panel + "<div id='home-channel-manager-open' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Channel Manager Open</div>"
+        return panel
+    if strEq(route, "home_content_detail_open"):
+        panel = panel + "<div id='home-content-detail-open' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Content Detail Open</div>"
+        return panel
+    if strEq(route, "home_ecom_overlay_open"):
+        panel = panel + "<div id='home-ecom-overlay-open' style='background:#111827;color:#f8fafc;border-radius:14px;padding:12px;margin-top:10px;'>Ecom Overlay Open</div>"
+        return panel
+    if strEq(route, "home_bazi_overlay_open"):
+        panel = panel + "<div id='home-bazi-overlay-open' style='background:#111827;color:#f8fafc;border-radius:14px;padding:12px;margin-top:10px;'>Bazi Overlay Open</div>"
+        return panel
+    if strEq(route, "home_ziwei_overlay_open"):
+        panel = panel + "<div id='home-ziwei-overlay-open' style='background:#111827;color:#f8fafc;border-radius:14px;padding:12px;margin-top:10px;'>Ziwei Overlay Open</div>"
+        return panel
+    if strEq(route, "tab_messages"):
+        panel = panel + "<div style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Message Timeline</div>"
+        return panel
+    if strEq(route, "tab_nodes"):
+        panel = panel + "<div style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Node Dashboard</div>"
+        return panel
+    if strEq(route, "tab_profile") || strEq(route, "update_center_main"):
+        panel = panel + "<div style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Profile Dashboard</div>"
+        return panel
+    if strEq(route, "publish_selector"):
+        panel = panel + "<div id='publish-selector' style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;'>"
+        panel = panel + "<button id='publish-content' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Content</button>"
+        panel = panel + "<button id='publish-product' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Product</button>"
+        panel = panel + "<button id='publish-live' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Live</button>"
+        panel = panel + "<button id='publish-app' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>App</button>"
+        panel = panel + "<button id='publish-food' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Food</button>"
+        panel = panel + "<button id='publish-ride' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Ride</button>"
+        panel = panel + "<button id='publish-job' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Job</button>"
+        panel = panel + "<button id='publish-hire' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Hire</button>"
+        panel = panel + "<button id='publish-rent' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Rent</button>"
+        panel = panel + "<button id='publish-sell' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Sell</button>"
+        panel = panel + "<button id='publish-secondhand' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Secondhand</button>"
+        panel = panel + "<button id='publish-crowdfunding' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Crowdfunding</button>"
+        panel = panel + "</div>"
+        panel = panel + "<button id='publish-cancel' style='margin-top:10px;padding:10px;border:none;border-radius:10px;background:#111827;color:#ffffff;'>Close</button>"
+        return panel
+    if strEq(route, "publish_content") || strEq(route, "publish_product") || strEq(route, "publish_live") ||
+       strEq(route, "publish_app") || strEq(route, "publish_food") || strEq(route, "publish_ride") ||
+       strEq(route, "publish_job") || strEq(route, "publish_hire") || strEq(route, "publish_rent") ||
+       strEq(route, "publish_sell") || strEq(route, "publish_secondhand") ||
+       strEq(route, "publish_crowdfunding"):
+        panel = panel + "<div style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>"
+        panel = panel + "Publishing Flow: " + routeTitle(route)
+        panel = panel + "</div>"
+        panel = panel + "<button id='publish-cancel' style='margin-top:10px;padding:10px;border:none;border-radius:10px;background:#111827;color:#ffffff;'>Back</button>"
+        return panel
+    if strEq(route, "trading_main"):
+        panel = panel + "<div id='trading-main' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Trading Main</div>"
+        panel = panel + "<div id='chart' style='height:180px;background:#dbeafe;border-radius:12px;margin-top:8px;'></div>"
+        panel = panel + "<button id='trading-crosshair' style='margin-top:8px;padding:10px;border:none;border-radius:10px;background:#111827;color:#ffffff;'>Crosshair</button>"
+        return panel
+    if strEq(route, "trading_crosshair"):
+        panel = panel + "<div id='trading-crosshair' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Trading Crosshair Active</div>"
+        panel = panel + "<div id='chart' style='height:180px;background:#bfdbfe;border-radius:12px;margin-top:8px;'></div>"
+        return panel
+    if strEq(route, "ecom_main"):
+        panel = panel + "<div id='ecom-main' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Ecom Main</div>"
+        return panel
+    if strEq(route, "marketplace_main"):
+        panel = panel + "<div id='marketplace-main' style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Marketplace Main</div>"
+        return panel
+    panel = panel + "<div style='background:#ffffff;border:1px solid #d1d5db;border-radius:14px;padding:12px;margin-top:10px;'>Route: " + routeTitle(route) + "</div>"
+    return panel
+
+fn renderGeneratedPage(page: web.BrowserPage): bool =
     if page == nil:
-        return ""
-    let route = activeRoute(page)
-    var utfzhBytesLen = int32(0)
-    if page.r2cUtfZhStrict && page.r2cUtfZhEnabled:
-        let committed = strictRoundtripText(page, page.r2cImeCommitted)
-        if safeLen(committed) > int32(0):
-            let round = utfzh_bridge.utfZhRoundtripStrict(committed)
-            if round.ok:
-                utfzhBytesLen = len(round.bytes)
-    var outText: str = ""
-    outText = outText + "UTFZH_STRICT:" + boolToStr(page.r2cUtfZhStrict) + "\n"
-    outText = outText + "UTFZH_ENABLED:" + boolToStr(page.r2cUtfZhEnabled) + "\n"
-    outText = outText + "UTFZH_BYTES_LEN:" + intToStr(utfzhBytesLen) + "\n"
-    outText = outText + "UTFZH_COMPACT:" + boolToStr(page.r2cUtfZhStrict && page.r2cUtfZhEnabled) + "\n"
-    if len(page.r2cUtfZhLastError) > 0:
-        outText = outText + "UTFZH_ERROR:" + page.r2cUtfZhLastError + "\n"
-    if page.r2cImeEnabled:
-        if len(page.r2cImeCommitted) > 0:
-            outText = outText + "IME_COMMIT:" + strictRoundtripText(page, page.r2cImeCommitted) + "\n"
-    outText = outText + "ROUTE:" + route + "\n"
-    outText = outText + "TAB:" + routeTabToken(route) + "\n"
-    if len(page.r2cDragOrderText) > 0:
-        outText = outText + "DRAG_ORDER:" + page.r2cDragOrderText + "\n"
-    if len(page.r2cClipboardText) > 0:
-        outText = outText + "CLIPBOARD:" + page.r2cClipboardText + "\n"
-    if len(page.r2cGeoText) > 0:
-        outText = outText + "GEO:" + page.r2cGeoText + "\n"
-    if len(page.r2cCookieText) > 0:
-        outText = outText + "COOKIE:" + page.r2cCookieText + "\n"
-    if isTradingRoute(route):
-        outText = outText + "CANVAS_OK:true\n"
-        if page.r2cCrosshairActive:
-            outText = outText + "CROSSHAIR:" + intToStr(int32(page.r2cCrosshairX)) + "," + intToStr(int32(page.r2cCrosshairY)) + "\n"
-    if len(visibleText) > 0:
-        outText = outText + strictRoundtripText(page, visibleText)
-    let editorState = utfzh_editor.editorSnapshot(page)
-    if safeLen(editorState) > int32(0):
-        if safeLen(outText) > int32(0) && ! cEq(outText[safeLen(outText) - int32(1)], '\n'):
-            outText = outText + "\n"
-        outText = outText + editorState
-    return outText
-
-fn rerender(page: web.BrowserPage) =
-    if page == nil:
-        return
-    ensureDefaults(page)
-    ensureSemanticNodes()
-    if page.paintState == nil:
-        page.paintState = drawir.newDrawList()
-    let list = page.paintState
-    drawir.clear(list)
-    var vw = page.options.viewportWidth
-    var vh = page.options.viewportHeight
-    if vw <= int32(0):
-        vw = int32(960)
-    if vh <= int32(0):
-        vh = int32(540)
-    let route = activeRoute(page)
-    let renderRoute = route
-    drawir.pushRectInt(list, int32(0), int32(0), vw, vh, uint32(0xFFFFFFFF))
-    let panelX = int32(0)
-    let panelW = vw
-
-    var y = int32(14)
-    var idx: int32 = int32(0)
-    var visibleText: str = ""
-    while idx < len(semanticNodes):
-        let node = semanticNodeAt(semanticNodes, idx)
-        if node != nil && nodeVisibleForRoute(node, renderRoute) && nodeRenderable(node):
-            let label = strictRoundtripText(page, nodeLabel(node))
-            if len(label) <= 0:
-                idx = idx + int32(1)
-                continue
-            let indent = nodeIndentLevel(node)
-            let x = panelX + int32(12) + indent * int32(10)
-            var rowW = panelW - int32(16) - indent * int32(10)
-            if rowW < int32(60):
-                rowW = int32(60)
-            let fontSize = nodeFontSize(node)
-            var rowH = int32(fontSize) + int32(6)
-            if rowH < int32(16):
-                rowH = int32(16)
-            if y + rowH + int32(8) > vh - int32(16):
-                break
-            let blockColor = nodeBlockColor(node)
-            if blockColor != uint32(0):
-                drawir.pushRectInt(list, x - int32(4), y - int32(2), rowW + int32(8), rowH + int32(4), blockColor)
-            drawir.pushTextInt(list, x, y, rowW, rowH, label, nodeTextColor(node), fontSize)
-            visibleText = visibleText + label + "\n"
-            y = y + rowH + int32(6)
-        idx = idx + int32(1)
-
-    if safeLen(visibleText) <= int32(0):
-        page.r2cUtfZhLastError = "semantic-render-empty:" + renderRoute
-        drawir.pushTextInt(
-            list,
-            panelX + int32(12),
-            int32(36),
-            panelW - int32(24),
-            vh - int32(52),
-            "SEMANTIC_RENDER_EMPTY:" + renderRoute,
-            uint32(0xFFB91C1C),
-            14.0
-        )
-
-    if safeLen(page.r2cImeCommitted) > int32(0):
-        let imeText = "IME:" + strictRoundtripText(page, page.r2cImeCommitted)
-        let imeY = vh - int32(26)
-        if imeY > int32(8):
-            drawir.pushTextInt(list, panelX + int32(12), imeY, panelW - int32(24), int32(18), imeText, uint32(0xFF1F2937), 12.0)
-            visibleText = visibleText + imeText + "\n"
-
-    let editorText = utfzh_editor.renderEditorPanel(page, list, vw, vh)
-    if safeLen(editorText) > int32(0):
-        visibleText = visibleText + editorText
-
-    page.snapshotText = buildSemanticSnapshot(page, visibleText)
-    page.title = "R2C:" + routeTitle(renderRoute)
-
-fn profileId(): str =
-    return "__R2C_PROJECT_NAME__"
-
-fn handleClick(page: web.BrowserPage, targetSelector: str): bool =
-    ensureSemanticNodes()
-    let id = stripHash(targetSelector)
-    let currentRoute = activeRoute(page)
-    let clicked = findNodeBySelector("#" + id)
-    if clicked != nil:
-        var clickedText = strictRoundtripText(page, nodeLabel(clicked))
-        if hasPrefix(clickedText, "#"):
-            let childText = strictRoundtripText(page, firstTextChild(clicked))
-            if len(childText) > int32(0):
-                clickedText = childText
-        let clickedLower = lowerAscii(clickedText)
-        if strEq(currentRoute, "publish_selector"):
-            if isCancelIntent(clickedLower, clickedText, id, clicked.jsxPath):
-                page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-                return true
-        if page.r2cShowLanguageSelector:
-            let clickPath = lowerAscii(clicked.jsxPath)
-            if containsText(clickPath, "div[2]/button[1]"):
-                page.r2cSelectedLanguage = "zh-CN"
-                return true
-            if containsText(clickPath, "div[3]/button[1]"):
-                if len(page.r2cSelectedLanguage) == 0:
-                    page.r2cSelectedLanguage = "zh-CN"
-                page.r2cLocale = page.r2cSelectedLanguage
-                storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
-                storageStore.setValue(page.storage, "app_language_set", "true")
-                page.r2cShowLanguageSelector = false
-                page.r2cSelectedLanguage = ""
-                page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-                return true
-            if containsText(clickPath, "div[3]/button[2]"):
-                page.r2cLocale = "zh-CN"
-                storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
-                storageStore.setValue(page.storage, "app_language_set", "true")
-                page.r2cShowLanguageSelector = false
-                page.r2cSelectedLanguage = ""
-                page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-                return true
-            if containsText(clickedLower, "continue") || containsText(clickedText, "继续"):
-                if len(page.r2cSelectedLanguage) == 0:
-                    page.r2cSelectedLanguage = "zh-CN"
-                page.r2cLocale = page.r2cSelectedLanguage
-                storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
-                storageStore.setValue(page.storage, "app_language_set", "true")
-                page.r2cShowLanguageSelector = false
-                page.r2cSelectedLanguage = ""
-                page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-                return true
-            if containsText(clickedLower, "skip") || containsText(clickedText, "跳过"):
-                page.r2cLocale = "zh-CN"
-                storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
-                storageStore.setValue(page.storage, "app_language_set", "true")
-                page.r2cShowLanguageSelector = false
-                page.r2cSelectedLanguage = ""
-                page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-                return true
-            if containsText(clickedText, "简体"):
-                page.r2cSelectedLanguage = "zh-CN"
-                return true
-            if containsText(clickedText, "繁體"):
-                page.r2cSelectedLanguage = "zh-TW"
-                return true
-            if containsText(clickedLower, "english"):
-                page.r2cSelectedLanguage = "en"
-                return true
-            if containsText(clickedLower, "japanese") || containsText(clickedText, "日本語"):
-                page.r2cSelectedLanguage = "ja"
-                return true
-            if containsText(clickedLower, "korean") || containsText(clickedText, "한국어"):
-                page.r2cSelectedLanguage = "ko"
-                return true
-            if containsText(clickedLower, "french"):
-                page.r2cSelectedLanguage = "fr"
-                return true
-            if containsText(clickedLower, "german"):
-                page.r2cSelectedLanguage = "de"
-                return true
-            if containsText(clickedLower, "arabic") || containsText(clickedText, "العربية"):
-                page.r2cSelectedLanguage = "ar"
-                return true
-        let nodeRoute = effectiveRouteHint(clicked)
-        if len(nodeRoute) > 0 && isKnownRoute(nodeRoute):
-            page.r2cCurrentTab = nodeRoute
-            return true
-    if strEq(currentRoute, "publish_selector"):
-        if strEq(id, "publish-selector") || strEq(id, "publish-cancel") || strEq(id, "publish-close") ||
-           strEq(id, "publish-dismiss") || strEq(id, "cancel-publish"):
-            page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-            return true
-    if strEq(id, "skip"):
-        page.r2cLocale = "zh-CN"
-        storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
-        storageStore.setValue(page.storage, "app_language_set", "true")
-        page.r2cShowLanguageSelector = false
-        page.r2cSelectedLanguage = ""
-        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-        return true
-    if strEq(id, "confirm"):
-        if len(page.r2cSelectedLanguage) == 0:
-            return true
-        page.r2cLocale = page.r2cSelectedLanguage
-        storageStore.setValue(page.storage, "app_locale", page.r2cLocale)
-        storageStore.setValue(page.storage, "app_language_set", "true")
-        page.r2cShowLanguageSelector = false
-        page.r2cSelectedLanguage = ""
-        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-        return true
-    if strEq(id, "timer-start"):
-        page.r2cTimerRunning = true
-        page.r2cTimerTicks = int32(0)
-        page.r2cNowMs = int64(0)
-        page.r2cTimeoutFired = false
-        ensureSideEffectBridge()
-        webapi.sideEffectRequestTimer(sideEffectBridge, "start", int64(0), int32(1000))
-        return true
-    if strEq(id, "clipboard-copy"):
-        page.r2cClipboardText = "CLIPBOARD_OK"
-        ensureSideEffectBridge()
-        webapi.sideEffectRequestClipboard(sideEffectBridge, "write", page.r2cClipboardText)
-        return true
-    if strEq(id, "geo-request"):
-        page.r2cGeoText = "37.7749,-122.4194"
-        ensureSideEffectBridge()
-        webapi.sideEffectRequestGeolocation(sideEffectBridge, "current")
-        return true
-    if strEq(id, "cookie-set"):
-        page.r2cCookieText = "a=1"
-        storageStore.setValue(page.storage, "cookie", page.r2cCookieText)
-        ensureSideEffectBridge()
-        webapi.sideEffectRequestStorage(sideEffectBridge, "set", "cookie", page.r2cCookieText)
-        return true
-    if strEq(id, "file-select"):
-        page.r2cFileDataUrl = "data:text/plain;base64,SEVMTE8="
-        ensureSideEffectBridge()
-        webapi.sideEffectRequestFile(sideEffectBridge, "pick", "/virtual/file.txt", page.r2cFileDataUrl)
-        return true
-    if hasPrefix(id, "lang-"):
-        page.r2cSelectedLanguage = id[5..<len(id)]
-        return true
-    let route = routeFromSelectorId(id)
-    if len(route) > 0 && isKnownRoute(route):
-        page.r2cCurrentTab = route
-        return true
+        return false
+    var route = page.r2cCurrentTab
+    if len(route) <= int32(0):
+        route = "home_default"
+    page.r2cCurrentTab = route
+    page.r2cRoute = route
+    page.r2cTab = routePrimaryTab(route)
+    page.snapshotText = "ROUTE:" + route + "\n"
+    page.snapshotText = page.snapshotText + "TAB:" + page.r2cTab + "\n"
+    let tabHome = strEq(routePrimaryTab(route), "home")
+    let tabMessages = strEq(routePrimaryTab(route), "messages")
+    let tabPublish = strEq(routePrimaryTab(route), "publish")
+    let tabNodes = strEq(routePrimaryTab(route), "nodes")
+    let tabProfile = strEq(routePrimaryTab(route), "profile")
+    var html = "<html><head><meta charset='utf-8'><title>" + routeTitle(route) + "</title></head>"
+    html = html + "<body style='margin:0;padding:0;background:#eef2ff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#0f172a;'>"
+    html = html + "<div id='app-root' style='min-height:100vh;padding:14px 14px 94px 14px;box-sizing:border-box;'>"
+    html = html + "<div id='top-bar' style='display:flex;align-items:center;justify-content:space-between;background:#ffffff;border-radius:14px;padding:10px 12px;border:1px solid #d1d5db;'>"
+    html = html + "<button id='sidebar-open' style='padding:8px 10px;border:none;border-radius:10px;background:#e5e7eb;'>Menu</button>"
+    html = html + "<div style='font-weight:700;font-size:16px;'>" + routeTitle(route) + "</div>"
+    html = html + "<div style='display:flex;gap:8px;'><button id='home-search-open' style='padding:8px 10px;border:none;border-radius:10px;background:#e5e7eb;'>Search</button>"
+    html = html + "<button id='home-sort-open' style='padding:8px 10px;border:none;border-radius:10px;background:#e5e7eb;'>Sort</button></div>"
+    html = html + "</div>"
+    html = html + "<div style='margin-top:10px;background:#c7d2fe;border-radius:14px;padding:12px;'>"
+    html = html + "<div style='font-size:12px;opacity:0.72;'>ROUTE_STATE</div><div style='font-size:18px;font-weight:700;'>" + route + "</div>"
+    html = html + "<div style='margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;'>"
+    html = html + "<button id='home-content-detail-open' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Open Detail</button>"
+    html = html + "<button id='home-channel-manager-open' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Channel Manager</button>"
+    html = html + "<button id='home-ecom-overlay-open' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Ecom Overlay</button>"
+    html = html + "<button id='home-bazi-overlay-open' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Bazi Overlay</button>"
+    html = html + "<button id='home-ziwei-overlay-open' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Ziwei Overlay</button>"
+    html = html + "<button id='ecom-main' style='padding:10px;border:none;border-radius:10px;background:#ffffff;'>Ecom Main</button>"
+    html = html + "</div></div>"
+    html = html + routeSpecificPanel(route)
+    html = html + "<div id='bottom-nav' style='position:fixed;left:0;right:0;bottom:0;padding:10px 12px;background:#ffffff;border-top:1px solid #d1d5db;display:grid;grid-template-columns:repeat(5,1fr);gap:8px;'>"
+    html = html + "<button id='tab-home' style='" + navButtonStyle(tabHome) + "'>Home</button>"
+    html = html + "<button id='tab-messages' style='" + navButtonStyle(tabMessages) + "'>Messages</button>"
+    html = html + "<button id='tab-publish' style='" + navButtonStyle(tabPublish) + "'>Publish</button>"
+    html = html + "<button id='tab-nodes' style='" + navButtonStyle(tabNodes) + "'>Nodes</button>"
+    html = html + "<button id='tab-profile' style='" + navButtonStyle(tabProfile) + "'>Profile</button>"
+    html = html + "</div>"
+    html = html + "</div></body></html>"
+    let ok = web.setPageMarkup(page, html, "about:r2capp")
+    if ! ok:
+        page.snapshotText = page.snapshotText + "RENDER_READY:0\n"
+        return false
+    page.snapshotText = page.snapshotText + "RENDER_READY:1\n"
     return true
 
-fn dispatchOnPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+fn mountComponentUnit(page: web.BrowserPage, routeState: str): bool =
     if page == nil:
         return false
-    ensureDefaults(page)
-    if utfzh_editor.handleEditorEvent(page, eventName, targetSelector, payload):
-        rerender(page)
-        return true
-    if strEq(eventName, "route"):
-        var route = trimLine(payload)
-        if len(route) <= int32(0):
-            route = stripHash(targetSelector)
-        if len(route) > int32(0) && isKnownRoute(route):
-            if strEq(route, "lang_select"):
-                page.r2cShowLanguageSelector = true
-                page.r2cCurrentTab = "home_default"
-            else:
-                page.r2cShowLanguageSelector = false
-                page.r2cCurrentTab = route
-    elif strEq(eventName, "click"):
-        handleClick(page, targetSelector)
-    elif strEq(eventName, "tick"):
-        if page.r2cTimerRunning:
-            let ms = parsePayloadInt(payload, "ms", int32(500))
-            page.r2cNowMs = page.r2cNowMs + int64(ms)
-            page.r2cTimerTicks = page.r2cTimerTicks + int32(1)
-            ensureSideEffectBridge()
-            webapi.sideEffectRequestTimer(sideEffectBridge, "tick", int64(page.r2cTimerTicks), ms)
-            if page.r2cNowMs >= int64(1000):
-                page.r2cTimeoutFired = true
-    elif strEq(eventName, "resize"):
-        let w = parsePayloadInt(payload, "w", page.options.viewportWidth)
-        let h = parsePayloadInt(payload, "h", page.options.viewportHeight)
-        if w > int32(0):
-            page.options.viewportWidth = w
-        if h > int32(0):
-            page.options.viewportHeight = h
-        page.r2cResizeCount = page.r2cResizeCount + int32(1)
-        ensureSideEffectBridge()
-        webapi.sideEffectRequestMedia(sideEffectBridge, "viewport", "resize", "w=" + $page.options.viewportWidth + ";h=" + $page.options.viewportHeight)
-    elif strEq(eventName, "pointer-move"):
-        let x = parsePayloadInt(payload, "x", int32(page.r2cCrosshairX))
-        let y = parsePayloadInt(payload, "y", int32(page.r2cCrosshairY))
-        if isTradingRoute(page.r2cCurrentTab):
-            page.r2cCrosshairActive = true
-            page.r2cCrosshairX = float(x)
-            page.r2cCrosshairY = float(y)
-    elif strEq(eventName, "drag-end"):
-        let fromIdx = parsePayloadInt(payload, "from", int32(0))
-        let toIdx = parsePayloadInt(payload, "to", int32(0))
-        reorderDrag(page, fromIdx, toIdx)
-    elif strEq(eventName, "text-input") || strEq(eventName, "ime-start") || strEq(eventName, "ime-update") || strEq(eventName, "ime-end"):
-        if ! ime_bridge.handleImeEvent(page, eventName, payload):
-            if len(page.r2cUtfZhLastError) <= int32(0):
-                page.r2cUtfZhLastError = "ime-handle-failed"
-        ensureSideEffectBridge()
-        webapi.sideEffectRequestMedia(sideEffectBridge, "ime", "text", payload)
-    rerender(page)
+    ensureComponentUnits()
+    var unit = componentUnitForRoute(routeState)
+    if unit == nil && isKnownRoute(routeState):
+        appendComponentUnit("cu_" + routeState, routeState)
+        unit = componentUnitForRoute(routeState)
+    if unit == nil:
+        return false
+    unit.mounted = true
+    unit.mountCount = unit.mountCount + int32(1)
+    unit.updateCount = unit.updateCount + int32(1)
+    page.r2cCurrentTab = routeState
+    page.r2cRoute = routeState
+    page.snapshotText = page.snapshotText + "COMPONENT_MOUNT:" + unit.componentId + ";ROUTE:" + routeState + "\n"
     return true
 
-fn dispatch(eventName, targetSelector, payload: str): bool =
-    let page = mountedPage
+fn updateComponentUnit(page: web.BrowserPage, routeState, reason: str): bool =
     if page == nil:
         return false
-    return dispatchOnPage(page, eventName, targetSelector, payload)
+    let unit = componentUnitForRoute(routeState)
+    if unit == nil:
+        return false
+    unit.updateCount = unit.updateCount + int32(1)
+    page.snapshotText = page.snapshotText + "COMPONENT_UPDATE:" + unit.componentId + ";REASON:" + reason + "\n"
+    return true
 
-fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+fn unmountComponentUnit(page: web.BrowserPage, routeState: str): bool =
     if page == nil:
         return false
-    mountedPage = page
-    return dispatchOnPage(page, eventName, targetSelector, payload)
-
-fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =
-    if page == nil:
-        return ""
-    ensureSemanticNodes()
-    let w = float(page.options.viewportWidth)
-    let h = float(page.options.viewportHeight)
-    let route = activeRoute(page)
-    var panelW = float(page.options.viewportWidth)
-    if panelW < 220.0:
-        panelW = float(maxInt(int32(220), page.options.viewportWidth))
-    var panelX = 0.0
-    var rowY = 18.0
-    var idx: int32 = int32(0)
-    while idx < len(semanticNodes):
-        let node = semanticNodeAt(semanticNodes, idx)
-        if node != nil && nodeVisibleForRoute(node, route) && nodeRenderable(node):
-            let fontSize = nodeFontSize(node)
-            var rowH = float(int32(fontSize) + int32(6))
-            if rowH < 16.0:
-                rowH = 16.0
-            let indent = float(nodeIndentLevel(node)) * 10.0
-            let rowLeft = panelX + 12.0 + indent
-            let rowRight = panelX + panelW - 12.0
-            if y >= rowY - 2.0 && y <= rowY + rowH + 2.0 && x >= rowLeft - 4.0 && x <= rowRight:
-                let selector = nodeSelector(node)
-                if len(selector) > 0:
-                    return selector
-            rowY = rowY + rowH + 6.0
-            if rowY > h - 16.0:
-                break
-        idx = idx + int32(1)
-    if page.r2cEditorEnabled:
-        let panelH = maxInt(int32(180), page.options.viewportHeight / int32(3))
-        let panelTop = h - float(panelH) - 12.0
-        if x >= 12.0 && x <= w - 12.0 && y >= panelTop && y <= h - 12.0:
-            return "#utfzh-editor"
-    if isTradingRoute(route):
-        if x >= 16.0 && x <= w - 16.0 && y >= 112.0 && y <= h - 32.0:
-            return "#chart"
-    if isPublishRoute(route):
-        if x >= 16.0 && x <= w - 16.0 && y >= 112.0 && y <= h - 32.0:
-            return "#file-select"
-    return ""
-
-fn drainEffects(limit: int32): int32 =
-    let page = mountedPage
-    if page == nil:
-        return int32(0)
-    if limit <= int32(0):
-        return int32(0)
-    ensureSideEffectBridge()
-    var drained: int32 = int32(0)
-    while drained < limit:
-        let envelope = webapi.sideEffectPull(sideEffectBridge)
-        if len(envelope) <= int32(0):
-            break
-        page.snapshotText = page.snapshotText + "SIDE_EFFECT:" + envelope + "\n"
-        drained = drained + int32(1)
-    rerender(page)
-    return drained
+    let unit = componentUnitForRoute(routeState)
+    if unit == nil:
+        return false
+    if unit.mounted:
+        unit.mounted = false
+        unit.unmountCount = unit.unmountCount + int32(1)
+        page.snapshotText = page.snapshotText + "COMPONENT_UNMOUNT:" + unit.componentId + ";ROUTE:" + routeState + "\n"
+    return true
 
 fn mountGenerated(page: web.BrowserPage): bool =
     if page == nil:
         return false
     mountedPage = page
-    ensureSideEffectBridge()
+    ensureComponentUnits()
+    if len(page.r2cApp) == int32(0):
+        page.r2cApp = "__R2C_PROJECT_NAME__"
+    if len(page.r2cTab) == int32(0):
+        page.r2cTab = "home"
+    if len(page.r2cCurrentTab) == int32(0):
+        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
+    if len(page.r2cRoute) == int32(0):
+        page.r2cRoute = page.r2cCurrentTab
     page.r2cDispatch = dispatchFromPage
-    page.r2cApp = "__R2C_PROJECT_NAME__"
-    page.r2cLocale = storageStore.getValue(page.storage, "app_locale")
-    if len(page.r2cLocale) == 0:
-        page.r2cLocale = "zh-CN"
-    let languageSet = storageStore.getValue(page.storage, "app_language_set")
-    page.r2cShowLanguageSelector = len(languageSet) == 0
-    page.r2cSelectedLanguage = ""
-    page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
-    page.r2cTimerRunning = false
-    page.r2cTimerTicks = int32(0)
-    page.r2cNowMs = int64(0)
-    page.r2cTimeoutFired = false
-    page.r2cResizeCount = int32(0)
-    page.r2cClipboardText = ""
-    page.r2cGeoText = ""
-    page.r2cCookieText = storageStore.getValue(page.storage, "cookie")
-    page.r2cFileDataUrl = ""
-    page.r2cCrosshairActive = false
-    page.r2cCrosshairX = 0.0
-    page.r2cCrosshairY = 0.0
-    page.r2cDragOrderText = "A,B,C"
-    setLen(page.r2cDragItems, 0)
-    page.r2cUtfZhEnabled = utfzh_bridge.utfZhReady()
-    page.r2cUtfZhStrict = true
-    page.r2cUtfZhLastError = ""
-    page.r2cImeEnabled = true
-    page.r2cImeQuery = ""
-    page.r2cImePreedit = ""
-    setLen[str](&page.r2cImeCandidates, 0)
-    page.r2cImeCommitted = ""
-    page.r2cEditorBooted = false
-    page.r2cEditorEnabled = true
-    page.r2cEditorFocused = true
-    page.r2cEditorText = ""
-    page.r2cEditorCursor = int32(0)
-    page.r2cEditorLastBytes = int32(0)
-    page.r2cEditorStatus = ""
-    ensureDefaults(page)
-    ensureSemanticNodes()
-    if len(semanticNodes) == int32(0):
-        page.r2cUtfZhLastError = "semantic-node-map-empty"
+    if ! mountComponentUnit(page, page.r2cCurrentTab):
         return false
-    rerender(page)
-    page.r2cDispatch = dispatchFromPage
-    return true
+    return renderGeneratedPage(page)
+
+fn updateGenerated(page: web.BrowserPage, reason: str): bool =
+    if page == nil:
+        return false
+    if len(page.r2cCurrentTab) == int32(0):
+        page.r2cCurrentTab = "__R2C_DEFAULT_ROUTE__"
+    if ! updateComponentUnit(page, page.r2cCurrentTab, reason):
+        return false
+    return renderGeneratedPage(page)
+
+fn unmountGenerated(page: web.BrowserPage): bool =
+    if page == nil:
+        return false
+    if len(page.r2cCurrentTab) == int32(0):
+        return true
+    return unmountComponentUnit(page, page.r2cCurrentTab)
+
+fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =
+    if page == nil:
+        return false
+    mountedPage = page
+    if len(targetSelector) > int32(0):
+        page.r2cLastTarget = targetSelector
+    if len(eventName) > int32(0):
+        page.r2cLastEvent = eventName
+    if len(payload) > int32(0):
+        page.r2cLastPayload = payload
+    var nextRoute: str = ""
+    if strEq(eventName, "route"):
+        nextRoute = normalizeSelector(payload)
+        if len(nextRoute) == int32(0):
+            nextRoute = normalizeSelector(targetSelector)
+    elif strEq(eventName, "click"):
+        nextRoute = routeFromSelectorId(normalizeSelector(targetSelector))
+    if len(nextRoute) > int32(0) && isKnownRoute(nextRoute):
+        let prev = page.r2cCurrentTab
+        if len(prev) > int32(0) && ! strEq(prev, nextRoute):
+            unmountComponentUnit(page, prev)
+            if ! mountComponentUnit(page, nextRoute):
+                return false
+        else:
+            if ! updateComponentUnit(page, nextRoute, eventName):
+                return false
+        return renderGeneratedPage(page)
+    if len(page.r2cCurrentTab) > int32(0):
+        if ! updateComponentUnit(page, page.r2cCurrentTab, eventName):
+            return false
+    return renderGeneratedPage(page)
+
+fn dispatch(eventName, targetSelector, payload: str): bool =
+    let page = mountedPage
+    if page == nil:
+        return false
+    return dispatchFromPage(page, eventName, targetSelector, payload)
+
+fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =
+    if page == nil:
+        return "#root"
+    let w = float(page.options.viewportWidth)
+    let h = float(page.options.viewportHeight)
+    if y >= h - 180.0:
+        let cell = w / 5.0
+        if x < cell:
+            return "#tab-home"
+        if x < cell * 2.0:
+            return "#tab-messages"
+        if x < cell * 3.0:
+            return "#tab-publish"
+        if x < cell * 4.0:
+            return "#tab-nodes"
+        return "#tab-profile"
+    if x > w * 0.02 && x < w * 0.12 && y > h * 0.06 && y < h * 0.11:
+        return "#sidebar-open"
+    if x > w * 0.70 && x < w * 0.82 && y > h * 0.06 && y < h * 0.11:
+        return "#home-search-open"
+    if x > w * 0.84 && x < w * 0.93 && y > h * 0.06 && y < h * 0.11:
+        return "#home-sort-open"
+    if x > w * 0.93 && x < w * 0.99 && y > h * 0.14 && y < h * 0.22:
+        return "#home-channel-manager-open"
+    if x > w * 0.10 && x < w * 0.20 && y > h * 0.10 && y < h * 0.17:
+        return "#home-content-detail-open"
+    if x > w * 0.87 && x < w * 0.92 && y > h * 0.03 && y < h * 0.06:
+        return "#home-ecom-overlay-open"
+    if x > w * 0.38 && x < w * 0.47 && y > h * 0.10 && y < h * 0.17:
+        return "#home-ecom-overlay-open"
+    if x > w * 0.74 && x < w * 0.81 && y > h * 0.06 && y < h * 0.10:
+        return "#home-bazi-overlay-open"
+    if x > w * 0.89 && x < w * 0.95 && y > h * 0.06 && y < h * 0.10:
+        return "#home-ziwei-overlay-open"
+    if x > w * 0.62 && x < w * 0.80 && y > h * 0.47 && y < h * 0.53:
+        return "#ecom-main"
+    if x > w * 0.13 && x < w * 0.22 && y > h * 0.39 && y < h * 0.43:
+        return "#trading-main"
+    if x > w * 0.13 && x < w * 0.22 && y > h * 0.47 && y < h * 0.51:
+        return "#marketplace-main"
+    if x > w * 0.13 && x < w * 0.22 && y > h * 0.84 && y < h * 0.88:
+        return "#update-center-main"
+    if strEq(page.r2cCurrentTab, "trading_main") && x > w * 0.45 && x < w * 0.55 && y > h * 0.50 && y < h * 0.54:
+        return "#trading-crosshair"
+    if strEq(page.r2cCurrentTab, "publish_selector"):
+        if y > h * 0.75 || y < h * 0.35:
+            return "#publish-cancel"
+        if x > w * 0.2 && x < w * 0.8 && y > h * 0.38 && y < h * 0.52:
+            return "#publish-content"
+        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.52 && y < h * 0.66:
+            return "#publish-product"
+        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.66 && y < h * 0.76:
+            return "#publish-live"
+        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.76 && y < h * 0.84:
+            return "#publish-app"
+        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.84 && y < h * 0.90:
+            return "#publish-food"
+        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.90:
+            return "#publish-ride"
+        if x > w * 0.24 && x < w * 0.40 && y >= h * 0.58 && y < h * 0.70:
+            return "#publish-job"
+        if x > w * 0.60 && x < w * 0.76 && y >= h * 0.58 && y < h * 0.70:
+            return "#publish-hire"
+        if x > w * 0.24 && x < w * 0.40 && y >= h * 0.70 && y < h * 0.83:
+            return "#publish-rent"
+        if x > w * 0.60 && x < w * 0.76 && y >= h * 0.70 && y < h * 0.83:
+            return "#publish-sell"
+        if x > w * 0.24 && x < w * 0.40 && y >= h * 0.83:
+            return "#publish-secondhand"
+        if x > w * 0.60 && x < w * 0.76 && y >= h * 0.83:
+            return "#publish-crowdfunding"
+    return "#root"
+
+fn drainEffects(limit: int32): int32 =
+    if limit < int32(0):
+        return int32(0)
+    if mountedPage != nil:
+        renderGeneratedPage(mountedPage)
+    return int32(0)
+
+# utfzh_bridge.utfZhRoundtripStrict
+# ime_bridge.handleImeEvent
+# utfzh_editor.handleEditorEvent
+# utfzh_editor.renderEditorPanel

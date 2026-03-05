@@ -1,12 +1,12 @@
 import { lazy, Suspense, useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { Search, SlidersHorizontal, Clock, Flame, Menu, Settings, MapPin } from 'lucide-react';
+import { Search, SlidersHorizontal, Clock, Flame, Menu, Settings, MapPin, Navigation } from 'lucide-react';
 import Masonry, { ResponsiveMasonry } from 'react-responsive-masonry';
 import VirtualizedMasonry from './VirtualizedMasonry';
 import ContentCard from './ContentCard';
 import ContentDetailPage from './ContentDetailPage';
 import EcomFeedPage, { type EcomPaymentContext } from './EcomFeedPage';
 import { parseProductsFromCsvString, type EcomProduct } from '../data/ecomData';
-import { sortContentsByDistance } from '../utils/distanceSort';
+import { sortContentsByDistance, haversineDistanceMeters, resolveContentCoordinates } from '../utils/distanceSort';
 import Sidebar from './Sidebar';
 import ChannelManager from './ChannelManager';
 import { publishTypes, type PublishType } from './PublishTypeSelector';
@@ -89,6 +89,11 @@ export default function HomePage({ onNavigate, onOpenApp }: { onNavigate?: (page
   const { t } = useLocale();
   const { captureHighAccuracyLocation } = useHighAccuracyLocation();
   const [userLocation, setUserLocation] = useState<CapturedLocation | null>(null);
+  const [distanceMin, setDistanceMin] = useState(0);     // left end input (km)
+  const [distanceMax, setDistanceMax] = useState(100);    // right end input (km)
+  const [distanceValue, setDistanceValue] = useState(50); // slider thumb position (km)
+  const distanceTrackRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
 
   const mergedContents = distributedContents;
 
@@ -195,14 +200,20 @@ export default function HomePage({ onNavigate, onOpenApp }: { onNavigate?: (page
       filtered = [...filtered].sort((a, b) => b.timestamp - a.timestamp);
     } else if (sortType === 'distance') {
       if (userLocation) {
-        filtered = sortContentsByDistance(
-          filtered,
-          {
-            latitude: userLocation.coords.latitude,
-            longitude: userLocation.coords.longitude,
-          },
-          true,
-        );
+        const userGeo = {
+          latitude: userLocation.coords.latitude,
+          longitude: userLocation.coords.longitude,
+        };
+        // Filter by distance: only show items within distanceValue km
+        const maxMeters = distanceValue * 1000;
+        if (maxMeters < distanceMax * 1000) {
+          filtered = filtered.filter((c) => {
+            const coords = resolveContentCoordinates(c);
+            if (!coords) return false;
+            return haversineDistanceMeters(userGeo, coords) <= maxMeters;
+          });
+        }
+        filtered = sortContentsByDistance(filtered, userGeo, true);
       } else {
         const now = Date.now();
         filtered = [...filtered].sort((a, b) => {
@@ -231,7 +242,7 @@ export default function HomePage({ onNavigate, onOpenApp }: { onNavigate?: (page
     }
 
     return filtered;
-  }, [mergedContents, activeCategory, sortType, searchQuery, userLocation]);
+  }, [mergedContents, activeCategory, sortType, searchQuery, userLocation, distanceValue, distanceMax]);
 
   const handleSelectDistanceSort = useCallback(() => {
     setShowSortMenu(false);
@@ -421,6 +432,122 @@ export default function HomePage({ onNavigate, onOpenApp }: { onNavigate?: (page
             >
               <MapPin size={16} /><span className="text-sm">{t.home_sortByDistance}</span>
             </button>
+          </div>
+        )}
+
+        {/* Distance Range Slider */}
+        {sortType === 'distance' && (
+          <div className="px-4 py-3 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-gray-200">
+            <div className="flex items-center gap-2 mb-2">
+              <Navigation size={14} className="text-purple-500" />
+              <span className="text-xs font-medium text-gray-600">
+                {userLocation ? '📍 GPS已定位' : '⏳ 定位中...'}
+              </span>
+              <span className="ml-auto text-xs font-bold text-purple-600">
+                {distanceValue >= distanceMax ? '不限距离' : `${distanceValue.toFixed(1)}km 内`}
+              </span>
+            </div>
+            {/* Slider with input endpoints */}
+            {(() => {
+              const range = distanceMax - distanceMin;
+              const clampedValue = Math.max(distanceMin, Math.min(distanceMax, distanceValue));
+              const pct = range > 0 ? ((clampedValue - distanceMin) / range) * 100 : 0;
+              const resolveValue = (clientX: number) => {
+                const track = distanceTrackRef.current;
+                if (!track) return distanceMin;
+                const rect = track.getBoundingClientRect();
+                const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                // stepless: round to 0.1
+                return Math.round((distanceMin + ratio * range) * 10) / 10;
+              };
+              const onPointerDown = (e: React.PointerEvent) => {
+                e.preventDefault();
+                isDragging.current = true;
+                (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                setDistanceValue(resolveValue(e.clientX));
+              };
+              const onPointerMove = (e: React.PointerEvent) => {
+                if (!isDragging.current) return;
+                setDistanceValue(resolveValue(e.clientX));
+              };
+              const onPointerUp = () => { isDragging.current = false; };
+              return (
+                <div className="flex items-center gap-2">
+                  {/* Left end input */}
+                  <div className="flex items-center gap-0.5 bg-white rounded-lg border border-gray-200 px-1.5 py-1 w-16">
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={distanceMin}
+                      min={0}
+                      step={1}
+                      onChange={(e) => {
+                        const v = Math.max(0, Number(e.target.value) || 0);
+                        setDistanceMin(v);
+                        if (distanceValue < v) setDistanceValue(v);
+                        if (distanceMax <= v) setDistanceMax(v + 1);
+                      }}
+                      className="w-full text-xs font-semibold text-purple-700 bg-transparent outline-none text-center"
+                    />
+                    <span className="text-[9px] text-gray-400">km</span>
+                  </div>
+                  {/* Slider track */}
+                  <div
+                    ref={distanceTrackRef}
+                    className="relative flex-1 h-10 flex items-center select-none touch-none cursor-pointer"
+                    onPointerDown={onPointerDown}
+                    onPointerMove={onPointerMove}
+                    onPointerUp={onPointerUp}
+                    onPointerCancel={onPointerUp}
+                  >
+                    {/* Track bg */}
+                    <div className="absolute left-0 right-0 h-1.5 rounded-full bg-gray-200" />
+                    {/* Filled track */}
+                    <div
+                      className="absolute h-1.5 rounded-full bg-gradient-to-r from-purple-400 to-purple-500"
+                      style={{ left: 0, width: `${pct}%` }}
+                    />
+                    {/* Thumb */}
+                    <div
+                      className="absolute w-7 h-7 -ml-3.5 rounded-full bg-white border-[2.5px] border-purple-500 shadow-lg cursor-grab active:cursor-grabbing active:scale-110 transition-transform z-10 flex items-center justify-center"
+                      style={{ left: `${pct}%` }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        isDragging.current = true;
+                        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                      }}
+                    >
+                      <div className="w-2 h-2 rounded-full bg-purple-500" />
+                    </div>
+                    {/* Current value label above thumb */}
+                    <div
+                      className="absolute -top-1 text-[10px] font-bold text-purple-600 pointer-events-none whitespace-nowrap"
+                      style={{ left: `${pct}%`, transform: 'translateX(-50%)' }}
+                    >
+                      {clampedValue.toFixed(1)}
+                    </div>
+                  </div>
+                  {/* Right end input */}
+                  <div className="flex items-center gap-0.5 bg-white rounded-lg border border-gray-200 px-1.5 py-1 w-16">
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={distanceMax}
+                      min={distanceMin + 1}
+                      step={1}
+                      onChange={(e) => {
+                        const v = Math.max(distanceMin + 1, Number(e.target.value) || 1);
+                        setDistanceMax(v);
+                        if (distanceValue > v) setDistanceValue(v);
+                      }}
+                      className="w-full text-xs font-semibold text-purple-700 bg-transparent outline-none text-center"
+                    />
+                    <span className="text-[9px] text-gray-400">km</span>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 

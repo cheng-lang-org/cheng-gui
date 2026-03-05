@@ -4,8 +4,6 @@ import gui/browser/web
 import gui/browser/r2capp/runtime_generic as r2cRuntime
 
 fn safeLen(text: str): int32 =
-    if text == nil:
-        return int32(0)
     return len(text)
 
 fn r2cRunnerBoolText(value: bool): str =

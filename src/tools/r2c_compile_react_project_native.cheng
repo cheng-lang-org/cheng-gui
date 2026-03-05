@@ -1,0 +1,468 @@
+import std/os
+import std/cmdline
+
+type
+    CliOptions = ref
+        project: str
+        entry: str
+        outDir: str
+        strict: bool
+        help: bool
+
+fn cEq(a: char, b: char): bool =
+    return int32(a) == int32(b)
+
+fn startsWith(text: str, prefix: str): bool =
+    if len(prefix) == 0:
+        return true
+    if len(text) < len(prefix):
+        return false
+    var idx: int32 = 0
+    while idx < len(prefix):
+        if ! cEq(text[idx], prefix[idx]):
+            return false
+        idx = idx + 1
+    return true
+
+fn contains(text: str, pattern: str): bool =
+    if len(pattern) == 0:
+        return true
+    if len(text) < len(pattern):
+        return false
+    var i: int32 = 0
+    while i + len(pattern) <= len(text):
+        var ok = true
+        var j: int32 = 0
+        while j < len(pattern):
+            if ! cEq(text[i + j], pattern[j]):
+                ok = false
+                break
+            j = j + 1
+        if ok:
+            return true
+        i = i + 1
+    return false
+
+fn matchAt(text: str, offset: int32, pattern: str): bool =
+    if offset < 0:
+        return false
+    if len(pattern) == 0:
+        return true
+    if offset + len(pattern) > len(text):
+        return false
+    var i: int32 = 0
+    while i < len(pattern):
+        if ! cEq(text[offset + i], pattern[i]):
+            return false
+        i = i + 1
+    return true
+
+fn shellQuote(value: str): str =
+    if len(value) == 0:
+        return "''"
+    var out = "'"
+    var idx: int32 = 0
+    while idx < len(value):
+        if cEq(value[idx], '\''):
+            out = out + "'\"'\"'"
+        else:
+            out = out + charToStr(value[idx])
+        idx = idx + 1
+    out = out + "'"
+    return out
+
+fn argInlineValue(arg: str, key: str): str =
+    let keyColon = key + ":"
+    if startsWith(arg, keyColon):
+        return arg[len(keyColon)..<len(arg)]
+    let keyEq = key + "="
+    if startsWith(arg, keyEq):
+        return arg[len(keyEq)..<len(arg)]
+    return ""
+
+fn splitLines(text: str): str[] =
+    var out: str[] = []
+    if len(text) == 0:
+        return out
+    var start: int32 = 0
+    var i: int32 = 0
+    while i <= len(text):
+        if i == len(text) || cEq(text[i], '\n'):
+            var endIdx = i
+            if endIdx > start && cEq(text[endIdx - 1], '\r'):
+                endIdx = endIdx - 1
+            if endIdx >= start:
+                let line = text[start..<endIdx]
+                let n = len(out)
+                setLen(out, n + 1)
+                out[n] = line
+            start = i + 1
+        i = i + 1
+    return out
+
+fn loadCliArgsFromFile(repoRoot: str): str[] =
+    let argsPath = os.joinPath(repoRoot, "build/.r2c_cli_args/current.args")
+    if ! os.fileExists(argsPath):
+        return []
+    let content = os.readFile(argsPath)
+    let lines = splitLines(content)
+    if len(lines) == 0:
+        return []
+    var count: int32 = 0
+    if ! cmdline.parseInt32(lines[0], count):
+        return []
+    if count < 0:
+        return []
+    var out: str[] = []
+    var idx: int32 = 0
+    while idx < count:
+        let src = idx + 1
+        if src >= len(lines):
+            break
+        let n = len(out)
+        setLen(out, n + 1)
+        out[n] = lines[src]
+        idx = idx + 1
+    return out
+
+fn usage() =
+    echo "Usage:"
+    echo "  r2c_compile_react_project --project <abs_path> [--entry </app/main.tsx>] --out <abs_path> [--strict]"
+    echo ""
+    echo "Pure Cheng orchestration path (thin C bridge only for process ingress)."
+
+fn parseCli(args: str[]): CliOptions =
+    var opts: CliOptions
+    new(opts)
+    opts.project = ""
+    opts.entry = "/app/main.tsx"
+    opts.outDir = ""
+    opts.strict = false
+    opts.help = false
+
+    let count = len(args)
+    var i: int32 = 0
+    while i < count:
+        let arg = args[i]
+        if arg == "-h" || arg == "--help":
+            opts.help = true
+            i = i + 1
+            continue
+        let projectInline = argInlineValue(arg, "--project")
+        if len(projectInline) > 0:
+            opts.project = projectInline
+            i = i + 1
+            continue
+        if arg == "--project":
+            if i + 1 >= count:
+                opts.project = ""
+                return opts
+            opts.project = args[i + 1]
+            i = i + 2
+            continue
+        let entryInline = argInlineValue(arg, "--entry")
+        if len(entryInline) > 0:
+            opts.entry = entryInline
+            i = i + 1
+            continue
+        if arg == "--entry":
+            if i + 1 >= count:
+                opts.entry = ""
+                return opts
+            opts.entry = args[i + 1]
+            i = i + 2
+            continue
+        let outInline = argInlineValue(arg, "--out")
+        if len(outInline) > 0:
+            opts.outDir = outInline
+            i = i + 1
+            continue
+        if arg == "--out":
+            if i + 1 >= count:
+                opts.outDir = ""
+                return opts
+            opts.outDir = args[i + 1]
+            i = i + 2
+            continue
+        if arg == "--strict":
+            opts.strict = true
+            i = i + 1
+            continue
+        echo "[r2c-compile] unknown arg: " + arg
+        opts.project = ""
+        opts.outDir = ""
+        return opts
+    return opts
+
+fn ensureDir(path: str): bool =
+    if len(path) == 0:
+        return false
+    if os.dirExists(path):
+        return true
+    let cmd = "mkdir -p " + shellQuote(path)
+    let res = os.execCmdEx(cmd, processOptionMask(poStdErrToStdOut), "")
+    return res.exitCode == 0 && os.dirExists(path)
+
+fn isExecutable(path: str): bool =
+    if len(path) == 0:
+        return false
+    let cmd = "test -x " + shellQuote(path)
+    let res = os.execCmdEx(cmd, processOptionMask(poStdErrToStdOut), "")
+    return res.exitCode == 0
+
+fn dirname(path: str): str =
+    if len(path) == 0:
+        return "."
+    var idx = len(path) - 1
+    while idx >= 0:
+        if cEq(path[idx], '/'):
+            if idx == 0:
+                return "/"
+            return path[0..<idx]
+        idx = idx - 1
+    return "."
+
+fn findJsonStringField(doc: str, key: str): str =
+    if len(doc) == 0 || len(key) == 0:
+        return ""
+    let token = "\"" + key + "\""
+    var i: int32 = 0
+    while i + len(token) <= len(doc):
+        if matchAt(doc, i, token):
+            var j = i + len(token)
+            while j < len(doc) && (cEq(doc[j], ' ') || cEq(doc[j], '\n') || cEq(doc[j], '\r') || cEq(doc[j], '\t')):
+                j = j + 1
+            if j >= len(doc) || ! cEq(doc[j], ':'):
+                i = i + 1
+                continue
+            j = j + 1
+            while j < len(doc) && (cEq(doc[j], ' ') || cEq(doc[j], '\n') || cEq(doc[j], '\r') || cEq(doc[j], '\t')):
+                j = j + 1
+            if j >= len(doc) || ! cEq(doc[j], '"'):
+                i = i + 1
+                continue
+            j = j + 1
+            var out = ""
+            while j < len(doc) && ! cEq(doc[j], '"'):
+                out = out + charToStr(doc[j])
+                j = j + 1
+            return out
+        i = i + 1
+    return ""
+
+fn resolveReportPath(reportPath: str, value: str): str =
+    if len(value) == 0:
+        return ""
+    if cEq(value[0], '/'):
+        return value
+    return os.joinPath(dirname(reportPath), value)
+
+fn resolveRepoRoot(): str =
+    let fromEnv = os.getEnv("CHENG_GUI_R2C_REPO_ROOT")
+    if len(fromEnv) > 0:
+        return fromEnv
+    let fromPkg = os.getEnv("GUI_PACKAGE_ROOT")
+    if len(fromPkg) > 0:
+        return fromPkg
+    return "/Users/lbcheng/.cheng-packages/cheng-gui"
+
+fn resolveTooling(): str =
+    let envBin = os.getEnv("CHENG_TOOLING_BIN")
+    if isExecutable(envBin):
+        return envBin
+    let fixed = "/Users/lbcheng/cheng-lang/artifacts/tooling_cmd/cheng_tooling"
+    if isExecutable(fixed):
+        return fixed
+    let fallback = "/Users/lbcheng/.cheng/toolchain/cheng-lang/artifacts/tooling_cmd/cheng_tooling"
+    if isExecutable(fallback):
+        return fallback
+    return ""
+
+fn ensureCompilerBin(repoRoot: str, toolingBin: str, track: str): str =
+    let explicitBin = os.getEnv("CHENG_R2C_NATIVE_COMPILER_BIN")
+    if isExecutable(explicitBin):
+        return explicitBin
+    let compilerBin = os.joinPath(repoRoot, "build/r2c_compiler_tracks/" + track + "/r2c_compile_macos")
+    if isExecutable(compilerBin):
+        return compilerBin
+    if ! ensureDir(dirname(compilerBin)):
+        return ""
+    var entry = os.joinPath(repoRoot, "src/r2c_aot_compile_main.cheng")
+    if ! os.fileExists(entry):
+        entry = os.joinPath(repoRoot, "src/r2c_aot_compiler_driver_main.cheng")
+    if ! os.fileExists(entry):
+        echo "[r2c-compile] missing compiler entry: " + entry
+        return ""
+    let target = os.getEnvDefault("BACKEND_TARGET", "arm64-apple-darwin")
+    let pkgRoots = os.getEnvDefault("PKG_ROOTS", "/Users/lbcheng/cheng-lang:/Users/lbcheng/.cheng-packages")
+    let rebuildLog = os.joinPath(dirname(compilerBin), "rebuild_via_cheng.log")
+    var cmd = "PKG_ROOTS=" + shellQuote(pkgRoots) + " MM=orc "
+    if track == "release":
+        cmd = cmd + shellQuote(toolingBin) + " release-compile " + shellQuote(entry) +
+              " --out:" + compilerBin + " --target:" + target + " --linker:system"
+    else:
+        cmd = cmd + shellQuote(toolingBin) + " cheng " + shellQuote(entry) +
+              " --out:" + compilerBin + " --target:" + target + " --linker:self --dev"
+    let res = os.execCmdEx(cmd, processOptionMask(poStdErrToStdOut), repoRoot)
+    os.writeFile(rebuildLog, res.output)
+    if res.exitCode != 0:
+        echo "[r2c-compile] rebuild compiler failed rc=" + intToStr(res.exitCode) + " log=" + rebuildLog
+        return ""
+    if ! isExecutable(compilerBin):
+        echo "[r2c-compile] rebuilt compiler not executable: " + compilerBin
+        return ""
+    echo "[r2c-compile] rebuilt compiler track=" + track + " bin=" + compilerBin
+    return compilerBin
+
+fn writeRequestEnv(path: str, project: str, outRoot: str, entry: str, profile: str, projectName: str, strict: bool) =
+    var text = ""
+    text = text + "R2C_IN_ROOT=" + project + "\n"
+    text = text + "R2C_OUT_ROOT=" + outRoot + "\n"
+    text = text + "R2C_ENTRY=" + entry + "\n"
+    text = text + "R2C_PROFILE=" + profile + "\n"
+    text = text + "R2C_PROJECT_NAME=" + projectName + "\n"
+    text = text + "R2C_STRICT=" + (if strict: "1" else: "0") + "\n"
+    text = text + "CHENG_R2C_IN_ROOT=" + project + "\n"
+    text = text + "CHENG_R2C_OUT_ROOT=" + outRoot + "\n"
+    text = text + "CHENG_R2C_ENTRY=" + entry + "\n"
+    text = text + "CHENG_R2C_PROFILE=" + profile + "\n"
+    text = text + "CHENG_R2C_PROJECT_NAME=" + projectName + "\n"
+    text = text + "CHENG_R2C_STRICT=" + (if strict: "1" else: "0") + "\n"
+    os.writeFile(path, text)
+
+fn basename(path: str): str =
+    if len(path) == 0:
+        return ""
+    var idx = len(path) - 1
+    while idx >= 0:
+        if cEq(path[idx], '/'):
+            if idx + 1 < len(path):
+                return path[idx + 1..<len(path)]
+            return ""
+        idx = idx - 1
+    return path
+
+fn parseAndValidateReport(reportPath: str, strict: bool): bool =
+    if ! os.fileExists(reportPath):
+        echo "[r2c-compile] missing compile report: " + reportPath
+        return false
+    let reportText = os.readFile(reportPath)
+    if len(reportText) == 0:
+        echo "[r2c-compile] empty compile report: " + reportPath
+        return false
+    if strict:
+        let origin = findJsonStringField(reportText, "compiler_report_origin")
+        if origin != "cheng-compiler":
+            echo "[r2c-compile] strict reject compiler_report_origin=" + origin
+            return false
+        let mode = findJsonStringField(reportText, "semantic_compile_mode")
+        if mode != "react-semantic-ir-node-compile":
+            echo "[r2c-compile] strict reject semantic_compile_mode=" + mode
+            return false
+        if ! contains(reportText, "\"template_runtime_used\": false") && ! contains(reportText, "\"template_runtime_used\":false"):
+            echo "[r2c-compile] strict reject template_runtime_used=true"
+            return false
+        let reactIr = resolveReportPath(reportPath, findJsonStringField(reportText, "react_ir_path"))
+        let hookGraph = resolveReportPath(reportPath, findJsonStringField(reportText, "hook_graph_path"))
+        let effectPlan = resolveReportPath(reportPath, findJsonStringField(reportText, "effect_plan_path"))
+        if len(reactIr) == 0 || len(hookGraph) == 0 || len(effectPlan) == 0:
+            echo "[r2c-compile] strict reject missing react_ir_path/hook_graph_path/effect_plan_path"
+            return false
+        if ! os.fileExists(reactIr) || ! os.fileExists(hookGraph) || ! os.fileExists(effectPlan):
+            echo "[r2c-compile] strict reject missing semantic artifacts on disk"
+            return false
+    return true
+
+fn runCompile(): int32 =
+    let repoRoot = resolveRepoRoot()
+    let args = loadCliArgsFromFile(repoRoot)
+    let opts = parseCli(args)
+    if opts == nil:
+        usage()
+        return 2
+    if opts.help:
+        usage()
+        return 0
+    if len(opts.project) == 0 || len(opts.outDir) == 0:
+        usage()
+        return 2
+    if ! os.dirExists(opts.project):
+        echo "[r2c-compile] missing project: " + opts.project
+        return 1
+
+    let toolingBin = resolveTooling()
+    if len(toolingBin) == 0:
+        echo "[r2c-compile] missing cheng_tooling; set CHENG_TOOLING_BIN"
+        return 1
+
+    let trackRaw = os.getEnvDefault("CHENG_R2C_BUILD_TRACK", "dev")
+    let track = if len(trackRaw) == 0: "dev" else: trackRaw
+    if track != "dev" && track != "release":
+        echo "[r2c-compile] invalid CHENG_R2C_BUILD_TRACK=" + track + " (expected dev|release)"
+        return 1
+
+    let compilerBin = ensureCompilerBin(repoRoot, toolingBin, track)
+    if len(compilerBin) == 0:
+        return 1
+
+    if ! ensureDir(opts.outDir):
+        echo "[r2c-compile] failed to create out dir: " + opts.outDir
+        return 1
+    let outRoot = os.joinPath(opts.outDir, "r2capp")
+    if ! ensureDir(outRoot):
+        echo "[r2c-compile] failed to create out root: " + outRoot
+        return 1
+
+    let profile = os.getEnvDefault("CHENG_R2C_PROFILE", "generic")
+    var projectName = basename(opts.project)
+    if len(projectName) == 0:
+        projectName = "r2capp"
+    let requestPath = os.joinPath(opts.outDir, "r2c_compile_request.env")
+    writeRequestEnv(requestPath, opts.project, outRoot, opts.entry, profile, projectName, opts.strict)
+
+    let strictInt = if opts.strict: "1" else: "0"
+    let compileLog = os.joinPath(opts.outDir, "r2c_compile.native.1.log")
+    var cmd = ""
+    cmd = cmd + "GUI_PACKAGE_ROOT=" + shellQuote(repoRoot) + " "
+    cmd = cmd + "GUI_ROOT=" + shellQuote(os.joinPath(repoRoot, "src")) + " "
+    cmd = cmd + "CHENG_R2C_BUILD_TRACK=" + shellQuote(track) + " "
+    cmd = cmd + "R2C_IN_ROOT=" + shellQuote(opts.project) + " "
+    cmd = cmd + "R2C_OUT_ROOT=" + shellQuote(outRoot) + " "
+    cmd = cmd + "R2C_ENTRY=" + shellQuote(opts.entry) + " "
+    cmd = cmd + "R2C_PROJECT_NAME=" + shellQuote(projectName) + " "
+    cmd = cmd + "R2C_PROFILE=" + shellQuote(profile) + " "
+    cmd = cmd + "R2C_STRICT=" + shellQuote(strictInt) + " "
+    cmd = cmd + "R2C_REQUEST_PATH=" + shellQuote(requestPath) + " "
+    cmd = cmd + "CHENG_R2C_IN_ROOT=" + shellQuote(opts.project) + " "
+    cmd = cmd + "CHENG_R2C_OUT_ROOT=" + shellQuote(outRoot) + " "
+    cmd = cmd + "CHENG_R2C_ENTRY=" + shellQuote(opts.entry) + " "
+    cmd = cmd + "CHENG_R2C_PROJECT_NAME=" + shellQuote(projectName) + " "
+    cmd = cmd + "CHENG_R2C_PROFILE=" + shellQuote(profile) + " "
+    cmd = cmd + "CHENG_R2C_STRICT=" + shellQuote(strictInt) + " "
+    cmd = cmd + "R2C_ALLOW_TEMPLATE_FALLBACK=0 R2C_STRICT_ALLOW_SEMANTIC_SHELL_GENERATOR=0 "
+    cmd = cmd + shellQuote(compilerBin)
+    cmd = cmd + " --in-root " + shellQuote(opts.project)
+    cmd = cmd + " --out-root " + shellQuote(outRoot)
+    cmd = cmd + " --entry " + shellQuote(opts.entry)
+    cmd = cmd + " --project-name " + shellQuote(projectName)
+    cmd = cmd + " --profile " + shellQuote(profile)
+    cmd = cmd + " --strict " + shellQuote(strictInt)
+
+    echo "[r2c-compile] build-track=" + track + " compiler=" + compilerBin
+    let res = os.execCmdEx(cmd, processOptionMask(poStdErrToStdOut), opts.outDir)
+    os.writeFile(compileLog, res.output)
+    if res.exitCode != 0:
+        echo "[r2c-compile] compiler failed rc=" + intToStr(res.exitCode) + " log=" + compileLog
+        return 1
+
+    let reportPath = os.joinPath(outRoot, "r2capp_compile_report.json")
+    if ! parseAndValidateReport(reportPath, opts.strict):
+        return 1
+
+    os.writeFile(os.joinPath(opts.outDir, "r2c_compile.native.log"), res.output)
+    return 0
+
+fn main(): int32 =
+    return runCompile()
+
+main()

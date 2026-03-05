@@ -159,6 +159,7 @@ async function ensureNativePublishContext(): Promise<void> {
   if (!libp2pService.isNativePlatform()) {
     return;
   }
+  await libp2pService.setDiscoveryActive(true, 'update-publisher').catch(() => undefined);
   const nativeService = libp2pService as unknown as {
     reconnectBootstrap?: () => Promise<unknown>;
     boostConnectivity?: () => Promise<unknown>;
@@ -179,10 +180,16 @@ async function ensureNativePublishContext(): Promise<void> {
   }
 
   await libp2pService.subscribeToLocalPeers?.catch?.(() => false);
+  await libp2pService
+    .networkDiscoverySnapshot('', 128, 7)
+    .catch(() => ({} as Record<string, unknown>));
   const connectedPeers = await libp2pService.getConnectedPeers().catch(() => [] as string[]);
   if (connectedPeers.length === 0) {
     await libp2pService.joinViaRandomBootstrap(3).catch(() => ({} as Record<string, unknown>));
     await libp2pService.reconnectBootstrap().catch(() => false);
+    await libp2pService
+      .networkDiscoverySnapshot('', 128, 7)
+      .catch(() => ({} as Record<string, unknown>));
   }
 }
 

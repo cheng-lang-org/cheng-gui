@@ -25,6 +25,13 @@ import {
 } from '../data/distributedContent';
 import { libp2pService } from '../libp2p/service';
 import { libp2pEventPump } from '../libp2p/eventPump';
+import { decideSevenGateAction } from '../libp2p/sevenGatesPolicy';
+import { sevenGatesRuntime } from '../libp2p/sevenGatesRuntime';
+import {
+  getStoredPeerMultiaddrs,
+  storePeerMultiaddrs,
+  storePeerMultiaddrsBatch,
+} from '../libp2p/peerMultiaddrStore';
 import { useLocale } from '../i18n/LocaleContext';
 import type { Translations } from '../i18n/translations';
 import Sidebar from './Sidebar';
@@ -196,6 +203,29 @@ function parseText(value: unknown, fallback = '--'): string {
   return fallback;
 }
 
+function sanitizeRuntimeStartupError(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    return '';
+  }
+  const lower = normalized.toLowerCase();
+  if (
+    lower === 'node_not_initialized'
+    || lower === 'node_not_initiailized'
+    || lower === 'runtime_not_ready'
+    || lower === 'init_pending'
+    || lower === 'init_failed'
+    || lower === 'start_failed'
+    || lower === 'start_not_effective'
+    || lower.includes('node_not_initialized')
+    || lower.includes('node_not_initiailized')
+    || lower.includes('runtime_not_ready')
+  ) {
+    return '';
+  }
+  return normalized;
+}
+
 function parseObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -269,6 +299,21 @@ function pickDialMultiaddr(peerId: string, addresses: string[]): string {
   const tcp = normalized.find((item) => item.includes('/tcp/'));
   if (tcp) return tcp;
   return normalized[0] ?? '';
+}
+
+function prioritizeDialMultiaddrs(peerId: string, addresses: string[]): string[] {
+  const normalized = uniqueStrings(
+    addresses
+      .map((item) => normalizeMultiaddrForPeer(item, peerId))
+      .filter((item) => isDialablePeerMultiaddr(item))
+  );
+  const quicV1 = normalized.filter((item) => item.includes('/quic-v1'));
+  const quicOther = normalized.filter((item) => item.includes('/quic') && !item.includes('/quic-v1'));
+  const tcp = normalized.filter((item) => item.includes('/tcp/'));
+  const rest = normalized.filter(
+    (item) => !item.includes('/quic') && !item.includes('/tcp/')
+  );
+  return uniqueStrings([...quicV1, ...quicOther, ...tcp, ...rest]);
 }
 
 function parseEventPayload(payload: unknown): Record<string, unknown> {
@@ -376,33 +421,6 @@ function parseDiscoveredPeers(raw: unknown): DiscoveredPeerRow[] {
     });
   }
   return output;
-}
-
-function parseRendezvousPeerMap(raw: unknown): Record<string, string[]> {
-  const result: Record<string, string[]> = {};
-  const root = parseObject(raw);
-  const peers = Array.isArray(raw)
-    ? raw
-    : Array.isArray(root.peers)
-      ? root.peers
-      : [];
-  for (const entry of peers) {
-    const row = parseObject(entry);
-    const peerId = normalizePeerId(parseText(row.peerId, parseText(row.peer_id, '')));
-    if (!peerId || !isLikelyPeerId(peerId)) {
-      continue;
-    }
-    const addresses = uniqueStrings(
-      [...parseStringArray(row.addresses), ...parseStringArray(row.multiaddrs)]
-        .map((item) => normalizeMultiaddrForPeer(item, peerId))
-        .filter((item) => isDialablePeerMultiaddr(item))
-    );
-    if (addresses.length === 0) {
-      continue;
-    }
-    result[peerId] = uniqueStrings([...(result[peerId] ?? []), ...addresses]);
-  }
-  return result;
 }
 
 function parseAndroidMdnsPeerMap(raw: unknown): Record<string, string[]> {
@@ -1014,15 +1032,12 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
   const [nativeStatusLoading, setNativeStatusLoading] = useState(false);
   const [isResourceExpanded, setIsResourceExpanded] = useState(false);
   const measuredBandwidthRef = useRef<Record<string, MeasuredBandwidthSnapshot>>({});
-  const lastRendezvousRefreshAtRef = useRef(0);
-  const lastMdnsDebugRefreshAtRef = useRef(0);
   const localPeerIdRef = useRef(normalizePeerId(localStorage.getItem('profile_local_peer_id_v1') ?? ''));
   const bootstrapAutoJoinRef = useRef(false);
   const refreshInFlightRef = useRef(false);
   const refreshPendingRef = useRef(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRefreshAtRef = useRef(0);
-  const lastAutoConnectAttemptAtRef = useRef<Record<string, number>>({});
 
   const refreshNativeStatus = async () => {
     setNativeStatusLoading(true);
@@ -1044,6 +1059,7 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
         peerId: '',
         lastError: 'runtime_health_unavailable',
       }));
+      const runtimeLastError = sanitizeRuntimeStartupError((runtimeHealth.lastError ?? '').trim());
       const runtimePeerId = normalizePeerId(runtimeHealth.peerId ?? identityPeerId ?? '');
       const runtimeStarted = parseBoolean(runtimeHealth.started, false);
       const effectiveStarted = runtimeStarted || started;
@@ -1052,13 +1068,13 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
         nativeReady: runtimeNativeReady,
         started: effectiveStarted,
         peerId: runtimePeerId,
-        lastError: (runtimeHealth.lastError ?? '').trim(),
+        lastError: runtimeLastError,
       });
       const runtimeReady = runtimeNativeReady || effectiveStarted;
       const persistedPeerId = normalizePeerId(localStorage.getItem('profile_local_peer_id_v1') ?? '');
       if (!runtimeReady && !started) {
-        const bridgeLastError = await libp2pService.getLastError().catch(() => '');
-        const runtimeError = runtimeHealth.lastError?.trim() ?? '';
+        const bridgeLastError = sanitizeRuntimeStartupError(await libp2pService.getLastError().catch(() => ''));
+        const runtimeError = runtimeLastError;
         const detailText = runtimeError || bridgeLastError.trim();
         const detail = detailText ? `: ${detailText}` : '';
         runtimeFailureReason = detailText;
@@ -1077,12 +1093,9 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
         }
       }
       if (!runtimeReady) {
-        const detail = runtimeHealth.lastError ? `: ${runtimeHealth.lastError}` : '';
+        const detail = runtimeLastError ? `: ${runtimeLastError}` : '';
         setRuntimeStatusHint(`runtime starting${detail}`);
-        runtimeFailureReason = runtimeFailureReason || (runtimeHealth.lastError?.trim() ?? '');
-        if (!runtimeFailureReason) {
-          runtimeFailureReason = 'runtime_not_ready';
-        }
+        runtimeFailureReason = runtimeFailureReason || runtimeLastError;
       } else if (!runtimeHealth.nativeReady) {
         setRuntimeStatusHint('runtime recovering');
       } else {
@@ -1090,46 +1103,28 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
       }
       const now = Date.now();
       const runtimeReadyForDiscovery = runtimeReady && runtimeHealth.nativeReady;
-      const shouldRefreshRendezvous =
-        runtimeReadyForDiscovery && now - lastRendezvousRefreshAtRef.current > 15_000;
-      const shouldRefreshMdnsDebug =
-        runtimeReadyForDiscovery
-        && (lastMdnsDebugRefreshAtRef.current === 0 || now - lastMdnsDebugRefreshAtRef.current > 5_000);
-      const discoveredPeersPromise = runtimeReadyForDiscovery
-        ? libp2pService.socialListDiscoveredPeers('', 256)
-        : Promise.resolve({ peers: [] as DiscoveredPeer[], totalCount: 0 });
-      const rendezvousPromise = shouldRefreshRendezvous
-        ? libp2pService.rendezvousDiscover('unimaker/nodes/v1', 64).catch(() => [] as Record<string, unknown>[])
-        : Promise.resolve([] as Record<string, unknown>[]);
-      const mdnsDebugPromise = shouldRefreshMdnsDebug
-        ? libp2pService.mdnsDebug().catch(() => ({} as Record<string, unknown>))
-        : Promise.resolve({} as Record<string, unknown>);
-
-      const [peerIdRaw, peers, rendezvousRaw, discoveredRaw, mdnsDebugRaw] = await Promise.all([
-        libp2pService.getLocalPeerId(),
-        libp2pService.getConnectedPeers(),
-        rendezvousPromise,
-        discoveredPeersPromise,
-        mdnsDebugPromise,
-      ]);
-
-      const [peersInfo, diagnostics] = await Promise.all([
-        libp2pService.getConnectedPeersInfo().catch(() => []),
+      const snapshotRaw = runtimeReadyForDiscovery
+        ? await libp2pService.networkDiscoverySnapshot('', 256, 7).catch(() => ({} as Record<string, unknown>))
+        : ({} as Record<string, unknown>);
+      const snapshot = parseObject(snapshotRaw);
+      const snapshotPeerId = normalizePeerId(parseText(snapshot.peerId, ''));
+      const connectedFromSnapshot = parseStringArray(snapshot.connectedPeers).map((item) => normalizePeerId(item));
+      const connectedFallback = await libp2pService.getConnectedPeers().catch(() => [] as string[]);
+      const connectedPeers = uniqueStrings([...connectedFromSnapshot, ...connectedFallback].filter(Boolean));
+      const peerRowsRaw = Array.isArray(snapshot.connectedPeersInfo) ? snapshot.connectedPeersInfo : [];
+      const peerRows = peerRowsRaw.map((entry) => parseObject(entry));
+      const discoveredPeers = parseDiscoveredPeers(snapshot.discoveredPeers ?? { peers: [] });
+      const mdnsDebugRaw = parseObject(snapshot.mdnsDebug);
+      setMdnsDebugState(mdnsDebugRaw);
+      const [diagnostics, bootstrapStatus] = await Promise.all([
         libp2pService.getDiagnostics().catch(() => ({} as Record<string, unknown>)),
+        libp2pService.bootstrapGetStatus().catch(() => ({} as Record<string, unknown>)),
       ]);
-      const peerRows = Array.isArray(peersInfo) ? peersInfo : [];
       const diagnosticsObj = parseObject(diagnostics);
-      const bootstrap: BootstrapPeer[] = [];
-      const rendezvousHints = shouldRefreshRendezvous ? parseRendezvousPeerMap(rendezvousRaw) : {};
-      if (shouldRefreshRendezvous) {
-        lastRendezvousRefreshAtRef.current = now;
-      }
+      const bootstrap = parseBootstrapPeers(snapshot.bootstrap ?? bootstrapStatus);
 
-      const resolvedPeerId = normalizePeerId(peerIdRaw || identityPeerId || runtimeHealth.peerId || localPeerIdRef.current);
-      const connectedPeers = uniqueStrings(peers.map((item) => normalizePeerId(item)).filter(Boolean));
-      const connectedSet = new Set(connectedPeers);
-      const discoveredPeers = parseDiscoveredPeers(discoveredRaw);
       const mdnsHints: Record<string, string[]> = {};
+      const rendezvousHints: Record<string, string[]> = {};
       for (const row of discoveredPeers) {
         if (row.sources.includes('mDNS') || row.sources.includes('LAN')) {
           mdnsHints[row.peerId] = uniqueStrings([...(mdnsHints[row.peerId] ?? []), ...row.multiaddrs]);
@@ -1138,78 +1133,73 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
           rendezvousHints[row.peerId] = uniqueStrings([...(rendezvousHints[row.peerId] ?? []), ...row.multiaddrs]);
         }
       }
-      const mergedRendezvousHints: Record<string, string[]> = rendezvousHints;
-
-      if (shouldRefreshMdnsDebug) {
-        lastMdnsDebugRefreshAtRef.current = now;
-      }
-      const androidMdnsPeers = shouldRefreshMdnsDebug ? parseAndroidMdnsPeerMap(mdnsDebugRaw) : {};
-      if (shouldRefreshMdnsDebug) {
-        setMdnsDebugState(parseObject(mdnsDebugRaw));
-      }
+      const androidMdnsPeers = parseAndroidMdnsPeerMap(mdnsDebugRaw);
       for (const [peerId, addrs] of Object.entries(androidMdnsPeers)) {
         if (!peerId || addrs.length === 0) {
           continue;
         }
         mdnsHints[peerId] = uniqueStrings([...(mdnsHints[peerId] ?? []), ...addrs]);
       }
-
-      const autoConnectCandidates = new Map<string, string>();
+      const mergedRendezvousHints: Record<string, string[]> = rendezvousHints;
+      const cacheEntries: Record<string, string[]> = {};
       for (const row of discoveredPeers) {
         const peerId = normalizePeerId(row.peerId);
-        const isLanDiscovered = row.sources.includes('mDNS') || row.sources.includes('LAN');
-        if (!isLanDiscovered || !peerId || peerId === resolvedPeerId || connectedSet.has(peerId)) {
+        if (!peerId) {
           continue;
         }
-        const firstAddr = row.multiaddrs.find((item) => isDialablePeerMultiaddr(item)) ?? '';
-        if (!firstAddr) {
+        const normalizedAddrs = prioritizeDialMultiaddrs(peerId, row.multiaddrs);
+        if (normalizedAddrs.length === 0) {
           continue;
         }
-        autoConnectCandidates.set(peerId, firstAddr);
+        cacheEntries[peerId] = uniqueStrings([...(cacheEntries[peerId] ?? []), ...normalizedAddrs]);
       }
       for (const [peerIdRaw, addrs] of Object.entries(mdnsHints)) {
         const peerId = normalizePeerId(peerIdRaw);
-        if (!peerId || peerId === resolvedPeerId || connectedSet.has(peerId) || autoConnectCandidates.has(peerId)) {
+        if (!peerId) {
           continue;
         }
-        const firstAddr = addrs.find((item) => isDialablePeerMultiaddr(item)) ?? '';
-        if (!firstAddr) {
+        const normalizedAddrs = prioritizeDialMultiaddrs(peerId, addrs);
+        if (normalizedAddrs.length === 0) {
           continue;
         }
-        autoConnectCandidates.set(peerId, firstAddr.trim());
+        cacheEntries[peerId] = uniqueStrings([...(cacheEntries[peerId] ?? []), ...normalizedAddrs]);
       }
       for (const [peerIdRaw, addrs] of Object.entries(mergedRendezvousHints)) {
         const peerId = normalizePeerId(peerIdRaw);
-        if (!peerId || peerId === resolvedPeerId || connectedSet.has(peerId) || autoConnectCandidates.has(peerId)) {
+        if (!peerId) {
           continue;
         }
-        const firstAddr = addrs.find((item) => isDialablePeerMultiaddr(item)) ?? '';
-        if (!firstAddr) {
+        const normalizedAddrs = prioritizeDialMultiaddrs(peerId, addrs);
+        if (normalizedAddrs.length === 0) {
           continue;
         }
-        autoConnectCandidates.set(peerId, firstAddr.trim());
+        cacheEntries[peerId] = uniqueStrings([...(cacheEntries[peerId] ?? []), ...normalizedAddrs]);
       }
-      const autoConnectTasks: Promise<unknown>[] = [];
-      for (const [peerId, rawAddr] of autoConnectCandidates.entries()) {
-        const lastAttemptAt = lastAutoConnectAttemptAtRef.current[peerId] ?? 0;
-        if (now - lastAttemptAt < 15_000) {
-          continue;
-        }
-        lastAutoConnectAttemptAtRef.current[peerId] = now;
-        const normalizedAddr = normalizeMultiaddrForPeer(rawAddr, peerId);
-        autoConnectTasks.push(
-          (async () => {
-            if (!isDialablePeerMultiaddr(normalizedAddr)) {
-              return;
-            }
-            await libp2pService.registerPeerHints(peerId, [normalizedAddr], 'nodes-page-auto-connect').catch(() => false);
-            await libp2pService.socialConnectPeer(peerId, normalizedAddr).catch(() => false);
-          })()
+      storePeerMultiaddrsBatch(cacheEntries);
+
+      const mdnsLanPeerIds = Object.keys(mdnsHints).filter((peerId) => normalizePeerId(peerId).length > 0);
+      const sampleMdnsPeerId = mdnsLanPeerIds[0] ?? '';
+      const sampleMdnsAddr = sampleMdnsPeerId ? (mdnsHints[sampleMdnsPeerId]?.[0] ?? '') : '';
+      if (mdnsLanPeerIds.length > 0) {
+        sevenGatesRuntime.recordEvidence(
+          'gate.mdns_lan_discovery',
+          {
+            check: 'nodes.mdns_lan_discovery',
+            status: 'passed',
+            detail: `lan peers discovered: ${mdnsLanPeerIds.length}`,
+            data: {
+              peerCount: mdnsLanPeerIds.length,
+              samplePeerId: sampleMdnsPeerId,
+              sampleMultiaddr: sampleMdnsAddr,
+            },
+          },
+          { ttlMs: 12 * 60 * 60 * 1000 }
         );
       }
-      if (autoConnectTasks.length > 0) {
-        await Promise.allSettled(autoConnectTasks);
-      }
+
+      const resolvedPeerId = normalizePeerId(
+        snapshotPeerId || identityPeerId || runtimeHealth.peerId || localPeerIdRef.current
+      );
 
       const rebuilt = buildNativeNodes(
         resolvedPeerId,
@@ -1219,7 +1209,16 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
         mergedRendezvousHints,
         t
       );
-      const rebuiltWithMeasured = applyMeasuredBandwidthOverlay(rebuilt, measuredBandwidthRef.current);
+      const rebuiltWithMeasured = applyMeasuredBandwidthOverlay(rebuilt, measuredBandwidthRef.current).map((item) => {
+        const cached = prioritizeDialMultiaddrs(item.peerId, getStoredPeerMultiaddrs(item.peerId));
+        if (cached.length === 0) {
+          return item;
+        }
+        return {
+          ...item,
+          multiaddrs: uniqueStrings([...item.multiaddrs, ...cached]),
+        };
+      });
       const visibleNodes = rebuiltWithMeasured.filter((item) => item.status === 'online' && item.peerId !== resolvedPeerId);
       setNodes(visibleNodes);
       if (resolvedPeerId.length > 0) {
@@ -1486,6 +1485,7 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
     const diag = parseObject(nativeDiagnostics);
     const discovery = parseObject(diag.discovery);
     const mdns = parseObject(mdnsDebugState);
+    const androidBridgeMdns = parseObject(mdns.androidBridge);
     const connectedCount = nativeConnectedPeers.length > 0
       ? nativeConnectedPeers.length
       : parseNumber(diag.connectedCount, parseNumber(diag.connectedPeers, 0));
@@ -1501,10 +1501,51 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
       runtimeHealthState.nativeReady
         ? (runtimeHealthState.started ? 'ready' : 'starting')
         : 'not_ready';
-    const lastError = parseText(
+    const rawLastError = parseText(
       runtimeHealthState.lastError,
       parseText(diag.lastError, parseText(diag.error, '')),
     );
+    const lastError = sanitizeRuntimeStartupError(rawLastError);
+    const mdnsError = parseText(
+      mdns.lastError,
+      parseText(
+        mdns.error,
+        parseText(
+          androidBridgeMdns.lastError,
+          parseText(androidBridgeMdns.error, ''),
+        ),
+      ),
+    );
+    const mdnsStatusText = parseText(
+      mdns.status,
+      parseText(androidBridgeMdns.status, ''),
+    ).toLowerCase();
+    const mdnsDisabled = parseBoolean(
+      mdns.enabled,
+      parseBoolean(
+        mdns.mdnsEnabled,
+        parseBoolean(androidBridgeMdns.enabled, true),
+      ),
+    ) === false;
+    const mdnsErrorText = `${mdnsError} ${mdnsStatusText} ${lastError}`.toLowerCase();
+    const mdnsCrashLikely = /sigsegv|fatal signal|segv|crash|abort|unimakermdns/.test(mdnsErrorText);
+    let mdnsHealth: 'ok' | 'degraded' | 'failed' = 'degraded';
+    let mdnsHintCode: 'runtime_starting' | 'disabled' | 'unhealthy' | 'fallback' | 'no_peer' | '' = '';
+    if (!runtimeHealthState.nativeReady || !runtimeHealthState.started) {
+      mdnsHintCode = 'runtime_starting';
+    } else if (mdnsDisabled) {
+      mdnsHealth = 'failed';
+      mdnsHintCode = 'disabled';
+    } else if (mdnsCrashLikely || mdnsError.length > 0) {
+      mdnsHealth = 'failed';
+      mdnsHintCode = 'unhealthy';
+    } else if (mdnsPeerCount > 0) {
+      mdnsHealth = 'ok';
+    } else if (candidateCount > 0 || connectedCount > 0) {
+      mdnsHintCode = 'fallback';
+    } else {
+      mdnsHintCode = 'no_peer';
+    }
     return {
       status,
       connectedCount,
@@ -1512,6 +1553,9 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
       candidateCount,
       peerId: runtimeHealthState.peerId || localPeerId,
       lastError,
+      mdnsError,
+      mdnsHealth,
+      mdnsHintCode,
     };
   }, [localPeerId, mdnsDebugState, nativeConnectedPeers, nativeDiagnostics, runtimeHealthState]);
 
@@ -1740,40 +1784,156 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
     try {
       const peerId = normalizePeerId(node.peerId);
       if (!peerId) return;
-      let multiaddrs = uniqueStrings(node.multiaddrs.map((item) => normalizeMultiaddrForPeer(item, peerId)).filter(Boolean));
-      let connected = false;
+      const decision = decideSevenGateAction(sevenGatesRuntime.getSnapshot(), 'connect_peer');
+      if (!decision.allowed) {
+        setNativeError(decision.reason);
+        return;
+      }
+      let multiaddrs = prioritizeDialMultiaddrs(
+        peerId,
+        [
+          ...node.multiaddrs,
+          ...getStoredPeerMultiaddrs(peerId),
+        ]
+      );
+      if (multiaddrs.length > 0) {
+        multiaddrs = prioritizeDialMultiaddrs(peerId, storePeerMultiaddrs(peerId, multiaddrs));
+      }
+      const knownAddrs = await libp2pService.getPeerMultiaddrs(peerId).catch(() => [] as string[]);
+      if (knownAddrs.length > 0) {
+        multiaddrs = prioritizeDialMultiaddrs(
+          peerId,
+          [
+            ...multiaddrs,
+            ...knownAddrs,
+          ]
+        );
+        multiaddrs = prioritizeDialMultiaddrs(peerId, storePeerMultiaddrs(peerId, multiaddrs));
+      }
 
-      const firstDial = pickDialMultiaddr(peerId, multiaddrs);
-      if (firstDial) {
-        connected = await libp2pService.connectMultiaddr(firstDial);
+      const fallbackDial = pickDialMultiaddr(peerId, multiaddrs);
+      let connectedAddr = '';
+      let connected = await libp2pService.socialConnectPeer(peerId, fallbackDial).catch(() => false);
+      if (!connected) {
+        connected = await libp2pService.socialConnectPeer(peerId).catch(() => false);
+      }
+      if (connected && fallbackDial) {
+        connectedAddr = fallbackDial;
       }
 
       if (!connected) {
-        const knownAddrs = await libp2pService.getPeerMultiaddrs(peerId);
-        multiaddrs = uniqueStrings([
-          ...multiaddrs,
-          ...knownAddrs.map((item) => normalizeMultiaddrForPeer(item, peerId)).filter(Boolean),
-        ]);
-        if (multiaddrs.length > 0) {
-          await libp2pService.registerPeerHints(peerId, multiaddrs, 'nodes-page');
-          const hintedDial = pickDialMultiaddr(peerId, multiaddrs);
-          if (hintedDial) {
-            connected = await libp2pService.connectMultiaddr(hintedDial);
-          }
-        }
-      }
-
-      if (!connected) {
-        connected = await libp2pService.connectPeer(peerId);
-      }
-
-      if (!connected) {
-        connected = await libp2pService.socialConnectPeer(peerId, firstDial || multiaddrs[0] || '');
-      }
-
-      if (!connected) {
+        sevenGatesRuntime.setGateStatus('gate.quic_direct_connect', 'failed', {
+          error: 'connect_failed',
+          evidence: [{
+            check: 'nodes.quic_direct_connect',
+            status: 'failed',
+            detail: 'connect peer failed',
+            data: { peerId },
+          }],
+          ttlMs: 12 * 60 * 60 * 1000,
+        });
         setNativeError((await libp2pService.getLastError()) || `${t.nodes_connectFailed}: ${peerId.slice(0, 10)}`);
+        return;
       }
+
+      const inferredQuicFromHints = connectedAddr.length === 0 && multiaddrs.some((item) => item.includes('/quic-v1'));
+      const connectedViaQuic = connectedAddr.includes('/quic-v1') || inferredQuicFromHints;
+      const reportedConnectedAddr = connectedAddr || fallbackDial || multiaddrs[0] || '';
+
+      setNodes((prev) => prev.map((item) => {
+        if (item.peerId !== peerId) {
+          return item;
+        }
+        return {
+          ...item,
+          status: 'online',
+          lastSeenAt: Date.now(),
+          multiaddrs: uniqueStrings([...item.multiaddrs, ...multiaddrs]),
+          sources: uniqueStrings([...item.sources, 'Connected']) as NodeSourceTag[],
+          connections: item.connections + 1,
+        };
+      }));
+      setSelectedNode((prev) => {
+        if (!prev || prev.peerId !== peerId) {
+          return prev;
+        }
+        return {
+          ...prev,
+          status: 'online',
+          lastSeenAt: Date.now(),
+          multiaddrs: uniqueStrings([...prev.multiaddrs, ...multiaddrs]),
+          sources: uniqueStrings([...prev.sources, 'Connected']) as NodeSourceTag[],
+          connections: prev.connections + 1,
+        };
+      });
+
+      sevenGatesRuntime.setGateStatus('gate.quic_direct_connect', connectedViaQuic ? 'passed' : 'failed', {
+        error: connectedViaQuic ? undefined : 'quic_v1_address_required',
+        evidence: [{
+          check: 'nodes.quic_direct_connect',
+          status: connectedViaQuic ? 'passed' : 'failed',
+          detail: connectedViaQuic
+            ? 'connected via /quic-v1'
+            : 'connected but missing /quic-v1 multiaddr',
+          data: {
+            peerId,
+            multiaddr: reportedConnectedAddr,
+          },
+        }],
+        ttlMs: 12 * 60 * 60 * 1000,
+      });
+
+      const msquicSettings = await libp2pService.getMsquicSettings().catch(() => ({} as Record<string, unknown>));
+      const migrationEnabled = parseBoolean(
+        (msquicSettings as Record<string, unknown>).migrationEnabled
+          ?? (msquicSettings as Record<string, unknown>).migration_enabled,
+        false,
+      );
+      let preHeartbeatOk = false;
+      let postHeartbeatOk = false;
+      if (migrationEnabled) {
+        preHeartbeatOk = await libp2pService.sendWithAck(peerId, {
+          type: 'migration',
+          phase: 'pre',
+          ts: Date.now(),
+        }, 5000).catch(() => false);
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 260);
+        });
+        postHeartbeatOk = await libp2pService.sendWithAck(peerId, {
+          type: 'migration',
+          phase: 'post',
+          ts: Date.now(),
+        }, 5000).catch(() => false);
+      }
+      const migrationPassed = migrationEnabled && preHeartbeatOk && postHeartbeatOk;
+      sevenGatesRuntime.setGateStatus('gate.quic_connection_migration', migrationPassed ? 'passed' : 'failed', {
+        error: migrationPassed
+          ? undefined
+          : (migrationEnabled ? 'migration_heartbeat_failed' : 'migration_disabled'),
+        evidence: [
+          {
+            check: 'nodes.msquic.migrationEnabled',
+            status: migrationEnabled ? 'passed' : 'failed',
+            detail: migrationEnabled ? 'migrationEnabled=true' : 'migrationEnabled=false',
+          },
+          {
+            check: 'nodes.migration.preHeartbeat',
+            status: migrationEnabled
+              ? (preHeartbeatOk ? 'passed' : 'failed')
+              : 'blocked',
+            detail: migrationEnabled ? undefined : 'migration disabled',
+          },
+          {
+            check: 'nodes.migration.postHeartbeat',
+            status: migrationEnabled
+              ? (postHeartbeatOk ? 'passed' : 'failed')
+              : 'blocked',
+            detail: migrationEnabled ? undefined : 'migration disabled',
+          },
+        ],
+        ttlMs: 12 * 60 * 60 * 1000,
+      });
     } catch (error) {
       setNativeError(error instanceof Error ? error.message : `${error}`);
     } finally {
@@ -1858,6 +2018,24 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
       : discoveryDiagnostics.status === 'starting'
         ? t.nodes_diag_runtime_starting
         : t.nodes_diag_runtime_notReady;
+  const mdnsHealthLabel =
+    discoveryDiagnostics.mdnsHealth === 'ok'
+      ? t.nodes_diag_mdns_health_ok
+      : discoveryDiagnostics.mdnsHealth === 'failed'
+        ? t.nodes_diag_mdns_health_failed
+        : t.nodes_diag_mdns_health_degraded;
+  const mdnsHintText =
+    discoveryDiagnostics.mdnsHintCode === 'runtime_starting'
+      ? t.nodes_diag_mdns_hint_runtime_starting
+      : discoveryDiagnostics.mdnsHintCode === 'disabled'
+        ? t.nodes_diag_mdns_hint_disabled
+        : discoveryDiagnostics.mdnsHintCode === 'unhealthy'
+          ? t.nodes_diag_mdns_hint_unhealthy
+          : discoveryDiagnostics.mdnsHintCode === 'fallback'
+            ? t.nodes_diag_mdns_hint_fallback
+            : discoveryDiagnostics.mdnsHintCode === 'no_peer'
+              ? t.nodes_diag_mdns_hint_no_peer
+              : '';
 
   return (
     <>
@@ -1990,6 +2168,17 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
             {runtimeStatusHint}
           </div>
         )}
+        {discoveryDiagnostics.mdnsHealth === 'failed' && (
+          <div className="mx-4 mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-2.5 py-2">
+            {mdnsHintText}
+            {discoveryDiagnostics.mdnsError ? `：${discoveryDiagnostics.mdnsError}` : ''}
+          </div>
+        )}
+        {discoveryDiagnostics.mdnsHealth === 'degraded' && discoveryDiagnostics.status === 'ready' && mdnsHintText && (
+          <div className="mx-4 mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-2">
+            {mdnsHintText}
+          </div>
+        )}
         <section className="mx-4 mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
           <div className="text-xs font-semibold text-slate-700 mb-2">{t.nodes_diag_title}</div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] text-slate-700">
@@ -1997,6 +2186,8 @@ export default function NodesPage({ onNavigate, onOpenApp }: { onNavigate?: (pag
             <div>{t.nodes_diag_connected_peers}：<span className="font-medium">{discoveryDiagnostics.connectedCount}</span></div>
             <div>{t.nodes_diag_mdns_peers}：<span className="font-medium">{discoveryDiagnostics.mdnsPeerCount}</span></div>
             <div>{t.nodes_diag_candidates}：<span className="font-medium">{discoveryDiagnostics.candidateCount}</span></div>
+            <div>{t.nodes_diag_mdns_health}：<span className={`font-medium ${discoveryDiagnostics.mdnsHealth === 'failed' ? 'text-red-600' : discoveryDiagnostics.mdnsHealth === 'ok' ? 'text-emerald-700' : 'text-amber-700'}`}>{mdnsHealthLabel}</span></div>
+            <div>{t.nodes_diag_mdns_error}：<span className="font-medium">{discoveryDiagnostics.mdnsError || '--'}</span></div>
             <div className="col-span-2 truncate">
               {t.nodes_diag_peer_id}：<span className="font-medium">{discoveryDiagnostics.peerId || '--'}</span>
             </div>

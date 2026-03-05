@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 export GUI_ROOT="$ROOT"
+BIN_DIR="${CHENG_GUI_DISPATCHER_BIN_DIR:-$ROOT/bin}"
+BIN_NAME="${CHENG_GUI_DISPATCHER_BIN_NAME:-cheng_gui_scripts}"
+COMPILE_CMD="$BIN_DIR/r2c_compile_react_project"
 
 usage() {
   cat <<'EOF'
@@ -10,8 +13,19 @@ Usage:
   r2c_compile_react_projects.sh --root <abs_path> --out <abs_path> [--strict] [--max-depth <n>]
 
 Description:
-  Discover React projects under --root and run r2c_compile_react_project.sh for each.
+  Discover React projects under --root and run native r2c_compile_react_project for each.
 EOF
+}
+
+ensure_compile_cmd() {
+  if [ -x "$COMPILE_CMD" ]; then
+    return 0
+  fi
+  "$ROOT/scripts/build_script_dispatcher.sh" --out-dir "$BIN_DIR" --bin-name "$BIN_NAME" >/dev/null
+  if [ ! -x "$COMPILE_CMD" ]; then
+    echo "[r2c-batch] missing native compile command: $COMPILE_CMD" >&2
+    exit 1
+  fi
 }
 
 json_escape() {
@@ -119,8 +133,9 @@ while IFS= read -r project_dir; do
   fi
 
   echo "[r2c-batch] compiling: $project_dir"
+  ensure_compile_cmd
   set +e
-  bash "$ROOT/scripts/r2c_compile_react_project.sh" "${args[@]}" >"$out_dir.compile.log" 2>&1
+  "$COMPILE_CMD" "${args[@]}" >"$out_dir.compile.log" 2>&1
   rc=$?
   set -e
   if [ "$rc" -eq 0 ]; then

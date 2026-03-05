@@ -17,7 +17,16 @@ const mock = vi.hoisted(() => ({
   boostConnectivity: vi.fn(async () => true),
   syncPeerstoreState: vi.fn(async () => ({} as Record<string, unknown>)),
   mdnsProbe: vi.fn(async () => true),
+  mdnsDebug: vi.fn(async () => ({ peers: [] as Array<Record<string, unknown>> })),
   setDiscoveryActive: vi.fn(async () => undefined),
+  networkDiscoverySnapshot: vi.fn(async () => ({
+    ok: true,
+    peerId: 'self-peer',
+    connectedPeers: [] as string[],
+    connectedPeersInfo: [] as Array<Record<string, unknown>>,
+    discoveredPeers: { peers: [] as Array<Record<string, unknown>>, totalCount: 0 },
+    mdnsDebug: {},
+  })),
   getConnectedPeers: vi.fn(async () => [] as string[]),
   joinViaRandomBootstrap: vi.fn(async () => ({ ok: true, connectedCount: 0 })),
   loadStoredPeers: vi.fn(async () => ({ peers: [] as Array<Record<string, unknown>> })),
@@ -49,9 +58,11 @@ vi.mock('../../../libp2p/service', () => ({
     boostConnectivity: (...args: unknown[]) => mock.boostConnectivity(...args),
     syncPeerstoreState: (...args: unknown[]) => mock.syncPeerstoreState(...args),
     mdnsProbe: (...args: unknown[]) => mock.mdnsProbe(...args),
+    mdnsDebug: (...args: unknown[]) => mock.mdnsDebug(...args),
     mdnsSetEnabled: async () => true,
     mdnsSetInterval: async () => true,
     setDiscoveryActive: (...args: unknown[]) => mock.setDiscoveryActive(...args),
+    networkDiscoverySnapshot: (...args: unknown[]) => mock.networkDiscoverySnapshot(...args),
     getConnectedPeers: (...args: unknown[]) => mock.getConnectedPeers(...args),
     joinViaRandomBootstrap: (...args: unknown[]) => mock.joinViaRandomBootstrap(...args),
     fetchFeedSnapshot: (...args: unknown[]) => mock.fetchFeedSnapshot(...args),
@@ -94,7 +105,18 @@ describe('update transport authority convergence', () => {
     mock.boostConnectivity.mockClear();
     mock.syncPeerstoreState.mockClear();
     mock.mdnsProbe.mockClear();
+    mock.mdnsDebug.mockReset();
+    mock.mdnsDebug.mockResolvedValue({ peers: [] });
     mock.setDiscoveryActive.mockClear();
+    mock.networkDiscoverySnapshot.mockReset();
+    mock.networkDiscoverySnapshot.mockResolvedValue({
+      ok: true,
+      peerId: 'self-peer',
+      connectedPeers: [],
+      connectedPeersInfo: [],
+      discoveredPeers: { peers: [], totalCount: 0 },
+      mdnsDebug: {},
+    });
     mock.getConnectedPeers.mockReset();
     mock.getConnectedPeers.mockResolvedValue([]);
     mock.joinViaRandomBootstrap.mockClear();
@@ -172,11 +194,19 @@ describe('update transport authority convergence', () => {
         },
       ],
     });
-    mock.rendezvousDiscover.mockImplementation(async (namespace: string) => {
-      if (namespace.startsWith('/')) {
-        return [{ peerId: 'peer-a' }, { peerId: 'self-peer' }];
-      }
-      return [];
+    mock.networkDiscoverySnapshot.mockResolvedValue({
+      ok: true,
+      peerId: 'self-peer',
+      connectedPeers: [],
+      connectedPeersInfo: [],
+      discoveredPeers: {
+        peers: [
+          { peerId: 'peer-a' },
+          { peerId: 'self-peer' },
+        ],
+        totalCount: 2,
+      },
+      mdnsDebug: {},
     });
 
     const transport = new UpdateTransport({
@@ -191,8 +221,6 @@ describe('update transport authority convergence', () => {
 
     await transport.start();
     expect(mock.feedSubscribePeer).toHaveBeenCalledWith('peer-a');
-    expect(mock.rendezvousDiscover).toHaveBeenCalledWith('unimaker/updates/v2/stable/android', 64);
-    expect(mock.rendezvousDiscover).toHaveBeenCalledWith('/unimaker/updates/v2/stable/android', 64);
     expect(messages.some((item) => item.kind === 'manifest' && item.source === 'feed_snapshot')).toBe(true);
     await transport.stop();
   });
@@ -340,13 +368,20 @@ describe('update transport authority convergence', () => {
     await transport.stop();
   });
 
-  it('falls back to real-time discovered peers when rendezvous is empty', async () => {
+  it('falls back to network discovery snapshot peers when rendezvous is empty', async () => {
     mock.rendezvousDiscover.mockResolvedValue([]);
-    mock.socialListDiscoveredPeers.mockResolvedValue({
-      peers: [
-        { peerId: 'peer-realtime', multiaddrs: ['/ip4/10.0.0.8/tcp/4001'] },
-      ],
-      totalCount: 1,
+    mock.networkDiscoverySnapshot.mockResolvedValue({
+      ok: true,
+      peerId: 'self-peer',
+      connectedPeers: [],
+      connectedPeersInfo: [],
+      discoveredPeers: {
+        peers: [
+          { peerId: 'peer-realtime', multiaddrs: ['/ip4/10.0.0.8/tcp/4001'] },
+        ],
+        totalCount: 1,
+      },
+      mdnsDebug: {},
     });
 
     const transport = new UpdateTransport({

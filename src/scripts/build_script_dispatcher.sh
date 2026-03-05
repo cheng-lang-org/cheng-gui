@@ -10,6 +10,8 @@ SRC_NATIVE_ANDROID_FULLROUTE="$ROOT/tools/native_verify_android_fullroute_visual
 SRC_NATIVE_MOBILE_RUN_ANDROID="$ROOT/tools/native_mobile_run_android.c"
 SRC_NATIVE_MOBILE_RUN_IOS="$ROOT/tools/native_mobile_run_ios.c"
 SRC_NATIVE_MOBILE_RUN_HARMONY="$ROOT/tools/native_mobile_run_harmony.c"
+SRC_NATIVE_EXTRACT_RUNTIME_GRAPH="$ROOT/tools/native_extract_react_runtime_graph.c"
+SRC_NATIVE_MERGE_SEMANTIC_GRAPH="$ROOT/tools/native_merge_semantic_graph.c"
 SRC_NATIVE_CAPTURE_ANDROID_TRUTH="$ROOT/tools/native_capture_android_unimaker_truth.c"
 SRC_NATIVE_CAPTURE_ROUTE_LAYER_ANDROID="$ROOT/tools/native_capture_route_layer_android.c"
 SRC_NATIVE_VERIFY_ROUTE_LAYER_ANDROID="$ROOT/tools/native_verify_route_layer_android.c"
@@ -101,6 +103,14 @@ if [ ! -f "$SRC_NATIVE_MOBILE_RUN_HARMONY" ]; then
   echo "[build-script-dispatcher] missing source: $SRC_NATIVE_MOBILE_RUN_HARMONY" >&2
   exit 1
 fi
+if [ ! -f "$SRC_NATIVE_EXTRACT_RUNTIME_GRAPH" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_EXTRACT_RUNTIME_GRAPH" >&2
+  exit 1
+fi
+if [ ! -f "$SRC_NATIVE_MERGE_SEMANTIC_GRAPH" ]; then
+  echo "[build-script-dispatcher] missing source: $SRC_NATIVE_MERGE_SEMANTIC_GRAPH" >&2
+  exit 1
+fi
 if [ ! -f "$SRC_NATIVE_CAPTURE_ANDROID_TRUTH" ]; then
   echo "[build-script-dispatcher] missing source: $SRC_NATIVE_CAPTURE_ANDROID_TRUTH" >&2
   exit 1
@@ -174,6 +184,8 @@ BIN_PATH="$OUT_DIR/$BIN_NAME"
   "$SRC_NATIVE_MOBILE_RUN_ANDROID" \
   "$SRC_NATIVE_MOBILE_RUN_IOS" \
   "$SRC_NATIVE_MOBILE_RUN_HARMONY" \
+  "$SRC_NATIVE_EXTRACT_RUNTIME_GRAPH" \
+  "$SRC_NATIVE_MERGE_SEMANTIC_GRAPH" \
   "$SRC_NATIVE_CAPTURE_ANDROID_TRUTH" \
   "$SRC_NATIVE_CAPTURE_ROUTE_LAYER_ANDROID" \
   "$SRC_NATIVE_VERIFY_ROUTE_LAYER_ANDROID" \
@@ -215,6 +227,8 @@ if [ "$create_links" = "1" ]; then
     "mobile_run_android"
     "mobile_run_ios"
     "mobile_run_harmony"
+    "extract_react_runtime_graph"
+    "merge_semantic_graph"
     "r2c_compile_react_project"
     "r2c_dev_hot_reload_android"
     "verify_android_claude_1to1_gate"

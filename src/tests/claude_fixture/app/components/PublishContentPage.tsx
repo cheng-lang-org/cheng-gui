@@ -9,6 +9,8 @@ import { getPublishLocationErrorMessage } from '../utils/publishLocationError';
 import { loadKnownBlockedHashes, runEdgeFilterPipeline, type EdgeFilterSummary } from '../services/edge/contentFilter';
 import { blurBackgroundFromDataUrl, parseBlurVoiceCommand } from '../services/edge/backgroundBlur';
 import { isEdgeSpeechSupported, transcribeOnce } from '../services/edge/speechRecognition';
+import { decideSevenGateAction } from '../libp2p/sevenGatesPolicy';
+import { sevenGatesRuntime } from '../libp2p/sevenGatesRuntime';
 
 interface PublishContentPageProps {
     onClose: () => void;
@@ -235,6 +237,11 @@ export default function PublishContentPage({ onClose }: PublishContentPageProps)
 
     const handlePublish = async () => {
         if (isPublishing) {
+            return;
+        }
+        const decision = decideSevenGateAction(sevenGatesRuntime.getSnapshot(), 'publish_content');
+        if (!decision.allowed) {
+            setPublishError(decision.reason);
             return;
         }
         setPublishError('');

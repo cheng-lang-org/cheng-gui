@@ -148,12 +148,33 @@ export class SocialStore {
       return;
     }
     try {
-      const [discovered, timeline, notifications] = await Promise.all([
-        libp2pService.socialListDiscoveredPeers('', 256),
+      const [snapshotRaw, timeline, notifications] = await Promise.all([
+        libp2pService.networkDiscoverySnapshot('', 256, 4),
         libp2pService.socialMomentsTimeline('', 50),
         libp2pService.socialNotificationsList('', 100),
       ]);
-      this.snapshot.discoveredPeers = discovered.peers;
+      const snapshot = isRecord(snapshotRaw) ? snapshotRaw : {};
+      const discoveredRoot = isRecord(snapshot.discoveredPeers) ? snapshot.discoveredPeers : {};
+      const discoveredRows = Array.isArray(discoveredRoot.peers) ? discoveredRoot.peers : [];
+      const discoveredPeers: DiscoveredPeer[] = [];
+      for (const rowRaw of discoveredRows) {
+        if (!isRecord(rowRaw)) {
+          continue;
+        }
+        const peerId = asString(rowRaw.peerId ?? rowRaw.peer_id).trim();
+        if (!peerId) {
+          continue;
+        }
+        const multiaddrs = parsePeerArray(rowRaw.multiaddrs ?? rowRaw.addresses);
+        const sources = parsePeerArray(rowRaw.sources ?? rowRaw.sourceTags);
+        discoveredPeers.push({
+          peerId,
+          multiaddrs,
+          sources,
+          ...(typeof rowRaw.lastSeenAt === 'number' ? { lastSeenAt: rowRaw.lastSeenAt } : {}),
+        });
+      }
+      this.snapshot.discoveredPeers = discoveredPeers;
       this.snapshot.moments = timeline.items;
       this.snapshot.notifications = notifications.items;
       this.snapshot.updatedAt = nowMs();

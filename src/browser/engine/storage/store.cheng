@@ -7,8 +7,6 @@ type
         entries: StorageEntry[]
 
 fn safeLen(text: str): int32 =
-    if text == nil:
-        return int32(0)
     return len(text)
 
 fn cNe(a: char, b: char): bool =

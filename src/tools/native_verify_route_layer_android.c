@@ -34,7 +34,7 @@ static int to_abs_path(const char *in, char *out, size_t cap) {
 static void usage(void) {
   fprintf(stdout,
           "Usage:\n"
-          "  verify_route_layer_android --layer-index <n> [--project <abs>] [--entry </app/main.tsx>] [--out <abs>] [--truth-dir <abs>]\n");
+          "  verify_route_layer_android --layer-index <n> [--project <abs>] [--entry </app/main.tsx>] [--out <abs>] [--truth-dir <abs>] [--require-runtime 1] [--routes-csv <a,b,c>] [--routes-file <path>]\n");
 }
 
 int native_verify_route_layer_android(const char *scripts_dir, int argc, char **argv, int arg_start) {
@@ -48,6 +48,8 @@ int native_verify_route_layer_android(const char *scripts_dir, int argc, char **
   if (entry == NULL || entry[0] == '\0') entry = "/app/main.tsx";
   const char *out_dir = NULL;
   const char *truth_dir = getenv("CHENG_ANDROID_1TO1_TRUTH_DIR");
+  const char *routes_csv = getenv("CHENG_ANDROID_EQ_ROUTE_FILTER_CSV");
+  const char *routes_file = getenv("CHENG_ANDROID_EQ_ROUTE_FILTER_FILE");
   int layer_index = -1;
 
   for (int i = arg_start; i < argc;) {
@@ -79,6 +81,28 @@ int native_verify_route_layer_android(const char *scripts_dir, int argc, char **
     if (strcmp(arg, "--layer-index") == 0) {
       if (i + 1 >= argc) return 2;
       layer_index = atoi(argv[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (strcmp(arg, "--routes-csv") == 0) {
+      if (i + 1 >= argc) return 2;
+      routes_csv = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (strcmp(arg, "--routes-file") == 0) {
+      if (i + 1 >= argc) return 2;
+      routes_file = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (strcmp(arg, "--require-runtime") == 0) {
+      if (i + 1 >= argc) return 2;
+      if (strcmp(argv[i + 1], "1") != 0) {
+        fprintf(stderr,
+                "[verify-route-layer-android] strict runtime mode requires --require-runtime=1\n");
+        return 2;
+      }
       i += 2;
       continue;
     }
@@ -116,6 +140,16 @@ int native_verify_route_layer_android(const char *scripts_dir, int argc, char **
 
   setenv("CHENG_ANDROID_EQ_REQUIRE_RUNTIME", "1", 1);
   setenv("CHENG_ANDROID_1TO1_REQUIRE_RUNTIME", "1", 1);
+  if (routes_csv != NULL && routes_csv[0] != '\0') {
+    setenv("CHENG_ANDROID_EQ_ROUTE_FILTER_CSV", routes_csv, 1);
+  } else {
+    unsetenv("CHENG_ANDROID_EQ_ROUTE_FILTER_CSV");
+  }
+  if (routes_file != NULL && routes_file[0] != '\0') {
+    setenv("CHENG_ANDROID_EQ_ROUTE_FILTER_FILE", routes_file, 1);
+  } else {
+    unsetenv("CHENG_ANDROID_EQ_ROUTE_FILTER_FILE");
+  }
   unsetenv("CHENG_ANDROID_1TO1_ROUTE_STATE");
   char layer_text[32];
   snprintf(layer_text, sizeof(layer_text), "%d", layer_index);

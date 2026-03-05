@@ -4,6 +4,7 @@ import PublishBasePage, { type PublishConfig } from './PublishBasePage';
 import { publishDistributedContent } from '../data/distributedContent';
 import { useLocale } from '../i18n/LocaleContext';
 import { getPublishLocationErrorMessage } from '../utils/publishLocationError';
+import LicensePlateInput from './LicensePlateInput';
 
 interface PublishRidePageProps {
     onClose: () => void;
@@ -12,6 +13,7 @@ interface PublishRidePageProps {
 export default function PublishRidePage({ onClose }: PublishRidePageProps) {
     const { t } = useLocale();
     const [rideType, setRideType] = useState<'offer' | 'need'>('offer');
+    const [licensePlate, setLicensePlate] = useState('');
 
     const rideConfig: PublishConfig = {
         category: 'ride',
@@ -38,6 +40,9 @@ export default function PublishRidePage({ onClose }: PublishRidePageProps) {
 
     const handlePublish = async (data: Record<string, unknown>, images: string[]) => {
         const fullData: Record<string, unknown> = { ...data, rideType };
+        if (rideType === 'offer') {
+            fullData.licensePlate = licensePlate;
+        }
         const summary = rideConfig.buildSummary(fullData, images);
 
         console.log('Publishing ride:', fullData);
@@ -93,6 +98,10 @@ export default function PublishRidePage({ onClose }: PublishRidePageProps) {
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">{t.pubRide_costShare}</label>
                         <input type="number" placeholder="¥0" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl" />
+                    </div>
+                    <div className="col-span-2">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">{t.pubRide_licensePlate}</label>
+                        <LicensePlateInput value={licensePlate} onChange={setLicensePlate} />
                     </div>
                 </div>
             )}

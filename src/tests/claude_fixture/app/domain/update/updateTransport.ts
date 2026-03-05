@@ -702,9 +702,16 @@ export class UpdateTransport {
       return;
     }
     await libp2pService.setDiscoveryActive(true, 'update-transport');
+    await libp2pService
+      .networkDiscoverySnapshot('', 128, options?.ensureBootstrap ? 7 : 4)
+      .catch(() => ({} as Record<string, JsonValue>));
     let connected = await libp2pService.getConnectedPeers().catch(() => [] as string[]);
     if (connected.length === 0 && options?.ensureBootstrap) {
       await libp2pService.joinViaRandomBootstrap(3).catch(() => ({} as Record<string, unknown>));
+      await libp2pService.reconnectBootstrap().catch(() => false);
+      await libp2pService
+        .networkDiscoverySnapshot('', 128, 7)
+        .catch(() => ({} as Record<string, JsonValue>));
       connected = await libp2pService.getConnectedPeers().catch(() => [] as string[]);
     }
     if (connected.length === 0) {
@@ -828,76 +835,37 @@ export class UpdateTransport {
       return false;
     }
     try {
-      const localPeerId = (await libp2pService.getLocalPeerId().catch(() => '')).trim();
+      const snapshot = await libp2pService
+        .networkDiscoverySnapshot('', 96, 4)
+        .catch(() => ({} as Record<string, JsonValue>));
+      const snapshotRoot = asObject(snapshot) ?? {};
+      const localPeerId = normalizePeerId(snapshotRoot.peerId ?? (await libp2pService.getLocalPeerId().catch(() => '')));
       const discovered = new Set<string>();
-      const peerHintMap = new Map<string, string[]>();
-      const namespaceCandidates = new Set<string>();
-      for (const value of namespaceVariants(this.options.authority_namespace)) {
-        namespaceCandidates.add(value);
+      const pushPeerId = (value: unknown) => {
+        const normalized = normalizePeerId(value);
+        if (normalized) {
+          discovered.add(normalized);
+        }
+      };
+      for (const peerId of asStringArray(snapshotRoot.connectedPeers)) {
+        pushPeerId(peerId);
       }
-      for (const fallbackNamespace of FALLBACK_RENDEZVOUS_NAMESPACES) {
-        for (const value of namespaceVariants(fallbackNamespace)) {
-          namespaceCandidates.add(value);
+      if (Array.isArray(snapshotRoot.connectedPeersInfo)) {
+        for (const rowRaw of snapshotRoot.connectedPeersInfo) {
+          const row = asObject(rowRaw);
+          pushPeerId(row?.peerId ?? row?.peer_id);
         }
       }
-      for (const namespace of namespaceCandidates) {
-        const peers = await libp2pService.rendezvousDiscover(namespace, 64).catch(() => []);
-        for (const peer of peers) {
-          const row = asObject(peer);
-          const peerId = normalizePeerId(row?.peerId ?? row?.peer_id);
-          if (peerId) {
-            discovered.add(peerId);
-            const hints = asStringArray(row?.multiaddrs ?? row?.addresses);
-            if (hints.length > 0) {
-              peerHintMap.set(peerId, hints);
-            }
-          }
-        }
-      }
-
-      // If rendezvous returns empty, pull from real-time discovered peers first (non-localStorage path).
-      if (discovered.size === 0) {
-        const realtime = await libp2pService.socialListDiscoveredPeers('', 64).catch(() => ({
-          peers: [] as Array<Record<string, unknown>>,
-          totalCount: 0,
-        }));
-        for (const peer of realtime.peers ?? []) {
-          const row = asObject(peer);
-          const peerId = normalizePeerId(row?.peerId ?? row?.peer_id);
-          if (peerId) {
-            discovered.add(peerId);
-            const hints = asStringArray(row?.multiaddrs ?? row?.addresses);
-            if (hints.length > 0) {
-              peerHintMap.set(peerId, hints);
-            }
-          }
-        }
-      }
-
-      // If still empty, only use currently connected peers to avoid cached/stale peers.
-      if (discovered.size === 0) {
-        const connected = await libp2pService.getConnectedPeers().catch(() => []);
-        for (const peerId of connected) {
-          const normalized = peerId.trim();
-          if (normalized) {
-            discovered.add(normalized);
-          }
-        }
+      const discoveredRoot = asObject(snapshotRoot.discoveredPeers);
+      const discoveredRows = Array.isArray(discoveredRoot?.peers) ? discoveredRoot.peers : [];
+      for (const rowRaw of discoveredRows) {
+        const row = asObject(rowRaw);
+        pushPeerId(row?.peerId ?? row?.peer_id);
       }
 
       for (const peerId of discovered) {
         if (!peerId || peerId === localPeerId || this.subscribedFeedPeers.has(peerId)) {
           continue;
-        }
-        const hints = peerHintMap.get(peerId) ?? [];
-        if (hints.length > 0) {
-          await libp2pService.registerPeerHints(peerId, hints, 'update-transport').catch(() => false);
-          const dial = hints[0] ?? '';
-          if (dial) {
-            await libp2pService.socialConnectPeer(peerId, dial).catch(() => false);
-          }
-        } else {
-          await libp2pService.socialConnectPeer(peerId).catch(() => false);
         }
         const ok = await libp2pService.feedSubscribePeer(peerId).catch(() => false);
         if (ok) {

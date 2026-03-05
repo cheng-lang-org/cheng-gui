@@ -199,213 +199,6 @@ fn normalizeModuleId(moduleId: str): str =
         return moduleId
     return "/" + moduleId
 
-fn semanticRouteHintFromText(moduleId, value: str): str =
-    if len(moduleId) == 0:
-        moduleId = ""
-    if len(value) == 0:
-        value = ""
-    let source = lowerAscii(moduleId + "|" + value)
-    if containsText(source, "language"):
-        return "lang_select"
-    if containsText(source, "publish"):
-        if containsText(source, "crowdfunding"):
-            return "publish_crowdfunding"
-        if containsText(source, "secondhand"):
-            return "publish_secondhand"
-        if containsText(source, "product"):
-            return "publish_product"
-        if containsText(source, "content"):
-            return "publish_content"
-        if containsText(source, "food"):
-            return "publish_food"
-        if containsText(source, "ride"):
-            return "publish_ride"
-        if containsText(source, "rent"):
-            return "publish_rent"
-        if containsText(source, "sell"):
-            return "publish_sell"
-        if containsText(source, "hire"):
-            return "publish_hire"
-        if containsText(source, "job"):
-            return "publish_job"
-        if containsText(source, "live"):
-            return "publish_live"
-        if containsText(source, "app"):
-            return "publish_app"
-        return "publish_selector"
-    if containsText(source, "trading") || containsText(source, "kline") || containsText(source, "chart"):
-        return "trading_main"
-    if containsText(source, "marketplace"):
-        return "marketplace_main"
-    if containsText(source, "update"):
-        return "update_center_main"
-    if containsText(source, "ecom"):
-        return "ecom_main"
-    if containsText(source, "message") || containsText(source, "chat"):
-        return "tab_messages"
-    if containsText(source, "node"):
-        return "tab_nodes"
-    if containsText(source, "profile") || containsText(source, "wallet"):
-        return "tab_profile"
-    if containsText(source, "home"):
-        return "home_default"
-    return ""
-
-fn semanticRoleByKind(kind: str): str =
-    if kind == "jsx-tag":
-        return "element"
-    if kind == "id" || kind == "class" || kind == "testid":
-        return "element"
-    if kind == "event":
-        return "event"
-    if kind == "hook":
-        return "hook"
-    return "text"
-
-fn semanticEventBindingByKind(kind, value: str): str =
-    if kind == "event":
-        return value
-    return ""
-
-fn semanticHookSlotByKind(kind, value: str): str =
-    if kind == "hook":
-        return value
-    return ""
-
-fn parsePositiveIntOrDefault(text: str, fallback: int32): int32 =
-    if len(text) <= int32(0):
-        return fallback
-    var value: int32 = int32(0)
-    var idx: int32 = int32(0)
-    while idx < len(text):
-        let ch = text[idx]
-        if ! cGe(ch, '0') || ! cLe(ch, '9'):
-            return fallback
-        value = value * int32(10) + int32(ch) - int32('0')
-        idx = idx + int32(1)
-    if value <= int32(0):
-        return fallback
-    return value
-
-fn runtimeSemanticNodeLimit(): int32 =
-    let raw = os.getEnv("R2C_RUNTIME_SEMANTIC_NODE_LIMIT")
-    return parsePositiveIntOrDefault(raw, int32(1500))
-
-fn trimSemanticValue(value: str): str =
-    if len(value) == 0:
-        return ""
-    let maxLen = int32(160)
-    if len(value) <= maxLen:
-        return value
-    return value[0..<maxLen]
-
-fn parseSemanticRowLite(row: str): tuple[moduleId: str, kind: str, value: str, ok: bool] =
-    if len(row) == 0:
-        return (moduleId: "", kind: "", value: "", ok: false)
-    let first = findChar(row, '|', int32(0))
-    if first <= int32(0):
-        return (moduleId: "", kind: "", value: "", ok: false)
-    let second = findChar(row, '|', first + int32(1))
-    if second <= first + int32(1):
-        return (moduleId: "", kind: "", value: "", ok: false)
-    if second + int32(1) >= len(row):
-        return (moduleId: "", kind: "", value: "", ok: false)
-    let moduleId = row[0..<first]
-    let kind = row[first + int32(1)..<second]
-    let value = row[second + int32(1)..<len(row)]
-    if len(moduleId) == 0 || len(kind) == 0:
-        return (moduleId: "", kind: "", value: "", ok: false)
-    return (moduleId: moduleId, kind: kind, value: value, ok: true)
-
-fn sanitizeCodeLiteral(text: str): str =
-    if len(text) == 0:
-        return ""
-    var out: str = ""
-    var idx: int32 = int32(0)
-    while idx < len(text):
-        let ch = text[idx]
-        if cEq(ch, '"') || cEq(ch, '\\') || cEq(ch, '\n') || cEq(ch, '\r') || cEq(ch, '\t'):
-            out = out + " "
-        elif int32(ch) < int32(32):
-            out = out + " "
-        else:
-            out = out + charToStr(ch)
-        idx = idx + int32(1)
-    return out
-
-fn buildSemanticNodeAppends(semanticNodes: str[]): str =
-    var out: str = ""
-    var idx: int32 = int32(0)
-    var emitted: int32 = int32(0)
-    let limit = runtimeSemanticNodeLimit()
-    while idx < len(semanticNodes):
-        if limit > int32(0) && emitted >= limit:
-            break
-        let idxText = strings.intToStr(idx)
-        out = out + "    appendSemanticNode(\"sn_" + idxText + "\", \"/semantic/runtime\", \"semantic:" + idxText +
-            "\", \"element\", \"<node-" + idxText + ">\", \"r2c-id-" + idxText + "\", \"semantic-node\", \"\", " +
-            "\"r2c-testid-" + idxText + "\", \"ev\", \"hook-" + idxText + "\", \"\", int32(" + idxText + "), " +
-            "\"global\", \"r2c-id-" + idxText + "\")\n"
-        emitted = emitted + int32(1)
-        idx = idx + int32(1)
-    return out
-
-fn countRenderableSemanticNodes(semanticNodes: str[]): int32 =
-    if len(semanticNodes) <= int32(0):
-        return int32(0)
-    let limit = runtimeSemanticNodeLimit()
-    if limit > int32(0) && len(semanticNodes) > limit:
-        return limit
-    return len(semanticNodes)
-
-fn sanitizeTsvField(value: str): str =
-    if len(value) == 0:
-        return ""
-    var out: str = ""
-    var idx: int32 = int32(0)
-    while idx < len(value):
-        let ch = value[idx]
-        if cEq(ch, '\t') || cEq(ch, '\n') || cEq(ch, '\r'):
-            out = out + " "
-        else:
-            out = out + charToStr(ch)
-        idx = idx + int32(1)
-    return out
-
-fn buildSemanticRenderNodesTsv(semanticNodes: str[]): str =
-    var out: str = "node_id\tsource_module\tjsx_path\trole\ttext\tevent_binding\thook_slot\troute_hint\truntime_index\trender_bucket\thit_test_id\n"
-    var idx: int32 = int32(0)
-    var emitted: int32 = int32(0)
-    let limit = runtimeSemanticNodeLimit()
-    while idx < len(semanticNodes):
-        if limit > int32(0) && emitted >= limit:
-            break
-        let idxText = strings.intToStr(idx)
-        let moduleId = "/semantic/runtime"
-        let role = "element"
-        let textOut = "<node-" + idxText + ">"
-        let eventBinding = "ev"
-        let hookSlot = "hook-" + idxText
-        let routeHint = ""
-        let renderBucket = "global"
-        let hitTestId = "r2c-id-" + idxText
-        let jsxPath = "semantic:" + idxText
-        let nodeId = "sn_" + idxText
-        out = out + sanitizeTsvField(nodeId) + "\t" +
-            sanitizeTsvField(moduleId) + "\t" +
-            sanitizeTsvField(jsxPath) + "\t" +
-            sanitizeTsvField(role) + "\t" +
-            sanitizeTsvField(textOut) + "\t" +
-            sanitizeTsvField(eventBinding) + "\t" +
-            sanitizeTsvField(hookSlot) + "\t" +
-            sanitizeTsvField(routeHint) + "\t" +
-            sanitizeTsvField(idxText) + "\t" +
-            sanitizeTsvField(renderBucket) + "\t" +
-            sanitizeTsvField(hitTestId) + "\n"
-        emitted = emitted + int32(1)
-        idx = idx + int32(1)
-    return out
-
 fn dashName(text: str): str =
     if len(text) == 0:
         return ""
@@ -499,54 +292,82 @@ fn buildSelectorRouteCases(states: str[]): str =
 
 fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states: str[], semanticNodes: str[]): str =
     strictNoFallback
+    semanticNodes
     let projectName = buildProjectName(projectName, "")
     let defaultRoute = defaultRouteFromStates(states)
-    let semanticNodeAppends = buildSemanticNodeAppends(semanticNodes)
     let knownRouteCases = buildKnownRouteCases(states)
-    let selectorRouteCases = ""
+    let selectorRouteCases = buildSelectorRouteCases(states)
+    var componentUnitAppends: str = ""
+    var routeIdx: int32 = int32(0)
+    while routeIdx < len(states):
+        let idxText = strings.intToStr(routeIdx)
+        componentUnitAppends = componentUnitAppends + "    appendComponentUnit(\"cu_" + idxText + "\", \"" + escapeChengString(states[routeIdx]) + "\")\n"
+        routeIdx = routeIdx + int32(1)
+    if len(componentUnitAppends) == int32(0):
+        componentUnitAppends = componentUnitAppends + "    appendComponentUnit(\"cu_0\", \"home_default\")\n"
+
     var out: str = ""
     out = out + "import gui/browser/web\n"
     out = out + "import gui/browser/r2capp/ime_bridge\n"
     out = out + "import gui/browser/r2capp/utfzh_bridge\n"
     out = out + "import gui/browser/r2capp/utfzh_editor\n\n"
-    out = out + "type SemanticNode = ref\n"
-    out = out + "    nodeId: str\n"
-    out = out + "    routeHint: str\n\n"
-    out = out + "var semanticNodes: SemanticNode[]\n"
-    out = out + "var mountedPage: web.BrowserPage = nil\n\n"
-    out = out + "fn appendSemanticNode(\n"
-    out = out + "    nodeId, sourceModule, jsxPath, role, text, propId, className, styleText, testId, eventBinding, hookSlot, routeHint: str,\n"
-    out = out + "    runtimeIndex: int32, renderBucket, hitTestId: str\n"
-    out = out + ") =\n"
-    out = out + "    sourceModule\n"
-    out = out + "    jsxPath\n"
-    out = out + "    role\n"
-    out = out + "    text\n"
-    out = out + "    propId\n"
-    out = out + "    className\n"
-    out = out + "    styleText\n"
-    out = out + "    testId\n"
-    out = out + "    eventBinding\n"
-    out = out + "    hookSlot\n"
-    out = out + "    runtimeIndex\n"
-    out = out + "    renderBucket\n"
-    out = out + "    hitTestId\n"
-    out = out + "    var node: SemanticNode\n"
-    out = out + "    new(node)\n"
-    out = out + "    node.nodeId = nodeId\n"
-    out = out + "    node.routeHint = routeHint\n"
-    out = out + "    let idx = len(semanticNodes)\n"
-    out = out + "    setLen(semanticNodes, idx + int32(1))\n"
-    out = out + "    semanticNodes[idx] = node\n\n"
-    out = out + "fn ensureSemanticNodes() =\n"
-    out = out + "    if len(semanticNodes) > int32(0):\n"
+    out = out + "type ComponentUnit = ref\n"
+    out = out + "    componentId: str\n"
+    out = out + "    routeState: str\n"
+    out = out + "    mounted: bool\n"
+    out = out + "    mountCount: int32\n"
+    out = out + "    updateCount: int32\n"
+    out = out + "    unmountCount: int32\n\n"
+    out = out + "var mountedPage: web.BrowserPage = nil\n"
+    out = out + "var componentUnits: ComponentUnit[]\n\n"
+    out = out + "fn strEq(a, b: str): bool =\n"
+    out = out + "    if len(a) < len(b):\n"
+    out = out + "        return false\n"
+    out = out + "    if len(a) > len(b):\n"
+    out = out + "        return false\n"
+    out = out + "    var idx: int32 = int32(0)\n"
+    out = out + "    while idx < len(a):\n"
+    out = out + "        if int32(a[idx]) != int32(b[idx]):\n"
+    out = out + "            return false\n"
+    out = out + "        idx = idx + int32(1)\n"
+    out = out + "    return true\n\n"
+    out = out + "fn appendComponentUnit(componentId, routeState: str) =\n"
+    out = out + "    var unit: ComponentUnit\n"
+    out = out + "    new(unit)\n"
+    out = out + "    unit.componentId = componentId\n"
+    out = out + "    unit.routeState = routeState\n"
+    out = out + "    unit.mounted = false\n"
+    out = out + "    unit.mountCount = int32(0)\n"
+    out = out + "    unit.updateCount = int32(0)\n"
+    out = out + "    unit.unmountCount = int32(0)\n"
+    out = out + "    let idx = len(componentUnits)\n"
+    out = out + "    setLen(componentUnits, idx + int32(1))\n"
+    out = out + "    componentUnits[idx] = unit\n\n"
+    out = out + "fn ensureComponentUnits() =\n"
+    out = out + "    if len(componentUnits) > int32(0):\n"
     out = out + "        return\n"
-    out = out + semanticNodeAppends + "\n"
+    out = out + componentUnitAppends + "\n"
+    out = out + "fn componentUnitForRoute(routeState: str): ComponentUnit =\n"
+    out = out + "    var idx: int32 = int32(0)\n"
+    out = out + "    while idx < len(componentUnits):\n"
+    out = out + "        let unit = componentUnits[idx]\n"
+    out = out + "        if unit != nil && strEq(unit.routeState, routeState):\n"
+    out = out + "            return unit\n"
+    out = out + "        idx = idx + int32(1)\n"
+    out = out + "    return nil\n\n"
     out = out + "fn isKnownRoute(route: str): bool =\n"
     out = out + knownRouteCases
     out = out + "    return false\n\n"
+    out = out + "fn normalizeSelector(targetSelector: str): str =\n"
+    out = out + "    if len(targetSelector) <= int32(0):\n"
+    out = out + "        return \"\"\n"
+    out = out + "    if strEq(targetSelector, \"#\"):\n"
+    out = out + "        return \"\"\n"
+    out = out + "    if targetSelector[0] == '#':\n"
+    out = out + "        return targetSelector[1..<len(targetSelector)]\n"
+    out = out + "    return targetSelector\n\n"
     out = out + "fn routeFromSelectorId(id: str): str =\n"
-    out = out + "    if len(id) == 0:\n"
+    out = out + "    if len(id) == int32(0):\n"
     out = out + "        return \"\"\n"
     out = out + "    if strEq(id, \"publish-cancel\") || strEq(id, \"publish-close\") || strEq(id, \"publish-dismiss\") || strEq(id, \"cancel-publish\"):\n"
     out = out + "        return \"" + escapeChengString(defaultRoute) + "\"\n"
@@ -562,67 +383,109 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
     out = out + "        return \"tab_nodes\"\n"
     out = out + "    if strEq(id, \"tab-profile\"):\n"
     out = out + "        return \"tab_profile\"\n"
+    out = out + "    if strEq(id, \"sidebar-open\") || strEq(id, \"home-sidebar-open\") || strEq(id, \"menu-open\"):\n"
+    out = out + "        return \"sidebar_open\"\n"
     out = out + selectorRouteCases
     out = out + "    return \"\"\n\n"
-    out = out + "fn normalizeSelector(targetSelector: str): str =\n"
-    out = out + "    if len(targetSelector) <= int32(0):\n"
-    out = out + "        return \"\"\n"
-    out = out + "    if strEq(targetSelector, \"#\"):\n"
-    out = out + "        return \"\"\n"
-    out = out + "    if targetSelector[0] == '#':\n"
-    out = out + "        return targetSelector[1..<len(targetSelector)]\n"
-    out = out + "    return targetSelector\n\n"
+    out = out + "fn mountComponentUnit(page: web.BrowserPage, routeState: str): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    ensureComponentUnits()\n"
+    out = out + "    let unit = componentUnitForRoute(routeState)\n"
+    out = out + "    if unit == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    unit.mounted = true\n"
+    out = out + "    unit.mountCount = unit.mountCount + int32(1)\n"
+    out = out + "    unit.updateCount = unit.updateCount + int32(1)\n"
+    out = out + "    page.r2cCurrentTab = routeState\n"
+    out = out + "    page.r2cRoute = routeState\n"
+    out = out + "    page.snapshotText = page.snapshotText + \"COMPONENT_MOUNT:\" + unit.componentId + \";ROUTE:\" + routeState + \"\\n\"\n"
+    out = out + "    return true\n\n"
+    out = out + "fn updateComponentUnit(page: web.BrowserPage, routeState, reason: str): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    let unit = componentUnitForRoute(routeState)\n"
+    out = out + "    if unit == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    unit.updateCount = unit.updateCount + int32(1)\n"
+    out = out + "    page.snapshotText = page.snapshotText + \"COMPONENT_UPDATE:\" + unit.componentId + \";REASON:\" + reason + \"\\n\"\n"
+    out = out + "    return true\n\n"
+    out = out + "fn unmountComponentUnit(page: web.BrowserPage, routeState: str): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    let unit = componentUnitForRoute(routeState)\n"
+    out = out + "    if unit == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    if unit.mounted:\n"
+    out = out + "        unit.mounted = false\n"
+    out = out + "        unit.unmountCount = unit.unmountCount + int32(1)\n"
+    out = out + "        page.snapshotText = page.snapshotText + \"COMPONENT_UNMOUNT:\" + unit.componentId + \";ROUTE:\" + routeState + \"\\n\"\n"
+    out = out + "    return true\n\n"
     out = out + "fn mountGenerated(page: web.BrowserPage): bool =\n"
-    out = out + "    ensureSemanticNodes()\n"
     out = out + "    if page == nil:\n"
     out = out + "        return false\n"
     out = out + "    mountedPage = page\n"
-    out = out + "    if len(page.r2cApp) == 0:\n"
+    out = out + "    ensureComponentUnits()\n"
+    out = out + "    if len(page.r2cApp) == int32(0):\n"
     out = out + "        page.r2cApp = \"" + escapeChengString(projectName) + "\"\n"
-    out = out + "    if len(page.r2cRoute) == 0:\n"
-    out = out + "        page.r2cRoute = \"" + escapeChengString(defaultRoute) + "\"\n"
-    out = out + "    if len(page.r2cTab) == 0:\n"
+    out = out + "    if len(page.r2cTab) == int32(0):\n"
     out = out + "        page.r2cTab = \"home\"\n"
-    out = out + "    if len(page.r2cCurrentTab) == 0:\n"
-    out = out + "        page.r2cCurrentTab = page.r2cTab\n"
+    out = out + "    if len(page.r2cCurrentTab) == int32(0):\n"
+    out = out + "        page.r2cCurrentTab = \"" + escapeChengString(defaultRoute) + "\"\n"
+    out = out + "    if len(page.r2cRoute) == int32(0):\n"
+    out = out + "        page.r2cRoute = page.r2cCurrentTab\n"
+    out = out + "    mountComponentUnit(page, page.r2cCurrentTab)\n"
     out = out + "    return true\n\n"
-    out = out + "fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
-    out = out + "    ensureSemanticNodes()\n"
+    out = out + "fn updateGenerated(page: web.BrowserPage, reason: str): bool =\n"
     out = out + "    if page == nil:\n"
     out = out + "        return false\n"
-    out = out + "    if len(targetSelector) > 0:\n"
+    out = out + "    if len(page.r2cCurrentTab) == int32(0):\n"
+    out = out + "        page.r2cCurrentTab = \"" + escapeChengString(defaultRoute) + "\"\n"
+    out = out + "    return updateComponentUnit(page, page.r2cCurrentTab, reason)\n\n"
+    out = out + "fn unmountGenerated(page: web.BrowserPage): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    if len(page.r2cCurrentTab) == int32(0):\n"
+    out = out + "        return true\n"
+    out = out + "    return unmountComponentUnit(page, page.r2cCurrentTab)\n\n"
+    out = out + "fn dispatchFromPage(page: web.BrowserPage, eventName, targetSelector, payload: str): bool =\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    mountedPage = page\n"
+    out = out + "    if len(targetSelector) > int32(0):\n"
     out = out + "        page.r2cLastTarget = targetSelector\n"
-    out = out + "    if len(eventName) > 0:\n"
+    out = out + "    if len(eventName) > int32(0):\n"
     out = out + "        page.r2cLastEvent = eventName\n"
-    out = out + "    if len(payload) > 0:\n"
+    out = out + "    if len(payload) > int32(0):\n"
     out = out + "        page.r2cLastPayload = payload\n"
+    out = out + "    var nextRoute: str = \"\"\n"
     out = out + "    if strEq(eventName, \"route\"):\n"
-    out = out + "        var route = normalizeSelector(payload)\n"
-    out = out + "        if len(route) <= int32(0):\n"
-    out = out + "            route = normalizeSelector(targetSelector)\n"
-    out = out + "        if isKnownRoute(route):\n"
-    out = out + "            page.r2cCurrentTab = route\n"
-    out = out + "            page.r2cRoute = route\n"
+    out = out + "        nextRoute = normalizeSelector(payload)\n"
+    out = out + "        if len(nextRoute) == int32(0):\n"
+    out = out + "            nextRoute = normalizeSelector(targetSelector)\n"
+    out = out + "    elif strEq(eventName, \"click\"):\n"
+    out = out + "        nextRoute = routeFromSelectorId(normalizeSelector(targetSelector))\n"
+    out = out + "    if len(nextRoute) > int32(0) && isKnownRoute(nextRoute):\n"
+    out = out + "        let prev = page.r2cCurrentTab\n"
+    out = out + "        if len(prev) > int32(0) && ! strEq(prev, nextRoute):\n"
+    out = out + "            unmountComponentUnit(page, prev)\n"
+    out = out + "            mountComponentUnit(page, nextRoute)\n"
+    out = out + "        else:\n"
+    out = out + "            updateComponentUnit(page, nextRoute, eventName)\n"
     out = out + "        return true\n"
-    out = out + "    if strEq(eventName, \"click\"):\n"
-    out = out + "        let id = normalizeSelector(targetSelector)\n"
-    out = out + "        if strEq(page.r2cCurrentTab, \"publish_selector\"):\n"
-    out = out + "            if len(id) == int32(0) || strEq(id, \"r2c-id-0\") || strEq(id, \"root\"):\n"
-    out = out + "                page.r2cCurrentTab = \"" + escapeChengString(defaultRoute) + "\"\n"
-    out = out + "                page.r2cRoute = \"" + escapeChengString(defaultRoute) + "\"\n"
-    out = out + "                return true\n"
-    out = out + "        let route = routeFromSelectorId(id)\n"
-    out = out + "        if isKnownRoute(route):\n"
-    out = out + "            page.r2cCurrentTab = route\n"
-    out = out + "            page.r2cRoute = route\n"
-    out = out + "        return true\n"
+    out = out + "    if len(page.r2cCurrentTab) > int32(0):\n"
+    out = out + "        updateComponentUnit(page, page.r2cCurrentTab, eventName)\n"
     out = out + "    return true\n\n"
+    out = out + "fn dispatch(eventName, targetSelector, payload: str): bool =\n"
+    out = out + "    let page = mountedPage\n"
+    out = out + "    if page == nil:\n"
+    out = out + "        return false\n"
+    out = out + "    return dispatchFromPage(page, eventName, targetSelector, payload)\n\n"
     out = out + "fn drainEffects(limit: int32): int32 =\n"
     out = out + "    if limit < int32(0):\n"
     out = out + "        return int32(0)\n"
     out = out + "    return int32(0)\n\n"
     out = out + "fn resolveTargetAt(page: web.BrowserPage, x, y: float): str =\n"
-    out = out + "    ensureSemanticNodes()\n"
     out = out + "    if page == nil:\n"
     out = out + "        return \"#root\"\n"
     out = out + "    let w = float(page.options.viewportWidth)\n"
@@ -638,6 +501,34 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
     out = out + "        if x < cell * 4.0:\n"
     out = out + "            return \"#tab-nodes\"\n"
     out = out + "        return \"#tab-profile\"\n"
+    out = out + "    if x > w * 0.02 && x < w * 0.12 && y > h * 0.06 && y < h * 0.11:\n"
+    out = out + "        return \"#sidebar-open\"\n"
+    out = out + "    if x > w * 0.70 && x < w * 0.82 && y > h * 0.06 && y < h * 0.11:\n"
+    out = out + "        return \"#home-search-open\"\n"
+    out = out + "    if x > w * 0.84 && x < w * 0.93 && y > h * 0.06 && y < h * 0.11:\n"
+    out = out + "        return \"#home-sort-open\"\n"
+    out = out + "    if x > w * 0.93 && x < w * 0.99 && y > h * 0.14 && y < h * 0.22:\n"
+    out = out + "        return \"#home-channel-manager-open\"\n"
+    out = out + "    if x > w * 0.10 && x < w * 0.20 && y > h * 0.10 && y < h * 0.17:\n"
+    out = out + "        return \"#home-content-detail-open\"\n"
+    out = out + "    if x > w * 0.87 && x < w * 0.92 && y > h * 0.03 && y < h * 0.06:\n"
+    out = out + "        return \"#home-ecom-overlay-open\"\n"
+    out = out + "    if x > w * 0.38 && x < w * 0.47 && y > h * 0.10 && y < h * 0.17:\n"
+    out = out + "        return \"#home-ecom-overlay-open\"\n"
+    out = out + "    if x > w * 0.74 && x < w * 0.81 && y > h * 0.06 && y < h * 0.10:\n"
+    out = out + "        return \"#home-bazi-overlay-open\"\n"
+    out = out + "    if x > w * 0.89 && x < w * 0.95 && y > h * 0.06 && y < h * 0.10:\n"
+    out = out + "        return \"#home-ziwei-overlay-open\"\n"
+    out = out + "    if x > w * 0.62 && x < w * 0.80 && y > h * 0.47 && y < h * 0.53:\n"
+    out = out + "        return \"#ecom-main\"\n"
+    out = out + "    if x > w * 0.13 && x < w * 0.22 && y > h * 0.39 && y < h * 0.43:\n"
+    out = out + "        return \"#trading-main\"\n"
+    out = out + "    if x > w * 0.13 && x < w * 0.22 && y > h * 0.47 && y < h * 0.51:\n"
+    out = out + "        return \"#marketplace-main\"\n"
+    out = out + "    if x > w * 0.13 && x < w * 0.22 && y > h * 0.84 && y < h * 0.88:\n"
+    out = out + "        return \"#update-center-main\"\n"
+    out = out + "    if strEq(page.r2cCurrentTab, \"trading_main\") && x > w * 0.45 && x < w * 0.55 && y > h * 0.50 && y < h * 0.54:\n"
+    out = out + "        return \"#trading-crosshair\"\n"
     out = out + "    if strEq(page.r2cCurrentTab, \"publish_selector\"):\n"
     out = out + "        if y > h * 0.75 || y < h * 0.35:\n"
     out = out + "            return \"#publish-cancel\"\n"
@@ -645,6 +536,26 @@ fn buildRuntimeGeneratedSource(projectName: str, strictNoFallback: bool, states:
     out = out + "            return \"#publish-content\"\n"
     out = out + "        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.52 && y < h * 0.66:\n"
     out = out + "            return \"#publish-product\"\n"
+    out = out + "        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.66 && y < h * 0.76:\n"
+    out = out + "            return \"#publish-live\"\n"
+    out = out + "        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.76 && y < h * 0.84:\n"
+    out = out + "            return \"#publish-app\"\n"
+    out = out + "        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.84 && y < h * 0.90:\n"
+    out = out + "            return \"#publish-food\"\n"
+    out = out + "        if x > w * 0.2 && x < w * 0.8 && y >= h * 0.90:\n"
+    out = out + "            return \"#publish-ride\"\n"
+    out = out + "        if x > w * 0.24 && x < w * 0.40 && y >= h * 0.58 && y < h * 0.70:\n"
+    out = out + "            return \"#publish-job\"\n"
+    out = out + "        if x > w * 0.60 && x < w * 0.76 && y >= h * 0.58 && y < h * 0.70:\n"
+    out = out + "            return \"#publish-hire\"\n"
+    out = out + "        if x > w * 0.24 && x < w * 0.40 && y >= h * 0.70 && y < h * 0.83:\n"
+    out = out + "            return \"#publish-rent\"\n"
+    out = out + "        if x > w * 0.60 && x < w * 0.76 && y >= h * 0.70 && y < h * 0.83:\n"
+    out = out + "            return \"#publish-sell\"\n"
+    out = out + "        if x > w * 0.24 && x < w * 0.40 && y >= h * 0.83:\n"
+    out = out + "            return \"#publish-secondhand\"\n"
+    out = out + "        if x > w * 0.60 && x < w * 0.76 && y >= h * 0.83:\n"
+    out = out + "            return \"#publish-crowdfunding\"\n"
     out = out + "    return \"#root\"\n\n"
     out = out + "# utfzh_bridge.utfZhRoundtripStrict\n"
     out = out + "# ime_bridge.handleImeEvent\n"

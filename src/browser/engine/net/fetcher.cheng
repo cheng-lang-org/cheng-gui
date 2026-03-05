@@ -10,8 +10,6 @@ type
 
 
 fn safeLen(text: str): int32 =
-    if text == nil:
-        return int32(0)
     return len(text)
 
 fn cEq(a: char, b: char): bool =
@@ -71,10 +69,9 @@ fn fetcherHasPrefix(text, prefix: str): bool =
 fn fetcherMatchAt(text: str, pattern: str, offset: int): bool =
     if offset < 0:
         return false
-    if text == nil || pattern == nil:
-        return false
     let n = safeLen(pattern)
-    if offset + n > safeLen(text):
+    let total = safeLen(text)
+    if offset + n > total:
         return false
     var idx: int32 = int32(0)
     while idx < n:
@@ -200,15 +197,13 @@ fn fetch(url: str): FetchResult =
     let execRes = os.execCmdEx(cmd, options, "")
     if execRes.exitCode != 0:
         result.error = "curl-exit:" + $ execRes.exitCode
-        if execRes.output != nil:
+        if safeLen(execRes.output) > int32(0):
             result.body = execRes.output
         return result
 
     # Keep explicit `str` locals to avoid backend bugs that can truncate pointers
     # when inferring the type/width of `var` string temporaries.
     var output: str = execRes.output
-    if output == nil:
-        output = ""
 
     let marker = "\nCHENG_STATUS:"
     let idxStatus = fetcherFindLast(output, marker)

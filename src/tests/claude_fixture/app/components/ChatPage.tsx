@@ -26,6 +26,9 @@ import {
     type SocialMessage,
 } from '../data/socialData';
 import { libp2pService } from '../libp2p/service';
+import { decideSevenGateAction } from '../libp2p/sevenGatesPolicy';
+import { sevenGatesRuntime } from '../libp2p/sevenGatesRuntime';
+import { getStoredPeerMultiaddrs, storePeerMultiaddrs } from '../libp2p/peerMultiaddrStore';
 import { onConversationUpdate } from '../libp2p/inboundHandler';
 import {
     getDistributedContents,
@@ -97,6 +100,63 @@ function formatMovieSource(peerId: string, selfPeerId: string): string {
     return `节点 ${peerId.slice(0, 12)}`;
 }
 
+function normalizeMultiaddrForPeer(addr: string, peerId: string): string {
+    const trimmed = typeof addr === 'string' ? addr.trim() : '';
+    if (!trimmed) {
+        return '';
+    }
+    if (trimmed.includes('/p2p/')) {
+        return trimmed;
+    }
+    if (!peerId) {
+        return trimmed;
+    }
+    return `${trimmed.replace(/\/+$/, '')}/p2p/${peerId}`;
+}
+
+function isDialablePeerMultiaddr(addr: string): boolean {
+    const normalized = addr.trim();
+    if (!normalized) return false;
+    if (!normalized.includes('/p2p/')) return false;
+    if (normalized.includes('/ip4/0.0.0.0/')) return false;
+    if (normalized.includes('/ip6/::/')) return false;
+    return true;
+}
+
+function uniqueStrings(values: string[]): string[] {
+    const seen = new Set<string>();
+    const output: string[] = [];
+    for (const value of values) {
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        output.push(value);
+    }
+    return output;
+}
+
+function prioritizePeerDialMultiaddrs(peerId: string, addresses: string[]): string[] {
+    const normalized = uniqueStrings(
+        addresses
+            .map((item) => normalizeMultiaddrForPeer(item, peerId))
+            .filter((item) => isDialablePeerMultiaddr(item))
+    );
+    const quicV1 = normalized.filter((item) => item.includes('/quic-v1'));
+    const quicOther = normalized.filter((item) => item.includes('/quic') && !item.includes('/quic-v1'));
+    const tcp = normalized.filter((item) => item.includes('/tcp/'));
+    const rest = normalized.filter(
+        (item) => !item.includes('/quic') && !item.includes('/tcp/')
+    );
+    return uniqueStrings([...quicV1, ...quicOther, ...tcp, ...rest]);
+}
+
+interface RealtimeRouteResult {
+    secureReady: boolean;
+    connected: boolean;
+    connectedViaQuic: boolean;
+    connectedAddr: string;
+    candidates: string[];
+}
+
 export default function ChatPage({
     chatId,
     chatName,
@@ -120,6 +180,7 @@ export default function ChatPage({
     const [deliveryState, setDeliveryState] = useState<Record<string, 'pending' | 'sent' | 'acked' | 'failed'>>({});
     const [locationFetching, setLocationFetching] = useState(false);
     const [locationHint, setLocationHint] = useState('');
+    const [actionBlockHint, setActionBlockHint] = useState('');
     const [locationPreview, setLocationPreview] = useState('');
     const [bootActionDone, setBootActionDone] = useState(false);
     const [movieTitle, setMovieTitle] = useState('');
@@ -306,6 +367,60 @@ export default function ChatPage({
         return chatId.trim();
     };
 
+    const canRunAction = useCallback((actionId: 'send_dm' | 'video_call' | 'synccast_control'): boolean => {
+        const decision = decideSevenGateAction(sevenGatesRuntime.getSnapshot(), actionId);
+        if (decision.allowed) {
+            setActionBlockHint('');
+            return true;
+        }
+        setActionBlockHint(decision.reason);
+        return false;
+    }, []);
+
+    const ensureRealtimeRoute = useCallback(async (
+        peerIdRaw: string,
+        _source: 'dm' | 'video' | 'synccast'
+    ): Promise<RealtimeRouteResult> => {
+        const peerId = peerIdRaw.trim();
+        if (!peerId || !libp2pService.isNativePlatform()) {
+            return {
+                secureReady: false,
+                connected: false,
+                connectedViaQuic: false,
+                connectedAddr: '',
+                candidates: [],
+            };
+        }
+
+        const cachedAddrs = getStoredPeerMultiaddrs(peerId);
+        const knownAddrs = await libp2pService.getPeerMultiaddrs(peerId).catch(() => [] as string[]);
+        let candidates = prioritizePeerDialMultiaddrs(peerId, [...cachedAddrs, ...knownAddrs]);
+        if (candidates.length > 0) {
+            candidates = prioritizePeerDialMultiaddrs(peerId, storePeerMultiaddrs(peerId, candidates));
+        }
+
+        const preferredDial = candidates.find((item) => item.includes('/quic-v1')) ?? candidates[0] ?? '';
+        let connectedAddr = '';
+        let connected = await libp2pService.socialConnectPeer(peerId, preferredDial).catch(() => false);
+        if (connected && preferredDial) {
+            connectedAddr = preferredDial;
+        }
+        if (!connected) {
+            connected = await libp2pService.socialConnectPeer(peerId).catch(() => false);
+        }
+
+        const secureReady = await libp2pService.waitSecureChannel(peerId, 5000).catch(() => false);
+        const connectedViaQuic = connectedAddr.includes('/quic-v1')
+            || (connectedAddr.length === 0 && candidates.some((item) => item.includes('/quic-v1')) && connected);
+        return {
+            secureReady,
+            connected,
+            connectedViaQuic,
+            connectedAddr,
+            candidates,
+        };
+    }, []);
+
     const sendDirectThroughLibp2p = useCallback(async (
         peerId: string,
         message: SocialMessage,
@@ -331,22 +446,94 @@ export default function ChatPage({
         } as const;
 
         try {
-            await libp2pService.waitSecureChannel(peerId, 5000).catch(() => false);
-            const socialSent = await libp2pService.socialDmSend(peerId, conversationId, payload);
-            if (socialSent) {
-                return 'sent';
-            }
-            const acked = await libp2pService.sendWithAck(peerId, payload, 9000);
-            if (acked) {
+            const route = await ensureRealtimeRoute(peerId, 'dm');
+            const secureReady = route.secureReady
+                || await libp2pService.waitSecureChannel(peerId, 5000).catch(() => false);
+            const socialSent = secureReady
+                ? await libp2pService.socialDmSend(peerId, conversationId, payload).catch(() => false)
+                : false;
+            const acked = secureReady
+                ? await libp2pService.sendWithAck(peerId, payload, 9000).catch(() => false)
+                : false;
+            const directSent = secureReady
+                ? await libp2pService.sendDirectText(peerId, JSON.stringify(payload), message.id).catch(() => false)
+                : false;
+            const ackSent = (acked || directSent || socialSent)
+                ? await libp2pService.sendChatAck(peerId, message.id, true, '').catch(() => false)
+                : false;
+
+            const dmGatePassed = acked && directSent && ackSent;
+            sevenGatesRuntime.setGateStatus('gate.dm_message_roundtrip', dmGatePassed ? 'passed' : (secureReady ? 'failed' : 'blocked'), {
+                error: dmGatePassed
+                    ? undefined
+                    : (secureReady ? 'dm_roundtrip_incomplete' : 'secure_channel_not_ready'),
+                evidence: [
+                    {
+                        check: 'chat.waitSecureChannel',
+                        status: secureReady ? 'passed' : 'blocked',
+                        detail: secureReady ? undefined : 'waitSecureChannel failed',
+                    },
+                    {
+                        check: 'chat.sendWithAck',
+                        status: secureReady ? (acked ? 'passed' : 'failed') : 'blocked',
+                        detail: secureReady && !acked ? 'sendWithAck failed' : undefined,
+                        data: { peerId },
+                    },
+                    {
+                        check: 'chat.sendDirectText',
+                        status: secureReady ? (directSent ? 'passed' : 'failed') : 'blocked',
+                        detail: secureReady && !directSent ? 'sendDirectText failed' : undefined,
+                        data: { peerId },
+                    },
+                    {
+                        check: 'chat.sendChatAck',
+                        status: (acked || directSent || socialSent)
+                            ? (ackSent ? 'passed' : 'failed')
+                            : 'blocked',
+                        detail: (acked || directSent || socialSent) && !ackSent
+                            ? 'sendChatAck failed'
+                            : undefined,
+                        data: { peerId },
+                    },
+                    {
+                        check: 'chat.quicDirectPreferred',
+                        status: route.connectedViaQuic ? 'passed' : (route.connected ? 'blocked' : 'failed'),
+                        detail: route.connectedViaQuic
+                            ? 'connected via /quic-v1 preferred path'
+                            : (route.connected
+                                ? 'connected without confirmed /quic-v1 path'
+                                : 'unable to establish direct route before dm send'),
+                        data: {
+                            peerId,
+                            connectedAddr: route.connectedAddr,
+                            candidateCount: route.candidates.length,
+                        },
+                    },
+                ],
+                ttlMs: 12 * 60 * 60 * 1000,
+            });
+
+            if (dmGatePassed) {
                 return 'acked';
             }
-            const directSent = await libp2pService.sendDirectText(peerId, JSON.stringify(payload), message.id);
-            return directSent ? 'sent' : 'failed';
+            if (socialSent || directSent || acked) {
+                return 'sent';
+            }
+            return 'failed';
         } catch (error) {
             console.warn('send direct message over libp2p failed', error);
+            sevenGatesRuntime.setGateStatus('gate.dm_message_roundtrip', 'failed', {
+                error: error instanceof Error ? error.message : 'dm_send_exception',
+                evidence: [{
+                    check: 'chat.send_dm_exception',
+                    status: 'failed',
+                    detail: error instanceof Error ? error.message : `${error}`,
+                }],
+                ttlMs: 12 * 60 * 60 * 1000,
+            });
             return 'failed';
         }
-    }, [chatId, isGroup]);
+    }, [chatId, ensureRealtimeRoute, isGroup]);
 
     const sendGroupThroughLibp2p = useCallback(async (
         message: SocialMessage,
@@ -373,6 +560,9 @@ export default function ChatPage({
     }, [chatId]);
 
     const dispatchOutbound = useCallback((message: SocialMessage) => {
+        if (!isGroup && !canRunAction('send_dm')) {
+            return;
+        }
         pushMessage(message);
         setDeliveryState((prev) => ({ ...prev, [message.id]: 'pending' }));
 
@@ -390,7 +580,7 @@ export default function ChatPage({
             const status = await sendDirectThroughLibp2p(peerId, message);
             setDeliveryState((prev) => ({ ...prev, [message.id]: status }));
         })();
-    }, [isGroup, pushMessage, sendDirectThroughLibp2p, sendGroupThroughLibp2p]);
+    }, [canRunAction, isGroup, pushMessage, sendDirectThroughLibp2p, sendGroupThroughLibp2p]);
 
     const handleLaunchApp = (appId: string) => {
         const app = mockApps.find(a => a.id === appId);
@@ -528,7 +718,15 @@ export default function ChatPage({
         }
     };
 
-    const handleSendVideoInvite = (callType: 'audio' | 'video' = 'video') => {
+    const handleSendVideoInvite = async (callType: 'audio' | 'video' = 'video') => {
+        if (!canRunAction('video_call')) {
+            return;
+        }
+        const targetPeerId = isGroup ? '' : resolvePeerId();
+        let route: RealtimeRouteResult | null = null;
+        if (targetPeerId) {
+            route = await ensureRealtimeRoute(targetPeerId, 'video');
+        }
         const content = callType === 'audio' ? t.chat_voiceCallInvite : t.chat_videoCallInvite;
         dispatchOutbound(createMessage({
             sender: 'me',
@@ -541,6 +739,51 @@ export default function ChatPage({
             },
         }));
         setShowMorePanel(false);
+        if (!libp2pService.isNativePlatform()) {
+            return;
+        }
+        const streamKey = `video-call-${Date.now()}`;
+        const txStartedAt = Date.now();
+        const txOk = await libp2pService.publishLivestreamFrame(streamKey, `video-frame-${Date.now()}`).catch(() => false);
+        const txLatencyMs = Date.now() - txStartedAt;
+        const events = await libp2pService.pollEvents(64).catch(() => []);
+        const rxFrames = events.some((event) => {
+            const topic = typeof event.topic === 'string' ? event.topic : '';
+            const payloadText = typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload ?? {});
+            const text = `${topic}|${payloadText}`.toLowerCase();
+            return text.includes('live/') || text.includes('livestream') || text.includes('video-frame');
+        }) ? 1 : 0;
+        const txFrames = txOk ? 1 : 0;
+        const videoPassed = txFrames >= 1 && rxFrames >= 1 && txLatencyMs <= 2000;
+        sevenGatesRuntime.setGateStatus('gate.video_call_media_stream', videoPassed ? 'passed' : 'failed', {
+            error: videoPassed ? undefined : 'video_media_threshold_unmet',
+            evidence: [
+                {
+                    check: 'chat.video_call_media_stream',
+                    status: videoPassed ? 'passed' : 'failed',
+                    detail: videoPassed ? 'video stream thresholds met' : 'video stream thresholds unmet',
+                    data: { txFrames, rxFrames, txLatencyMs },
+                },
+                {
+                    check: 'chat.video_call_quic_route',
+                    status: route
+                        ? (route.connectedViaQuic ? 'passed' : (route.connected ? 'blocked' : 'failed'))
+                        : 'blocked',
+                    detail: route
+                        ? (route.connectedViaQuic
+                            ? 'quic direct route ready'
+                            : (route.connected ? 'route ready without confirmed /quic-v1' : 'route not ready'))
+                        : 'group/no target peer',
+                    data: route
+                        ? {
+                            connectedAddr: route.connectedAddr,
+                            candidateCount: route.candidates.length,
+                        }
+                        : undefined,
+                },
+            ],
+            ttlMs: 12 * 60 * 60 * 1000,
+        });
     };
 
     const refreshMovieCandidates = useCallback(async () => {
@@ -602,8 +845,35 @@ export default function ChatPage({
     }, [refreshMovieCandidates, refreshSynccastState, showMovieModal]);
 
     const handleSynccastControl = useCallback(async (op: 'play' | 'pause' | 'sync_anchor') => {
+        if (!canRunAction('synccast_control')) {
+            setMovieStatusHint('七门禁未通过，已阻断同步控制');
+            return;
+        }
         const roomId = resolveSynccastRoomId();
         if (!roomId) {
+            return;
+        }
+        const targetPeerId = resolveSynccastTargetPeerId();
+        const route = targetPeerId
+            ? await ensureRealtimeRoute(targetPeerId, 'synccast')
+            : null;
+        if (targetPeerId && route && !route.connected) {
+            sevenGatesRuntime.setGateStatus('gate.synccast_live_stream', 'blocked', {
+                error: 'synccast_direct_route_not_ready',
+                evidence: [
+                    {
+                        check: 'chat.synccast.quic_route',
+                        status: 'failed',
+                        detail: 'unable to establish direct route before synccast control',
+                        data: {
+                            peerId: targetPeerId,
+                            candidateCount: route.candidates.length,
+                        },
+                    },
+                ],
+                ttlMs: 12 * 60 * 60 * 1000,
+            });
+            setMovieStatusHint('同步控制失败，请先建立节点直连');
             return;
         }
         await ensureSynccastTopicSubscribed(roomId);
@@ -613,17 +883,78 @@ export default function ChatPage({
             anchorTsMs: Date.now(),
         };
         const ok = await libp2pService.socialSynccastControl(roomId, payload).catch(() => false);
+        const state = ok ? await libp2pService.socialSynccastGetState(roomId).catch(() => ({} as Record<string, unknown>)) : {};
+        const rooms = ok
+            ? await libp2pService.socialSynccastListRooms(20).catch(() => ({ items: [] as unknown[], totalCount: 0 }))
+            : { items: [] as unknown[], totalCount: 0 };
+        const hasState = !!state && typeof state === 'object' && Object.keys(state).length > 0;
+        const roomItems = Array.isArray((rooms as { items?: unknown[] }).items)
+            ? ((rooms as { items?: unknown[] }).items ?? [])
+            : [];
+        const totalCount = typeof (rooms as { totalCount?: unknown }).totalCount === 'number'
+            ? ((rooms as { totalCount?: number }).totalCount ?? 0)
+            : roomItems.length;
+        const hasRooms = roomItems.length > 0 || totalCount > 0;
+        const synccastPassed = ok && hasState && hasRooms;
+        sevenGatesRuntime.setGateStatus(
+            'gate.synccast_live_stream',
+            synccastPassed ? 'passed' : (ok ? 'failed' : 'blocked'),
+            {
+                error: synccastPassed ? undefined : (ok ? 'synccast_state_incomplete' : 'synccast_control_failed'),
+                evidence: [
+                    {
+                        check: 'chat.synccast.control',
+                        status: ok ? 'passed' : 'blocked',
+                        detail: ok ? undefined : 'socialSynccastControl failed',
+                        data: { roomId, op },
+                    },
+                    {
+                        check: 'chat.synccast.getState',
+                        status: ok ? (hasState ? 'passed' : 'failed') : 'blocked',
+                        detail: ok && !hasState ? 'socialSynccastGetState empty' : undefined,
+                    },
+                    {
+                        check: 'chat.synccast.listRooms',
+                        status: ok ? (hasRooms ? 'passed' : 'failed') : 'blocked',
+                        detail: ok && !hasRooms ? 'socialSynccastListRooms empty' : undefined,
+                    },
+                    {
+                        check: 'chat.synccast.quic_route',
+                        status: route
+                            ? (route.connectedViaQuic ? 'passed' : (route.connected ? 'blocked' : 'failed'))
+                            : 'blocked',
+                        detail: route
+                            ? (route.connectedViaQuic
+                                ? 'quic direct route ready'
+                                : (route.connected ? 'route ready without confirmed /quic-v1' : 'route not ready'))
+                            : 'group/no target peer',
+                        data: route
+                            ? {
+                                peerId: targetPeerId,
+                                connectedAddr: route.connectedAddr,
+                                candidateCount: route.candidates.length,
+                            }
+                            : undefined,
+                    },
+                ],
+                ttlMs: 12 * 60 * 60 * 1000,
+            }
+        );
         if (!ok) {
             setMovieStatusHint('同步控制失败，请检查网络连接');
             return;
         }
         setMovieStatusHint(op === 'pause' ? '已同步暂停' : '已同步播放');
         void refreshSynccastState();
-    }, [chatId, ensureSynccastTopicSubscribed, isGroup, localPeerId, refreshSynccastState]);
+    }, [canRunAction, chatId, ensureRealtimeRoute, ensureSynccastTopicSubscribed, isGroup, localPeerId, refreshSynccastState]);
 
     const handleStartMovieWatchParty = useCallback(async () => {
         if (isGroup) {
             setMovieStatusHint('看电影当前仅支持双人会话');
+            return;
+        }
+        if (!canRunAction('synccast_control')) {
+            setMovieStatusHint('七门禁未通过，已阻断发起看电影');
             return;
         }
         const roomId = resolveSynccastRoomId();
@@ -637,6 +968,83 @@ export default function ChatPage({
         let contentId = '';
         let sourcePeerId = '';
         let source: 'libp2p-content' | 'local-file' = 'libp2p-content';
+        let upsertOk = false;
+        let joined = false;
+        let playOk = false;
+        const targetPeerId = resolveSynccastTargetPeerId();
+        let route: RealtimeRouteResult | null = null;
+
+        const updateSynccastGate = async () => {
+            const state = playOk
+                ? await libp2pService.socialSynccastGetState(roomId).catch(() => ({} as Record<string, unknown>))
+                : {};
+            const rooms = playOk
+                ? await libp2pService.socialSynccastListRooms(20).catch(() => ({ items: [] as unknown[], totalCount: 0 }))
+                : { items: [] as unknown[], totalCount: 0 };
+            const hasState = !!state && typeof state === 'object' && Object.keys(state).length > 0;
+            const roomItems = Array.isArray((rooms as { items?: unknown[] }).items)
+                ? ((rooms as { items?: unknown[] }).items ?? [])
+                : [];
+            const totalCount = typeof (rooms as { totalCount?: unknown }).totalCount === 'number'
+                ? ((rooms as { totalCount?: number }).totalCount ?? 0)
+                : roomItems.length;
+            const hasRooms = roomItems.length > 0 || totalCount > 0;
+            const passed = upsertOk && joined && playOk && hasState && hasRooms;
+            sevenGatesRuntime.setGateStatus(
+                'gate.synccast_live_stream',
+                passed ? 'passed' : (playOk ? 'failed' : 'blocked'),
+                {
+                    error: passed ? undefined : (playOk ? 'synccast_state_incomplete' : 'synccast_control_flow_failed'),
+                    evidence: [
+                        {
+                            check: 'chat.synccast.upsertProgram',
+                            status: upsertOk ? 'passed' : 'failed',
+                            detail: upsertOk ? undefined : 'socialSynccastUpsertProgram failed',
+                        },
+                        {
+                            check: 'chat.synccast.join',
+                            status: upsertOk ? (joined ? 'passed' : 'failed') : 'blocked',
+                            detail: upsertOk && !joined ? 'socialSynccastJoin failed' : undefined,
+                        },
+                        {
+                            check: 'chat.synccast.control',
+                            status: joined ? (playOk ? 'passed' : 'failed') : 'blocked',
+                            detail: joined && !playOk ? 'socialSynccastControl(play) failed' : undefined,
+                        },
+                        {
+                            check: 'chat.synccast.getState',
+                            status: playOk ? (hasState ? 'passed' : 'failed') : 'blocked',
+                            detail: playOk && !hasState ? 'socialSynccastGetState empty' : undefined,
+                        },
+                        {
+                            check: 'chat.synccast.listRooms',
+                            status: playOk ? (hasRooms ? 'passed' : 'failed') : 'blocked',
+                            detail: playOk && !hasRooms ? 'socialSynccastListRooms empty' : undefined,
+                        },
+                        {
+                            check: 'chat.synccast.quic_route',
+                            status: route
+                                ? (route.connectedViaQuic ? 'passed' : (route.connected ? 'blocked' : 'failed'))
+                                : 'blocked',
+                            detail: route
+                                ? (route.connectedViaQuic
+                                    ? 'quic direct route ready'
+                                    : (route.connected ? 'route ready without confirmed /quic-v1' : 'route not ready'))
+                                : 'group/no target peer',
+                            data: route
+                                ? {
+                                    peerId: targetPeerId,
+                                    connectedAddr: route.connectedAddr,
+                                    candidateCount: route.candidates.length,
+                                }
+                                : undefined,
+                        },
+                    ],
+                    ttlMs: 12 * 60 * 60 * 1000,
+                }
+            );
+            return passed;
+        };
 
         if (movieSourceType === 'network') {
             const selected = movieCandidates.find((item) => item.id === movieCandidateId) ?? null;
@@ -680,6 +1088,14 @@ export default function ChatPage({
         }
 
         try {
+            if (targetPeerId) {
+                route = await ensureRealtimeRoute(targetPeerId, 'synccast');
+                if (!route.connected) {
+                    await updateSynccastGate();
+                    setMovieStatusHint('节点直连未建立，无法发起同步播放');
+                    return;
+                }
+            }
             await ensureSynccastTopicSubscribed(roomId);
             const program = {
                 programId: `movie-${contentId}`,
@@ -696,17 +1112,19 @@ export default function ChatPage({
             } as any; // Cast to any to bypass strict type check if types aren't updated yet
 
             const upsert = await libp2pService.socialSynccastUpsertProgram(roomId, program);
-            const upsertOk = Boolean(upsert.ok !== false);
+            upsertOk = Boolean(upsert.ok !== false);
             if (!upsertOk) {
+                await updateSynccastGate();
                 setMovieStatusHint('片源写入失败');
                 return;
             }
-            const joined = await libp2pService.socialSynccastJoin(roomId, resolveSynccastTargetPeerId());
+            joined = await libp2pService.socialSynccastJoin(roomId, targetPeerId);
             if (!joined) {
+                await updateSynccastGate();
                 setMovieStatusHint('加入看电影房间失败');
                 return;
             }
-            const playOk = await libp2pService.socialSynccastControl(roomId, {
+            playOk = await libp2pService.socialSynccastControl(roomId, {
                 op: 'play',
                 positionMs: 0,
                 anchorTsMs: Date.now(),
@@ -716,19 +1134,22 @@ export default function ChatPage({
                 sourcePeerId,
             });
             if (!playOk) {
+                await updateSynccastGate();
                 setMovieStatusHint('开始同步播放失败');
                 return;
             }
+            const synccastPassed = await updateSynccastGate();
             sendSystemNotice(`[看电影] 已发起：${title}（${source === 'local-file' ? '本地文件' : formatMovieSource(sourcePeerId, localPeerId)}）`);
-            setMovieStatusHint('已发起同步播放');
+            setMovieStatusHint(synccastPassed ? '已发起同步播放' : '已发起播放，但同步状态证据不完整');
             setShowMovieModal(false);
         } catch (error) {
             console.warn('start movie watch party failed', error);
+            await updateSynccastGate();
             setMovieStatusHint('发起失败，请稍后重试');
         } finally {
             setMovieSubmitting(false);
         }
-    }, [isGroup, resolveSynccastRoomId, movieSourceType, movieCandidates, movieCandidateId, movieTitle, localVideoFile, ensureSynccastTopicSubscribed, localPeerId, resolveSynccastTargetPeerId, sendSystemNotice]);
+    }, [canRunAction, ensureRealtimeRoute, isGroup, resolveSynccastRoomId, movieSourceType, movieCandidates, movieCandidateId, movieTitle, localVideoFile, ensureSynccastTopicSubscribed, localPeerId, resolveSynccastTargetPeerId, sendSystemNotice]);
 
 
     const captureHighAccuracyLocation = useCallback(async (): Promise<CapturedLocation> => {
@@ -1089,6 +1510,9 @@ export default function ChatPage({
                 )}
                 {movieStatusHint && (
                     <div className="mt-1 text-xs text-purple-600">{movieStatusHint}</div>
+                )}
+                {actionBlockHint && (
+                    <div className="mt-1 text-xs text-red-600">{actionBlockHint}</div>
                 )}
 
                 {showMorePanel && (

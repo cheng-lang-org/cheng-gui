@@ -72,9 +72,21 @@ trap 'rm -f "$script_names" "$expected_names" "$bin_names" "$list_out"' EXIT
 find "$SCRIPTS_DIR" -maxdepth 1 -type f \( -name '*.sh' -o -name '*.py' \) \
   | sed -e 's#^.*/##' -e 's/\.sh$//' -e 's/\.py$//' \
   | sort -u > "$script_names"
+# shell-only internal gate helper (no dispatcher command alias)
+grep -Fvx "verify_r2c_zero_script_surface" "$script_names" > "$script_names.filtered"
+mv "$script_names.filtered" "$script_names"
 cp "$script_names" "$expected_names"
 native_only_commands=(
+  "capture_android_unimaker_truth"
+  "capture_route_layer_android"
+  "claude_route_bfs_1to1_android"
   "mobile_run_android"
+  "mobile_run_ios"
+  "mobile_run_harmony"
+  "r2c_dev_hot_reload_android"
+  "verify_route_layer_android"
+  "extract_react_runtime_graph"
+  "merge_semantic_graph"
 )
 for cmd in "${native_only_commands[@]}"; do
   printf '%s\n' "$cmd" >> "$expected_names"
@@ -152,5 +164,6 @@ done
 "$BIN_PATH" verify_android_fullroute_visual_pixel --help >/dev/null
 "$BIN_DIR/verify_android_fullroute_visual_pixel" --help >/dev/null
 "$BIN_PATH" verify_android_claude_1to1_gate --help >/dev/null
+"$SCRIPTS_DIR/verify_r2c_zero_script_surface.sh"
 
 echo "[verify-script-dispatcher] ok scripts=$script_count commands=$listed_count bin=$BIN_PATH mode=$LINK_MODE"

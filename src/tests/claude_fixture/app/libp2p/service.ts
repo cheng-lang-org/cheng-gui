@@ -3,13 +3,31 @@ import { Libp2pBridge } from './index';
 import type {
   BridgeEventEntry,
   DiscoveredPeer,
+  HostNetworkStatus,
   JsonValue,
+  MsQuicSettings,
   MomentPost,
   NotificationItem,
   PresenceSnapshot,
+  RwadNfcAuthorizeTransferReq,
+  RwadNfcAuthorizeTransferResp,
+  RwadNfcEnrollReq,
+  RwadNfcEnrollResp,
+  RwadNfcResolveRecipientReq,
+  RwadNfcResolveRecipientResp,
+  RwadNfcProof,
+  RwadNfcStartReceiveReq,
+  RwadNfcStartReceiveResp,
+  RwadNfcStatusReq,
+  RwadNfcStatusResp,
+  RwadNfcStopReceiveReq,
+  RwadNfcStopReceiveResp,
   SyncCastRoomState,
 } from './definitions';
 import type { SessionContext } from '../domain/dex/types';
+import { cborValueToJsonValue, decodeCbor64, encodeCbor64, jsonValueToCborValue } from './cbor';
+import { canonicalizePeerId, isCanonicalPeerId } from './peerId';
+import { shouldEnableWebBridgeFallback } from './webBridgeFallback';
 
 function toJsonString(value: string | Record<string, JsonValue>): string {
   if (typeof value === 'string') {
@@ -46,31 +64,63 @@ function coerceBoolean(value: unknown, fallback = false): boolean {
 }
 
 function normalizePeerIdText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
+  return canonicalizePeerId(value);
 }
 
 function isLikelyPeerId(peerId: string): boolean {
-  const value = peerId.trim();
-  if (!value) return false;
-  if (value.startsWith('did:')) {
-    if (value.length < 8 || value.length > 192) return false;
-    return /^[A-Za-z0-9:._%-]+$/.test(value);
+  return isCanonicalPeerId(canonicalizePeerId(peerId));
+}
+
+function sanitizeRuntimePlaceholderError(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    return '';
   }
-  if (value.length < 8 || value.length >= 63) return false;
-  if ((value.startsWith('12D3Koo') || value.startsWith('16Uiu2')) && value.length >= 24) {
-    return true;
+  const lower = normalized.toLowerCase();
+  if (
+    lower === 'node_not_initialized'
+    || lower === 'node_not_initiailized'
+    || lower === 'runtime_not_ready'
+    || lower === 'init_pending'
+    || lower === 'init_failed'
+    || lower === 'start_failed'
+    || lower === 'start_not_effective'
+    || lower.includes('node_not_initialized')
+    || lower.includes('node_not_initiailized')
+    || lower.includes('runtime_not_ready')
+  ) {
+    return '';
   }
-  if (value.startsWith('Qm') && value.length >= 30) {
-    return true;
-  }
-  return false;
+  return normalized;
 }
 
 const LOCAL_PEER_ID_STORAGE_KEY = 'profile_local_peer_id_v1';
-const FALLBACK_DEVICE_DID_STORAGE_KEY = 'unimaker_device_did_v1';
-const FALLBACK_DEVICE_SEED_STORAGE_KEY = 'unimaker_device_seed_v1';
-const UPDATE_DEVICE_ID_STORAGE_KEY = 'unimaker_update_device_id';
-const FALLBACK_DID_PREFIX = 'did:unimaker:device:';
+const LIBP2P_RUNTIME_PROFILE_OVERRIDE_STORAGE_KEY = 'libp2p_runtime_profile_override_v1';
+type RuntimeProfileId = 'standard_android' | 'huawei_family' | 'harmony_android_container';
+
+function normalizeRuntimeProfileOverride(value: unknown): RuntimeProfileId | '' {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!normalized || normalized === 'auto' || normalized === 'default') {
+    return '';
+  }
+  if (normalized === 'standard_android' || normalized === 'android' || normalized === 'standard') {
+    return 'standard_android';
+  }
+  if (normalized === 'huawei_family' || normalized === 'huawei' || normalized === 'honor') {
+    return 'huawei_family';
+  }
+  if (
+    normalized === 'harmony_android_container'
+    || normalized === 'harmony'
+    || normalized === 'hongmeng'
+    || normalized === 'ohos'
+    || normalized === 'zhuoyi'
+    || normalized === 'zyt'
+  ) {
+    return 'harmony_android_container';
+  }
+  return '';
+}
 
 function hasBrowserStorage(): boolean {
   try {
@@ -80,113 +130,127 @@ function hasBrowserStorage(): boolean {
   }
 }
 
-function normalizeDidText(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-  const lowered = trimmed.toLowerCase();
-  if (lowered.includes('stub')) return '';
-  if (lowered.startsWith('did:')) {
-    return lowered;
-  }
-  const normalized = lowered.replace(/[^a-z0-9._-]/g, '');
-  if (!normalized) return '';
-  return `${FALLBACK_DID_PREFIX}${normalized}`;
-}
-
-function randomSeed(): string {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID();
-  }
-  return `seed-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function fnv1aHex(input: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
 export class Libp2pService {
   private initialized = false;
   private ensureStartedInFlight: Promise<boolean> | null = null;
   private lastStartError = '';
   private ensureStartCooldownUntilMs = 0;
-  private readonly mdnsDefaultProbeIntervalSeconds = 5;
+  private readonly mdnsDefaultProbeIntervalSeconds = 2;
   private readonly mdnsDiscoveryReasons: Set<string> = new Set<string>();
 
   private isTerminalStartError(errorText: string): boolean {
     const normalized = errorText.trim().toLowerCase();
     if (!normalized) return false;
-    return normalized.includes('node_init')
-      || normalized.includes('host init failed')
-      || normalized.includes('load_library_failed')
+    return normalized.includes('load_library_failed')
       || normalized.includes('native_lib_not_loaded')
       || normalized.includes('dlopen')
       || normalized.includes('unsatisfiedlinkerror')
       || normalized.includes('no such method');
   }
 
+  private isUndetailedStartupError(errorText: string): boolean {
+    const normalized = errorText.trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+    if (
+      normalized === 'init_failed'
+      || normalized === 'start_failed'
+      || normalized === 'start_not_effective'
+      || normalized === 'node_not_initialized'
+      || normalized === 'node_not_initiailized'
+      || normalized === 'runtime_not_ready'
+      || normalized === 'init_pending'
+      || normalized === 'runtime_health_empty_payload'
+    ) {
+      return true;
+    }
+    return /^node_(init|start)_failed_without_detail(?::.*)?$/i.test(normalized)
+      || /^attempt_\d+:node_(init|start)_failed_without_detail.*$/i.test(normalized);
+  }
+
+  private pickBestStartupError(...candidates: Array<string | undefined | null>): string {
+    let fallback = '';
+    for (const candidate of candidates) {
+      const normalized = typeof candidate === 'string' ? candidate.trim() : '';
+      if (!normalized) {
+        continue;
+      }
+      if (!this.isUndetailedStartupError(normalized)) {
+        return normalized;
+      }
+      fallback = normalized;
+    }
+    return fallback;
+  }
+
+  private summarizeInitAttempt(attempt: Record<string, JsonValue>): string {
+    const listen = Array.isArray(attempt.listenAddresses)
+      ? attempt.listenAddresses
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+      : [];
+    const automationsRaw = isJsonRecord(attempt.automations) ? attempt.automations : {};
+    const enabledAutomations = Object.entries(automationsRaw)
+      .filter(([, value]) => coerceBoolean(value, false))
+      .map(([key]) => key)
+      .sort();
+    const listenText = listen.length > 0 ? listen.join(';') : 'none';
+    const automationText = enabledAutomations.length > 0 ? enabledAutomations.join('+') : 'none';
+    return `listen=${listenText},automations=${automationText}`;
+  }
+
+  private readRuntimeProfileOverride(): RuntimeProfileId | '' {
+    const envOverride = normalizeRuntimeProfileOverride(
+      (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_LIBP2P_RUNTIME_PROFILE_OVERRIDE,
+    );
+    if (envOverride) {
+      return envOverride;
+    }
+    if (hasBrowserStorage()) {
+      try {
+        const storageOverride = normalizeRuntimeProfileOverride(
+          localStorage.getItem(LIBP2P_RUNTIME_PROFILE_OVERRIDE_STORAGE_KEY),
+        );
+        if (storageOverride) {
+          return storageOverride;
+        }
+      } catch {
+        // ignore storage read failures
+      }
+    }
+    return '';
+  }
+
+  private isHuaweiLikeRuntime(): boolean {
+    if (!this.hasBridgeBackend()) {
+      return false;
+    }
+    const globalNavigator = (globalThis as { navigator?: { userAgent?: string; platform?: string; vendor?: string } }).navigator;
+    const marker = [
+      globalNavigator?.userAgent ?? '',
+      globalNavigator?.platform ?? '',
+      globalNavigator?.vendor ?? '',
+    ].join(' ').toLowerCase();
+    if (!marker) {
+      return false;
+    }
+    return marker.includes('huawei')
+      || marker.includes('honor')
+      || marker.includes('harmony')
+      || marker.includes('hongmeng')
+      || marker.includes('ohos')
+      || marker.includes('zhuoyi')
+      || marker.includes('zyt');
+  }
+
   private setStartCooldown(ms: number): void {
     this.ensureStartCooldownUntilMs = Date.now() + Math.max(0, ms);
   }
 
-  private buildRecoveryConfig(config?: Record<string, JsonValue> | string): Record<string, JsonValue> | string {
-    if (typeof config === 'string') {
-      return config;
-    }
-    return {
-      listenAddresses: [
-        '/ip4/0.0.0.0/tcp/0',
-      ],
-      automations: {
-        gossipsub: true,
-        directStream: false,
-        rendezvous: false,
-        autonat: false,
-        circuitRelay: false,
-        livestream: false,
-        dataTransfer: false,
-      },
-      ...(config ?? {}),
-    };
-  }
-
-  private async resetNative(): Promise<boolean> {
-    if (!this.hasNativeBridge()) {
-      return false;
-    }
-    try {
-      const resetResult = await this.invokeOptionalBridge('reset');
-      if (coerceBoolean(resetResult.ok as unknown, false)) {
-        this.initialized = false;
-        return true;
-      }
-    } catch {
-      // ignore and fallback to stop
-    }
-    const stopped = await this.stop().catch(() => false);
-    if (stopped) {
-      this.initialized = false;
-    }
-    return stopped;
-  }
-
-  private readPersistedPeerId(): string {
-    if (!hasBrowserStorage()) {
-      return '';
-    }
-    try {
-      return (localStorage.getItem(LOCAL_PEER_ID_STORAGE_KEY) ?? '').trim();
-    } catch {
-      return '';
-    }
-  }
-
   private persistPeerId(peerId: string): void {
-    const normalized = peerId.trim();
+    const normalized = normalizePeerIdText(peerId);
     if (!normalized || !hasBrowserStorage()) {
       return;
     }
@@ -197,99 +261,9 @@ export class Libp2pService {
     }
   }
 
-  private readPersistedDid(): string {
-    if (!hasBrowserStorage()) {
-      return '';
-    }
-    try {
-      const raw = localStorage.getItem(FALLBACK_DEVICE_DID_STORAGE_KEY) ?? '';
-      return normalizeDidText(raw);
-    } catch {
-      return '';
-    }
-  }
-
-  private persistDid(didText: string): void {
-    if (!hasBrowserStorage()) {
-      return;
-    }
-    const normalized = normalizeDidText(didText);
-    if (!normalized) {
-      return;
-    }
-    try {
-      localStorage.setItem(FALLBACK_DEVICE_DID_STORAGE_KEY, normalized);
-    } catch {
-      // ignore storage write failures
-    }
-  }
-
-  private createFallbackDid(): string {
-    if (!hasBrowserStorage()) {
-      return `${FALLBACK_DID_PREFIX}ephemeral`;
-    }
-    const legacySeed = (localStorage.getItem(UPDATE_DEVICE_ID_STORAGE_KEY) ?? '').trim();
-    const persistedSeed = (localStorage.getItem(FALLBACK_DEVICE_SEED_STORAGE_KEY) ?? '').trim();
-    const seed = legacySeed || persistedSeed || randomSeed();
-    const normalizedSeed = seed.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 64) || randomSeed().replace(/[^a-z0-9]/gi, '').slice(0, 32);
-    try {
-      localStorage.setItem(FALLBACK_DEVICE_SEED_STORAGE_KEY, normalizedSeed);
-    } catch {
-      // ignore storage write failures
-    }
-    const did = `${FALLBACK_DID_PREFIX}${normalizedSeed}`;
-    this.persistDid(did);
-    return did;
-  }
-
-  private async derivePeerIdFromDid(didText: string): Promise<string> {
-    const normalizedDid = normalizeDidText(didText);
-    if (!normalizedDid) {
-      return '';
-    }
-    const seed = `did-peer:v1:${normalizedDid}`;
-    let digestHex = '';
-    try {
-      const subtle = globalThis.crypto?.subtle;
-      if (subtle) {
-        const payload = new TextEncoder().encode(seed);
-        const digest = await subtle.digest('SHA-256', payload);
-        const bytes = new Uint8Array(digest);
-        digestHex = Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
-      }
-    } catch {
-      digestHex = '';
-    }
-    if (!digestHex) {
-      digestHex = [
-        fnv1aHex(seed),
-        fnv1aHex(`${seed}|1`),
-        fnv1aHex(`${seed}|2`),
-        fnv1aHex(`${seed}|3`),
-        fnv1aHex(`${seed}|4`),
-        fnv1aHex(`${seed}|5`),
-      ].join('');
-    }
-    const body = digestHex.slice(0, 44).padEnd(44, '0');
-    return `12D3KooW${body}`;
-  }
-
-  private async fallbackPeerId(): Promise<string> {
-    const persisted = this.readPersistedPeerId();
-    if (persisted) {
-      return persisted;
-    }
-    const did = this.readPersistedDid() || this.createFallbackDid();
-    const derived = (await this.derivePeerIdFromDid(did)).trim();
-    if (derived) {
-      this.persistPeerId(derived);
-    }
-    return derived;
-  }
-
   private async getLocalPeerIdDirect(): Promise<string> {
     const raw = await Libp2pBridge.getLocalPeerId().catch(() => ({ peerId: '' }));
-    const peerId = typeof raw.peerId === 'string' ? raw.peerId.trim() : '';
+    const peerId = normalizePeerIdText(raw.peerId);
     if (peerId.length > 0) {
       this.persistPeerId(peerId);
     }
@@ -321,11 +295,19 @@ export class Libp2pService {
     return Capacitor.isNativePlatform() && pluginAvailable !== false;
   }
 
+  private hasWebFallbackBridge(): boolean {
+    return shouldEnableWebBridgeFallback();
+  }
+
+  private hasBridgeBackend(): boolean {
+    return this.hasNativeBridge() || this.hasWebFallbackBridge();
+  }
+
   private async invokeOptionalBridge(
     method: string,
     payload: Record<string, JsonValue> = {},
   ): Promise<Record<string, JsonValue>> {
-    if (!this.hasNativeBridge()) {
+    if (!this.hasBridgeBackend()) {
       throw new Error('native_platform_required');
     }
     const dynamicBridge = Libp2pBridge as unknown as Record<string, unknown>;
@@ -335,6 +317,24 @@ export class Libp2pService {
     }
     const raw = await (fn as (args: Record<string, JsonValue>) => Promise<unknown>)(payload);
     return isJsonRecord(raw) ? raw : {};
+  }
+
+  private async invokeOptionalBridgeCbor(
+    method: string,
+    payload: Record<string, JsonValue> = {},
+  ): Promise<Record<string, JsonValue>> {
+    const wrappedPayload = encodeCbor64(jsonValueToCborValue(payload));
+    const raw = await this.invokeOptionalBridge(method, { payload: wrappedPayload });
+    const responsePayload = typeof raw.payload === 'string' ? raw.payload : '';
+    if (!responsePayload) {
+      throw new Error('invalid_cbor_payload');
+    }
+    const decoded = decodeCbor64(responsePayload);
+    const normalized = cborValueToJsonValue(decoded);
+    if (!isJsonRecord(normalized)) {
+      throw new Error('invalid_cbor_payload');
+    }
+    return normalized;
   }
 
   private normalizeDiscoveryReason(reason: string): string {
@@ -405,7 +405,7 @@ export class Libp2pService {
   }
 
   isNativePlatform(): boolean {
-    return this.hasNativeBridge();
+    return this.hasBridgeBackend();
   }
 
   async init(config?: Record<string, JsonValue> | string): Promise<boolean> {
@@ -414,22 +414,37 @@ export class Libp2pService {
       return false;
     }
     if (typeof config === 'string') {
-      const result = await Libp2pBridge.init({ config }).catch((error) => {
+      const parsed = (() => {
+        try {
+          const row = JSON.parse(config);
+          return isJsonRecord(row) ? row : null;
+        } catch {
+          return null;
+        }
+      })();
+      if (parsed) {
+        return this.init(parsed);
+      }
+      const fallbackResult = await Libp2pBridge.init({ config }).catch((error) => {
         this.lastStartError = error instanceof Error ? error.message : `${error}`;
         return { ok: false };
       });
-      this.initialized = result.ok;
-      if (!result.ok && !this.lastStartError) {
+      this.initialized = fallbackResult.ok;
+      if (!fallbackResult.ok && !this.lastStartError) {
         this.lastStartError = (await this.getLastError().catch(() => '')) || 'init_failed';
       }
-      return result.ok;
+      return fallbackResult.ok;
     }
+
+    const runtimeProfileOverride = this.readRuntimeProfileOverride();
+    const preferConservativeFirst = runtimeProfileOverride !== 'standard_android' && (
+      runtimeProfileOverride !== ''
+      || this.isHuaweiLikeRuntime()
+    );
 
     const baseConfig: Record<string, JsonValue> = {
       listenAddresses: [
-        '/ip4/0.0.0.0/tcp/4001',
         '/ip4/0.0.0.0/udp/4001/quic-v1',
-        '/ip6/::/tcp/4001',
         '/ip6/::/udp/4001/quic-v1',
       ],
       automations: {
@@ -443,53 +458,105 @@ export class Libp2pService {
       },
       ...(config ?? {}),
     };
+    if (runtimeProfileOverride) {
+      baseConfig.runtimeProfile = runtimeProfileOverride;
+      baseConfig.runtime_profile = runtimeProfileOverride;
+    }
 
-    const compatibilityConfig1: Record<string, JsonValue> = {
-      ...baseConfig,
-      listenAddresses: [
-        '/ip4/0.0.0.0/tcp/0',
-        '/ip4/0.0.0.0/udp/0/quic-v1',
-      ],
+    const conservativeAutomations: Record<string, JsonValue> = {
+      gossipsub: runtimeProfileOverride === 'harmony_android_container' ? false : true,
+      directStream: false,
+      rendezvous: false,
+      autonat: false,
+      circuitRelay: false,
+      livestream: false,
+      dataTransfer: false,
     };
-    const compatibilityConfig2: Record<string, JsonValue> = {
-      ...baseConfig,
-      listenAddresses: [
-        '/ip4/0.0.0.0/tcp/0',
-      ],
-      automations: {
-        gossipsub: true,
-        directStream: true,
-        rendezvous: false,
-        autonat: false,
-        circuitRelay: false,
-        livestream: true,
-        dataTransfer: false,
+
+    const conservativeFirstAttempts: Record<string, JsonValue>[] = [
+      {
+        ...baseConfig,
+        listenAddresses: [
+          '/ip4/0.0.0.0/tcp/0',
+          '/ip4/127.0.0.1/tcp/0',
+        ],
+        automations: conservativeAutomations,
       },
-    };
-    const compatibilityConfig3: Record<string, JsonValue> = {
-      ...compatibilityConfig2,
-      automations: {
-        gossipsub: true,
-        directStream: false,
-        rendezvous: false,
-        autonat: false,
-        circuitRelay: false,
-        livestream: false,
-        dataTransfer: false,
+      {
+        ...baseConfig,
+        listenAddresses: [
+          '/ip4/127.0.0.1/tcp/0',
+        ],
+        automations: {
+          ...conservativeAutomations,
+          gossipsub: false,
+        },
       },
-    };
-    const attempts: Record<string, JsonValue>[] = [
-      baseConfig,
-      compatibilityConfig1,
-      compatibilityConfig2,
-      compatibilityConfig3,
+      {
+        ...baseConfig,
+        listenAddresses: [],
+        automations: {
+          ...conservativeAutomations,
+          gossipsub: false,
+        },
+      },
     ];
-    const errors: string[] = [];
-    for (const attemptConfig of attempts) {
-      const result = await Libp2pBridge.init({ config: attemptConfig }).catch((error) => {
-        const bridgeError = error instanceof Error ? error.message : `${error}`;
-        if (bridgeError) {
-          errors.push(bridgeError);
+
+    const aggressiveAttempts: Record<string, JsonValue>[] = [
+      baseConfig,
+      {
+        ...baseConfig,
+        listenAddresses: [
+          '/ip4/0.0.0.0/tcp/0',
+          '/ip6/::/tcp/0',
+          '/ip4/0.0.0.0/udp/0/quic-v1',
+          '/ip6/::/udp/0/quic-v1',
+        ],
+      },
+      {
+        ...baseConfig,
+        listenAddresses: [
+          '/ip4/0.0.0.0/tcp/0',
+          '/ip6/::/tcp/0',
+        ],
+        automations: {
+          ...conservativeAutomations,
+          directStream: true,
+          livestream: true,
+        },
+      },
+      {
+        ...(config ?? {}),
+        ...(runtimeProfileOverride
+          ? { runtimeProfile: runtimeProfileOverride, runtime_profile: runtimeProfileOverride }
+          : {}),
+      },
+      {
+        ...(config ?? {}),
+        ...(runtimeProfileOverride
+          ? { runtimeProfile: runtimeProfileOverride, runtime_profile: runtimeProfileOverride }
+          : {}),
+        listenAddresses: [
+          '/ip4/127.0.0.1/tcp/0',
+        ],
+      },
+    ];
+
+    const compatibilityAttempts: Record<string, JsonValue>[] = preferConservativeFirst
+      ? [...conservativeFirstAttempts, ...aggressiveAttempts]
+      : [...aggressiveAttempts, ...conservativeFirstAttempts];
+
+    const initErrors: string[] = [];
+    for (let index = 0; index < compatibilityAttempts.length; index += 1) {
+      const attempt = compatibilityAttempts[index]!;
+      const attemptTag = `attempt_${index + 1}`;
+      if (index > 0) {
+        await this.invokeOptionalBridge('reset').catch(() => ({} as Record<string, JsonValue>));
+      }
+      const result = await Libp2pBridge.init({ config: attempt }).catch((error) => {
+        const text = error instanceof Error ? error.message : `${error}`;
+        if (text.trim().length > 0) {
+          initErrors.push(`${attemptTag}:${text.trim()}`);
         }
         return { ok: false };
       });
@@ -499,20 +566,30 @@ export class Libp2pService {
         return true;
       }
       const nativeError = await this.getLastError().catch(() => '');
-      if (nativeError) {
-        errors.push(nativeError);
+      const normalizedNativeError = nativeError.trim();
+      if (normalizedNativeError.length > 0) {
+        initErrors.push(`${attemptTag}:${normalizedNativeError}`);
+      } else {
+        initErrors.push(`${attemptTag}:node_init_failed_without_detail(${this.summarizeInitAttempt(attempt)})`);
       }
     }
+
     this.initialized = false;
-    this.lastStartError = errors.find((item) => item.trim().length > 0) || 'init_failed';
+    this.lastStartError = this.pickBestStartupError(
+      ...initErrors,
+      `node_init_failed_without_detail:attempted_${compatibilityAttempts.length}`,
+      'init_failed',
+    );
     if (this.isTerminalStartError(this.lastStartError)) {
       this.setStartCooldown(60_000);
+    } else {
+      this.setStartCooldown(10_000);
     }
     return false;
   }
 
   async start(): Promise<boolean> {
-    if (!this.hasNativeBridge()) {
+    if (!this.hasBridgeBackend()) {
       this.lastStartError = 'native_platform_required';
       return false;
     }
@@ -525,7 +602,12 @@ export class Libp2pService {
         peerId: undefined as string | undefined,
         lastError: undefined as string | undefined,
       }));
-      this.lastStartError = nativeError || (health.lastError ?? '') || this.lastStartError || 'start_failed';
+      this.lastStartError = this.pickBestStartupError(
+        this.lastStartError,
+        nativeError,
+        health.lastError ?? '',
+        'start_failed',
+      );
     }
     return result.ok;
   }
@@ -536,7 +618,7 @@ export class Libp2pService {
   }
 
   async isStarted(): Promise<boolean> {
-    if (!this.hasNativeBridge()) {
+    if (!this.hasBridgeBackend()) {
       return false;
     }
     const result = await Libp2pBridge.isStarted().catch(() => ({ started: false }));
@@ -551,13 +633,12 @@ export class Libp2pService {
       const bridgeError = error instanceof Error ? error.message : `${error}`;
       const started = await this.isStarted().catch(() => false);
       const directPeerId = await this.getLocalPeerIdDirect().catch(() => '');
-      const peerId = directPeerId || await this.fallbackPeerId().catch(() => '');
       const nativeError = await this.getLastError().catch(() => '');
       const lastError = nativeError || bridgeError || this.lastStartError || 'runtime_health_bridge_failed';
       return {
         nativeReady: started || this.initialized,
         started,
-        peerId: peerId || undefined,
+        peerId: directPeerId || undefined,
         lastError,
       };
     }
@@ -573,18 +654,19 @@ export class Libp2pService {
       : false;
     const effectiveNativeReady = nativeReady || started;
     const peerValue = (result.peer_id ?? result.peerId) as unknown;
-    const parsedPeerId = typeof peerValue === 'string' && peerValue.trim().length > 0 ? peerValue.trim() : '';
-    const peerId = parsedPeerId || await this.fallbackPeerId().catch(() => '');
+    const peerId = typeof peerValue === 'string' && peerValue.trim().length > 0 ? peerValue.trim() : '';
     if (peerId) {
       this.persistPeerId(peerId);
     }
     const errorValue = (result.last_error ?? result.lastError) as unknown;
-    const parsedLastError = typeof errorValue === 'string' && errorValue.trim().length > 0 ? errorValue.trim() : undefined;
-    const nativeBridgeError = await this.getLastError().catch(() => '');
+    const parsedLastErrorRaw = typeof errorValue === 'string' && errorValue.trim().length > 0 ? errorValue.trim() : '';
+    const parsedLastError = sanitizeRuntimePlaceholderError(parsedLastErrorRaw) || undefined;
+    const nativeBridgeError = sanitizeRuntimePlaceholderError(await this.getLastError().catch(() => ''));
+    const fallbackStartError = sanitizeRuntimePlaceholderError(this.lastStartError);
     const healthPayloadMissing = !hasNativeReadyField && !hasStartedField;
     const lastError = parsedLastError
       ?? ((!effectiveNativeReady && !started)
-        ? (nativeBridgeError || this.lastStartError || (healthPayloadMissing ? 'runtime_health_empty_payload' : 'runtime_not_ready'))
+        ? (nativeBridgeError || fallbackStartError || (healthPayloadMissing ? 'runtime_health_empty_payload' : 'runtime_not_ready'))
         : undefined);
     return {
       nativeReady: effectiveNativeReady,
@@ -594,8 +676,34 @@ export class Libp2pService {
     };
   }
 
+  async getHostNetworkStatus(): Promise<HostNetworkStatus | null> {
+    try {
+      const result = await this.invokeOptionalBridge('getHostNetworkStatus');
+      const transport = typeof result.transport === 'string' ? result.transport : 'none';
+      const networkType = typeof result.networkType === 'string' ? result.networkType : 'none';
+      const ssid = typeof result.ssid === 'string' ? result.ssid : '';
+      const reason = typeof result.reason === 'string' ? result.reason : '';
+      const timestampMs =
+        typeof result.timestampMs === 'number' && Number.isFinite(result.timestampMs)
+          ? result.timestampMs
+          : Date.now();
+      return {
+        type: 'HostNetworkStatus',
+        transport,
+        networkType,
+        ssid: ssid || undefined,
+        isConnected: coerceBoolean(result.isConnected, false),
+        isMetered: coerceBoolean(result.isMetered, false),
+        timestampMs,
+        reason: reason || undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async ensureStarted(config?: Record<string, JsonValue> | string): Promise<boolean> {
-    if (!this.hasNativeBridge()) {
+    if (!this.hasBridgeBackend()) {
       this.lastStartError = 'native_bridge_unavailable';
       return false;
     }
@@ -607,97 +715,62 @@ export class Libp2pService {
       return this.ensureStartedInFlight;
     }
     this.ensureStartedInFlight = (async () => {
-      const applyDiscoveryAfterStart = async () => {
-        this.initialized = true;
-        this.lastStartError = '';
-        this.ensureStartCooldownUntilMs = 0;
-        if (this.mdnsDiscoveryReasons.size > 0) {
-          const health = await this.runtimeHealth().catch(() => ({
-            nativeReady: false,
-            started: false,
-            peerId: undefined as string | undefined,
-            lastError: undefined as string | undefined,
-          }));
-          if (health.nativeReady && health.started) {
-            await this.applyDiscoveryPolicyInternal();
-          }
-        }
-        return true;
-      };
-
       const healthBefore = await this.runtimeHealth().catch(() => ({
         nativeReady: false,
         started: false,
         peerId: undefined as string | undefined,
         lastError: undefined as string | undefined,
       }));
-      const alreadyStarted = healthBefore.started || await this.isStarted().catch(() => false);
-      if (alreadyStarted) {
-        return applyDiscoveryAfterStart();
+      if (healthBefore.started || await this.isStarted().catch(() => false)) {
+        this.initialized = true;
+        this.lastStartError = '';
+        this.ensureStartCooldownUntilMs = 0;
+        return true;
       }
 
       const mustInit = !this.initialized || !healthBefore.nativeReady;
       if (mustInit) {
         const initOk = await this.init(config).catch(() => false);
         if (!initOk) {
-          this.initialized = false;
-          this.lastStartError = (await this.getLastError().catch(() => '')) || this.lastStartError || 'init_failed';
-          if (this.isTerminalStartError(this.lastStartError)) {
-            this.setStartCooldown(60_000);
-            return false;
-          }
+          this.lastStartError = this.pickBestStartupError(
+            this.lastStartError,
+            await this.getLastError().catch(() => ''),
+            'init_failed',
+          );
+          this.setStartCooldown(this.isTerminalStartError(this.lastStartError) ? 60_000 : 10_000);
+          return false;
         }
       }
 
-      await this.start().catch(() => false);
-      let startedAfterInit = await this.isStarted().catch(() => false);
-      if (!startedAfterInit) {
-        // Force one recovery re-init when JS/native state drifts.
-        this.initialized = false;
-        await this.resetNative().catch(() => false);
-        const recoveryConfig = this.buildRecoveryConfig(config);
-        const recoveryInitOk = await this.init(recoveryConfig).catch(() => false);
-        if (recoveryInitOk) {
-          await this.start().catch(() => false);
-          startedAfterInit = await this.isStarted().catch(() => false);
-        } else {
-          this.lastStartError = (await this.getLastError().catch(() => '')) || this.lastStartError || 'reinit_failed';
-          if (this.isTerminalStartError(this.lastStartError)) {
-            this.setStartCooldown(60_000);
-            return false;
-          }
-        }
-      }
-      if (startedAfterInit) {
-        return applyDiscoveryAfterStart();
-      }
-      const healthAfter = await this.runtimeHealth().catch(() => ({
-        nativeReady: false,
-        started: false,
-        peerId: undefined as string | undefined,
-        lastError: undefined as string | undefined,
-      }));
-      if (healthAfter.nativeReady && healthAfter.started) {
-        return applyDiscoveryAfterStart();
-      }
-      if (healthAfter.nativeReady && !healthAfter.started) {
-        await this.start().catch(() => false);
-        const postStartHealth = await this.runtimeHealth().catch(() => ({
-          nativeReady: false,
-          started: false,
-          peerId: undefined as string | undefined,
-          lastError: undefined as string | undefined,
-        }));
-        if (postStartHealth.nativeReady && postStartHealth.started) {
-          return applyDiscoveryAfterStart();
-        }
-        this.lastStartError = postStartHealth.lastError ?? this.lastStartError ?? 'start_retry_failed';
-        this.setStartCooldown(this.isTerminalStartError(this.lastStartError) ? 60_000 : 5_000);
+      const started = await this.start().catch(() => false);
+      if (!started) {
+        this.lastStartError = this.pickBestStartupError(
+          this.lastStartError,
+          await this.getLastError().catch(() => ''),
+          'start_failed',
+        );
+        this.setStartCooldown(this.isTerminalStartError(this.lastStartError) ? 60_000 : 10_000);
         return false;
       }
-      this.lastStartError = healthAfter.lastError ?? this.lastStartError ?? 'runtime_not_ready';
-      this.setStartCooldown(this.isTerminalStartError(this.lastStartError) ? 60_000 : 10_000);
-      return false;
+
+      const startedAfter = await this.isStarted().catch(() => false);
+      if (!startedAfter) {
+        this.lastStartError = this.pickBestStartupError(
+          this.lastStartError,
+          await this.getLastError().catch(() => ''),
+          'start_not_effective',
+        );
+        this.setStartCooldown(this.isTerminalStartError(this.lastStartError) ? 60_000 : 10_000);
+        return false;
+      }
+
+      this.initialized = true;
+      this.lastStartError = '';
+      this.ensureStartCooldownUntilMs = 0;
+      if (this.mdnsDiscoveryReasons.size > 0) {
+        await this.applyDiscoveryPolicyInternal();
+      }
+      return true;
     })();
 
     try {
@@ -708,8 +781,8 @@ export class Libp2pService {
   }
 
   async ensurePeerIdentity(config?: Record<string, JsonValue> | string): Promise<string> {
-    if (!this.hasNativeBridge()) {
-      return this.fallbackPeerId();
+    if (!this.hasBridgeBackend()) {
+      return '';
     }
     const direct = await this.getLocalPeerIdDirect().catch(() => '');
     if (direct) {
@@ -731,11 +804,11 @@ export class Libp2pService {
       peerId: undefined as string | undefined,
       lastError: undefined as string | undefined,
     }));
-    const fromHealth = typeof health.peerId === 'string' ? health.peerId.trim() : '';
+    const fromHealth = normalizePeerIdText(health.peerId);
     if (fromHealth) {
       return fromHealth;
     }
-    return this.fallbackPeerId();
+    return '';
   }
 
   async generateIdentity(): Promise<Record<string, JsonValue>> {
@@ -747,7 +820,7 @@ export class Libp2pService {
   }
 
   async getLocalPeerId(): Promise<string> {
-    const normalize = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+    const normalize = (value: unknown): string => normalizePeerIdText(value);
     const direct = await this.getLocalPeerIdDirect().catch(() => '');
     if (direct) return direct;
 
@@ -772,7 +845,7 @@ export class Libp2pService {
       this.persistPeerId(fromHealth);
       return fromHealth;
     }
-    return this.fallbackPeerId();
+    return '';
   }
 
   async getListenAddresses(): Promise<string[]> {
@@ -850,6 +923,24 @@ export class Libp2pService {
   async reserveOnAllRelays(): Promise<number> {
     const result = await Libp2pBridge.reserveOnAllRelays();
     return result.ok ? result.count : -1;
+  }
+
+  async setMsquicSettings(settings: Partial<MsQuicSettings> | Record<string, JsonValue>): Promise<boolean> {
+    const settingsJson = JSON.stringify(settings ?? {});
+    const result = await this.safeBridgeCall(
+      async () => Libp2pBridge.setMsquicSettings({ settingsJson }),
+      { ok: false },
+      'setMsquicSettings'
+    );
+    return result.ok;
+  }
+
+  async getMsquicSettings(): Promise<Record<string, JsonValue>> {
+    return this.safeBridgeCall(
+      async () => Libp2pBridge.getMsquicSettings(),
+      {},
+      'getMsquicSettings',
+    );
   }
 
   async getConnectedPeers(): Promise<string[]> {
@@ -1018,6 +1109,51 @@ export class Libp2pService {
     return result.error ?? '';
   }
 
+  async setSevenGatesReport(report: Record<string, JsonValue>): Promise<boolean> {
+    if (!this.hasBridgeBackend()) {
+      return false;
+    }
+    const dynamicBridge = Libp2pBridge as unknown as Record<string, unknown>;
+    const fn = dynamicBridge.setSevenGatesReport;
+    if (typeof fn !== 'function') {
+      return false;
+    }
+    try {
+      const result = await (fn as (options: { reportJson: string }) => Promise<unknown>)({
+        reportJson: JSON.stringify(report ?? {}),
+      });
+      if (isJsonRecord(result)) {
+        return coerceBoolean(result.ok, false);
+      }
+      if (result && typeof result === 'object') {
+        return coerceBoolean((result as { ok?: unknown }).ok, false);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  async getSevenGatesReport(): Promise<Record<string, JsonValue>> {
+    if (!this.hasBridgeBackend()) {
+      return {};
+    }
+    const dynamicBridge = Libp2pBridge as unknown as Record<string, unknown>;
+    const fn = dynamicBridge.getSevenGatesReport;
+    if (typeof fn !== 'function') {
+      return {};
+    }
+    try {
+      const result = await (fn as () => Promise<unknown>)();
+      if (isJsonRecord(result)) {
+        return result;
+      }
+      return {};
+    } catch {
+      return {};
+    }
+  }
+
   async fetchFeedSnapshot(): Promise<Record<string, JsonValue>> {
     return Libp2pBridge.fetchFeedSnapshot();
   }
@@ -1169,14 +1305,16 @@ export class Libp2pService {
   async getLastError(): Promise<string> {
     try {
       const result = await Libp2pBridge.getLastError();
-      const nativeError = (result.error ?? '').trim();
+      const nativeError = sanitizeRuntimePlaceholderError((result.error ?? '').trim());
       if (nativeError.length > 0) {
         return nativeError;
       }
-      return this.lastStartError || '';
+      return sanitizeRuntimePlaceholderError(this.lastStartError || '');
     } catch (error) {
       const bridgeError = error instanceof Error ? error.message : `${error}`;
-      return this.lastStartError || bridgeError || 'runtime_error_unavailable';
+      return sanitizeRuntimePlaceholderError(this.lastStartError || '')
+        || sanitizeRuntimePlaceholderError(bridgeError)
+        || 'runtime_error_unavailable';
     }
   }
 
@@ -1325,6 +1463,183 @@ export class Libp2pService {
     }
   }
 
+  async rwadSessionAuthorizePayment(options: {
+    walletId: string;
+    reason?: string;
+    timeoutMs?: number;
+  }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const result = await this.invokeOptionalBridge('rwadSessionAuthorizePayment', {
+        walletId: options.walletId,
+        reason: options.reason ?? '',
+        timeoutMs: typeof options.timeoutMs === 'number' ? options.timeoutMs : 45_000,
+      });
+      return {
+        ok: coerceBoolean(result.ok, false),
+        error: typeof result.error === 'string' ? result.error : undefined,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : `${error}`,
+      };
+    }
+  }
+
+  async rwadNfcStatus(options: RwadNfcStatusReq): Promise<RwadNfcStatusResp> {
+    try {
+      const result = await this.invokeOptionalBridgeCbor('rwadNfcStatus', {
+        walletId: options.walletId,
+      });
+      return {
+        ok: coerceBoolean(result.ok, false),
+        walletId: typeof result.walletId === 'string' ? result.walletId : undefined,
+        enrolled: typeof result.enrolled === 'boolean' ? result.enrolled : undefined,
+        tagCommitment: typeof result.tagCommitment === 'string' ? result.tagCommitment : undefined,
+        error: typeof result.error === 'string' ? result.error : undefined,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        walletId: options.walletId,
+        enrolled: false,
+        error: error instanceof Error ? error.message : `${error}`,
+      };
+    }
+  }
+
+  async rwadNfcEnroll(options: RwadNfcEnrollReq): Promise<RwadNfcEnrollResp> {
+    try {
+      const result = await this.invokeOptionalBridgeCbor('rwadNfcEnroll', {
+        walletId: options.walletId,
+        timeoutMs: typeof options.timeoutMs === 'number' ? options.timeoutMs : 25_000,
+      });
+      return {
+        ok: coerceBoolean(result.ok, false),
+        walletId: typeof result.walletId === 'string' ? result.walletId : undefined,
+        enrolled: typeof result.enrolled === 'boolean' ? result.enrolled : undefined,
+        tagCommitment: typeof result.tagCommitment === 'string' ? result.tagCommitment : undefined,
+        error: typeof result.error === 'string' ? result.error : undefined,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        walletId: options.walletId,
+        enrolled: false,
+        error: error instanceof Error ? error.message : `${error}`,
+      };
+    }
+  }
+
+  async rwadNfcAuthorizeTransfer(options: RwadNfcAuthorizeTransferReq): Promise<RwadNfcAuthorizeTransferResp> {
+    try {
+      const result = await this.invokeOptionalBridgeCbor('rwadNfcAuthorizeTransfer', {
+        walletId: options.walletId,
+        to: options.to,
+        amount: options.amount,
+        nonce: options.nonce ?? '',
+        txDigest: options.txDigest ?? '',
+        timeoutMs: typeof options.timeoutMs === 'number' ? options.timeoutMs : 25_000,
+      });
+      const proofRaw = isJsonRecord(result.proof) ? result.proof : null;
+      const proof: RwadNfcProof | undefined = proofRaw
+        ? {
+            walletId: typeof proofRaw.walletId === 'string' ? proofRaw.walletId : '',
+            tagCommitment: typeof proofRaw.tagCommitment === 'string' ? proofRaw.tagCommitment : '',
+            challenge: typeof proofRaw.challenge === 'string' ? proofRaw.challenge : '',
+            signature: typeof proofRaw.signature === 'string' ? proofRaw.signature : '',
+            ts: typeof proofRaw.ts === 'number' ? proofRaw.ts : 0,
+            nonce: typeof proofRaw.nonce === 'string' ? proofRaw.nonce : '',
+          }
+        : undefined;
+      return {
+        ok: coerceBoolean(result.ok, false),
+        proof: proof && proof.walletId && proof.tagCommitment && proof.challenge && proof.signature ? proof : undefined,
+        error: typeof result.error === 'string' ? result.error : undefined,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : `${error}`,
+      };
+    }
+  }
+
+  async rwadNfcStartReceive(options: RwadNfcStartReceiveReq): Promise<RwadNfcStartReceiveResp> {
+    try {
+      const result = await this.invokeOptionalBridgeCbor('rwadNfcStartReceive', {
+        walletId: options.walletId,
+        ttlMs: typeof options.ttlMs === 'number' ? options.ttlMs : 180_000,
+      });
+      return {
+        ok: coerceBoolean(result.ok, false),
+        walletId: typeof result.walletId === 'string' ? result.walletId : undefined,
+        expiresAt: typeof result.expiresAt === 'number' ? result.expiresAt : undefined,
+        error: typeof result.error === 'string' ? result.error : undefined,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        walletId: options.walletId,
+        error: error instanceof Error ? error.message : `${error}`,
+      };
+    }
+  }
+
+  async rwadNfcStopReceive(options: RwadNfcStopReceiveReq = {}): Promise<RwadNfcStopReceiveResp> {
+    try {
+      const result = await this.invokeOptionalBridgeCbor('rwadNfcStopReceive', {
+        walletId: typeof options.walletId === 'string' ? options.walletId : '',
+      });
+      return {
+        ok: coerceBoolean(result.ok, false),
+        error: typeof result.error === 'string' ? result.error : undefined,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : `${error}`,
+      };
+    }
+  }
+
+  async rwadNfcResolveRecipient(options: RwadNfcResolveRecipientReq = {}): Promise<RwadNfcResolveRecipientResp> {
+    try {
+      const result = await this.invokeOptionalBridgeCbor('rwadNfcResolveRecipient', {
+        timeoutMs: typeof options.timeoutMs === 'number' ? options.timeoutMs : 25_000,
+        walletId: typeof options.walletId === 'string' ? options.walletId : '',
+      });
+      return {
+        ok: coerceBoolean(result.ok, false),
+        walletId: typeof result.walletId === 'string' ? result.walletId : undefined,
+        error: typeof result.error === 'string' ? result.error : undefined,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : `${error}`,
+      };
+    }
+  }
+
+  async openNfcSettings(): Promise<boolean> {
+    try {
+      const result = await this.invokeOptionalBridge('openNfcSettings');
+      return coerceBoolean(result.ok, false);
+    } catch {
+      return false;
+    }
+  }
+
+  async openNfcPaymentSettings(): Promise<boolean> {
+    try {
+      const result = await this.invokeOptionalBridge('openNfcPaymentSettings');
+      return coerceBoolean(result.ok, false);
+    } catch {
+      return this.openNfcSettings();
+    }
+  }
+
   async socialListDiscoveredPeers(sourceFilter = '', limit = 64): Promise<{ peers: DiscoveredPeer[]; totalCount: number }> {
     return this.safeBridgeCall(async () => {
       const result = await Libp2pBridge.socialListDiscoveredPeers({ sourceFilter, limit });
@@ -1343,6 +1658,28 @@ export class Libp2pService {
       peers: [] as DiscoveredPeer[],
       totalCount: 0,
     }, `socialListDiscoveredPeers(${sourceFilter},${limit})`);
+  }
+
+  async networkDiscoverySnapshot(
+    sourceFilter = '',
+    limit = 256,
+    connectCap = 7,
+  ): Promise<Record<string, JsonValue>> {
+    return this.safeBridgeCall(async () => {
+      return await this.invokeOptionalBridge('networkDiscoverySnapshot', {
+        sourceFilter,
+        limit,
+        connectCap,
+      });
+    }, {
+      ok: false,
+      error: 'network_discovery_snapshot_failed',
+      connectedPeers: [],
+      connectedPeersInfo: [],
+      discoveredPeers: { peers: [], totalCount: 0 },
+      mdnsDebug: {},
+      autoConnect: { attempted: 0, connected: 0 },
+    }, `networkDiscoverySnapshot(${sourceFilter},${limit},${connectCap})`);
   }
 
   async socialConnectPeer(peerId: string, multiaddr = ''): Promise<boolean> {

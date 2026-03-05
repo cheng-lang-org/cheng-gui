@@ -12,8 +12,6 @@ fn cNe(a: char, b: char): bool =
     return cLt(a, b) || cGt(a, b)
 
 fn safeLen(text: str): int32 =
-    if text == nil:
-        return int32(0)
     return len(text)
 
 fn strEq(a: str, b: str): bool =

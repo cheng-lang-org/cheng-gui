@@ -25,8 +25,6 @@ fn cGe(a: char, b: char): bool =
     return !cLt(a, b)
 
 fn safeLen(text: str): int32 =
-    if text == nil:
-        return int32(0)
     return len(text)
 
 fn htmlStrEq(a: str, b: str): bool =
@@ -46,12 +44,11 @@ fn htmlStrEq(a: str, b: str): bool =
     return true
 
 fn htmlMatchAt(text: str, pattern: str, offset: int32): bool =
-    if text == nil || pattern == nil:
-        return false
     if offset < 0:
         return false
     let n = safeLen(pattern)
-    if offset + n > safeLen(text):
+    let total = safeLen(text)
+    if offset + n > total:
         return false
     var idx: int32 = int32(0)
     while idx < n:

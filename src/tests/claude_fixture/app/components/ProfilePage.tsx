@@ -57,7 +57,6 @@ import {
   saveWallets,
   deleteWallet as deleteWalletEntry,
   createEVMAndSolanaWallets,
-  createRWADWallet,
   importEVMWallet,
   importSolanaWallet,
   createBTCWallet,
@@ -70,6 +69,8 @@ import {
   maskAddr,
 } from '../utils/walletChains';
 import { DEFAULT_MAKER_FUNDS_V2 } from '../domain/dex/marketConfig';
+import { submitProfilePointsTransferWithNfc, submitProfileRwadTransferWithNfc } from '../domain/rwad/nfcTransfer';
+import LicensePlateInput from './LicensePlateInput';
 
 interface AddressRecord {
   id: string;
@@ -115,6 +116,22 @@ interface AssetActionState {
   action: 'recharge' | 'transfer';
 }
 
+type RwadSettlementMode = 'real_atomic_v1' | 'demo_fast_v1';
+const RWAD_SETTLEMENT_MODE_STORAGE_KEY = 'rwad_nfc_settlement_mode_v1';
+const RWAD_SETTLEMENT_CONFIRMATIONS_REAL = 2;
+
+function normalizeSettlementMode(raw: unknown): RwadSettlementMode {
+  const mode = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (mode === 'demo_fast_v1' || mode === 'demo_fast' || mode === 'demo') {
+    return 'demo_fast_v1';
+  }
+  return 'real_atomic_v1';
+}
+
+function readSettlementMode(): RwadSettlementMode {
+  return normalizeSettlementMode(localStorage.getItem(RWAD_SETTLEMENT_MODE_STORAGE_KEY));
+}
+
 const STORAGE_KEYS = {
   points: 'profile_points_balance_v2',
   rwadLegacy: 'profile_rwad_balance_v2',
@@ -133,6 +150,9 @@ const STORAGE_KEYS = {
   rideEnabled: 'profile_ride_enabled',
   rideFrom: 'profile_ride_from',
   rideTo: 'profile_ride_to',
+  ridePhone: 'profile_ride_phone',
+  rideIdCard: 'profile_ride_id_card',
+  rideLicensePlate: 'profile_ride_license_plate',
   localPeerId: 'profile_local_peer_id_v1',
   vpnNodeEnabled: 'profile_vpn_node_enabled',
   vpnNodeFee: 'profile_vpn_node_fee',
@@ -406,7 +426,7 @@ function normalizePeerId(raw: string): string {
 }
 
 export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavigate?: (page: string) => void; onOpenApp?: (appId: string) => void;[key: string]: unknown }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [regionPolicy, setRegionPolicy] = useState(() => getRegionPolicySync());
   const isDomestic = regionPolicy.isDomestic;
@@ -485,10 +505,25 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
   const [showWallet, setShowWallet] = useState(false);
   const [copiedPeerId, setCopiedPeerId] = useState(false);
 
+  // Collapsible section states
+  const [nodeExpanded, setNodeExpanded] = useState(false);
+  const [paymentExpanded, setPaymentExpanded] = useState(false);
+  const [orderExpanded, setOrderExpanded] = useState(false);
+
+  // Full-screen overlay states for service settings (like Web3 Wallet pattern)
+  const [showErrandPanel, setShowErrandPanel] = useState(false);
+  const [showRidePanel, setShowRidePanel] = useState(false);
+  const [showVpnPanel, setShowVpnPanel] = useState(false);
+  const [showC2cPanel, setShowC2cPanel] = useState(false);
+  const [showDistributedPanel, setShowDistributedPanel] = useState(false);
+
   const [pointsBalance, setPointsBalance] = useState<number>(() => readNumber(STORAGE_KEYS.points, 0));
   const [rwadBalance, setRwadBalance] = useState<number>(() => readNumber(STORAGE_KEYS.rwadChainCache, 0));
   const [rwadSyncing, setRwadSyncing] = useState(false);
   const [rwadSyncHint, setRwadSyncHint] = useState('');
+  const [rwadNfcReceiveBusy, setRwadNfcReceiveBusy] = useState(false);
+  const [rwadNfcReceiveActive, setRwadNfcReceiveActive] = useState(false);
+  const [rwadNfcReceiveExpiresAt, setRwadNfcReceiveExpiresAt] = useState(0);
   const [showRwadMigrationHint, setShowRwadMigrationHint] = useState(false);
   const [domainName, setDomainName] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.domain) || '');
   const [domainInput, setDomainInput] = useState('');
@@ -569,6 +604,9 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
   const [assetAmountInput, setAssetAmountInput] = useState('');
   const [assetTargetInput, setAssetTargetInput] = useState('');
   const [assetActionError, setAssetActionError] = useState('');
+  const [assetActionHint, setAssetActionHint] = useState('');
+  const [assetActionBusy, setAssetActionBusy] = useState(false);
+  const [assetSettlementMode, setAssetSettlementMode] = useState<RwadSettlementMode>(() => readSettlementMode());
 
   const [addresses, setAddresses] = useState<AddressRecord[]>(() => readJson<AddressRecord[]>(STORAGE_KEYS.addresses, []));
   const [showAddressEditor, setShowAddressEditor] = useState(false);
@@ -642,6 +680,9 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
   const [rideEnabled, setRideEnabled] = useState(() => localStorage.getItem(STORAGE_KEYS.rideEnabled) === 'true');
   const [rideFrom, setRideFrom] = useState(() => localStorage.getItem(STORAGE_KEYS.rideFrom) || '');
   const [rideTo, setRideTo] = useState(() => localStorage.getItem(STORAGE_KEYS.rideTo) || '');
+  const [ridePhone, setRidePhone] = useState(() => localStorage.getItem(STORAGE_KEYS.ridePhone) || '');
+  const [rideIdCard, setRideIdCard] = useState(() => localStorage.getItem(STORAGE_KEYS.rideIdCard) || '');
+  const [rideLicensePlate, setRideLicensePlate] = useState(() => localStorage.getItem(STORAGE_KEYS.rideLicensePlate) || '');
 
   const toggleErrand = (v: boolean) => { setErrandEnabled(v); localStorage.setItem(STORAGE_KEYS.errandEnabled, String(v)); };
   const toggleRide = (v: boolean) => { setRideEnabled(v); localStorage.setItem(STORAGE_KEYS.rideEnabled, String(v)); };
@@ -649,6 +690,16 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
   const saveErrandDestM = (m: number) => { setErrandDestMeters(m); localStorage.setItem(STORAGE_KEYS.errandDestRange, String(m)); };
   const saveRideFrom = (v: string) => { setRideFrom(v); localStorage.setItem(STORAGE_KEYS.rideFrom, v); };
   const saveRideTo = (v: string) => { setRideTo(v); localStorage.setItem(STORAGE_KEYS.rideTo, v); };
+  const saveRidePhone = (v: string) => { setRidePhone(v); localStorage.setItem(STORAGE_KEYS.ridePhone, v); };
+  const saveRideIdCard = (v: string) => { setRideIdCard(v); localStorage.setItem(STORAGE_KEYS.rideIdCard, v); };
+  const saveRideLicensePlate = (v: string) => { setRideLicensePlate(v); localStorage.setItem(STORAGE_KEYS.rideLicensePlate, v); };
+  const readPersistedPeerId = useCallback((): string => {
+    try {
+      return localStorage.getItem('profile_local_peer_id_v1')?.trim() ?? '';
+    } catch {
+      return '';
+    }
+  }, []);
 
   useEffect(() => {
     const alreadyHinted = localStorage.getItem(STORAGE_KEYS.rwadMigrationHintShown) === '1';
@@ -664,16 +715,17 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
 
   const refreshRwadBalance = useCallback(async () => {
     const rwadWallet = wallets.find((item) => item.chain === 'rwad');
-    if (!rwadWallet) {
+    const identity = peerId.trim() || readPersistedPeerId() || rwadWallet?.address || '';
+    if (!identity) {
       setRwadBalance(0);
-      setRwadSyncHint(t.profile_rwadWalletNotFound);
+      setRwadSyncHint(t.profile_transferIdentityUnavailable);
       return;
     }
 
     setRwadSyncing(true);
     setRwadSyncHint('');
     try {
-      const balance = await fetchRWADBalance(rwadWallet.address);
+      const balance = await fetchRWADBalance(identity);
       const next = Math.max(0, Number(balance.raw.toFixed(6)));
       setRwadBalance(next);
       localStorage.setItem(STORAGE_KEYS.rwadChainCache, String(next));
@@ -683,7 +735,29 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
     } finally {
       setRwadSyncing(false);
     }
-  }, [wallets]);
+  }, [peerId, wallets, t.profile_transferIdentityUnavailable, readPersistedPeerId]);
+
+  useEffect(() => {
+    if (!rwadNfcReceiveActive || rwadNfcReceiveExpiresAt <= 0) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      if (Date.now() >= rwadNfcReceiveExpiresAt) {
+        setRwadNfcReceiveActive(false);
+        setRwadNfcReceiveExpiresAt(0);
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [rwadNfcReceiveActive, rwadNfcReceiveExpiresAt]);
+
+  useEffect(() => {
+    return () => {
+      const rwadWallet = loadWallets().find((item) => item.chain === 'rwad');
+      const cleanupWalletId = peerId.trim() || readPersistedPeerId() || rwadWallet?.address || '';
+      if (!cleanupWalletId) return;
+      void libp2pService.rwadNfcStopReceive({ walletId: cleanupWalletId });
+    };
+  }, [peerId, readPersistedPeerId]);
 
   // Independent unit toggles
   const toggleOriginUnit = () => {
@@ -807,6 +881,9 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
     setAssetAmountInput('');
     setAssetTargetInput('');
     setAssetActionError('');
+    setAssetActionHint('');
+    setAssetActionBusy(false);
+    setAssetSettlementMode(readSettlementMode());
   };
 
   const closeAssetAction = () => {
@@ -814,10 +891,225 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
     setAssetAmountInput('');
     setAssetTargetInput('');
     setAssetActionError('');
+    setAssetActionHint('');
+    setAssetActionBusy(false);
   };
 
-  const handleAssetActionSubmit = () => {
+  const updateAssetSettlementMode = useCallback((mode: RwadSettlementMode) => {
+    setAssetSettlementMode(mode);
+    localStorage.setItem(RWAD_SETTLEMENT_MODE_STORAGE_KEY, mode);
+  }, []);
+
+  const settlementModeCopy = locale.startsWith('zh-TW')
+    ? {
+      title: '到帳模式',
+      real: `真實原子確認（${RWAD_SETTLEMENT_CONFIRMATIONS_REAL} 確認）`,
+      demo: '演示快速到帳（不等待確認）',
+      descReal: '正式支付流程：提交後等待鏈上確認達標才視為成功。',
+      descDemo: '演示流程：交易提交成功即回傳，不等待鏈上深度確認。',
+    }
+    : locale.startsWith('zh')
+      ? {
+        title: '到账模式',
+        real: `真实原子确认（${RWAD_SETTLEMENT_CONFIRMATIONS_REAL}确认）`,
+        demo: '演示快速到账（不等确认）',
+        descReal: '正式支付流程：提交后等待链上确认达标才视为成功。',
+        descDemo: '演示流程：交易提交成功即返回，不等待链上深度确认。',
+      }
+      : {
+        title: 'Settlement Mode',
+        real: `Real Atomic (${RWAD_SETTLEMENT_CONFIRMATIONS_REAL} confirmations)`,
+        demo: 'Demo Fast (no confirmation wait)',
+        descReal: 'Production payment flow: success only after required on-chain confirmations.',
+        descDemo: 'Demo flow: returns once transaction is submitted without deep confirmation wait.',
+      };
+
+  const resolveRwadTransferError = useCallback((reason: string): string => {
+    const normalized = reason.trim();
+    if (normalized.startsWith('bridge_method_unavailable')) {
+      return t.profile_rwadNfcUnsupportedPlatform;
+    }
+    switch (normalized) {
+      case 'rwad_wallet_not_found':
+        return t.profile_transferIdentityUnavailable;
+      case 'transfer_identity_unavailable':
+        return t.profile_transferIdentityUnavailable;
+      case 'invalid_target_address':
+        return t.profile_errInvalidTarget;
+      case 'rwad_transfer_submit_failed':
+      case 'rwad_transfer_confirm_timeout':
+      case 'rwad_transfer_rejected':
+      case 'rwad_transfer_missing_tx_hash':
+        return t.profile_rwadTransferSubmitFailed;
+      case 'rwad_transfer_sign_failed':
+      case 'missing_root_private_key':
+        return t.profile_rwadTransferSignFailed;
+      case 'nfc_unavailable':
+        return t.profile_rwadNfcUnavailable;
+      case 'nfc_disabled':
+        return t.profile_rwadNfcDisabled;
+      case 'nfc_scan_cancelled':
+        return t.profile_rwadNfcScanCancelled;
+      case 'nfc_tag_untrusted':
+        return t.profile_rwadNfcTagUntrusted;
+      case 'nfc_auth_timeout':
+        return t.profile_rwadNfcAuthTimeout;
+      case 'nfc_wallet_intercepted':
+        return t.profile_rwadNfcWalletIntercepted;
+      case 'nfc_peer_not_ready':
+        return t.profile_rwadNfcPeerNotReady;
+      case 'nfc_peer_self_transfer_denied':
+        return t.profile_rwadNfcSelfTransferDenied;
+      case 'biometric_not_ready':
+      case 'biometric_not_available':
+      case 'biometric_not_enrolled':
+      case 'biometric_activity_required':
+        return t.profile_rwadBiometricUnavailable;
+      case 'biometric_auth_cancelled':
+        return t.profile_rwadBiometricCancelled;
+      case 'biometric_auth_timeout':
+        return t.profile_rwadBiometricTimeout;
+      case 'biometric_auth_failed':
+      case 'biometric_locked':
+        return t.profile_rwadBiometricFailed;
+      case 'invalid_cbor_payload':
+      case 'missing_required_field':
+      case 'field_type_mismatch':
+      case 'native_proxy_unavailable':
+      case 'native_bridge_not_ready':
+        return t.profile_rwadNfcProtocolError;
+      case 'unsupported_platform':
+      case 'native_platform_required':
+      case 'bridge_method_unavailable':
+        return t.profile_rwadNfcUnsupportedPlatform;
+      default:
+        return `${t.profile_rwadTransferFailedPrefix}: ${normalized}`;
+    }
+  }, [t]);
+
+  const resolvePointsTransferError = useCallback((reason: string): string => {
+    const normalized = reason.trim();
+    if (normalized.startsWith('bridge_method_unavailable')) {
+      return t.profile_rwadNfcUnsupportedPlatform;
+    }
+    switch (normalized) {
+      case 'rwad_wallet_not_found':
+      case 'transfer_identity_unavailable':
+        return t.profile_transferIdentityUnavailable;
+      case 'invalid_target_address':
+        return t.profile_errInvalidTarget;
+      case 'points_transfer_submit_failed':
+      case 'points_transfer_confirm_timeout':
+      case 'points_transfer_rejected':
+      case 'points_transfer_missing_tx_hash':
+        return t.profile_pointsTransferSubmitFailed;
+      case 'points_transfer_sign_failed':
+      case 'missing_root_private_key':
+        return t.profile_pointsTransferSignFailed;
+      case 'nfc_unavailable':
+        return t.profile_rwadNfcUnavailable;
+      case 'nfc_disabled':
+        return t.profile_rwadNfcDisabled;
+      case 'nfc_scan_cancelled':
+        return t.profile_rwadNfcScanCancelled;
+      case 'nfc_tag_untrusted':
+        return t.profile_rwadNfcTagUntrusted;
+      case 'nfc_auth_timeout':
+        return t.profile_rwadNfcAuthTimeout;
+      case 'nfc_wallet_intercepted':
+        return t.profile_rwadNfcWalletIntercepted;
+      case 'nfc_peer_not_ready':
+        return t.profile_rwadNfcPeerNotReady;
+      case 'nfc_peer_self_transfer_denied':
+        return t.profile_rwadNfcSelfTransferDenied;
+      case 'biometric_not_ready':
+      case 'biometric_not_available':
+      case 'biometric_not_enrolled':
+      case 'biometric_activity_required':
+        return t.profile_rwadBiometricUnavailable;
+      case 'biometric_auth_cancelled':
+        return t.profile_rwadBiometricCancelled;
+      case 'biometric_auth_timeout':
+        return t.profile_rwadBiometricTimeout;
+      case 'biometric_auth_failed':
+      case 'biometric_locked':
+        return t.profile_rwadBiometricFailed;
+      case 'invalid_cbor_payload':
+      case 'missing_required_field':
+      case 'field_type_mismatch':
+      case 'native_proxy_unavailable':
+      case 'native_bridge_not_ready':
+        return t.profile_rwadNfcProtocolError;
+      case 'unsupported_platform':
+      case 'native_platform_required':
+      case 'bridge_method_unavailable':
+        return t.profile_rwadNfcUnsupportedPlatform;
+      default:
+        return `${t.profile_pointsTransferFailedPrefix}: ${normalized}`;
+    }
+  }, [t]);
+
+  const handleToggleRwadNfcReceive = useCallback(async () => {
+    if (rwadNfcReceiveBusy) {
+      return;
+    }
+    const receiveWalletId = peerId.trim() || readPersistedPeerId() || wallets.find((item) => item.chain === 'rwad')?.address || '';
+    if (!receiveWalletId) {
+      setRwadSyncHint(t.profile_transferIdentityUnavailable);
+      return;
+    }
+    setRwadNfcReceiveBusy(true);
+    setRwadSyncHint('');
+    try {
+      if (rwadNfcReceiveActive) {
+        const stopped = await libp2pService.rwadNfcStopReceive({ walletId: receiveWalletId });
+        if (!stopped.ok) {
+          setRwadSyncHint(resolveRwadTransferError(stopped.error ?? 'nfc_unavailable'));
+          return;
+        }
+        setRwadNfcReceiveActive(false);
+        setRwadNfcReceiveExpiresAt(0);
+        setRwadSyncHint(t.profile_rwadNfcReceiveStopped);
+        return;
+      }
+      const started = await libp2pService.rwadNfcStartReceive({
+        walletId: receiveWalletId,
+        ttlMs: 180_000,
+      });
+      if (!started.ok) {
+        const startedError = (started.error ?? '').trim();
+        if (startedError === 'nfc_wallet_intercepted') {
+          const opened = await libp2pService.openNfcPaymentSettings().catch(() => false);
+          if (opened) {
+            setRwadSyncHint(t.profile_rwadNfcPaymentSettingsOpening);
+          } else {
+            setRwadSyncHint(resolveRwadTransferError(startedError || 'nfc_unavailable'));
+          }
+          return;
+        }
+        if (startedError === 'nfc_disabled' || startedError === 'nfc_unavailable') {
+          const opened = await libp2pService.openNfcSettings().catch(() => false);
+          if (opened) {
+            setRwadSyncHint(t.profile_rwadNfcSettingsOpening);
+          } else {
+            setRwadSyncHint(resolveRwadTransferError(startedError || 'nfc_unavailable'));
+          }
+          return;
+        }
+        setRwadSyncHint(resolveRwadTransferError(started.error ?? 'nfc_unavailable'));
+        return;
+      }
+      setRwadNfcReceiveActive(true);
+      setRwadNfcReceiveExpiresAt(started.expiresAt ?? Date.now() + 180_000);
+      setRwadSyncHint(t.profile_rwadNfcReceiveStarted);
+    } finally {
+      setRwadNfcReceiveBusy(false);
+    }
+  }, [peerId, resolveRwadTransferError, rwadNfcReceiveActive, rwadNfcReceiveBusy, t, wallets, readPersistedPeerId]);
+
+  const handleAssetActionSubmit = async () => {
     if (!assetActionState) return;
+    if (assetActionBusy) return;
 
     const amount = amountIsValid(assetAmountInput);
     if (amount === null) {
@@ -851,7 +1143,11 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
     }
 
     const target = assetTargetInput.trim();
-    if (target.length < 6) {
+    if (assetActionState.asset === 'points' && !isDomestic && target.length < 6) {
+      setAssetActionError(t.profile_errInvalidTarget);
+      return;
+    }
+    if ((assetActionState.asset === 'rwad' || (assetActionState.asset === 'points' && isDomestic)) && target.length > 0 && target.length < 6) {
       setAssetActionError(t.profile_errInvalidTarget);
       return;
     }
@@ -861,21 +1157,118 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
         setAssetActionError(t.profile_errInsufficientPoints);
         return;
       }
+      if (isDomestic) {
+        const nfcAutoFill = target.length === 0;
+        setAssetActionBusy(true);
+        setAssetActionError('');
+        setAssetActionHint(nfcAutoFill ? t.profile_pointsNfcScanning : '');
+        setRwadSyncHint('');
+        const transfer = await submitProfilePointsTransferWithNfc({
+          to: target || undefined,
+          amount,
+          settlementMode: assetSettlementMode,
+        });
+      setAssetActionBusy(false);
+      if (!transfer.ok) {
+        const reason = transfer.reason ?? 'points_transfer_submit_failed';
+        if (nfcAutoFill && reason === 'nfc_wallet_intercepted') {
+          const opened = await libp2pService.openNfcPaymentSettings().catch(() => false);
+          if (opened) {
+            setAssetActionHint(t.profile_rwadNfcPaymentSettingsOpening);
+            setAssetActionError('');
+            return;
+          }
+        }
+        if (nfcAutoFill && (reason === 'nfc_disabled' || reason === 'nfc_unavailable')) {
+          const opened = await libp2pService.openNfcSettings().catch(() => false);
+          if (opened) {
+            setAssetActionHint(t.profile_rwadNfcSettingsOpening);
+            setAssetActionError('');
+            return;
+          }
+        }
+        setAssetActionError(resolvePointsTransferError(reason));
+        setAssetActionHint('');
+        return;
+      }
+        persistPoints(pointsBalance - amount);
+        setAssetActionHint(nfcAutoFill ? t.profile_pointsNfcAuthorized : '');
+        appendLedger({
+          id: createId('ledger'),
+          type: 'points_transfer',
+          amount,
+          target: transfer.to ?? '',
+          createdAt: Date.now(),
+        });
+        setRwadSyncHint(
+          transfer.txHash
+            ? `${t.profile_pointsTransferSubmittedPrefix} ${transfer.txHash.slice(0, 16)}${typeof transfer.confirmations === 'number' && transfer.confirmations > 0 ? ` c=${transfer.confirmations}` : ''}`
+            : t.profile_pointsNfcAuthorized,
+        );
+        closeAssetAction();
+        return;
+      }
       persistPoints(pointsBalance - amount);
+      appendLedger({
+        id: createId('ledger'),
+        type: 'points_transfer',
+        amount,
+        target,
+        createdAt: Date.now(),
+      });
+      closeAssetAction();
+      return;
     } else {
-      setAssetActionError(t.profile_rwadChainTransferBlocked);
+      const nfcAutoFill = target.length === 0;
+      setAssetActionBusy(true);
+      setAssetActionError('');
+      setAssetActionHint(nfcAutoFill ? t.profile_rwadNfcScanning : '');
+      setRwadSyncHint('');
+      const transfer = await submitProfileRwadTransferWithNfc({
+        to: target || undefined,
+        amount,
+        settlementMode: assetSettlementMode,
+      });
+      setAssetActionBusy(false);
+      if (!transfer.ok) {
+        const reason = transfer.reason ?? 'rwad_transfer_submit_failed';
+        if (nfcAutoFill && reason === 'nfc_wallet_intercepted') {
+          const opened = await libp2pService.openNfcPaymentSettings().catch(() => false);
+          if (opened) {
+            setAssetActionHint(t.profile_rwadNfcPaymentSettingsOpening);
+            setAssetActionError('');
+            return;
+          }
+        }
+        if (nfcAutoFill && (reason === 'nfc_disabled' || reason === 'nfc_unavailable')) {
+          const opened = await libp2pService.openNfcSettings().catch(() => false);
+          if (opened) {
+            setAssetActionHint(t.profile_rwadNfcSettingsOpening);
+            setAssetActionError('');
+            return;
+          }
+        }
+        setAssetActionError(resolveRwadTransferError(reason));
+        setAssetActionHint('');
+        return;
+      }
+      setAssetActionHint(nfcAutoFill ? t.profile_rwadNfcAuthorized : '');
+      appendLedger({
+        id: createId('ledger'),
+        type: 'rwad_transfer',
+        amount,
+        target: transfer.to ?? '',
+        createdAt: Date.now(),
+      });
+      setRwadSyncHint(
+        transfer.txHash
+          ? `${t.profile_rwadTransferSubmittedPrefix} ${transfer.txHash.slice(0, 16)}${typeof transfer.confirmations === 'number' && transfer.confirmations > 0 ? ` c=${transfer.confirmations}` : ''}`
+          : t.profile_rwadNfcAuthorized,
+      );
+      void refreshRwadBalance();
+      closeAssetAction();
       return;
     }
-
-    appendLedger({
-      id: createId('ledger'),
-      type: assetActionState.asset === 'points' ? 'points_transfer' : 'rwad_transfer',
-      amount,
-      target,
-      createdAt: Date.now(),
-    });
-
-    closeAssetAction();
   };
 
   const handleRegisterDomain = () => {
@@ -1130,21 +1523,6 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
     setWalletCreating(false);
   };
 
-  const createRWAD = async () => {
-    setWalletCreating(true);
-    setWalletError('');
-    try {
-      await createRWADWallet();
-      setWallets(loadWallets());
-      setWalletSuccess(t.profile_rwadWalletCreated);
-      if (!isDomestic) {
-        await refreshRwadBalance();
-      }
-    } catch (err) {
-      setWalletError(err instanceof Error ? err.message : t.profile_errCreateFailed);
-    }
-    setWalletCreating(false);
-  };
 
   const importWalletForChain = async (chain: ChainType, input: string, alias: string) => {
     setWalletCreating(true);
@@ -1206,136 +1584,178 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
         </header>
 
         <div className="p-3 space-y-3">
+          {/* ===== 节点信息（折叠/展开） ===== */}
           <section className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-            <div className="px-4 pt-4 pb-3 border-b border-gray-100">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-500">{t.profile_nodePeerId}</span>
-                <button
-                  onClick={handleCopyPeerId}
-                  className="flex items-center gap-1 text-xs text-purple-600"
-                >
-                  {copiedPeerId ? <Check size={12} /> : <Copy size={12} />}
-                  <span>{copiedPeerId ? t.profile_copied : t.profile_copy}</span>
-                </button>
+            {/* Collapsed header — always visible */}
+            <button
+              onClick={() => setNodeExpanded(!nodeExpanded)}
+              className="w-full px-4 py-3.5 flex items-center justify-between hover:bg-gray-50 transition-colors"
+            >
+              <div className="min-w-0 flex-1 text-left">
+                <div className="text-xs text-gray-500">{t.profile_nodePeerId}</div>
+                <div className="font-mono text-[11px] text-gray-900 truncate text-left">{peerId || t.profile_locating}</div>
               </div>
-              <div className="font-mono text-[11px] text-gray-900 break-all mt-1">{peerId || t.profile_locating}</div>
-            </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleCopyPeerId(); }}
+                  className="p-1.5 rounded-lg hover:bg-purple-50 text-purple-600"
+                >
+                  {copiedPeerId ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+                <ChevronRight size={18} className={`text-gray-400 transition-transform duration-200 ${nodeExpanded ? 'rotate-90' : ''}`} />
+              </div>
+            </button>
 
-            {!isDomestic && (
-              <div className="px-4 py-3 border-b border-gray-100">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm font-medium text-gray-800">RWAD</span>
+            {/* Expanded content */}
+            {nodeExpanded && (
+              <div className="border-t border-gray-100">
+                {!isDomestic && (
+                  <div className="px-4 py-3 border-b border-gray-100">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-sm font-medium text-gray-800">RWAD</span>
+                      </div>
+                      <span className="text-lg font-semibold text-purple-600">{rwadBalance.toFixed(0)}</span>
+                    </div>
+                    <div className="flex gap-2 mt-3">
+                      <button
+                        onClick={() => { void refreshRwadBalance(); }}
+                        disabled={rwadSyncing}
+                        className="flex-1 py-2 rounded-lg text-sm font-medium border bg-purple-600 text-white border-purple-600"
+                      >
+                        {rwadSyncing ? t.profile_loading : t.profile_refreshChainBalance}
+                      </button>
+                      <button
+                        onClick={() => setShowWallet(true)}
+                        className="flex-1 py-2 rounded-lg text-sm font-medium border border-purple-200 text-purple-700 bg-purple-50"
+                      >
+                        {t.profile_web3Wallet}
+                      </button>
+                    </div>
+                    <div className="mt-2">
+                      <button
+                        onClick={() => { void handleToggleRwadNfcReceive(); }}
+                        disabled={rwadNfcReceiveBusy}
+                        className={`w-full py-2 rounded-lg text-sm font-medium border ${rwadNfcReceiveActive ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-300'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                      >
+                        {rwadNfcReceiveActive ? t.profile_rwadNfcReceiveStop : t.profile_rwadNfcReceiveStart}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-gray-500 mt-2">{t.profile_overseasRwadNote}</p>
+                    {rwadNfcReceiveActive && rwadNfcReceiveExpiresAt > 0 && (
+                      <p className="text-[11px] text-emerald-600 mt-1">
+                        {t.profile_rwadNfcReceiveActiveUntil} {new Date(rwadNfcReceiveExpiresAt).toLocaleTimeString()}
+                      </p>
+                    )}
+                    {rwadSyncHint && <p className="text-[11px] text-gray-500 mt-1">{rwadSyncHint}</p>}
+                    {showRwadMigrationHint && (
+                      <p className="text-[11px] text-orange-600 mt-1">{t.profile_rwadMigrationHint}</p>
+                    )}
                   </div>
-                  <span className="text-lg font-semibold text-purple-600">{rwadBalance.toFixed(0)}</span>
-                </div>
-                <div className="flex gap-2 mt-3">
-                  <button
-                    onClick={() => { void refreshRwadBalance(); }}
-                    disabled={rwadSyncing}
-                    className="flex-1 py-2 rounded-lg text-sm font-medium border bg-purple-600 text-white border-purple-600"
-                  >
-                    {rwadSyncing ? t.profile_loading : t.profile_refreshChainBalance}
-                  </button>
-                  <button
-                    onClick={() => setShowWallet(true)}
-                    className="flex-1 py-2 rounded-lg text-sm font-medium border border-purple-200 text-purple-700 bg-purple-50"
-                  >
-                    {t.profile_web3Wallet}
-                  </button>
-                </div>
-                <p className="text-[11px] text-gray-500 mt-2">{t.profile_overseasRwadNote}</p>
-                {rwadSyncHint && <p className="text-[11px] text-gray-500 mt-1">{rwadSyncHint}</p>}
-                {showRwadMigrationHint && (
-                  <p className="text-[11px] text-orange-600 mt-1">{t.profile_rwadMigrationHint}</p>
                 )}
+
+                <div className="px-4 py-3 border-b border-gray-100">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-sm font-medium text-gray-800">{t.profile_points}</span>
+                    </div>
+                    <span className="text-lg font-semibold text-purple-600">{pointsBalance.toFixed(0)}</span>
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => openAssetAction('points', 'recharge')}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium border ${isDomestic ? 'bg-purple-600 text-white border-purple-600' : 'bg-gray-100 text-gray-400 border-gray-200'}`}
+                    >
+                      {t.profile_recharge}
+                    </button>
+                    <button
+                      onClick={() => openAssetAction('points', 'transfer')}
+                      className="flex-1 py-2 rounded-lg text-sm font-medium border border-purple-200 text-purple-700 bg-purple-50"
+                    >
+                      {t.profile_transfer}
+                    </button>
+                  </div>
+                  {isDomestic && (
+                    <div className="mt-2">
+                      <button
+                        onClick={() => { void handleToggleRwadNfcReceive(); }}
+                        disabled={rwadNfcReceiveBusy}
+                        className={`w-full py-2 rounded-lg text-sm font-medium border ${rwadNfcReceiveActive ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-300'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                      >
+                        {rwadNfcReceiveActive ? t.profile_rwadNfcReceiveStop : t.profile_rwadNfcReceiveStart}
+                      </button>
+                    </div>
+                  )}
+                  {isDomestic && rwadNfcReceiveActive && rwadNfcReceiveExpiresAt > 0 && (
+                    <p className="text-[11px] text-emerald-600 mt-1">
+                      {t.profile_rwadNfcReceiveActiveUntil} {new Date(rwadNfcReceiveExpiresAt).toLocaleTimeString()}
+                    </p>
+                  )}
+                  {isDomestic && rwadSyncHint && <p className="text-[11px] text-gray-500 mt-1">{rwadSyncHint}</p>}
+                </div>
+
+                <div className="px-4 py-3">
+                  <div className="mb-2">
+                    <span className="text-sm font-medium text-gray-800">{t.profile_domainLabel}</span>
+                  </div>
+
+                  {domainName ? (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 rounded-lg bg-purple-50 border border-purple-100 px-3 py-2 text-sm text-purple-900 break-all truncate">
+                        {domainName}
+                      </div>
+                      <button
+                        onClick={() => setShowDomainTransfer(true)}
+                        className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border border-purple-200 text-purple-700 bg-purple-50"
+                      >
+                        {t.profile_transferDomain}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={domainInput}
+                        onChange={(event) => {
+                          setDomainInput(event.target.value);
+                          setDomainError('');
+                        }}
+                        placeholder={t.profile_domainInputPlaceholder}
+                        className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      <button
+                        onClick={handleRegisterDomain}
+                        className="shrink-0 px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700"
+                      >
+                        注册
+                      </button>
+                    </div>
+                  )}
+
+                  {domainError && (
+                    <div className="text-xs text-red-600 mt-2">{domainError}</div>
+                  )}
+                </div>
               </div>
             )}
-
-            <div className="px-4 py-3 border-b border-gray-100">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-sm font-medium text-gray-800">{t.profile_points}</span>
-                </div>
-                <span className="text-lg font-semibold text-purple-600">{pointsBalance.toFixed(0)}</span>
-              </div>
-              <div className="flex gap-2 mt-3">
-                <button
-                  onClick={() => openAssetAction('points', 'recharge')}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${isDomestic ? 'bg-purple-600 text-white border-purple-600' : 'bg-gray-100 text-gray-400 border-gray-200'}`}
-                >
-                  {t.profile_recharge}
-                </button>
-                <button
-                  onClick={() => openAssetAction('points', 'transfer')}
-                  className="flex-1 py-2 rounded-lg text-sm font-medium border border-purple-200 text-purple-700 bg-purple-50"
-                >
-                  {t.profile_transfer}
-                </button>
-              </div>
-            </div>
-
-            <div className="px-4 py-3">
-              <div className="mb-2">
-                <span className="text-sm font-medium text-gray-800">{t.profile_domainLabel}</span>
-              </div>
-
-              {domainName ? (
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 rounded-lg bg-purple-50 border border-purple-100 px-3 py-2 text-sm text-purple-900 break-all truncate">
-                    {domainName}
-                  </div>
-                  <button
-                    onClick={() => setShowDomainTransfer(true)}
-                    className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border border-purple-200 text-purple-700 bg-purple-50"
-                  >
-                    {t.profile_transferDomain}
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <input
-                    value={domainInput}
-                    onChange={(event) => {
-                      setDomainInput(event.target.value);
-                      setDomainError('');
-                    }}
-                    placeholder={t.profile_domainInputPlaceholder}
-                    className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  />
-                  <button
-                    onClick={handleRegisterDomain}
-                    className="shrink-0 px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700"
-                  >
-                    注册
-                  </button>
-                </div>
-              )}
-
-              {domainError && (
-                <div className="text-xs text-red-600 mt-2">{domainError}</div>
-              )}
-            </div>
           </section>
 
-          {/* 收款设置 */}
+          {/* ===== 收款设置（常驻展开） ===== */}
           <section className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-            <div className="px-4 py-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-gray-900 mb-1">收款设置</div>
-                  <div className="text-xs text-gray-500">
-                    当前策略：{isDomestic ? '国内IP（微信/支付宝）' : '境外IP（信用卡/Web3 钱包）'}
-                  </div>
+            <div className="px-4 py-3.5 flex items-center justify-between">
+              <div>
+                <div className="font-medium text-gray-900 text-sm">收款设置</div>
+                <div className="text-xs text-gray-500">
+                  {isDomestic ? '微信/支付宝' : '信用卡/Web3 钱包'}
                 </div>
-                <button
-                  onClick={() => { void ensureRegionPolicy(true).then(setRegionPolicy); }}
-                  className="px-2 py-1 text-xs rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
-                >
-                  刷新IP
-                </button>
               </div>
-
+              <button
+                onClick={() => void ensureRegionPolicy(true).then(setRegionPolicy)}
+                className="px-2 py-1 text-xs rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
+              >
+                刷新IP
+              </button>
+            </div>
+            <div className="border-t border-gray-100 px-4 py-4 space-y-3">
               {isDomestic ? (
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -1456,468 +1876,182 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
             </div>
           </section>
 
-          {/* 跑腿 & 顺风车 设置 */}
+          {/* ===== 接单（折叠/展开） ===== */}
           <section className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-            <div className="px-4 py-4">
-              <div className="font-medium text-gray-900 mb-1">{t.profile_serviceWillingness}</div>
-
-              {/* 跑腿开关 */}
-              <div className="space-y-4">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Footprints size={18} className="text-orange-500" />
-                      <span className="text-sm font-medium text-gray-800">{t.profile_errand}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => toggleErrand(!errandEnabled)}
-                      className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${errandEnabled ? 'bg-orange-500' : 'bg-gray-300'}`}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${errandEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
-
-                  {errandEnabled && (
-                    <div className="mt-3 ml-7 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">{t.profile_errandOriginRange}</span>
-                        <div className="flex items-center gap-0.5">
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            value={originInput}
-                            onChange={(e) => {
-                              setOriginInput(e.target.value);
-                              const n = Number(e.target.value);
-                              if (!isNaN(n) && n >= originSliderMin && n <= originSliderMax) {
-                                saveErrandOriginM(originFromDisplay(n));
-                              }
-                            }}
-                            onBlur={() => {
-                              const n = Number(originInput);
-                              if (!originInput || isNaN(n) || n < originSliderMin) {
-                                saveErrandOriginM(originFromDisplay(originSliderMin));
-                                setOriginInput(String(originSliderMin));
-                              } else if (n > originSliderMax) {
-                                saveErrandOriginM(originFromDisplay(originSliderMax));
-                                setOriginInput(String(originSliderMax));
-                              } else {
-                                const rounded = errandOriginUnit === 'km' ? Math.round(n) : Math.round(n / 100) * 100;
-                                saveErrandOriginM(originFromDisplay(rounded));
-                                setOriginInput(String(rounded));
-                              }
-                            }}
-                            className="w-14 text-right text-sm font-semibold bg-transparent outline-none border-b border-dashed text-orange-600 border-orange-300"
-                          />
-                          <button
-                            type="button"
-                            onClick={toggleOriginUnit}
-                            className="text-sm font-semibold underline decoration-dashed underline-offset-2 cursor-pointer transition-colors text-orange-600 hover:text-orange-700"
-                          >
-                            {errandOriginUnit === 'km' ? t.profile_rangeUnit : t.profile_rangeUnitM}
-                          </button>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">{t.profile_errandDestRange}</span>
-                        <div className="flex items-center gap-0.5">
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            value={destInput}
-                            onChange={(e) => {
-                              setDestInput(e.target.value);
-                              const n = Number(e.target.value);
-                              if (!isNaN(n) && n >= destSliderMin && n <= destSliderMax) {
-                                saveErrandDestM(destFromDisplay(n));
-                              }
-                            }}
-                            onBlur={() => {
-                              const n = Number(destInput);
-                              if (!destInput || isNaN(n) || n < destSliderMin) {
-                                saveErrandDestM(destFromDisplay(destSliderMin));
-                                setDestInput(String(destSliderMin));
-                              } else if (n > destSliderMax) {
-                                saveErrandDestM(destFromDisplay(destSliderMax));
-                                setDestInput(String(destSliderMax));
-                              } else {
-                                const rounded = errandDestUnit === 'km' ? Math.round(n) : Math.round(n / 100) * 100;
-                                saveErrandDestM(destFromDisplay(rounded));
-                                setDestInput(String(rounded));
-                              }
-                            }}
-                            className="w-14 text-right text-sm font-semibold bg-transparent outline-none border-b border-dashed text-orange-600 border-orange-300"
-                          />
-                          <button
-                            type="button"
-                            onClick={toggleDestUnit}
-                            className="text-sm font-semibold underline decoration-dashed underline-offset-2 cursor-pointer transition-colors text-orange-600 hover:text-orange-700"
-                          >
-                            {errandDestUnit === 'km' ? t.profile_rangeUnit : t.profile_rangeUnitM}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+            <button
+              onClick={() => setOrderExpanded(!orderExpanded)}
+              className="w-full px-4 py-3.5 flex items-center justify-between hover:bg-gray-50 transition-colors"
+            >
+              <div>
+                <div className="font-medium text-gray-900 text-sm">接单</div>
+                <div className="text-xs text-gray-500">
+                  {[errandEnabled && '跑腿', rideEnabled && '顺风车', vpnNodeEnabled && 'VPN', c2cMakerEnabled && 'C2C', distributedNodeEnabled && '算力'].filter(Boolean).join(' · ') || '未开启'}
                 </div>
-
-                <div className="h-px bg-gray-100" />
-
-                {/* 顺风车开关 */}
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Car size={18} className="text-blue-500" />
-                      <span className="text-sm font-medium text-gray-800">{t.profile_rideshare}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => toggleRide(!rideEnabled)}
-                      className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${rideEnabled ? 'bg-blue-500' : 'bg-gray-300'}`}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${rideEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
-                  {rideEnabled && (
-                    <div className="mt-3 ml-7 space-y-3">
-                      {/* Route */}
-                      <div>
-                        <div className="text-xs text-gray-500 mb-1.5">{t.profile_rideshareRoute}</div>
-                        <div className="flex items-center gap-2 bg-gray-50 rounded-lg p-2 border border-gray-100">
-                          <div className="flex-1 flex items-center gap-2">
-                            <div className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
-                            <input
-                              value={rideFrom}
-                              onChange={(e) => saveRideFrom(e.target.value)}
-                              placeholder={t.profile_rideshareFrom}
-                              className="w-full text-sm bg-transparent outline-none placeholder-gray-400"
-                            />
-                          </div>
-                          <ChevronRight size={14} className="text-gray-300" />
-                          <div className="flex-1 flex items-center gap-2">
-                            <div className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-                            <input
-                              value={rideTo}
-                              onChange={(e) => saveRideTo(e.target.value)}
-                              placeholder={t.profile_rideshareTo}
-                              className="w-full text-sm bg-transparent outline-none placeholder-gray-400"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="h-px bg-gray-100" />
-
-                {/* VPN Proxy Node Switch */}
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Server size={18} className="text-purple-500" />
-                      <div>
-                        <div className="text-sm font-medium text-gray-800">{t.profile_vpnNode}</div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => toggleVpnNode(!vpnNodeEnabled)}
-                      className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${vpnNodeEnabled ? 'bg-purple-500' : 'bg-gray-300'}`}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${vpnNodeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
-
-                  {vpnNodeEnabled && (
-                    <div className="mt-3 ml-7 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">{t.profile_vpnFee}</span>
-                        <div className="flex items-center gap-0.5">
-                          <input
-                            type="number"
-                            value={vpnNodeFee}
-                            onChange={(e) => saveVpnNodeFee(e.target.value)}
-                            min="0"
-                            step="0.01"
-                            placeholder="0.10"
-                            className="w-16 text-right text-sm font-semibold bg-transparent outline-none border-b border-dashed text-purple-600 border-purple-300"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="h-px bg-gray-100" />
-
-                {/* C2C Market Maker Switch */}
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <ArrowLeftRight size={18} className="text-indigo-500" />
-                      <div>
-                        <div className="text-sm font-medium text-gray-800">{t.profile_c2cMaker}</div>
-                        <div className="text-[10px] text-gray-400 mt-0.5">{t.profile_c2cMakerHint}</div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => toggleC2cMaker(!c2cMakerEnabled)}
-                      className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${c2cMakerEnabled ? 'bg-indigo-500' : 'bg-gray-300'}`}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${c2cMakerEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
-
-                  {c2cMakerEnabled && (
-                    <div className="mt-3 ml-7 space-y-3">
-                      <div className="text-xs text-gray-500 mb-1">{t.profile_c2cFundType} / {t.profile_c2cDailyLimit} / {t.profile_c2cSpread}</div>
-                      <div className="space-y-2">
-                        {c2cMakerFunds.map((fund, idx) => (
-                          <div key={fund.assetCode} className="bg-gray-50 rounded-lg p-2 border border-gray-100 space-y-2">
-                            <div className="flex items-center gap-3">
-                              <label className="flex items-center gap-2 cursor-pointer min-w-[96px]">
-                                <div className={`w-4 h-4 rounded border flex items-center justify-center ${fund.enabled ? 'bg-indigo-500 border-indigo-500' : 'bg-white border-gray-300'}`}>
-                                  {fund.enabled && <Check size={10} className="text-white" />}
-                                </div>
-                                <input
-                                  type="checkbox"
-                                  className="hidden"
-                                  checked={fund.enabled}
-                                  onChange={(e) => updateFundSetting(idx, 'enabled', e.target.checked)}
-                                />
-                                <span className="text-sm font-medium text-gray-700">{fund.assetCode}</span>
-                              </label>
-
-                              <div className="h-4 w-px bg-gray-200" />
-
-                              <div className="flex-1 flex items-center gap-2">
-                                <span className="text-[11px] text-gray-500">{t.profile_c2cLimitLabel}</span>
-                                <input
-                                  type="number"
-                                  value={fund.limit}
-                                  onChange={(e) => updateFundSetting(idx, 'limit', e.target.value)}
-                                  placeholder={t.profile_c2cLimitPlaceholder}
-                                  className={`w-full text-sm bg-transparent outline-none ${fund.enabled ? 'text-gray-900' : 'text-gray-400'}`}
-                                  disabled={!fund.enabled}
-                                />
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-2 text-xs">
-                              <label className="flex items-center gap-2">
-                                <span className="text-gray-500 min-w-[58px]">{t.profile_c2cBaseBps}</span>
-                                <input
-                                  type="number"
-                                  value={fund.baseSpreadBps}
-                                  onChange={(e) => updateFundSetting(idx, 'baseSpreadBps', Number(e.target.value))}
-                                  className={`w-full text-sm bg-transparent border rounded px-2 py-1 ${fund.enabled ? 'text-gray-900 border-gray-200' : 'text-gray-400 border-gray-100'}`}
-                                  disabled={!fund.enabled}
-                                />
-                              </label>
-                              <label className="flex items-center gap-2">
-                                <span className="text-gray-500 min-w-[58px]">{t.profile_c2cMaxBps}</span>
-                                <input
-                                  type="number"
-                                  value={fund.maxSpreadBps}
-                                  onChange={(e) => updateFundSetting(idx, 'maxSpreadBps', Number(e.target.value))}
-                                  className={`w-full text-sm bg-transparent border rounded px-2 py-1 ${fund.enabled ? 'text-gray-900 border-gray-200' : 'text-gray-400 border-gray-100'}`}
-                                  disabled={!fund.enabled}
-                                />
-                              </label>
-                            </div>
-
-                            <div className="text-[10px] text-gray-500">
-                              {t.profile_c2cPairs}: {fund.marketPairs.join(', ')}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="text-[10px] text-gray-400">
-                        {t.profile_c2cPolicyReset}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {c2cMakerEnabled ? (
-                  <>
-                    <div className="h-px bg-gray-100" />
-
-                    {/* DEX rollback switches */}
-                    <div>
-                      <div className="text-sm font-medium text-gray-800 mb-3 flex items-center gap-2">
-                        <span className="w-1 h-4 bg-purple-500 rounded-full" />
-                        {t.profile_dexSettings}
-                      </div>
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-                          <div className="flex-1 pr-4">
-                            <div className="text-sm font-medium text-gray-900">{t.profile_dexClob}</div>
-                            <div className="text-xs text-gray-500 mt-0.5 leading-tight">{t.profile_dexClobDesc}</div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => toggleFeature('dex_clob_v1', !dexClobEnabled)}
-                            className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${dexClobEnabled ? 'bg-purple-600' : 'bg-gray-200'}`}
-                          >
-                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200 ${dexClobEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                          </button>
-                        </div>
-
-                        <div className="flex items-center justify-between bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-                          <div className="flex-1 pr-4">
-                            <div className="text-sm font-medium text-gray-900">{t.profile_dexBridge}</div>
-                            <div className="text-xs text-gray-500 mt-0.5 leading-tight">{t.profile_dexBridgeDesc}</div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => toggleFeature('dex_c2c_bridge_v1', !dexBridgeEnabled)}
-                            className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${dexBridgeEnabled ? 'bg-purple-600' : 'bg-gray-200'}`}
-                          >
-                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200 ${dexBridgeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="ml-7 text-[11px] text-gray-400">
-                    {t.profile_c2cDexHint}
-                  </div>
-                )}
-
-                <div className="h-px bg-gray-100" />
-
-                {/* Distributed Node Switch */}
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Server size={18} className="text-emerald-500" />
-                      <div>
-                        <div className="text-sm font-medium text-gray-800">{t.profile_distributedNode}</div>
-                        <div className="text-[10px] text-gray-400 mt-0.5 max-w-[240px] leading-tight">{t.profile_distributedNodeHint}</div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setDistributedNodeEnabled(!distributedNodeEnabled)}
-                      className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${distributedNodeEnabled ? 'bg-emerald-500' : 'bg-gray-300'}`}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${distributedNodeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
-                  {distributedNodeEnabled && (
-                    <div className="mt-3 ml-7 grid grid-cols-2 gap-3">
-                      <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 flex flex-col justify-between">
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">{t.profile_limitCpu}</div>
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              value={limitCpu}
-                              onChange={(e) => setLimitCpu(Number(e.target.value))}
-                              className="w-12 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500"
-                            />
-                            <span className="text-[10px] text-gray-400">{t.profile_unitCore}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 flex flex-col justify-between">
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">{t.profile_limitMemory}</div>
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              value={limitMemory}
-                              onChange={(e) => setLimitMemory(Number(e.target.value))}
-                              className="w-12 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500"
-                            />
-                            <span className="text-[10px] text-gray-400">{t.profile_unitGB}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 flex flex-col justify-between">
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">{t.profile_limitDisk}</div>
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              value={limitDisk}
-                              onChange={(e) => setLimitDisk(Number(e.target.value))}
-                              className="w-12 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500"
-                            />
-                            <span className="text-[10px] text-gray-400">{t.profile_unitGB}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 flex flex-col justify-between">
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">{t.profile_limitGpu}</div>
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              value={limitGpu}
-                              onChange={(e) => setLimitGpu(Number(e.target.value))}
-                              className="w-12 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500"
-                            />
-                            <span className="text-[10px] text-gray-400">{t.profile_unitCard}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
               </div>
-            </div>
+              <ChevronRight size={18} className={`text-gray-400 transition-transform duration-200 ${orderExpanded ? 'rotate-90' : ''}`} />
+            </button>
+
+            {orderExpanded && (<div className="border-t border-gray-100">
+              {/* 跑腿 */}
+              <div className="px-4 py-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Footprints size={18} className="text-orange-500" />
+                  <div>
+                    <div className="text-sm font-medium text-gray-800">{t.profile_errand}</div>
+                    <div className="text-xs text-gray-500">{errandEnabled ? `${originToDisplay(errandOriginMeters)} ${errandOriginUnit}` : '未开启'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {errandEnabled && (
+                    <button onClick={() => setShowErrandPanel(true)} className="text-xs text-orange-500 px-2 py-0.5 rounded border border-orange-200 hover:bg-orange-50">
+                      设置
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { toggleErrand(!errandEnabled); if (!errandEnabled) setShowErrandPanel(true); }}
+                    className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${errandEnabled ? 'bg-orange-500' : 'bg-gray-300'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${errandEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="h-px bg-gray-100 mx-4" />
+
+              {/* 顺风车 */}
+              <div className="px-4 py-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Car size={18} className="text-blue-500" />
+                  <div>
+                    <div className="text-sm font-medium text-gray-800">{t.profile_rideshare}</div>
+                    <div className="text-xs text-gray-500">{rideEnabled ? (rideLicensePlate || rideFrom || '已开启') : '未开启'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {rideEnabled && (
+                    <button onClick={() => setShowRidePanel(true)} className="text-xs text-blue-500 px-2 py-0.5 rounded border border-blue-200 hover:bg-blue-50">
+                      设置
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { toggleRide(!rideEnabled); if (!rideEnabled) setShowRidePanel(true); }}
+                    className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${rideEnabled ? 'bg-blue-500' : 'bg-gray-300'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${rideEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="h-px bg-gray-100 mx-4" />
+
+              {/* VPN代理节点 */}
+              <div className="px-4 py-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Server size={18} className="text-purple-500" />
+                  <div>
+                    <div className="text-sm font-medium text-gray-800">{t.profile_vpnNode}</div>
+                    <div className="text-xs text-gray-500">{vpnNodeEnabled ? `${vpnNodeFee} RWAD/GB` : '未开启'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {vpnNodeEnabled && (
+                    <button onClick={() => setShowVpnPanel(true)} className="text-xs text-purple-500 px-2 py-0.5 rounded border border-purple-200 hover:bg-purple-50">
+                      设置
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { toggleVpnNode(!vpnNodeEnabled); if (!vpnNodeEnabled) setShowVpnPanel(true); }}
+                    className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${vpnNodeEnabled ? 'bg-purple-500' : 'bg-gray-300'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${vpnNodeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="h-px bg-gray-100 mx-4" />
+
+              {/* C2C做市商 */}
+              <div className="px-4 py-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <ArrowLeftRight size={18} className="text-indigo-500" />
+                  <div>
+                    <div className="text-sm font-medium text-gray-800">{t.profile_c2cMaker}</div>
+                    <div className="text-xs text-gray-500">{c2cMakerEnabled ? `${c2cMakerFunds.filter(f => f.enabled).length} 币种已开启` : '未开启'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {c2cMakerEnabled && (
+                    <button onClick={() => setShowC2cPanel(true)} className="text-xs text-indigo-500 px-2 py-0.5 rounded border border-indigo-200 hover:bg-indigo-50">
+                      设置
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { toggleC2cMaker(!c2cMakerEnabled); if (!c2cMakerEnabled) setShowC2cPanel(true); }}
+                    className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${c2cMakerEnabled ? 'bg-indigo-500' : 'bg-gray-300'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${c2cMakerEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="h-px bg-gray-100 mx-4" />
+
+              {/* 分布式全球算力节点 */}
+              <div className="px-4 py-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Server size={18} className="text-emerald-500" />
+                  <div>
+                    <div className="text-sm font-medium text-gray-800">{t.profile_distributedNode}</div>
+                    <div className="text-xs text-gray-500">{distributedNodeEnabled ? `CPU${limitCpu} / 内存${limitMemory}GB` : '未开启'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {distributedNodeEnabled && (
+                    <button onClick={() => setShowDistributedPanel(true)} className="text-xs text-emerald-500 px-2 py-0.5 rounded border border-emerald-200 hover:bg-emerald-50">
+                      设置
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setDistributedNodeEnabled(!distributedNodeEnabled); if (!distributedNodeEnabled) setShowDistributedPanel(true); }}
+                    className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${distributedNodeEnabled ? 'bg-emerald-500' : 'bg-gray-300'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${distributedNodeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              </div>
+            </div>)}
           </section>
 
+          {/* ===== Web3 钱包 ===== */}
           <section className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
             <button
               onClick={() => setShowWallet(true)}
-              className="w-full px-4 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
+              className="w-full px-4 py-3.5 flex items-center justify-between hover:bg-gray-50 transition-colors"
             >
               <div className="text-left">
-                <div className="font-medium text-gray-900">{t.profile_web3Wallet}</div>
-                <div className="text-xs text-gray-600">
+                <div className="font-medium text-gray-900 text-sm">{t.profile_web3Wallet}</div>
+                <div className="text-xs text-gray-500">
                   {wallets.length > 0 ? `${wallets.length} ${t.profile_walletCount}` : t.profile_createOrImport}
                 </div>
               </div>
               <ChevronRight size={18} className="text-gray-400" />
             </button>
-            {/* Inline wallet summary */}
-            {wallets.length > 0 && (
-              <div className="px-4 pb-3 space-y-2">
-                {wallets.map((w) => (
-                  <div key={w.id} className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-gray-800 truncate">{w.alias}</div>
-                      <div className="text-[10px] text-gray-500 font-mono truncate">{maskAddr(w.address)}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xs font-semibold text-purple-600">
-                        {walletBalances[w.id]
-                          ? `${walletBalances[w.id].formatted} ${walletBalances[w.id].symbol}`
-                          : walletBalanceLoading ? '...' : '--'}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </section>
 
+          {/* ===== 交易记录 ===== */}
           <section className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
             <button
               onClick={() => setShowTransactions(true)}
-              className="w-full px-4 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
+              className="w-full px-4 py-3.5 flex items-center justify-between hover:bg-gray-50 transition-colors"
             >
               <div className="text-left">
-                <div className="font-medium text-gray-900">{t.profile_transactionHistory}</div>
-                <div className="text-xs text-gray-600">
+                <div className="font-medium text-gray-900 text-sm">{t.profile_transactionHistory}</div>
+                <div className="text-xs text-gray-500">
                   {ledger.length > 0 ? `${ledger.length} ${t.profile_recordCount}` : t.profile_noRecords}
                 </div>
               </div>
@@ -1925,15 +2059,16 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
             </button>
           </section>
 
+          {/* ===== 清空已发布内容 ===== */}
           <section className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
             <button
               onClick={handleClearPublishedContents}
               disabled={clearingPublished}
-              className="w-full px-4 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors disabled:opacity-60"
+              className="w-full px-4 py-3.5 flex items-center justify-between hover:bg-gray-50 transition-colors disabled:opacity-60"
             >
               <div className="text-left">
-                <div className="font-medium text-gray-900">清空已发布内容</div>
-                <div className="text-xs text-gray-600">
+                <div className="font-medium text-gray-900 text-sm">清空已发布内容</div>
+                <div className="text-xs text-gray-500">
                   {publishedContentCount > 0 ? `${publishedContentCount} 条本机发布内容` : '暂无本机已发布内容'}
                 </div>
               </div>
@@ -1978,14 +2113,52 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
                     />
                   </div>
                 )}
+                {assetActionState.action === 'transfer' && assetActionState.asset === 'points' && isDomestic && (
+                  <div className="text-xs text-gray-500">{t.profile_pointsNfcNoAddressHint}</div>
+                )}
+                {assetActionState.action === 'transfer' && assetActionState.asset === 'rwad' && (
+                  <div className="text-xs text-gray-500">{t.profile_rwadNfcNoAddressHint}</div>
+                )}
+                {assetActionState.action === 'transfer' && (assetActionState.asset === 'rwad' || (assetActionState.asset === 'points' && isDomestic)) && (
+                  <div className="rounded-lg border border-gray-200 p-2.5 space-y-2">
+                    <div className="text-xs text-gray-600">{settlementModeCopy.title}</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updateAssetSettlementMode('real_atomic_v1')}
+                        className={`rounded-lg border px-2 py-2 text-xs font-medium transition-colors ${assetSettlementMode === 'real_atomic_v1'
+                          ? 'border-purple-500 bg-purple-50 text-purple-700'
+                          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                          }`}
+                      >
+                        {settlementModeCopy.real}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateAssetSettlementMode('demo_fast_v1')}
+                        className={`rounded-lg border px-2 py-2 text-xs font-medium transition-colors ${assetSettlementMode === 'demo_fast_v1'
+                          ? 'border-purple-500 bg-purple-50 text-purple-700'
+                          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                          }`}
+                      >
+                        {settlementModeCopy.demo}
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-gray-500">
+                      {assetSettlementMode === 'real_atomic_v1' ? settlementModeCopy.descReal : settlementModeCopy.descDemo}
+                    </div>
+                  </div>
+                )}
 
                 {assetActionError && <div className="text-xs text-red-600">{assetActionError}</div>}
+                {assetActionHint && <div className="text-xs text-cyan-600">{assetActionHint}</div>}
 
                 <button
-                  onClick={handleAssetActionSubmit}
-                  className="w-full py-2.5 rounded-lg bg-purple-600 text-white font-medium hover:bg-purple-700"
+                  onClick={() => { void handleAssetActionSubmit(); }}
+                  disabled={assetActionBusy}
+                  className="w-full py-2.5 rounded-lg bg-purple-600 text-white font-medium hover:bg-purple-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {t.profile_confirm}
+                  {assetActionBusy ? `${t.profile_loading}...` : t.profile_confirm}
                 </button>
               </div>
             </div>
@@ -2439,13 +2612,7 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
                           >
                             {walletCreating ? t.profile_creating : t.profile_createBtc}
                           </button>
-                          <button
-                            onClick={createRWAD}
-                            disabled={walletCreating || !allTosAccepted}
-                            className="w-full py-2.5 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                          >
-                            {walletCreating ? t.profile_creating : t.profile_createRwadWallet}
-                          </button>
+
                         </>
                       ) : (
                         <>
@@ -2614,6 +2781,336 @@ export default function ProfilePage({ onNavigate, onOpenApp, ...rest }: { onNavi
             </div>
           )
         }
+
+        {/* ===== 跑腿设置面板（底部半屏） ===== */}
+        {showErrandPanel && (
+          <div className="fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setShowErrandPanel(false)}>
+            <div className="absolute inset-0 bg-black/40" />
+            <div className="relative bg-white rounded-t-2xl max-h-[60vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex flex-col items-center pt-2 pb-1 shrink-0">
+                <div className="w-10 h-1 rounded-full bg-gray-300" />
+              </div>
+              <div className="flex items-center justify-between px-4 pb-3 border-b border-gray-100 shrink-0">
+                <h3 className="text-base font-semibold text-gray-900">{t.profile_errand}</h3>
+                <button onClick={() => setShowErrandPanel(false)} className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center">
+                  <X size={16} className="text-gray-500" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600">{t.profile_errandOriginRange}</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={originInput}
+                        onChange={(e) => {
+                          setOriginInput(e.target.value);
+                          const n = Number(e.target.value);
+                          if (!isNaN(n) && n >= originSliderMin && n <= originSliderMax) {
+                            saveErrandOriginM(originFromDisplay(n));
+                          }
+                        }}
+                        onBlur={() => {
+                          const n = Number(originInput);
+                          if (!originInput || isNaN(n) || n < originSliderMin) {
+                            saveErrandOriginM(originFromDisplay(originSliderMin));
+                            setOriginInput(String(originSliderMin));
+                          } else if (n > originSliderMax) {
+                            saveErrandOriginM(originFromDisplay(originSliderMax));
+                            setOriginInput(String(originSliderMax));
+                          } else {
+                            const rounded = errandOriginUnit === 'km' ? Math.round(n) : Math.round(n / 100) * 100;
+                            saveErrandOriginM(originFromDisplay(rounded));
+                            setOriginInput(String(rounded));
+                          }
+                        }}
+                        className="w-16 text-right text-sm font-semibold bg-transparent outline-none border-b-2 text-orange-600 border-orange-300"
+                      />
+                      <button type="button" onClick={toggleOriginUnit} className="text-sm font-semibold text-orange-600">
+                        {errandOriginUnit === 'km' ? t.profile_rangeUnit : t.profile_rangeUnitM}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600">{t.profile_errandDestRange}</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={destInput}
+                        onChange={(e) => {
+                          setDestInput(e.target.value);
+                          const n = Number(e.target.value);
+                          if (!isNaN(n) && n >= destSliderMin && n <= destSliderMax) {
+                            saveErrandDestM(destFromDisplay(n));
+                          }
+                        }}
+                        onBlur={() => {
+                          const n = Number(destInput);
+                          if (!destInput || isNaN(n) || n < destSliderMin) {
+                            saveErrandDestM(destFromDisplay(destSliderMin));
+                            setDestInput(String(destSliderMin));
+                          } else if (n > destSliderMax) {
+                            saveErrandDestM(destFromDisplay(destSliderMax));
+                            setDestInput(String(destSliderMax));
+                          } else {
+                            const rounded = errandDestUnit === 'km' ? Math.round(n) : Math.round(n / 100) * 100;
+                            saveErrandDestM(destFromDisplay(rounded));
+                            setDestInput(String(rounded));
+                          }
+                        }}
+                        className="w-16 text-right text-sm font-semibold bg-transparent outline-none border-b-2 text-orange-600 border-orange-300"
+                      />
+                      <button type="button" onClick={toggleDestUnit} className="text-sm font-semibold text-orange-600">
+                        {errandDestUnit === 'km' ? t.profile_rangeUnit : t.profile_rangeUnitM}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== 顺风车设置面板（底部半屏） ===== */}
+        {showRidePanel && (
+          <div className="fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setShowRidePanel(false)}>
+            <div className="absolute inset-0 bg-black/40" />
+            <div className="relative bg-white rounded-t-2xl max-h-[70vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex flex-col items-center pt-2 pb-1 shrink-0">
+                <div className="w-10 h-1 rounded-full bg-gray-300" />
+              </div>
+              <div className="flex items-center justify-between px-4 pb-3 border-b border-gray-100 shrink-0">
+                <h3 className="text-base font-semibold text-gray-900">{t.profile_rideshare}</h3>
+                <button onClick={() => setShowRidePanel(false)} className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center">
+                  <X size={16} className="text-gray-500" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div>
+                  <div className="text-sm font-medium text-gray-800 mb-2">{t.profile_rideshareRoute}</div>
+                  <div className="flex items-center gap-2 bg-gray-50 rounded-lg p-2.5 border border-gray-100">
+                    <div className="flex-1 flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+                      <input
+                        value={rideFrom}
+                        onChange={(e) => saveRideFrom(e.target.value)}
+                        placeholder={t.profile_rideshareFrom}
+                        className="w-full text-sm bg-transparent outline-none placeholder-gray-400"
+                      />
+                    </div>
+                    <ChevronRight size={14} className="text-gray-300" />
+                    <div className="flex-1 flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+                      <input
+                        value={rideTo}
+                        onChange={(e) => saveRideTo(e.target.value)}
+                        placeholder={t.profile_rideshareTo}
+                        className="w-full text-sm bg-transparent outline-none placeholder-gray-400"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs text-gray-500 mb-1.5">{t.profile_ridesharePhone}</div>
+                    <input
+                      type="tel"
+                      value={ridePhone}
+                      onChange={(e) => saveRidePhone(e.target.value)}
+                      className="w-full text-sm bg-gray-50 rounded-lg p-2.5 border border-gray-100 outline-none focus:border-blue-300 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500 mb-1.5">{t.profile_rideshareIdCard}</div>
+                    <input
+                      type="text"
+                      value={rideIdCard}
+                      onChange={(e) => saveRideIdCard(e.target.value.toUpperCase())}
+                      className="w-full text-sm bg-gray-50 rounded-lg p-2.5 border border-gray-100 outline-none focus:border-blue-300 transition-colors uppercase"
+                      maxLength={18}
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500 mb-1.5">{t.profile_rideshareLicensePlate}</div>
+                    <LicensePlateInput
+                      value={rideLicensePlate}
+                      onChange={saveRideLicensePlate}
+                      className="text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== VPN代理节点面板（底部半屏） ===== */}
+        {showVpnPanel && (
+          <div className="fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setShowVpnPanel(false)}>
+            <div className="absolute inset-0 bg-black/40" />
+            <div className="relative bg-white rounded-t-2xl max-h-[40vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex flex-col items-center pt-2 pb-1 shrink-0">
+                <div className="w-10 h-1 rounded-full bg-gray-300" />
+              </div>
+              <div className="flex items-center justify-between px-4 pb-3 border-b border-gray-100 shrink-0">
+                <h3 className="text-base font-semibold text-gray-900">{t.profile_vpnNode}</h3>
+                <button onClick={() => setShowVpnPanel(false)} className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center">
+                  <X size={16} className="text-gray-500" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">{t.profile_vpnFee}</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      value={vpnNodeFee}
+                      onChange={(e) => saveVpnNodeFee(e.target.value)}
+                      min="0"
+                      step="0.01"
+                      placeholder="0.10"
+                      className="w-20 text-right text-sm font-semibold bg-transparent outline-none border-b-2 text-purple-600 border-purple-300"
+                    />
+                    <span className="text-xs text-gray-500">RWAD/GB</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== C2C做市商面板（底部半屏） ===== */}
+        {showC2cPanel && (
+          <div className="fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setShowC2cPanel(false)}>
+            <div className="absolute inset-0 bg-black/40" />
+            <div className="relative bg-white rounded-t-2xl max-h-[75vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex flex-col items-center pt-2 pb-1 shrink-0">
+                <div className="w-10 h-1 rounded-full bg-gray-300" />
+              </div>
+              <div className="flex items-center justify-between px-4 pb-3 border-b border-gray-100 shrink-0">
+                <h3 className="text-base font-semibold text-gray-900">{t.profile_c2cMaker}</h3>
+                <button onClick={() => setShowC2cPanel(false)} className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center">
+                  <X size={16} className="text-gray-500" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="space-y-3">
+                  <div className="text-sm font-medium text-gray-800">{t.profile_c2cFundType} / {t.profile_c2cDailyLimit} / {t.profile_c2cSpread}</div>
+                  {c2cMakerFunds.map((fund, idx) => (
+                    <div key={fund.assetCode} className="bg-gray-50 rounded-lg p-3 border border-gray-100 space-y-2">
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 cursor-pointer min-w-[96px]">
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${fund.enabled ? 'bg-indigo-500 border-indigo-500' : 'bg-white border-gray-300'}`}>
+                            {fund.enabled && <Check size={10} className="text-white" />}
+                          </div>
+                          <input type="checkbox" className="hidden" checked={fund.enabled} onChange={(e) => updateFundSetting(idx, 'enabled', e.target.checked)} />
+                          <span className="text-sm font-medium text-gray-700">{fund.assetCode}</span>
+                        </label>
+                        <div className="h-4 w-px bg-gray-200" />
+                        <div className="flex-1 flex items-center gap-2">
+                          <span className="text-[11px] text-gray-500">{t.profile_c2cLimitLabel}</span>
+                          <input type="number" value={fund.limit} onChange={(e) => updateFundSetting(idx, 'limit', e.target.value)} placeholder={t.profile_c2cLimitPlaceholder} className={`w-full text-sm bg-transparent outline-none ${fund.enabled ? 'text-gray-900' : 'text-gray-400'}`} disabled={!fund.enabled} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <label className="flex items-center gap-2">
+                          <span className="text-gray-500 min-w-[58px]">{t.profile_c2cBaseBps}</span>
+                          <input type="number" value={fund.baseSpreadBps} onChange={(e) => updateFundSetting(idx, 'baseSpreadBps', Number(e.target.value))} className={`w-full text-sm bg-transparent border rounded px-2 py-1 ${fund.enabled ? 'text-gray-900 border-gray-200' : 'text-gray-400 border-gray-100'}`} disabled={!fund.enabled} />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <span className="text-gray-500 min-w-[58px]">{t.profile_c2cMaxBps}</span>
+                          <input type="number" value={fund.maxSpreadBps} onChange={(e) => updateFundSetting(idx, 'maxSpreadBps', Number(e.target.value))} className={`w-full text-sm bg-transparent border rounded px-2 py-1 ${fund.enabled ? 'text-gray-900 border-gray-200' : 'text-gray-400 border-gray-100'}`} disabled={!fund.enabled} />
+                        </label>
+                      </div>
+                      <div className="text-[10px] text-gray-500">{t.profile_c2cPairs}: {fund.marketPairs.join(', ')}</div>
+                    </div>
+                  ))}
+                  <div className="text-[10px] text-gray-400">{t.profile_c2cPolicyReset}</div>
+                </div>
+
+                {/* DEX Settings */}
+                <div className="space-y-3">
+                  <div className="text-sm font-medium text-gray-800 flex items-center gap-2">
+                    <span className="w-1 h-4 bg-purple-500 rounded-full" />
+                    {t.profile_dexSettings}
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-gray-200 p-3">
+                    <div className="flex-1 pr-4">
+                      <div className="text-sm font-medium text-gray-900">{t.profile_dexClob}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">{t.profile_dexClobDesc}</div>
+                    </div>
+                    <button type="button" onClick={() => toggleFeature('dex_clob_v1', !dexClobEnabled)} className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${dexClobEnabled ? 'bg-purple-600' : 'bg-gray-200'}`}>
+                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200 ${dexClobEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-gray-200 p-3">
+                    <div className="flex-1 pr-4">
+                      <div className="text-sm font-medium text-gray-900">{t.profile_dexBridge}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">{t.profile_dexBridgeDesc}</div>
+                    </div>
+                    <button type="button" onClick={() => toggleFeature('dex_c2c_bridge_v1', !dexBridgeEnabled)} className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${dexBridgeEnabled ? 'bg-purple-600' : 'bg-gray-200'}`}>
+                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200 ${dexBridgeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== 分布式全球算力节点面板（底部半屏） ===== */}
+        {showDistributedPanel && (
+          <div className="fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setShowDistributedPanel(false)}>
+            <div className="absolute inset-0 bg-black/40" />
+            <div className="relative bg-white rounded-t-2xl max-h-[50vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex flex-col items-center pt-2 pb-1 shrink-0">
+                <div className="w-10 h-1 rounded-full bg-gray-300" />
+              </div>
+              <div className="flex items-center justify-between px-4 pb-3 border-b border-gray-100 shrink-0">
+                <h3 className="text-base font-semibold text-gray-900">{t.profile_distributedNode}</h3>
+                <button onClick={() => setShowDistributedPanel(false)} className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center">
+                  <X size={16} className="text-gray-500" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                    <div className="text-xs text-gray-500 mb-1">{t.profile_limitCpu}</div>
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={limitCpu} onChange={(e) => setLimitCpu(Number(e.target.value))} className="w-14 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500" />
+                      <span className="text-[10px] text-gray-400">{t.profile_unitCore}</span>
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                    <div className="text-xs text-gray-500 mb-1">{t.profile_limitMemory}</div>
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={limitMemory} onChange={(e) => setLimitMemory(Number(e.target.value))} className="w-14 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500" />
+                      <span className="text-[10px] text-gray-400">{t.profile_unitGB}</span>
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                    <div className="text-xs text-gray-500 mb-1">{t.profile_limitDisk}</div>
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={limitDisk} onChange={(e) => setLimitDisk(Number(e.target.value))} className="w-14 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500" />
+                      <span className="text-[10px] text-gray-400">{t.profile_unitGB}</span>
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                    <div className="text-xs text-gray-500 mb-1">{t.profile_limitGpu}</div>
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={limitGpu} onChange={(e) => setLimitGpu(Number(e.target.value))} className="w-14 text-sm bg-transparent outline-none border-b border-gray-300 focus:border-emerald-500" />
+                      <span className="text-[10px] text-gray-400">{t.profile_unitCard}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
       </div>
     </>

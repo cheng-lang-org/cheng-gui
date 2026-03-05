@@ -213,6 +213,166 @@ export interface Libp2pIdentity {
   keyPath?: string;
 }
 
+export interface MsQuicSettings {
+  allowDatagram: boolean;
+  maxDatagram: number;
+  minimumMtu: number;
+  maximumMtu: number;
+  migrationEnabled: boolean;
+  ecnEnabled: boolean;
+}
+
+export type SevenGateId =
+  | 'gate.mdns_lan_discovery'
+  | 'gate.quic_direct_connect'
+  | 'gate.quic_connection_migration'
+  | 'gate.dm_message_roundtrip'
+  | 'gate.video_call_media_stream'
+  | 'gate.synccast_live_stream'
+  | 'gate.content_publish_home_feed';
+
+export type SevenGateStatus = 'passed' | 'failed' | 'blocked';
+
+export interface SevenGateEvidence {
+  check: string;
+  status: SevenGateStatus;
+  detail?: string;
+  data?: Record<string, JsonValue>;
+}
+
+export interface SevenGateReport {
+  gateId: SevenGateId;
+  status: SevenGateStatus;
+  error?: string;
+  evidence: SevenGateEvidence[];
+}
+
+export type SevenGateRuntimeMode = 'passive' | 'active_probe' | 'hybrid';
+
+export interface SevenGateSnapshotGate {
+  gateId: SevenGateId;
+  status: SevenGateStatus;
+  error?: string;
+  evidence: SevenGateEvidence[];
+  updatedAt: number;
+  expiresAt: number;
+}
+
+export interface SevenGateSnapshot {
+  schema: 'seven_gates_frontend_v1';
+  mode: SevenGateRuntimeMode;
+  overall: SevenGateStatus;
+  updatedAt: number;
+  gates: SevenGateSnapshotGate[];
+}
+
+export type SevenGateActionId =
+  | 'connect_peer'
+  | 'send_dm'
+  | 'video_call'
+  | 'synccast_control'
+  | 'publish_content';
+
+export interface SevenGateActionDecision {
+  actionId: SevenGateActionId;
+  allowed: boolean;
+  status: SevenGateStatus;
+  reason: string;
+  requiredGates: SevenGateId[];
+}
+
+export interface HostNetworkStatus {
+  type: 'HostNetworkStatus';
+  transport: string;
+  networkType: string;
+  ssid?: string;
+  isConnected: boolean;
+  isMetered: boolean;
+  timestampMs: number;
+  reason?: string;
+}
+
+export interface RwadNfcStatusReq {
+  walletId: string;
+}
+
+export interface RwadNfcStatusResp {
+  ok: boolean;
+  walletId?: string;
+  enrolled?: boolean;
+  tagCommitment?: string;
+  error?: string;
+}
+
+export interface RwadNfcEnrollReq {
+  walletId: string;
+  timeoutMs?: number;
+}
+
+export interface RwadNfcEnrollResp {
+  ok: boolean;
+  walletId?: string;
+  enrolled?: boolean;
+  tagCommitment?: string;
+  error?: string;
+}
+
+export interface RwadNfcAuthorizeTransferReq {
+  walletId: string;
+  to: string;
+  amount: number;
+  nonce?: string;
+  txDigest?: string;
+  timeoutMs?: number;
+}
+
+export interface RwadNfcStartReceiveReq {
+  walletId: string;
+  ttlMs?: number;
+}
+
+export interface RwadNfcStartReceiveResp {
+  ok: boolean;
+  walletId?: string;
+  expiresAt?: number;
+  error?: string;
+}
+
+export interface RwadNfcStopReceiveReq {
+  walletId?: string;
+}
+
+export interface RwadNfcStopReceiveResp {
+  ok: boolean;
+  error?: string;
+}
+
+export interface RwadNfcResolveRecipientReq {
+  timeoutMs?: number;
+  walletId?: string;
+}
+
+export interface RwadNfcResolveRecipientResp {
+  ok: boolean;
+  walletId?: string;
+  error?: string;
+}
+
+export interface RwadNfcProof {
+  walletId: string;
+  tagCommitment: string;
+  challenge: string;
+  signature: string;
+  ts: number;
+  nonce: string;
+}
+
+export interface RwadNfcAuthorizeTransferResp {
+  ok: boolean;
+  proof?: RwadNfcProof;
+  error?: string;
+}
+
 export interface Libp2pBridgePlugin {
   init(options: { config?: string | Record<string, JsonValue> }): Promise<OkResult>;
   start(): Promise<OkResult>;
@@ -220,6 +380,7 @@ export interface Libp2pBridgePlugin {
   reset?(): Promise<OkResult>;
   isStarted(): Promise<StartedResult>;
   runtimeHealth(): Promise<RuntimeHealthResult>;
+  getHostNetworkStatus?(): Promise<Record<string, JsonValue>>;
   generateIdentity(): Promise<Libp2pIdentity>;
   identityFromSeed(options: { seed: string }): Promise<Libp2pIdentity>;
   getLocalPeerId(): Promise<PeerIdResult>;
@@ -243,6 +404,8 @@ export interface Libp2pBridgePlugin {
   boostConnectivity(): Promise<OkResult>;
   reserveOnRelay(options: { relayAddr: string }): Promise<OkResult>;
   reserveOnAllRelays(): Promise<ReserveAllResult>;
+  setMsquicSettings(options: { settingsJson?: string; settings?: Partial<MsQuicSettings> }): Promise<OkResult>;
+  getMsquicSettings(): Promise<Record<string, JsonValue>>;
   mdnsSetEnabled(options: { enabled: boolean }): Promise<OkResult>;
   mdnsSetInterface(options: { ipv4: string }): Promise<OkResult>;
   mdnsSetInterval(options: { seconds: number }): Promise<OkResult>;
@@ -355,8 +518,26 @@ export interface Libp2pBridgePlugin {
     policyRef?: string;
   }): Promise<Record<string, JsonValue>>;
   rwadSessionDestroy?(options: { sessionId: string }): Promise<OkResult>;
+  rwadSessionAuthorizePayment?(options: {
+    walletId: string;
+    reason?: string;
+    timeoutMs?: number;
+  }): Promise<Record<string, JsonValue>>;
+  rwadNfcStatus?(options: { payload: string }): Promise<{ payload?: string }>;
+  rwadNfcEnroll?(options: { payload: string }): Promise<{ payload?: string }>;
+  rwadNfcAuthorizeTransfer?(options: { payload: string }): Promise<{ payload?: string }>;
+  rwadNfcStartReceive?(options: { payload: string }): Promise<{ payload?: string }>;
+  rwadNfcStopReceive?(options: { payload: string }): Promise<{ payload?: string }>;
+  rwadNfcResolveRecipient?(options: { payload: string }): Promise<{ payload?: string }>;
+  openNfcSettings?(): Promise<OkResult>;
+  openNfcPaymentSettings?(): Promise<OkResult>;
 
   socialListDiscoveredPeers(options?: { sourceFilter?: string; limit?: number }): Promise<{ peers: DiscoveredPeer[]; totalCount?: number }>;
+  networkDiscoverySnapshot(options?: {
+    sourceFilter?: string;
+    limit?: number;
+    connectCap?: number;
+  }): Promise<Record<string, JsonValue>>;
   socialConnectPeer(options: { peerId: string; multiaddr?: string }): Promise<OkResult>;
   socialDmSend(options: {
     peerId: string;
@@ -415,4 +596,6 @@ export interface Libp2pBridgePlugin {
   socialNotificationsList(options?: { cursor?: string; limit?: number }): Promise<{ items: NotificationItem[]; nextCursor?: string; hasMore?: boolean }>;
   socialQueryPresence(options: { peerIds?: string[]; peerIdsJson?: string }): Promise<{ peers: PresenceSnapshot[] }>;
   socialPollEvents(options?: { maxEvents?: number }): Promise<{ events: BridgeEventEntry[] }>;
+  setSevenGatesReport?(options: { reportJson: string }): Promise<OkResult>;
+  getSevenGatesReport?(): Promise<Record<string, JsonValue>>;
 }
